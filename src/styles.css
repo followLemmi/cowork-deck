@@ -1,0 +1,5 @@
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+#app { display: flex; font-family: system-ui, sans-serif; }
+#sidebar { width: 240px; background: #1b1b1f; color: #eee; padding: 8px; overflow: auto; }
+#deck { flex: 1; display: grid; gap: 6px; padding: 6px; background: #0f0f12; }
