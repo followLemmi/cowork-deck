@@ -14,10 +14,35 @@ impl Store {
     fn ws_path(&self) -> PathBuf { self.dir.join("workspaces.json") }
     fn sk_path(&self) -> PathBuf { self.dir.join("skills.json") }
 
-    fn read_vec<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Vec<T> {
+    /// Reads and parses a JSON array file. A missing file is a normal,
+    /// expected case (first run) and yields an empty Vec. Any other read
+    /// error (permission denied, I/O error, etc.) is transient/abnormal and
+    /// is propagated as `Err` rather than silently swallowed — callers that
+    /// are about to overwrite the file (upsert/delete) must treat that as a
+    /// hard stop instead of proceeding with an empty in-memory list, which
+    /// would otherwise truncate an existing, populated file on save.
+    fn try_read_vec<T: serde::de::DeserializeOwned>(path: &PathBuf) -> std::io::Result<Vec<T>> {
         match std::fs::read_to_string(path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-            Err(_) => Vec::new(),
+            Ok(s) => Ok(serde_json::from_str(&s).unwrap_or_default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Best-effort read for plain listing (no save follows). On a
+    /// non-NotFound error this logs a warning and returns empty rather than
+    /// propagating, since there is no destructive save operation downstream
+    /// that could be corrupted by it.
+    fn read_vec<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Vec<T> {
+        match Self::try_read_vec(path) {
+            Ok(items) => items,
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to read {} ({e}); treating as empty for this listing",
+                    path.display()
+                );
+                Vec::new()
+            }
         }
     }
 
@@ -36,8 +61,14 @@ impl Store {
         Self::write_vec(&self.sk_path(), items)
     }
 
+    // NOTE: upsert_*/delete_* deliberately use `try_read_vec` (not the
+    // best-effort `read_vec`) so that a transient, non-NotFound read error
+    // (e.g. permission denied, disk I/O error) aborts before `save_*` is
+    // called. Without this, a read failure would be treated as "no existing
+    // items", and the subsequent save would overwrite a populated file with
+    // a truncated (often single-item) list.
     pub fn upsert_workspace(&self, w: Workspace) -> std::io::Result<Vec<Workspace>> {
-        let mut items = self.workspaces();
+        let mut items: Vec<Workspace> = Self::try_read_vec(&self.ws_path())?;
         match items.iter_mut().find(|x| x.id == w.id) {
             Some(existing) => *existing = w,
             None => items.push(w),
@@ -47,14 +78,14 @@ impl Store {
     }
 
     pub fn delete_workspace(&self, id: &str) -> std::io::Result<Vec<Workspace>> {
-        let mut items = self.workspaces();
+        let mut items: Vec<Workspace> = Self::try_read_vec(&self.ws_path())?;
         items.retain(|x| x.id != id);
         self.save_workspaces(&items)?;
         Ok(items)
     }
 
     pub fn upsert_skill(&self, sk: Skill) -> std::io::Result<Vec<Skill>> {
-        let mut items = self.skills();
+        let mut items: Vec<Skill> = Self::try_read_vec(&self.sk_path())?;
         match items.iter_mut().find(|x| x.id == sk.id) {
             Some(existing) => *existing = sk,
             None => items.push(sk),
@@ -64,7 +95,7 @@ impl Store {
     }
 
     pub fn delete_skill(&self, id: &str) -> std::io::Result<Vec<Skill>> {
-        let mut items = self.skills();
+        let mut items: Vec<Skill> = Self::try_read_vec(&self.sk_path())?;
         items.retain(|x| x.id != id);
         self.save_skills(&items)?;
         Ok(items)
@@ -102,5 +133,64 @@ mod tests {
         // delete
         let after = s.delete_workspace("w1").unwrap();
         assert!(after.is_empty());
+    }
+
+    #[test]
+    fn read_vec_returns_empty_for_missing_file_not_found() {
+        let dir = tmp();
+        let missing = dir.join("does-not-exist.json");
+        // Best-effort read_vec: NotFound -> empty, no error.
+        let items: Vec<Workspace> = Store::read_vec(&missing);
+        assert!(items.is_empty());
+        // Same guarantee on the strict helper used by upsert/delete.
+        let items: Vec<Workspace> = Store::try_read_vec(&missing).unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn upsert_refuses_to_truncate_on_non_not_found_read_error() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let s = Store::new(tmp());
+        let w1 = Workspace {
+            id: "w1".into(),
+            name: "First".into(),
+            path: "/tmp/a".into(),
+            color: "#111111".into(),
+        };
+        s.upsert_workspace(w1.clone()).unwrap();
+
+        let path = s.ws_path();
+        let original_perms = fs::metadata(&path).unwrap().permissions();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // If the file is still readable (e.g. tests running as root, where
+        // permission bits don't block reads), this scenario can't be
+        // exercised on this platform/user — skip rather than false-fail.
+        let still_readable = fs::read_to_string(&path).is_ok();
+        if still_readable {
+            fs::set_permissions(&path, original_perms).unwrap();
+            return;
+        }
+
+        let w2 = Workspace {
+            id: "w2".into(),
+            name: "Second".into(),
+            path: "/tmp/b".into(),
+            color: "#222222".into(),
+        };
+        let result = s.upsert_workspace(w2);
+        assert!(
+            result.is_err(),
+            "upsert must refuse to proceed (and must NOT save) on a non-NotFound read error"
+        );
+
+        // Restore permissions and verify the original file is untouched,
+        // i.e. it was NOT overwritten with an empty/truncated list.
+        fs::set_permissions(&path, original_perms).unwrap();
+        let items = s.workspaces();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "w1");
     }
 }

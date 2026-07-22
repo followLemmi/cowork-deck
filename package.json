@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "stage:reporter": "bash scripts/stage-reporter.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
