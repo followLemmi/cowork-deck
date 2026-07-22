@@ -6,6 +6,7 @@ mod hooks;
 mod listener;
 mod pty;
 mod commands;
+mod external;
 
 use commands::AppState;
 use std::sync::Mutex;

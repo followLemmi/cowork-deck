@@ -542,6 +542,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
+ "shell-words",
  "tauri",
  "tauri-build",
  "tauri-plugin-notification",
