@@ -7,7 +7,8 @@ export class TerminalPanel {
   private term: Terminal;
   private fitAddon: FitAddon;
   private ro: ResizeObserver | null = null;
-  constructor(private session: string, mount: HTMLElement) {
+  private rafId: number | null = null;
+  constructor(private session: string, private mount: HTMLElement) {
     this.term = new Terminal({
       fontFamily: '"CaskaydiaCove Nerd Font Mono", "Cascadia Code", ui-monospace, monospace',
       fontSize: 14,
@@ -33,11 +34,9 @@ export class TerminalPanel {
     if ((document as any).fonts?.ready) {
       (document as any).fonts.ready.then(() => this.fit());
     }
-    let scheduled = false;
     this.ro = new ResizeObserver(() => {
-      if (scheduled) return;
-      scheduled = true;
-      requestAnimationFrame(() => { scheduled = false; this.fit(); });
+      if (this.rafId !== null) return;
+      this.rafId = requestAnimationFrame(() => { this.rafId = null; this.fit(); });
     });
     this.ro.observe(mount);
     this.term.onData((d) => { void writeSession(this.session, d); });
@@ -49,15 +48,16 @@ export class TerminalPanel {
   }
   write(text: string) { this.term.write(text); }
   fit() {
+    if (this.mount.clientWidth === 0 || this.mount.clientHeight === 0) return;
     try {
-      const el = this.term.element as HTMLElement | undefined;
-      if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
       this.fitAddon.fit();
-    } catch {
-      /* container not measurable yet */
+    } catch (e) {
+      console.debug("terminal fit skipped", e);
     }
   }
   dispose() {
+    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
+    this.rafId = null;
     this.ro?.disconnect();
     this.ro = null;
     this.term.dispose();
