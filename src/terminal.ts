@@ -6,6 +6,7 @@ import { startSession, writeSession, resizeSession } from "./ipc";
 export class TerminalPanel {
   private term: Terminal;
   private fitAddon: FitAddon;
+  private ro: ResizeObserver | null = null;
   constructor(private session: string, mount: HTMLElement) {
     this.term = new Terminal({
       fontFamily: '"CaskaydiaCove Nerd Font Mono", "Cascadia Code", ui-monospace, monospace',
@@ -32,6 +33,13 @@ export class TerminalPanel {
     if ((document as any).fonts?.ready) {
       (document as any).fonts.ready.then(() => this.fit());
     }
+    let scheduled = false;
+    this.ro = new ResizeObserver(() => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => { scheduled = false; this.fit(); });
+    });
+    this.ro.observe(mount);
     this.term.onData((d) => { void writeSession(this.session, d); });
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
   }
@@ -40,6 +48,18 @@ export class TerminalPanel {
     await startSession(this.session, cwd, initialPrompt, cols, rows);
   }
   write(text: string) { this.term.write(text); }
-  fit() { this.fitAddon.fit(); }
-  dispose() { this.term.dispose(); }
+  fit() {
+    try {
+      const el = this.term.element as HTMLElement | undefined;
+      if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
+      this.fitAddon.fit();
+    } catch {
+      /* container not measurable yet */
+    }
+  }
+  dispose() {
+    this.ro?.disconnect();
+    this.ro = null;
+    this.term.dispose();
+  }
 }
