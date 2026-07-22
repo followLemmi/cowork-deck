@@ -2,7 +2,10 @@ import { TerminalPanel } from "./terminal";
 import { onOutput, onState, onExit, closeSession, type SessionState, type Skill, type Workspace } from "./ipc";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 
-interface Tile { session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement; }
+interface Tile {
+  session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
+  workspacePath: string; prompt: string | null; restartBtn: HTMLButtonElement;
+}
 
 const LABEL: Record<SessionState, string> = {
   idle: "готов", working: "работает", waitingInput: "ждёт ввода", ended: "завершён", error: "ошибка",
@@ -36,13 +39,26 @@ export class Deck {
     close.textContent = "✕"; close.className = "tile-close";
     close.onclick = () => this.remove(session);
     head.append(title, label, close);
+    const restart = document.createElement("button");
+    restart.textContent = "⟳"; restart.className = "tile-close"; restart.style.display = "none";
+    restart.title = "перезапустить";
+    restart.onclick = async () => {
+      restart.style.display = "none";
+      tile.panel.write("\r\n[перезапуск сессии...]\r\n");
+      await tile.panel.start(tile.workspacePath, tile.prompt);
+      this.setState(session, "idle");
+    };
+    head.insertBefore(restart, close);
     const mount = document.createElement("div");
     mount.className = "tile-body";
     el.append(head, mount);
     this.deckEl.appendChild(el);
 
     const panel = new TerminalPanel(session, mount);
-    const tile: Tile = { session, name: title.textContent!, panel, state: "idle", el, label };
+    const tile: Tile = {
+      session, name: title.textContent!, panel, state: "idle", el, label,
+      workspacePath: workspace.path, prompt: skill ? skill.prompt : null, restartBtn: restart,
+    };
     this.tiles.set(session, tile);
     this.renderList();
     await panel.start(workspace.path, skill ? skill.prompt : null);
@@ -55,6 +71,7 @@ export class Deck {
     tile.state = state;
     tile.label.className = `tile-state state-${state}`;
     tile.label.textContent = LABEL[state];
+    tile.restartBtn.style.display = (state === "ended" || state === "error") ? "inline" : "none";
     this.renderList();
     if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       sendNotification({ title: `cowork-deck · ${LABEL[state]}`, body: tile.name });
