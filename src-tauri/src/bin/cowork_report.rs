@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::mpsc;
 use std::time::Duration;
 
 fn main() {
@@ -13,8 +14,16 @@ fn main() {
     let session = &args[3];
 
     // Best-effort: read optional stdin JSON to extract notification_type.
-    let mut buf = String::new();
-    let _ = std::io::stdin().read_to_string(&mut buf);
+    // The read happens on a separate thread and is bounded by a timeout so
+    // this reporter can never block the host session waiting on stdin that
+    // may never arrive or never close.
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = std::io::stdin().read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let buf = rx.recv_timeout(Duration::from_millis(300)).unwrap_or_default();
     let notification_type = extract_field(&buf, "notification_type");
 
     let payload = match notification_type {
@@ -46,6 +55,8 @@ fn esc(s: &str) -> String {
 
 /// Minimal string-field extractor for a flat JSON object. Avoids a serde dep
 /// in the reporter to keep it tiny; hook payload fields we need are strings.
+/// Assumes flat, quote-free string values (Claude Code's internal
+/// notification_type strings), not arbitrary JSON.
 fn extract_field(json: &str, key: &str) -> Option<String> {
     let needle = format!("\"{}\"", key);
     let start = json.find(&needle)? + needle.len();
