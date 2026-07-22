@@ -12,7 +12,7 @@
 
 - Keep unchanged: command/event/state naming that survives (`session://state`, `session://exit`, camelCase SessionState), workspaces/skills store behavior, 127.0.0.1-only listener, single user, cross-platform, sessions best-effort terminate with the window.
 - Removed surface: `start_session`, `write_session`, `resize_session`, `session://output`, `src/terminal.ts`, `src-tauri/src/pty.rs`, the `base64` dependency, `@xterm/*` deps. Nothing else may call these afterward.
-- Default terminal command template: exactly `ghostty -e`.
+- Default terminal command template: **empty string = auto-detect the system default terminal**. The user may override with an explicit template (e.g. `ghostty -e`). Auto-detect per OS: Linux → `$TERMINAL -e` if `$TERMINAL` set, else `x-terminal-emulator -e` if present, else first found among `ghostty -e`/`wezterm start --`/`kitty`/`alacritty -e`/`gnome-terminal --`/`konsole -e`/`xterm -e`; Windows → `wt` if present else `cmd /c start`; macOS → best-effort `open -a Terminal` note (documented as possibly needing a custom template).
 - Temp settings files: `<std::env::temp_dir()>/coworkdeck-<session>.json`.
 - Spawning terminals uses Rust `std::process::Command` (no Tauri shell plugin, no new capability).
 
@@ -23,7 +23,7 @@
 **Files:** Modify `src-tauri/src/store.rs`, `src-tauri/src/model.rs` (add `Settings`). Test: inline in store.rs.
 
 **Interfaces produced:**
-- `model::Settings { terminal_command: String }` with `#[serde(rename = "terminalCommand")]` and a `Default` of `"ghostty -e"`.
+- `model::Settings { terminal_command: String }` with `#[serde(rename = "terminalCommand")]` and a `Default` of `""` (empty = auto-detect system default; resolved at launch time in Task 3).
 - `Store::settings(&self) -> Settings` (returns Default if file missing/unreadable) and `Store::save_settings(&self, &Settings) -> std::io::Result<()>`, backed by `settings.json` in the config dir.
 
 - [ ] **Step 1: Failing test** in store.rs:
@@ -31,7 +31,7 @@
 #[test]
 fn settings_default_then_roundtrip() {
     let s = Store::new(tmp());
-    assert_eq!(s.settings().terminal_command, "ghostty -e");
+    assert_eq!(s.settings().terminal_command, ""); // empty = auto-detect
     let mut cfg = s.settings();
     cfg.terminal_command = "wezterm start --".into();
     s.save_settings(&cfg).unwrap();
@@ -47,7 +47,7 @@ pub struct Settings {
     pub terminal_command: String,
 }
 impl Default for Settings {
-    fn default() -> Self { Settings { terminal_command: "ghostty -e".into() } }
+    fn default() -> Self { Settings { terminal_command: String::new() } } // empty = auto-detect
 }
 ```
 Add to `store.rs`:
@@ -79,6 +79,7 @@ pub fn save_settings(&self, s: &Settings) -> std::io::Result<()> {
 
 **Interfaces produced:**
 - `hooks::write_settings_file(reporter_path: &str, port: u16, session: &str) -> std::io::Result<std::path::PathBuf>` — writes `build_settings_json(...)` to `temp_dir()/coworkdeck-<session>.json`, returns the path.
+- `external::detect_default_terminal() -> String` — returns a non-empty terminal command template for the current OS (see Global Constraints). Used to resolve an empty (auto) template.
 - `external::build_launch_argv(template: &str, program: &str, settings_file: &str, prompt: &Option<String>) -> Result<Vec<String>, String>` — shell-splits `template`, errors if empty, then appends `program`, `"--settings"`, `settings_file`, and the prompt if present.
 - `external::ExternalManager` with `new()`, `launch(&self, session: &str, argv: &[String], cwd: &str) -> std::io::Result<()>` (spawns `argv[0]` with `argv[1..]`, cwd set, stores the `Child`), `kill(&self, session: &str)`, `kill_all(&self)`.
 
@@ -106,6 +107,11 @@ mod tests {
         let argv2 = build_launch_argv("wezterm start --", "claude", "/tmp/s.json", &None).unwrap();
         assert_eq!(argv2, vec!["wezterm","start","--","claude","--settings","/tmp/s.json"]);
         assert!(build_launch_argv("   ", "claude", "/tmp/s.json", &None).is_err());
+    }
+    #[test]
+    fn detect_returns_nonempty() {
+        // On any supported OS the resolver must yield a runnable prefix.
+        assert!(!detect_default_terminal().trim().is_empty());
     }
     #[test]
     fn manager_launches_and_kills() {
@@ -138,6 +144,58 @@ Create `src-tauri/src/external.rs`:
 use std::collections::HashMap;
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex};
+
+/// Return a runnable terminal command template for the current OS. Used when the
+/// user's template is empty ("auto"). Each candidate carries the correct flag to
+/// run a command in that terminal.
+pub fn detect_default_terminal() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        if which("wt") { return "wt".into(); }
+        return "cmd /c start".into();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Best-effort: Terminal.app via `open` needs a script wrapper for args, which
+        // does not fit the prefix model. Fall back to a common terminal if present,
+        // else return a Terminal.app hint the user can refine.
+        for (bin, tmpl) in [("ghostty","ghostty -e"),("wezterm","wezterm start --"),("kitty","kitty"),("alacritty","alacritty -e")] {
+            if which(bin) { return tmpl.into(); }
+        }
+        return "open -a Terminal".into();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Ok(t) = std::env::var("TERMINAL") {
+            if !t.trim().is_empty() { return format!("{} -e", t.trim()); }
+        }
+        if which("x-terminal-emulator") { return "x-terminal-emulator -e".into(); }
+        for (bin, tmpl) in [
+            ("ghostty","ghostty -e"), ("wezterm","wezterm start --"), ("kitty","kitty"),
+            ("alacritty","alacritty -e"), ("gnome-terminal","gnome-terminal --"),
+            ("konsole","konsole -e"), ("xterm","xterm -e"),
+        ] {
+            if which(bin) { return tmpl.into(); }
+        }
+        return "xterm -e".into();
+    }
+}
+
+/// Is `bin` resolvable on PATH? Scans `$PATH` directly (no shell builtin, no crate).
+fn which(bin: &str) -> bool {
+    let path = match std::env::var_os("PATH") { Some(p) => p, None => return false };
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(bin);
+        if candidate.is_file() { return true; }
+        #[cfg(windows)]
+        {
+            for ext in ["exe", "cmd", "bat"] {
+                if dir.join(format!("{bin}.{ext}")).is_file() { return true; }
+            }
+        }
+    }
+    false
+}
 
 /// Split the terminal command template and append the claude invocation.
 pub fn build_launch_argv(
@@ -240,7 +298,11 @@ pub fn launch_session(
     let program = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let settings_file = crate::hooks::write_settings_file(&state.reporter_path, state.listener_port, &session)
         .map_err(|e| e.to_string())?;
-    let template = state.store.lock().unwrap().settings().terminal_command;
+    let mut template = state.store.lock().unwrap().settings().terminal_command;
+    if template.trim().is_empty() {
+        // Empty setting = auto: resolve the system default terminal at launch time.
+        template = crate::external::detect_default_terminal();
+    }
     let argv = crate::external::build_launch_argv(
         &template, &program, &settings_file.to_string_lossy(), &initial_prompt,
     )?;
@@ -276,7 +338,7 @@ export const launchSession = (session: string, cwd: string, initialPrompt: strin
 ```
 Update `tests/ipc.test.ts`: drop the startSession/decodeB64 cases; add a test that `launchSession("s1","/p","do it")` invokes `"launch_session"` with `{ session:"s1", cwd:"/p", initialPrompt:"do it" }`, and that `getSettings` calls `"get_settings"`.
 - [ ] **Step 2:** Delete `src/terminal.ts`. Rewrite `src/sessions.ts` `Deck` so `launch(workspace, skill|null)` creates a **card** (no TerminalPanel): a session id via `crypto.randomUUID()`, a card element with title (`skill ? icon+name : "терминал · "+workspace.name`), a state label (`state-idle` initially), and a close button (calls `closeSession` + removes the card). `wireEvents` subscribes only to `onState` (update label + notify on transitions into waitingInput/ended/error) and `onExit` (mark ended). Keep the existing `LABEL`/`NOTIFY_ON`/notification-permission logic. Build card DOM with `textContent` (no innerHTML for names). `launch()` calls `launchSession(session, workspace.path, skill ? skill.prompt : null)`.
-- [ ] **Step 3:** `src/main.ts`: add a settings field in the sidebar — a text input for the terminal command, loaded via `getSettings()` and saved via `saveSettings({ terminalCommand })` on change (blur or a small Save button). Keep workspaces/skills wiring and the launch handlers reading `workspaces.active` live. Remove any `onOutput`/TerminalPanel references. Update `src/styles.css`: drop `.tile-body` xterm sizing; add `.card`/settings-field styles as needed.
+- [ ] **Step 3:** `src/main.ts`: add a settings field in the sidebar — a text input for the terminal command, loaded via `getSettings()` and saved via `saveSettings({ terminalCommand })` on change (blur or a small Save button). When the value is empty, show placeholder text `(системный по умолчанию)` so the user knows empty means auto-detect the system default terminal. Keep workspaces/skills wiring and the launch handlers reading `workspaces.active` live. Remove any `onOutput`/TerminalPanel references. Update `src/styles.css`: drop `.tile-body` xterm sizing; add `.card`/settings-field styles as needed.
 - [ ] **Step 4:** `package.json`: remove `@xterm/xterm` and `@xterm/addon-fit` from dependencies. Run `npm install` to update the lockfile.
 - [ ] **Step 5:** Verify: `npx tsc --noEmit` (no errors, no dangling imports of removed modules), `npm run build` (succeeds), `npx vitest run` (updated ipc tests pass).
 - [ ] **Step 6:** Commit: `feat: session cards + terminal-command setting; remove xterm frontend`.
@@ -288,7 +350,7 @@ Update `tests/ipc.test.ts`: drop the startSession/decodeB64 cases; add a test th
 **Files:** Modify `README.md`. Verification task otherwise.
 
 - [ ] **Step 1:** Full suites: `cd src-tauri && cargo test` (all pass) ; `cd .. && npx vitest run` (pass) ; `npm run build` (pass) ; `cargo build --release --manifest-path src-tauri/Cargo.toml` (pass).
-- [ ] **Step 2:** Update `README.md`: document that sessions open in an external terminal; the configurable terminal command (default `ghostty -e`) and where to set it; the single-instance-terminal caveat for close-on-exit; that state labels/notifications still work via hooks. Remove references to the embedded terminal.
+- [ ] **Step 2:** Update `README.md`: document that sessions open in an external terminal; that the terminal command setting defaults to the **system default terminal** (empty = auto-detect; Linux via `$TERMINAL`/`x-terminal-emulator`, Windows via `wt`/`cmd`, macOS best-effort) and can be overridden (e.g. `ghostty -e`); the single-instance-terminal caveat for close-on-exit; that state labels/notifications still work via hooks. Remove references to the embedded terminal.
 - [ ] **Step 3:** Produce a USER SMOKE CHECKLIST in the report: set terminal command, launch a skill → external terminal window opens running claude, label goes working→waitingInput, OS notification fires; `pgrep -fa claude` and closing the pult window behavior (note the single-instance caveat).
 - [ ] **Step 4:** Commit any doc change: `docs: README for external-terminal mode`.
 
