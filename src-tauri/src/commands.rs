@@ -5,7 +5,7 @@ use crate::store::Store;
 use base64::Engine;
 use serde::Serialize;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 pub struct AppState {
     pub store: Mutex<Store>,
