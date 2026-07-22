@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 struct Session {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
 }
 
@@ -33,6 +33,9 @@ impl PtyManager {
     where
         F: Fn(Vec<u8>) + Send + 'static,
     {
+        // Avoid orphaning a previously spawned process under the same session id.
+        self.kill(session);
+
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
@@ -45,7 +48,8 @@ impl PtyManager {
         let mut child = pair.slave.spawn_command(cmd).map_err(to_io)?;
         let killer = child.clone_killer();
         let mut reader = pair.master.try_clone_reader().map_err(to_io)?;
-        let writer = pair.master.take_writer().map_err(to_io)?;
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(pair.master.take_writer().map_err(to_io)?));
 
         // Reader thread: stream output until EOF.
         std::thread::spawn(move || {
@@ -73,11 +77,21 @@ impl PtyManager {
     }
 
     pub fn write(&self, session: &str, data: &[u8]) -> std::io::Result<()> {
-        let mut map = self.sessions.lock().unwrap();
-        if let Some(s) = map.get_mut(session) {
-            s.writer.write_all(data)?;
-            s.writer.flush()?;
-        }
+        // Only hold the map lock long enough to clone out this session's writer
+        // handle. The blocking IO below runs against the per-session writer
+        // mutex, so a wedged write can never stall other sessions, resizes,
+        // kill(), or kill_all().
+        let writer = {
+            let map = self.sessions.lock().unwrap();
+            match map.get(session) {
+                Some(s) => Arc::clone(&s.writer),
+                None => return Ok(()),
+            }
+        };
+
+        let mut w = writer.lock().unwrap();
+        w.write_all(data)?;
+        w.flush()?;
         Ok(())
     }
 
@@ -92,14 +106,25 @@ impl PtyManager {
     }
 
     pub fn kill(&self, session: &str) {
-        if let Some(mut s) = self.sessions.lock().unwrap().remove(session) {
+        // Remove the entry and drop the map guard before killing, so a stuck
+        // writer holding only its own per-session lock can never block this.
+        let removed = {
+            let mut map = self.sessions.lock().unwrap();
+            map.remove(session)
+        };
+        if let Some(mut s) = removed {
             let _ = s.killer.kill();
         }
     }
 
     pub fn kill_all(&self) {
-        let mut map = self.sessions.lock().unwrap();
-        for (_, mut s) in map.drain() {
+        // Drain into a local Vec and drop the map guard before killing any
+        // child, so kill_all can never be blocked by a stuck per-session write.
+        let removed: Vec<Session> = {
+            let mut map = self.sessions.lock().unwrap();
+            map.drain().map(|(_, s)| s).collect()
+        };
+        for mut s in removed {
             let _ = s.killer.kill();
         }
     }
