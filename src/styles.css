@@ -4,3 +4,9 @@ html, body, #app { height: 100%; margin: 0; }
 #sidebar { width: 240px; background: #1b1b1f; color: #eee; padding: 8px; overflow: auto; }
 #deck { flex: 1; display: grid; gap: 6px; padding: 6px; background: #0f0f12; }
 .panel { background: #000; border: 1px solid #333; border-radius: 6px; overflow: hidden; min-height: 200px; }
+.ws-row { display: flex; align-items: center; gap: 6px; padding: 4px; border-radius: 4px; }
+.ws-row.active { background: #2a2a30; }
+.ws-label { flex: 1; text-align: left; background: none; border: none; color: #eee; cursor: pointer; }
+.ws-del, .ws-add { background: none; border: 1px solid #444; color: #aaa; border-radius: 4px; cursor: pointer; }
+.ws-add { margin-top: 8px; width: 100%; padding: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
