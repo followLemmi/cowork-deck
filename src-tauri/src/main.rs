@@ -4,6 +4,7 @@ mod model;
 mod store;
 mod hooks;
 mod listener;
+mod pty;
 
 fn main() {
     tauri::Builder::default()
