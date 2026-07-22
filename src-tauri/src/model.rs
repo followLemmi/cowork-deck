@@ -29,6 +29,20 @@ pub struct Skill {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(rename = "terminalCommand")]
+    pub terminal_command: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            terminal_command: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReporterEvent {
     pub session: String,
     pub kind: String,

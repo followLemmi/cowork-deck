@@ -1,4 +1,4 @@
-use crate::model::{Skill, Workspace};
+use crate::model::{Settings, Skill, Workspace};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -13,6 +13,20 @@ impl Store {
 
     fn ws_path(&self) -> PathBuf { self.dir.join("workspaces.json") }
     fn sk_path(&self) -> PathBuf { self.dir.join("skills.json") }
+    fn settings_path(&self) -> std::path::PathBuf { self.dir.join("settings.json") }
+
+    pub fn settings(&self) -> Settings {
+        match std::fs::read_to_string(self.settings_path()) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => Settings::default(),
+        }
+    }
+
+    pub fn save_settings(&self, s: &Settings) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(self.settings_path(), json)
+    }
 
     /// Reads and parses a JSON array file. A missing file is a normal,
     /// expected case (first run) and yields an empty Vec. Any other read
@@ -192,5 +206,15 @@ mod tests {
         let items = s.workspaces();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "w1");
+    }
+
+    #[test]
+    fn settings_default_then_roundtrip() {
+        let s = Store::new(tmp());
+        assert_eq!(s.settings().terminal_command, ""); // empty = auto-detect
+        let mut cfg = s.settings();
+        cfg.terminal_command = "wezterm start --".into();
+        s.save_settings(&cfg).unwrap();
+        assert_eq!(Store::new(s.dir.clone()).settings().terminal_command, "wezterm start --");
     }
 }
