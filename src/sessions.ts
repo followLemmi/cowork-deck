@@ -76,7 +76,12 @@ export class Deck {
     for (const t of this.tiles.values()) {
       const row = document.createElement("div");
       row.className = "sess-row";
-      row.innerHTML = `<span class="tile-state state-${t.state}">${LABEL[t.state]}</span> <span>${t.name}</span>`;
+      const stateSpan = document.createElement("span");
+      stateSpan.className = `tile-state state-${t.state}`;
+      stateSpan.textContent = LABEL[t.state];
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = t.name;
+      row.append(stateSpan, " ", nameSpan);
       this.listEl.appendChild(row);
     }
   }
