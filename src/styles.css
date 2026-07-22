@@ -1,3 +1,18 @@
+@font-face {
+  font-family: "CaskaydiaCove Nerd Font Mono";
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+  src: url("./assets/fonts/CaskaydiaCoveNerdFontMono-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "CaskaydiaCove Nerd Font Mono";
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+  src: url("./assets/fonts/CaskaydiaCoveNerdFontMono-Bold.ttf") format("truetype");
+}
+
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
 #app { display: flex; font-family: system-ui, sans-serif; }
@@ -18,7 +33,7 @@ html, body, #app { height: 100%; margin: 0; }
 .tile { display: flex; flex-direction: column; background: #000; border: 1px solid #333; border-radius: 6px; overflow: hidden; }
 .tile-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: #16161a; color: #eee; font-size: 12px; }
 .tile-head span:first-child { flex: 1; }
-.tile-body { flex: 1; min-height: 0; }
+.tile-body { flex: 1; min-height: 0; background: #1d1f21; padding: 8px; }
 .tile-close { background: none; border: none; color: #aaa; cursor: pointer; }
 .tile-state { font-size: 11px; padding: 1px 6px; border-radius: 8px; }
 .state-idle { background: #334; color: #cde; }
