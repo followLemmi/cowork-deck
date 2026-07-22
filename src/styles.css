@@ -19,6 +19,7 @@ html, body, #app { height: 100%; margin: 0; }
 .card-head { display: flex; align-items: center; gap: 8px; padding: 8px; background: #16161a; color: #eee; font-size: 12px; }
 .card-title { flex: 1; }
 .tile-close { background: none; border: none; color: #aaa; cursor: pointer; }
+.tile-relaunch { background: none; border: none; color: #aaa; cursor: pointer; }
 .tile-state { font-size: 11px; padding: 1px 6px; border-radius: 8px; }
 .state-idle { background: #334; color: #cde; }
 .state-working { background: #1e3a2a; color: #8f8; }

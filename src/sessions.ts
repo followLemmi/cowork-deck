@@ -3,6 +3,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 
 interface Card {
   session: string; name: string; state: SessionState; el: HTMLElement; label: HTMLElement;
+  relaunch: HTMLElement; workspacePath: string; prompt: string | null;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -35,19 +36,28 @@ export class Deck {
     const label = document.createElement("span");
     label.className = "tile-state state-idle";
     label.textContent = LABEL.idle;
+    const relaunch = document.createElement("button");
+    relaunch.textContent = "⟳";
+    relaunch.className = "tile-relaunch";
+    relaunch.title = "перезапустить";
+    relaunch.style.display = "none";
+    relaunch.onclick = () => this.relaunch(card.session);
     const close = document.createElement("button");
     close.textContent = "✕";
     close.className = "tile-close";
-    close.onclick = () => this.remove(session);
-    head.append(title, label, close);
+    close.onclick = () => this.remove(card.session);
+    head.append(title, label, relaunch, close);
     el.append(head);
     this.deckEl.appendChild(el);
 
-    const card: Card = { session, name, state: "idle", el, label };
+    const prompt = skill ? skill.prompt : null;
+    const card: Card = {
+      session, name, state: "idle", el, label, relaunch, workspacePath: workspace.path, prompt,
+    };
     this.cards.set(session, card);
     this.renderList();
 
-    await launchSession(session, workspace.path, skill ? skill.prompt : null);
+    await launchSession(session, workspace.path, prompt);
   }
 
   private setState(session: string, state: SessionState) {
@@ -57,10 +67,26 @@ export class Deck {
     card.state = state;
     card.label.className = `tile-state state-${state}`;
     card.label.textContent = LABEL[state];
+    card.relaunch.style.display = state === "ended" || state === "error" ? "" : "none";
     this.renderList();
     if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       sendNotification({ title: `cowork-deck · ${LABEL[state]}`, body: card.name });
     }
+  }
+
+  private relaunch(session: string) {
+    const card = this.cards.get(session);
+    if (!card) return;
+    const newId = crypto.randomUUID();
+    this.cards.delete(session);
+    card.session = newId;
+    card.state = "idle";
+    card.label.className = "tile-state state-idle";
+    card.label.textContent = LABEL.idle;
+    card.relaunch.style.display = "none";
+    this.cards.set(newId, card);
+    this.renderList();
+    void launchSession(newId, card.workspacePath, card.prompt);
   }
 
   private remove(session: string) {
