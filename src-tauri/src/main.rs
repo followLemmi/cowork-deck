@@ -2,6 +2,7 @@
 
 mod model;
 mod store;
+mod hooks;
 
 fn main() {
     tauri::Builder::default()
