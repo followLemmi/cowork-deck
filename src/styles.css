@@ -10,3 +10,7 @@ html, body, #app { height: 100%; margin: 0; }
 .ws-del, .ws-add { background: none; border: 1px solid #444; color: #aaa; border-radius: 4px; cursor: pointer; }
 .ws-add { margin-top: 8px; width: 100%; padding: 6px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.sk-row { display: flex; gap: 6px; margin: 4px 0; }
+.sk-run { flex: 1; text-align: left; padding: 6px; background: #26304a; color: #eee; border: none; border-radius: 4px; cursor: pointer; }
+.sk-del { background: none; border: 1px solid #444; color: #aaa; border-radius: 4px; cursor: pointer; }
+.sk-add { width: 100%; padding: 6px; margin-top: 8px; background: none; border: 1px solid #444; color: #aaa; border-radius: 4px; cursor: pointer; }
