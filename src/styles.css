@@ -14,3 +14,16 @@ html, body, #app { height: 100%; margin: 0; }
 .sk-run { flex: 1; text-align: left; padding: 6px; background: #26304a; color: #eee; border: none; border-radius: 4px; cursor: pointer; }
 .sk-del { background: none; border: 1px solid #444; color: #aaa; border-radius: 4px; cursor: pointer; }
 .sk-add { width: 100%; padding: 6px; margin-top: 8px; background: none; border: 1px solid #444; color: #aaa; border-radius: 4px; cursor: pointer; }
+#deck { grid-template-columns: repeat(2, 1fr); grid-auto-rows: 1fr; }
+.tile { display: flex; flex-direction: column; background: #000; border: 1px solid #333; border-radius: 6px; overflow: hidden; }
+.tile-head { display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: #16161a; color: #eee; font-size: 12px; }
+.tile-head span:first-child { flex: 1; }
+.tile-body { flex: 1; min-height: 0; }
+.tile-close { background: none; border: none; color: #aaa; cursor: pointer; }
+.tile-state { font-size: 11px; padding: 1px 6px; border-radius: 8px; }
+.state-idle { background: #334; color: #cde; }
+.state-working { background: #1e3a2a; color: #8f8; }
+.state-waitingInput { background: #4a3a10; color: #fd6; }
+.state-ended { background: #333; color: #bbb; }
+.state-error { background: #4a1e1e; color: #f88; }
+.sess-row { display: flex; gap: 6px; align-items: center; font-size: 12px; margin: 3px 0; }
