@@ -78,6 +78,7 @@ export class Deck {
     const card = this.cards.get(session);
     if (!card) return;
     const newId = crypto.randomUUID();
+    void closeSession(session);
     this.cards.delete(session);
     card.session = newId;
     card.state = "idle";
