@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod model;
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
