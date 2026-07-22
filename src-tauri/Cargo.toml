@@ -18,7 +18,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-notification = "2"
+portable-pty = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-shell-words = "1"
+base64 = "0.22"

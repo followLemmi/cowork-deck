@@ -1,7 +1,7 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
-import { claudeAvailable, getSettings, saveSettings } from "./ipc";
+import { claudeAvailable } from "./ipc";
 
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
@@ -10,22 +10,7 @@ const skMount = document.createElement("div");
 const listMount = document.createElement("div");
 const newBtn = document.createElement("button");
 newBtn.textContent = "+ сессия"; newBtn.className = "ws-add";
-
-const settingsWrap = document.createElement("div");
-settingsWrap.className = "settings-field";
-const settingsLabel = document.createElement("label");
-settingsLabel.textContent = "Команда терминала";
-const settingsInput = document.createElement("input");
-settingsInput.type = "text";
-settingsInput.placeholder = "(системный по умолчанию)";
-settingsWrap.append(settingsLabel, settingsInput);
-
-sidebar.append(wsMount, skMount, newBtn, settingsWrap, listMount);
-
-getSettings().then((s) => { settingsInput.value = s.terminalCommand; });
-settingsInput.addEventListener("blur", () => {
-  void saveSettings({ terminalCommand: settingsInput.value.trim() });
-});
+sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const deck = new Deck(deckEl, listMount);
 deck.wireEvents();

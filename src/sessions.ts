@@ -1,9 +1,10 @@
-import { onState, closeSession, launchSession, type SessionState, type Skill, type Workspace } from "./ipc";
+import { TerminalPanel } from "./terminal";
+import { onOutput, onState, onExit, closeSession, type SessionState, type Skill, type Workspace } from "./ipc";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 
-interface Card {
-  session: string; name: string; state: SessionState; el: HTMLElement; label: HTMLElement;
-  relaunch: HTMLElement; workspacePath: string; prompt: string | null;
+interface Tile {
+  session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
+  workspacePath: string; prompt: string | null; restartBtn: HTMLButtonElement;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -12,103 +13,91 @@ const LABEL: Record<SessionState, string> = {
 const NOTIFY_ON: SessionState[] = ["waitingInput", "ended", "error"];
 
 export class Deck {
-  private cards = new Map<string, Card>();
+  private tiles = new Map<string, Tile>();
   private notifyOk = false;
   constructor(private deckEl: HTMLElement, private listEl: HTMLElement) {}
 
   async wireEvents() {
     this.notifyOk = await isPermissionGranted();
     if (!this.notifyOk) this.notifyOk = (await requestPermission()) === "granted";
+    await onOutput((s, text) => this.tiles.get(s)?.panel.write(text));
     await onState((s, state) => this.setState(s, state));
+    await onExit((s) => { /* state already emitted; keep tile for scrollback */ void s; });
   }
 
   async launch(workspace: Workspace, skill: Skill | null) {
     const session = crypto.randomUUID();
-    const name = skill ? `${skill.icon} ${skill.name}` : `терминал · ${workspace.name}`;
-
     const el = document.createElement("div");
-    el.className = "card";
+    el.className = "tile";
     const head = document.createElement("div");
-    head.className = "card-head";
+    head.className = "tile-head";
     const title = document.createElement("span");
-    title.className = "card-title";
-    title.textContent = name;
+    title.textContent = skill ? `${skill.icon} ${skill.name}` : `терминал · ${workspace.name}`;
     const label = document.createElement("span");
-    label.className = "tile-state state-idle";
-    label.textContent = LABEL.idle;
-    const relaunch = document.createElement("button");
-    relaunch.textContent = "⟳";
-    relaunch.className = "tile-relaunch";
-    relaunch.title = "перезапустить";
-    relaunch.style.display = "none";
-    relaunch.onclick = () => this.relaunch(card.session);
+    label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
     const close = document.createElement("button");
-    close.textContent = "✕";
-    close.className = "tile-close";
-    close.onclick = () => this.remove(card.session);
-    head.append(title, label, relaunch, close);
-    el.append(head);
+    close.textContent = "✕"; close.className = "tile-close";
+    close.onclick = () => this.remove(session);
+    head.append(title, label, close);
+    const restart = document.createElement("button");
+    restart.textContent = "⟳"; restart.className = "tile-close"; restart.style.display = "none";
+    restart.title = "перезапустить";
+    restart.onclick = async () => {
+      restart.style.display = "none";
+      tile.panel.write("\r\n[перезапуск сессии...]\r\n");
+      await tile.panel.start(tile.workspacePath, tile.prompt);
+      this.setState(session, "idle");
+    };
+    head.insertBefore(restart, close);
+    const mount = document.createElement("div");
+    mount.className = "tile-body";
+    el.append(head, mount);
     this.deckEl.appendChild(el);
 
-    const prompt = skill ? skill.prompt : null;
-    const card: Card = {
-      session, name, state: "idle", el, label, relaunch, workspacePath: workspace.path, prompt,
+    const panel = new TerminalPanel(session, mount);
+    const tile: Tile = {
+      session, name: title.textContent!, panel, state: "idle", el, label,
+      workspacePath: workspace.path, prompt: skill ? skill.prompt : null, restartBtn: restart,
     };
-    this.cards.set(session, card);
+    this.tiles.set(session, tile);
     this.renderList();
-
-    await launchSession(session, workspace.path, prompt);
+    await panel.start(workspace.path, skill ? skill.prompt : null);
   }
 
   private setState(session: string, state: SessionState) {
-    const card = this.cards.get(session);
-    if (!card) return;
-    const prev = card.state;
-    card.state = state;
-    card.label.className = `tile-state state-${state}`;
-    card.label.textContent = LABEL[state];
-    card.relaunch.style.display = state === "ended" || state === "error" ? "" : "none";
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    const prev = tile.state;
+    tile.state = state;
+    tile.label.className = `tile-state state-${state}`;
+    tile.label.textContent = LABEL[state];
+    tile.restartBtn.style.display = (state === "ended" || state === "error") ? "inline" : "none";
     this.renderList();
     if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
-      sendNotification({ title: `cowork-deck · ${LABEL[state]}`, body: card.name });
+      sendNotification({ title: `cowork-deck · ${LABEL[state]}`, body: tile.name });
     }
   }
 
-  private relaunch(session: string) {
-    const card = this.cards.get(session);
-    if (!card) return;
-    const newId = crypto.randomUUID();
-    void closeSession(session);
-    this.cards.delete(session);
-    card.session = newId;
-    card.state = "idle";
-    card.label.className = "tile-state state-idle";
-    card.label.textContent = LABEL.idle;
-    card.relaunch.style.display = "none";
-    this.cards.set(newId, card);
-    this.renderList();
-    void launchSession(newId, card.workspacePath, card.prompt);
-  }
-
   private remove(session: string) {
-    const card = this.cards.get(session);
-    if (!card) return;
+    const tile = this.tiles.get(session);
+    if (!tile) return;
     void closeSession(session);
-    card.el.remove();
-    this.cards.delete(session);
+    tile.panel.dispose();
+    tile.el.remove();
+    this.tiles.delete(session);
     this.renderList();
   }
 
   private renderList() {
     this.listEl.innerHTML = "<h3>Сессии</h3>";
-    for (const c of this.cards.values()) {
+    for (const t of this.tiles.values()) {
       const row = document.createElement("div");
       row.className = "sess-row";
       const stateSpan = document.createElement("span");
-      stateSpan.className = `tile-state state-${c.state}`;
-      stateSpan.textContent = LABEL[c.state];
+      stateSpan.className = `tile-state state-${t.state}`;
+      stateSpan.textContent = LABEL[t.state];
       const nameSpan = document.createElement("span");
-      nameSpan.textContent = c.name;
+      nameSpan.textContent = t.name;
       row.append(stateSpan, " ", nameSpan);
       this.listEl.appendChild(row);
     }

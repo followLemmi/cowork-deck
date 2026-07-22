@@ -1,27 +1,35 @@
-use crate::model::{Settings, Skill, Workspace};
+use crate::hooks::build_settings_json;
+use crate::model::{Skill, Workspace};
+use crate::pty::PtyManager;
 use crate::store::Store;
+use base64::Engine;
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
 pub struct AppState {
     pub store: Mutex<Store>,
-    pub external: crate::external::ExternalManager,
+    pub pty: PtyManager,
     pub listener_port: u16,
     pub reporter_path: String,
 }
 
+/// Build the argv (after the program name) for launching an interactive claude
+/// session with per-session hook settings and an optional initial prompt.
+pub fn build_claude_args(settings_json: &str, initial_prompt: &Option<String>) -> Vec<String> {
+    let mut args = vec!["--settings".to_string(), settings_json.to_string()];
+    if let Some(p) = initial_prompt {
+        args.push(p.clone());
+    }
+    args
+}
+
+#[derive(Clone, Serialize)]
+struct OutputPayload { session: String, #[serde(rename = "dataB64")] data_b64: String }
 #[derive(Clone, Serialize)]
 struct StatePayload { session: String, state: crate::model::SessionState }
-
-#[tauri::command]
-pub fn get_settings(state: State<AppState>) -> Settings {
-    state.store.lock().unwrap().settings()
-}
-#[tauri::command]
-pub fn save_settings(state: State<AppState>, settings: Settings) -> Result<(), String> {
-    state.store.lock().unwrap().save_settings(&settings).map_err(|e| e.to_string())
-}
+#[derive(Clone, Serialize)]
+struct ExitPayload { session: String, ok: bool }
 
 #[tauri::command]
 pub fn list_workspaces(state: State<AppState>) -> Vec<Workspace> {
@@ -73,32 +81,72 @@ fn which_claude() -> Option<String> {
 }
 
 #[tauri::command]
-pub fn launch_session(
+pub fn start_session(
+    app: AppHandle,
     state: State<AppState>,
     session: String,
     cwd: String,
     initial_prompt: Option<String>,
+    cols: u16,
+    rows: u16,
 ) -> Result<(), String> {
     let program = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
-    let settings_file = crate::hooks::write_settings_file(&state.reporter_path, state.listener_port, &session)
-        .map_err(|e| e.to_string())?;
-    let mut template = state.store.lock().unwrap().settings().terminal_command;
-    if template.trim().is_empty() {
-        // Empty setting = auto: resolve the system default terminal at launch time.
-        template = crate::external::detect_default_terminal();
-    }
-    let argv = crate::external::build_launch_argv(
-        &template, &program, &settings_file.to_string_lossy(), &initial_prompt,
-    )?;
-    state.external.launch(&session, &argv, &cwd).map_err(|e| e.to_string())
+    let settings = build_settings_json(&state.reporter_path, state.listener_port, &session);
+    let args = build_claude_args(&settings, &initial_prompt);
+
+    let app_out = app.clone();
+    let sess_out = session.clone();
+    let on_output = move |bytes: Vec<u8>| {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let _ = app_out.emit("session://output", OutputPayload { session: sess_out.clone(), data_b64: b64 });
+    };
+
+    let app_exit = app.clone();
+    let sess_exit = session.clone();
+    let on_exit = move |ok: bool| {
+        let state = if ok { crate::model::SessionState::Ended } else { crate::model::SessionState::Error };
+        let _ = app_exit.emit("session://state", StatePayload { session: sess_exit.clone(), state });
+        let _ = app_exit.emit("session://exit", ExitPayload { session: sess_exit.clone(), ok });
+    };
+
+    state.pty
+        .spawn(&session, &program, &args, &cwd, cols, rows, on_output, on_exit)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
+pub fn write_session(state: State<AppState>, session: String, data: String) -> Result<(), String> {
+    state.pty.write(&session, data.as_bytes()).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub fn resize_session(state: State<AppState>, session: String, cols: u16, rows: u16) -> Result<(), String> {
+    state.pty.resize(&session, cols, rows).map_err(|e| e.to_string())
+}
+#[tauri::command]
 pub fn close_session(state: State<AppState>, session: String) {
-    state.external.kill(&session);
+    state.pty.kill(&session);
 }
 
 /// Called by main during setup to emit state changes coming from the listener.
 pub fn emit_state(app: &AppHandle, session: String, state: crate::model::SessionState) {
     let _ = app.emit("session://state", StatePayload { session, state });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_claude_args_with_settings_and_prompt() {
+        let args = build_claude_args("{\"hooks\":{}}", &Some("collect email report".into()));
+        assert_eq!(args[0], "--settings");
+        assert_eq!(args[1], "{\"hooks\":{}}");
+        assert_eq!(args.last().unwrap(), "collect email report");
+    }
+
+    #[test]
+    fn builds_claude_args_without_prompt() {
+        let args = build_claude_args("{}", &None);
+        assert_eq!(args, vec!["--settings".to_string(), "{}".to_string()]);
+    }
 }

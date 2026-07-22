@@ -4,8 +4,8 @@ mod model;
 mod store;
 mod hooks;
 mod listener;
+mod pty;
 mod commands;
-mod external;
 
 use commands::AppState;
 use std::sync::Mutex;
@@ -41,7 +41,7 @@ fn main() {
 
             app.manage(AppState {
                 store: Mutex::new(store),
-                external: external::ExternalManager::new(),
+                pty: pty::PtyManager::new(),
                 listener_port: port,
                 reporter_path: reporter_path(),
             });
@@ -50,13 +50,11 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if let Some(state) = window.try_state::<AppState>() {
-                    state.external.kill_all();
+                    state.pty.kill_all();
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_settings,
-            commands::save_settings,
             commands::list_workspaces,
             commands::save_workspace,
             commands::remove_workspace,
@@ -64,7 +62,9 @@ fn main() {
             commands::save_skill,
             commands::remove_skill,
             commands::claude_available,
-            commands::launch_session,
+            commands::start_session,
+            commands::write_session,
+            commands::resize_session,
             commands::close_session,
         ])
         .run(tauri::generate_context!())

@@ -26,17 +26,6 @@ pub fn build_settings_json(reporter_path: &str, port: u16, session: &str) -> Str
     json!({ "hooks": hooks }).to_string()
 }
 
-/// Write `build_settings_json(...)` to a temp file and return its path.
-pub fn write_settings_file(
-    reporter_path: &str, port: u16, session: &str,
-) -> std::io::Result<std::path::PathBuf> {
-    let json = build_settings_json(reporter_path, port, session);
-    let mut path = std::env::temp_dir();
-    path.push(format!("coworkdeck-{}.json", session));
-    std::fs::write(&path, json)?;
-    Ok(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,14 +43,5 @@ mod tests {
         assert!(cmd.contains("51234"), "cmd: {cmd}");
         assert!(cmd.contains("sess-9"), "cmd: {cmd}");
         assert!(cmd.contains("waiting"), "cmd: {cmd}");
-    }
-
-    #[test]
-    fn writes_settings_file_with_session_command() {
-        let p = write_settings_file("/opt/cowork_report", 7777, "sess-file").unwrap();
-        let body = std::fs::read_to_string(&p).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(v["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap().contains("sess-file"));
-        let _ = std::fs::remove_file(p);
     }
 }
