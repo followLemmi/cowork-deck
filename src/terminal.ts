@@ -1,6 +1,5 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { LigaturesAddon } from "@xterm/addon-ligatures";
 import "@xterm/xterm/css/xterm.css";
 import { startSession, writeSession, resizeSession } from "./ipc";
 
@@ -29,11 +28,6 @@ export class TerminalPanel {
     this.fitAddon = new FitAddon();
     this.term.loadAddon(this.fitAddon);
     this.term.open(mount);
-    try {
-      this.term.loadAddon(new LigaturesAddon());
-    } catch (e) {
-      console.warn("ligatures unavailable", e);
-    }
     this.fitAddon.fit();
     if ((document as any).fonts?.ready) {
       (document as any).fonts.ready.then(() => this.fit());
