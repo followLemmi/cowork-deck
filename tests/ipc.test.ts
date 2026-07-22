@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/api/event");
 
-import { listWorkspaces, startSession, decodeB64 } from "../src/ipc";
+import { listWorkspaces, launchSession, getSettings } from "../src/ipc";
 import { invoke } from "@tauri-apps/api/core";
 
 describe("ipc", () => {
@@ -18,18 +18,18 @@ describe("ipc", () => {
     expect(res[0].id).toBe("w1");
   });
 
-  it("startSession passes all params", async () => {
+  it("launchSession passes session, cwd and initialPrompt", async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
-    await startSession("s1", "/proj", "do the thing", 80, 24);
-    expect(invoke).toHaveBeenCalledWith("start_session", {
-      session: "s1", cwd: "/proj", initialPrompt: "do the thing", cols: 80, rows: 24,
+    await launchSession("s1", "/p", "do it");
+    expect(invoke).toHaveBeenCalledWith("launch_session", {
+      session: "s1", cwd: "/p", initialPrompt: "do it",
     });
   });
 
-  it("decodeB64 round-trips utf8", () => {
-    const str = "héllo";
-    const utf8Bytes = new TextEncoder().encode(str);
-    const b64 = btoa(String.fromCharCode(...utf8Bytes));
-    expect(decodeB64(b64)).toBe(str);
+  it("getSettings calls the right command", async () => {
+    vi.mocked(invoke).mockResolvedValue({ terminalCommand: "" });
+    const res = await getSettings();
+    expect(invoke).toHaveBeenCalledWith("get_settings");
+    expect(res.terminalCommand).toBe("");
   });
 });
