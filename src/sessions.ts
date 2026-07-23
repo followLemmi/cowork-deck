@@ -61,7 +61,16 @@ export class Deck {
     };
     this.tiles.set(session, tile);
     this.renderList();
-    await panel.start(workspace.path, skill ? skill.prompt : null);
+    try {
+      await panel.start(workspace.path, skill ? skill.prompt : null);
+    } catch (e) {
+      this.setState(session, "error");
+      const raw = String((e as { message?: string })?.message ?? e);
+      const readable = raw.includes("claude-not-found")
+        ? "claude не найден — укажите путь и перезапустите"
+        : raw;
+      panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+    }
   }
 
   private setState(session: string, state: SessionState) {
