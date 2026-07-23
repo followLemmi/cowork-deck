@@ -753,9 +753,11 @@ git commit -m "feat: command registry, hotkey matcher, next-waiting nav and Deck
 
 В `src/terminal.ts` в конструкторе после `this.term.open(mount);` добавить:
 ```ts
-    // Не даём xterm поглощать хоткеи-комбо приложения (Cmd/Ctrl+…).
+    // Перехватываем ТОЛЬКО распознанные хоткеи приложения; всё остальное
+    // (в т.ч. Ctrl+C/D/L, обычный ввод) отдаём терминалу.
+    import { matchHotkey } from "./commands"; // (импорт — вверху файла)
     this.term.attachCustomKeyEventHandler((e) => {
-      if ((e.metaKey || e.ctrlKey) && e.type === "keydown") return false;
+      if (e.type === "keydown" && matchHotkey(e)) return false;
       return true;
     });
 ```
