@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, type SessionState, type Skill, type Workspace } from "./ipc";
+import { onOutput, onState, onExit, closeSession, type SessionState, type Skill, type Workspace, type SessionEntry } from "./ipc";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { nextWaitingIndex } from "./commands";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
@@ -209,4 +209,10 @@ export function waitingCount(states: SessionState[]): number {
 
 export function waitingVerb(n: number): string {
   return n % 10 === 1 && n % 100 !== 11 ? "ждёт" : "ждут";
+}
+
+export function serializeTiles(
+  tiles: { session: string; workspacePath: string; name: string }[],
+): SessionEntry[] {
+  return tiles.map((t) => ({ sessionId: t.session, cwd: t.workspacePath, name: t.name }));
 }
