@@ -38,6 +38,13 @@ pub struct SessionEntry {
     pub name: String,
 }
 
+/// Небольшое UI-состояние, переживающее перезапуск (пока — активное пространство).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct UiState {
+    #[serde(rename = "activeWorkspaceId")]
+    pub active_workspace_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReporterEvent {
     pub session: String,

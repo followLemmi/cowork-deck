@@ -1,4 +1,4 @@
-use crate::model::{SessionEntry, Skill, Workspace};
+use crate::model::{SessionEntry, Skill, UiState, Workspace};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -67,6 +67,19 @@ impl Store {
         Self::write_vec(&self.layout_path(), items)
     }
 
+    fn ui_path(&self) -> PathBuf { self.dir.join("ui_state.json") }
+    pub fn ui_state(&self) -> UiState {
+        match std::fs::read_to_string(self.ui_path()) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => UiState::default(),
+        }
+    }
+    pub fn save_ui_state(&self, st: &UiState) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(st)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(self.ui_path(), json)
+    }
+
     // NOTE: upsert_*/delete_* deliberately use `try_read_vec` (not the
     // best-effort `read_vec`) so that a transient, non-NotFound read error
     // (e.g. permission denied, disk I/O error) aborts before `save_*` is
@@ -111,7 +124,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{SessionEntry, Workspace};
+    use crate::model::{SessionEntry, UiState, Workspace};
 
     fn tmp() -> std::path::PathBuf {
         let mut d = std::env::temp_dir();
@@ -211,5 +224,14 @@ mod tests {
         s.save_layout(&entries).unwrap();
         let reloaded = Store::new(s.dir.clone()).layout();
         assert_eq!(reloaded, entries);
+    }
+
+    #[test]
+    fn ui_state_round_trips_and_defaults_empty() {
+        let s = Store::new(tmp());
+        assert_eq!(s.ui_state(), UiState::default()); // NotFound -> default (None)
+        let st = UiState { active_workspace_id: Some("w-1".into()) };
+        s.save_ui_state(&st).unwrap();
+        assert_eq!(Store::new(s.dir.clone()).ui_state(), st);
     }
 }

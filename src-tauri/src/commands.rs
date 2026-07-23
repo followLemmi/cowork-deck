@@ -1,5 +1,5 @@
 use crate::hooks::build_settings_json;
-use crate::model::{SessionEntry, Skill, Workspace};
+use crate::model::{SessionEntry, Skill, UiState, Workspace};
 use crate::pty::PtyManager;
 use crate::store::Store;
 use base64::Engine;
@@ -150,6 +150,16 @@ pub fn load_layout(state: State<AppState>) -> Vec<SessionEntry> {
 #[tauri::command]
 pub fn save_layout(state: State<AppState>, sessions: Vec<SessionEntry>) -> Result<(), String> {
     state.store.lock().unwrap().save_layout(&sessions).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn load_ui_state(state: State<AppState>) -> UiState {
+    state.store.lock().unwrap().ui_state()
+}
+
+#[tauri::command]
+pub fn save_ui_state(state: State<AppState>, ui: UiState) -> Result<(), String> {
+    state.store.lock().unwrap().save_ui_state(&ui).map_err(|e| e.to_string())
 }
 
 /// Called by main during setup to emit state changes coming from the listener.
