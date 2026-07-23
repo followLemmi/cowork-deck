@@ -103,10 +103,28 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
   color: var(--fg-subtle); font-family: var(--font-ui); font-size: var(--fs-base); line-height: 1.6;
 }
 
-.tile-state { font-size: 11px; padding: 1px 6px; border-radius: 8px; }
-.state-idle { background: #334; color: #cde; }
-.state-working { background: #1e3a2a; color: #8f8; }
-.state-waitingInput { background: #4a3a10; color: #fd6; }
-.state-ended { background: #333; color: #bbb; }
-.state-error { background: #4a1e1e; color: #f88; }
+.tile-state {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-ui); font-size: var(--fs-xs); font-weight: var(--fw-medium);
+  padding: 2px 8px 2px 6px; border-radius: 999px;
+  border: 1px solid transparent; line-height: 1.4; white-space: nowrap;
+}
+.tile-state::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor; flex: none;
+}
+
+.state-idle         { color: var(--st-idle);    background: rgba(107, 114, 125, 0.14); }
+.state-working      { color: var(--st-working); background: rgba(152, 195, 121, 0.14); }
+.state-waitingInput { color: var(--st-waiting); background: rgba(229, 192, 123, 0.16); border-color: rgba(229, 192, 123, 0.4); }
+.state-ended        { color: var(--st-ended);   background: rgba(86, 182, 194, 0.14); }
+.state-error        { color: var(--st-error);   background: rgba(224, 108, 117, 0.16); border-color: rgba(224, 108, 117, 0.4); }
+
+.state-waitingInput::before { animation: pulse-dot 1.4s var(--ease) infinite; }
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 192, 123, 0.5); }
+  50%      { box-shadow: 0 0 0 5px rgba(229, 192, 123, 0); }
+}
+.state-working::before { animation: breathe 1.8s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 .sess-row { display: flex; gap: 6px; align-items: center; font-size: 12px; margin: 3px 0; }
