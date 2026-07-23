@@ -3,6 +3,7 @@ import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { claudeAvailable } from "./ipc";
 import { alertModal } from "./modal";
+import { matchHotkey } from "./commands";
 
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
@@ -34,6 +35,26 @@ newBtn.onclick = () => {
 
 workspaces.load();
 skills.load();
+
+const COMMANDS: Record<string, () => void> = {
+  "palette": () => {}, // Task 7
+  "new-session": () => { const ws = workspaces.active; if (ws) deck.launch(ws, null); },
+  "close-active": () => deck.closeActive(),
+  "search": () => deck.searchActive(),
+  "next-waiting": () => deck.focusNextWaiting(),
+};
+
+window.addEventListener("keydown", (e) => {
+  const id = matchHotkey(e);
+  if (!id) return;
+  if (id.startsWith("focus-")) {
+    e.preventDefault();
+    deck.focusByIndex(Number(id.slice("focus-".length)));
+    return;
+  }
+  const run = COMMANDS[id];
+  if (run) { e.preventDefault(); run(); }
+});
 
 claudeAvailable().then((ok) => {
   if (!ok) alertModal("Не найден исполняемый файл claude. Укажите путь через переменную окружения COWORK_CLAUDE_PATH и перезапустите приложение.");

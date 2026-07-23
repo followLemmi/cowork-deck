@@ -30,6 +30,11 @@ export class TerminalPanel {
     this.fitAddon = new FitAddon();
     this.term.loadAddon(this.fitAddon);
     this.term.open(mount);
+    // Не даём xterm поглощать хоткеи-комбо приложения (Cmd/Ctrl+…).
+    this.term.attachCustomKeyEventHandler((e) => {
+      if ((e.metaKey || e.ctrlKey) && e.type === "keydown") return false;
+      return true;
+    });
     this.fitAddon.fit();
     if ((document as any).fonts?.ready) {
       (document as any).fonts.ready.then(() => this.fit());
