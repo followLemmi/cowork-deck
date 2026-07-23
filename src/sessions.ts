@@ -53,6 +53,7 @@ export class Deck {
     mount.className = "tile-body";
     el.append(head, mount);
     this.deckEl.appendChild(el);
+    el.addEventListener("mousedown", () => this.focusTile(session));
 
     const panel = new TerminalPanel(session, mount);
     const tile: Tile = {
@@ -71,6 +72,16 @@ export class Deck {
         : raw;
       panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
     }
+    this.focusTile(session);
+  }
+
+  private focusTile(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    for (const t of this.tiles.values()) t.el.classList.toggle("is-active", t === tile);
+    this.deckEl.classList.toggle("has-active", this.tiles.size > 0);
+    tile.el.scrollIntoView?.({ block: "nearest" });
+    tile.panel.focus();
   }
 
   private setState(session: string, state: SessionState) {
@@ -94,6 +105,7 @@ export class Deck {
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
+    if (this.tiles.size === 0) this.deckEl.classList.remove("has-active");
     this.renderList();
   }
 
@@ -101,7 +113,8 @@ export class Deck {
     this.listEl.innerHTML = "<h3>Сессии</h3>";
     for (const t of this.tiles.values()) {
       const row = document.createElement("div");
-      row.className = "sess-row";
+      row.className = "sess-row" + (t.el.classList.contains("is-active") ? " active" : "");
+      row.onclick = () => this.focusTile(t.session);
       const stateSpan = document.createElement("span");
       stateSpan.className = `tile-state state-${t.state}`;
       stateSpan.textContent = LABEL[t.state];

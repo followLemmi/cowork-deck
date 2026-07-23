@@ -56,3 +56,28 @@ describe("Deck.launch error handling", () => {
     expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("claude не найден"));
   });
 });
+
+describe("Deck.focusTile", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.innerHTML = "";
+    startMock.mockResolvedValue(undefined);
+  });
+
+  it("clicking a session row marks its tile active", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl);
+
+    await deck.launch(WS as any, null);
+    await deck.launch(WS as any, null);
+
+    const firstRow = listEl.querySelectorAll<HTMLElement>(".sess-row")[0];
+    firstRow.click();
+
+    const activeTiles = deckEl.querySelectorAll(".tile.is-active");
+    expect(activeTiles.length).toBe(1);
+    expect(deckEl.classList.contains("has-active")).toBe(true);
+  });
+});

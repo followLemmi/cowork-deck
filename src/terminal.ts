@@ -47,6 +47,7 @@ export class TerminalPanel {
     await startSession(this.session, cwd, initialPrompt, cols, rows);
   }
   write(text: string) { this.term.write(text); }
+  focus() { this.term.focus(); }
   fit() {
     if (this.mount.clientWidth === 0 || this.mount.clientHeight === 0) return;
     try {
