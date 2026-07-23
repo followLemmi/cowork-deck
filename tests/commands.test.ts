@@ -19,6 +19,9 @@ describe("matchHotkey", () => {
   it("maps Cmd+Shift+] to next-waiting", () => {
     expect(matchHotkey({ ...base, key: "]", metaKey: true, shiftKey: true }, true)).toBe("next-waiting");
   });
+  it("maps Cmd+B to broadcast on macOS", () => {
+    expect(matchHotkey({ ...base, key: "b", metaKey: true }, true)).toBe("broadcast");
+  });
   it("returns null without modifier", () => {
     expect(matchHotkey({ ...base, key: "k" }, true)).toBeNull();
   });
