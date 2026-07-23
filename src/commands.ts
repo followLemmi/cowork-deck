@@ -14,6 +14,7 @@ export function matchHotkey(e: { key: string; metaKey: boolean; ctrlKey: boolean
   if (k === "n" && !e.shiftKey) return "new-session";
   if (k === "w" && !e.shiftKey) return "close-active";
   if (k === "f" && !e.shiftKey) return "search";
+  if (k === "b" && !e.shiftKey) return "broadcast";
   if (k === "]" && e.shiftKey) return "next-waiting";
   if (/^[1-9]$/.test(k) && !e.shiftKey) return `focus-${k}`;
   return null;

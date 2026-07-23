@@ -18,11 +18,11 @@ describe("ipc", () => {
     expect(res[0].id).toBe("w1");
   });
 
-  it("startSession passes all params", async () => {
+  it("startSession passes all params incl. resume", async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
-    await startSession("s1", "/proj", "do the thing", 80, 24);
+    await startSession("s1", "/proj", "do the thing", 80, 24, false);
     expect(invoke).toHaveBeenCalledWith("start_session", {
-      session: "s1", cwd: "/proj", initialPrompt: "do the thing", cols: 80, rows: 24,
+      session: "s1", cwd: "/proj", initialPrompt: "do the thing", cols: 80, rows: 24, resume: false,
     });
   });
 

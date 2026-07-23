@@ -91,6 +91,8 @@ fn main() {
             commands::write_session,
             commands::resize_session,
             commands::close_session,
+            commands::load_layout,
+            commands::save_layout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");

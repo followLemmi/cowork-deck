@@ -54,9 +54,9 @@ export class TerminalPanel {
     this.term.onData((d) => { void writeSession(this.session, d); });
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
   }
-  async start(cwd: string, initialPrompt: string | null) {
+  async start(cwd: string, initialPrompt: string | null, resume = false) {
     const { cols, rows } = this.term;
-    await startSession(this.session, cwd, initialPrompt, cols, rows);
+    await startSession(this.session, cwd, initialPrompt, cols, rows, resume);
   }
   write(text: string) { this.term.write(text); }
   focus() { this.term.focus(); }

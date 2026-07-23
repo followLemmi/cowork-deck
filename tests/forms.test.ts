@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { pickFolderMock } = vi.hoisted(() => ({ pickFolderMock: vi.fn() }));
 vi.mock("../src/dialog", () => ({ pickFolder: pickFolderMock }));
 
-import { workspaceForm, skillForm } from "../src/forms";
+import { workspaceForm, skillForm, placeholderForm } from "../src/forms";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -70,5 +70,22 @@ describe("skillForm", () => {
     const res = await p;
     expect(res).toMatchObject({ name: "Fix", prompt: "line1\nline2", workspaceId: "ws-1" });
     expect(res!.icon).toBe("▶"); // default when empty
+  });
+});
+
+describe("placeholderForm", () => {
+  it("collects one value per name and resolves on OK", async () => {
+    const p = placeholderForm(["branch", "ticket"]);
+    const inputs = document.querySelectorAll<HTMLInputElement>(".form-ph");
+    inputs[0].value = "feat/x";
+    inputs[1].value = "JIRA-1";
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect(await p).toEqual({ branch: "feat/x", ticket: "JIRA-1" });
+  });
+
+  it("resolves null on cancel", async () => {
+    const p = placeholderForm(["branch"]);
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    expect(await p).toBeNull();
   });
 });

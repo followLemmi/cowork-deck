@@ -1,11 +1,13 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
-import { claudeAvailable } from "./ipc";
+import { claudeAvailable, loadLayout } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
+import { resolvePrompt } from "./placeholders";
+import { placeholderForm } from "./forms";
 
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
@@ -17,8 +19,13 @@ newBtn.textContent = "+ сессия"; newBtn.className = "ws-add";
 sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const deck = new Deck(deckEl, listMount);
-deck.wireEvents();
 deck.wireNotificationFocus();
+async function boot() {
+  await deck.wireEvents();
+  const entries = await loadLayout();
+  if (entries.length) await deck.restore(entries);
+}
+void boot();
 
 // NOTE: `workspaces.active` is read live (via the getter) at every launch point
 // instead of caching the workspace passed to onSelect, because
@@ -27,9 +34,12 @@ deck.wireNotificationFocus();
 // a deleted workspace's path. Reading `workspaces.active` at click time keeps
 // us in sync with whatever del()/select() last did.
 const workspaces = new WorkspacesPanel(wsMount, () => {});
-const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, (skill) => {
+const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
   const ws = workspaces.active;
-  if (ws) deck.launch(ws, skill);
+  if (!ws) return;
+  const prompt = await resolvePrompt(skill.prompt, placeholderForm);
+  if (prompt === null) return;
+  deck.launch(ws, { ...skill, prompt });
 });
 newBtn.onclick = () => {
   const ws = workspaces.active;
@@ -46,6 +56,7 @@ function paletteCommands(): Command[] {
     { id: "next-waiting", title: "К следующей ждущей вводу", run: () => deck.focusNextWaiting() },
     { id: "search", title: "Поиск в терминале", run: () => deck.searchActive() },
     { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
+    { id: "broadcast", title: "Режим broadcast (ввод в несколько сессий)", run: () => deck.toggleBroadcast() },
   ];
 }
 
@@ -55,6 +66,7 @@ const COMMANDS: Record<string, () => void> = {
   "close-active": () => deck.closeActive(),
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),
+  "broadcast": () => deck.toggleBroadcast(),
 };
 
 window.addEventListener("keydown", (e) => {
