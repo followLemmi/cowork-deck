@@ -163,7 +163,7 @@ Create `tests/forms.test.ts`:
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const pickFolderMock = vi.fn();
+const { pickFolderMock } = vi.hoisted(() => ({ pickFolderMock: vi.fn() }));
 vi.mock("../src/dialog", () => ({ pickFolder: pickFolderMock }));
 
 import { workspaceForm, skillForm } from "../src/forms";
@@ -472,13 +472,12 @@ Create `tests/workspaces.test.ts`:
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const saveWorkspace = vi.fn();
+const { saveWorkspace, workspaceForm } = vi.hoisted(() => ({ saveWorkspace: vi.fn(), workspaceForm: vi.fn() }));
 vi.mock("../src/ipc", () => ({
   listWorkspaces: vi.fn().mockResolvedValue([]),
   saveWorkspace,
   removeWorkspace: vi.fn(),
 }));
-const workspaceForm = vi.fn();
 vi.mock("../src/forms", () => ({ workspaceForm }));
 vi.mock("../src/modal", () => ({ confirmModal: vi.fn() }));
 
@@ -565,13 +564,12 @@ Create `tests/skills.test.ts`:
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const saveSkill = vi.fn();
+const { saveSkill, skillForm } = vi.hoisted(() => ({ saveSkill: vi.fn(), skillForm: vi.fn() }));
 vi.mock("../src/ipc", () => ({
   listSkills: vi.fn().mockResolvedValue([]),
   saveSkill,
   removeSkill: vi.fn(),
 }));
-const skillForm = vi.fn();
 vi.mock("../src/forms", () => ({ skillForm }));
 vi.mock("../src/modal", () => ({ confirmModal: vi.fn() }));
 
