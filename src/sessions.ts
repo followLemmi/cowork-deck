@@ -110,7 +110,10 @@ export class Deck {
   }
 
   private renderList() {
-    this.listEl.innerHTML = "<h3>Сессии</h3>";
+    const waiting = waitingCount([...this.tiles.values()].map((t) => t.state));
+    const header = waiting > 0 ? `Сессии · ${waiting} ждут ввода` : "Сессии";
+    this.listEl.innerHTML = `<h3>${header}</h3>`;
+    document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
     for (const t of this.tiles.values()) {
       const row = document.createElement("div");
       row.className = "sess-row" + (t.el.classList.contains("is-active") ? " active" : "");
@@ -124,4 +127,8 @@ export class Deck {
       this.listEl.appendChild(row);
     }
   }
+}
+
+export function waitingCount(states: SessionState[]): number {
+  return states.filter((s) => s === "waitingInput").length;
 }
