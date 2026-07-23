@@ -45,8 +45,18 @@ export class Deck {
     restart.onclick = async () => {
       restart.style.display = "none";
       tile.panel.write("\r\n[перезапуск сессии...]\r\n");
-      await tile.panel.start(tile.workspacePath, tile.prompt);
-      this.setState(session, "idle");
+      try {
+        await tile.panel.start(tile.workspacePath, tile.prompt);
+        this.setState(session, "idle");
+      } catch (e) {
+        this.setState(session, "error");
+        const raw = String((e as { message?: string })?.message ?? e);
+        const readable = raw.includes("claude-not-found")
+          ? "claude не найден — укажите путь и перезапустите"
+          : raw;
+        tile.panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+        restart.style.display = "inline";
+      }
     };
     head.insertBefore(restart, close);
     const mount = document.createElement("div");
@@ -82,6 +92,7 @@ export class Deck {
     this.deckEl.classList.toggle("has-active", this.tiles.size > 0);
     tile.el.scrollIntoView?.({ block: "nearest" });
     tile.panel.focus();
+    this.renderList();
   }
 
   private setState(session: string, state: SessionState) {
@@ -111,7 +122,7 @@ export class Deck {
 
   private renderList() {
     const waiting = waitingCount([...this.tiles.values()].map((t) => t.state));
-    const header = waiting > 0 ? `Сессии · ${waiting} ждут ввода` : "Сессии";
+    const header = waiting > 0 ? `Сессии · ${waiting} ${waitingVerb(waiting)} ввода` : "Сессии";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
     for (const t of this.tiles.values()) {
@@ -131,4 +142,8 @@ export class Deck {
 
 export function waitingCount(states: SessionState[]): number {
   return states.filter((s) => s === "waitingInput").length;
+}
+
+export function waitingVerb(n: number): string {
+  return n % 10 === 1 && n % 100 !== 11 ? "ждёт" : "ждут";
 }

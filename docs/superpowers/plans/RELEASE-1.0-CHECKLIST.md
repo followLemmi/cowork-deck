@@ -82,7 +82,7 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
   `tests::defaults_to_exe_dir_when_none_exist`, `model::tests::maps_kinds_to_states` (P0-4).
 
 - [ ] Метки состояния реально меняются в `tauri dev` на живом claude 2.1.217 — требует человека
-  — Запустить `npm run tauri dev`, создать сессию с реальным claude, провести через полный цикл (ввод → работа → ждёт ввода → завершение), убедиться, что метла плитки переключается корректно (готов → работает → ждёт ввода → завершён).
+  — Запустить `npm run tauri dev`, создать сессию с реальным claude, провести через полный цикл (ввод → работа → ждёт ввода → завершение), убедиться, что метка плитки переключается корректно (готов → работает → ждёт ввода → завершён).
 
 - [x] Нет busy-loop в listener (backoff) — юнит-тест `listener::tests::backoff_grows_and_caps` зелёный
   (P0-3, commit `271cc9d`).
