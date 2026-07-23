@@ -156,3 +156,37 @@ export function skillForm(
     name.focus();
   });
 }
+
+/** Prompt for one value per placeholder name (order preserved). Resolves a
+ *  name→value map on OK, or null on Cancel/backdrop click. */
+export function placeholderForm(names: string[]): Promise<Record<string, string> | null> {
+  return new Promise((resolve) => {
+    const { overlay: ov, box } = overlay();
+    const title = document.createElement("div");
+    title.className = "modal-title";
+    title.textContent = "Параметры сценария";
+
+    const inputs = new Map<string, HTMLInputElement>();
+    const rows: HTMLElement[] = [];
+    for (const n of names) {
+      const inp = document.createElement("input");
+      inp.className = "modal-input form-ph"; inp.type = "text";
+      inp.dataset.name = n;
+      inputs.set(n, inp);
+      rows.push(labeled(n, inp));
+    }
+
+    const { row, ok, cancel } = actions();
+    box.append(title, ...rows, row);
+
+    const close = (v: Record<string, string> | null) => { ov.remove(); resolve(v); };
+    ok.onclick = () => {
+      const values: Record<string, string> = {};
+      for (const [n, inp] of inputs) values[n] = inp.value.trim();
+      close(values);
+    };
+    cancel.onclick = () => close(null);
+    ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(null); });
+    inputs.get(names[0])?.focus();
+  });
+}
