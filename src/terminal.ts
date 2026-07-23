@@ -48,6 +48,8 @@ export class TerminalPanel {
   }
   write(text: string) { this.term.write(text); }
   focus() { this.term.focus(); }
+  // расширяется в Task 8: очистка через строку поиска/панель терминала
+  clear() { this.term.clear(); }
   fit() {
     if (this.mount.clientWidth === 0 || this.mount.clientHeight === 0) return;
     try {

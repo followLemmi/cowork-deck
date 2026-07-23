@@ -1,6 +1,7 @@
 import { TerminalPanel } from "./terminal";
 import { onOutput, onState, onExit, closeSession, type SessionState, type Skill, type Workspace } from "./ipc";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { nextWaitingIndex } from "./commands";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -83,6 +84,37 @@ export class Deck {
       panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
     }
     this.focusTile(session);
+  }
+
+  get activeSession(): string | null {
+    for (const [id, t] of this.tiles) if (t.el.classList.contains("is-active")) return id;
+    return null;
+  }
+  focusByIndex(n: number) {
+    const ids = [...this.tiles.keys()];
+    const id = ids[n - 1];
+    if (id) this.focusTile(id);
+  }
+  focusNextWaiting() {
+    const ids = [...this.tiles.keys()];
+    const states = ids.map((id) => this.tiles.get(id)!.state);
+    const cur = ids.indexOf(this.activeSession ?? "");
+    const idx = nextWaitingIndex(states, cur);
+    if (idx != null) this.focusTile(ids[idx]);
+  }
+  closeActive() {
+    const id = this.activeSession;
+    if (id) this.remove(id);
+  }
+  searchActive() {
+    // расширяется в Task 8: полноценная строка поиска в плитке
+    const id = this.activeSession;
+    if (id) this.tiles.get(id)!.panel.focus();
+  }
+  clearActive() {
+    // расширяется в Task 8
+    const id = this.activeSession;
+    if (id) this.tiles.get(id)!.panel.clear();
   }
 
   private focusTile(session: string) {
