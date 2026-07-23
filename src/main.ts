@@ -4,6 +4,8 @@ import { Deck } from "./sessions";
 import { claudeAvailable } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey } from "./commands";
+import type { Command } from "./commands";
+import { openPalette } from "./palette";
 
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
@@ -36,8 +38,18 @@ newBtn.onclick = () => {
 workspaces.load();
 skills.load();
 
+function paletteCommands(): Command[] {
+  return [
+    { id: "new-session", title: "Новая сессия", run: () => { const ws = workspaces.active; if (ws) deck.launch(ws, null); } },
+    { id: "close-active", title: "Закрыть активную сессию", run: () => deck.closeActive() },
+    { id: "next-waiting", title: "К следующей ждущей вводу", run: () => deck.focusNextWaiting() },
+    { id: "search", title: "Поиск в терминале", run: () => deck.searchActive() },
+    { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
+  ];
+}
+
 const COMMANDS: Record<string, () => void> = {
-  "palette": () => {}, // Task 7
+  "palette": () => openPalette(paletteCommands()),
   "new-session": () => { const ws = workspaces.active; if (ws) deck.launch(ws, null); },
   "close-active": () => deck.closeActive(),
   "search": () => deck.searchActive(),

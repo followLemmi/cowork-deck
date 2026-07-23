@@ -167,3 +167,10 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .form-swatches { display: flex; gap: 6px; }
 .form-swatch { width: 18px; height: 18px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
 .form-swatch.selected { border-color: var(--fg); box-shadow: 0 0 0 2px var(--bg-panel); }
+
+/* --- Command palette (Cmd+K) --- */
+.palette-box { min-width: 420px; gap: var(--sp-2); }
+.palette-input { width: 100%; }
+.palette-list { display: flex; flex-direction: column; max-height: 300px; overflow: auto; }
+.palette-item { padding: 8px 10px; border-radius: var(--r-sm); color: var(--fg); font-size: var(--fs-base); cursor: pointer; }
+.palette-item:hover, .palette-item.selected { background: var(--accent-weak); color: var(--accent); }
