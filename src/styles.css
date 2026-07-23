@@ -155,7 +155,6 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 /* --- Form fields (workspace/skill create-edit modals) --- */
 .form-row { display: flex; flex-direction: column; gap: 4px; }
 .form-row > .form-label { color: var(--fg-muted); font-family: var(--font-ui); font-size: var(--fs-xs); }
-.form-row label.form-row { flex-direction: row; align-items: center; gap: var(--sp-2); }
 .form-pathrow { display: flex; gap: var(--sp-2); }
 .form-pathrow .form-path { flex: 1; }
 .form-pick { padding: 6px 10px; border-radius: var(--r-sm); border: 1px dashed var(--border); background: none; color: var(--fg-muted); font: inherit; font-size: var(--fs-sm); cursor: pointer; white-space: nowrap; }

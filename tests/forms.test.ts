@@ -44,6 +44,20 @@ describe("workspaceForm", () => {
     document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
     expect(await p).toBeNull();
   });
+
+  it("keeps the chosen color when the color label area is clicked", async () => {
+    const p = workspaceForm();
+    const swatches = document.querySelectorAll<HTMLButtonElement>(".form-swatch");
+    swatches[1].click(); // choose the second color
+    const colorRow = [...document.querySelectorAll<HTMLElement>(".form-row")]
+      .find((r) => r.querySelector(".form-swatches"))!;
+    (colorRow.querySelector(".form-label") as HTMLElement).click(); // click label area
+    (document.querySelector(".form-name") as HTMLInputElement).value = "n";
+    (document.querySelector(".form-path") as HTMLInputElement).value = "/p";
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res!.color).not.toBe("#61afef"); // not reset to the first swatch
+  });
 });
 
 describe("skillForm", () => {

@@ -85,8 +85,15 @@ export function workspaceForm(
       swatches.append(dot);
     }
 
+    const colorRow = document.createElement("div");
+    colorRow.className = "form-row";
+    const colorLabel = document.createElement("span");
+    colorLabel.className = "form-label";
+    colorLabel.textContent = "Цвет";
+    colorRow.append(colorLabel, swatches);
+
     const { row, ok, cancel } = actions();
-    box.append(title, labeled("Имя", name), labeled("Папка", pathRow), labeled("Цвет", swatches), row);
+    box.append(title, labeled("Имя", name), labeled("Папка", pathRow), colorRow, row);
 
     const close = (v: { name: string; path: string; color: string } | null) => { ov.remove(); resolve(v); };
     ok.onclick = () => {
