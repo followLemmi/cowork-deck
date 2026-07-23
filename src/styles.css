@@ -67,7 +67,7 @@ html, body, #app { height: 100%; margin: 0; }
   text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-subtle);
 }
 #sidebar h3:first-child { margin-top: 0; }
-#deck { flex: 1; display: grid; gap: var(--sp-2); padding: var(--sp-2); background: var(--bg-app); }
+#deck { flex: 1; display: grid; gap: var(--sp-2); padding: var(--sp-2); background: var(--bg-app); position: relative; }
 
 .ws-row { display: flex; align-items: center; gap: var(--sp-2); padding: 6px var(--sp-2); border-radius: var(--r-sm); transition: background var(--dur-1) var(--ease); }
 .ws-row:hover { background: var(--bg-raised); }
@@ -178,9 +178,14 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 /* --- Broadcast mode (tile checkboxes + bottom input panel) --- */
 .bcast-check.hidden { display: none; }
 .bcast-check { margin-right: 6px; accent-color: var(--accent); }
+/* Absolutely positioned so it is NOT a grid item of #deck (a grid child would
+   occupy a full ~240px auto-row cell). It floats as a thin bar across the
+   bottom of the deck only while broadcast mode is on. */
 .bcast-panel {
-  position: sticky; bottom: 0; display: flex; padding: var(--sp-2);
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 5;
+  display: flex; padding: var(--sp-2);
   background: var(--bg-panel); border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.28);
 }
 .bcast-panel.hidden { display: none; }
 .bcast-input {
