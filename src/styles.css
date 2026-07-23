@@ -85,6 +85,10 @@ html, body, #app { height: 100%; margin: 0; }
 .sk-row:hover .sk-del, .ws-row:hover .ws-del { opacity: 1; }
 .sk-del:hover, .ws-del:hover { color: var(--st-error); }
 
+.ws-edit, .sk-edit { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; opacity: 0; transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+.ws-row:hover .ws-edit, .sk-row:hover .sk-edit { opacity: 1; }
+.ws-edit:hover, .sk-edit:hover { color: var(--accent); }
+
 .sk-add, .ws-add { width: 100%; padding: 7px; margin-top: var(--sp-1); background: none; color: var(--fg-muted); border: 1px dashed var(--border); border-radius: var(--r-sm); font: inherit; font-size: var(--fs-sm); cursor: pointer; transition: all var(--dur-1) var(--ease); }
 .sk-add:hover, .ws-add:hover { border-color: var(--accent); color: var(--accent); border-style: solid; background: var(--accent-weak); }
 
