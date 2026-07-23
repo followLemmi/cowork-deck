@@ -1,5 +1,5 @@
 use crate::hooks::build_settings_json;
-use crate::model::{Skill, Workspace};
+use crate::model::{SessionEntry, Skill, Workspace};
 use crate::pty::PtyManager;
 use crate::store::Store;
 use base64::Engine;
@@ -140,6 +140,16 @@ pub fn resize_session(state: State<AppState>, session: String, cols: u16, rows: 
 #[tauri::command]
 pub fn close_session(state: State<AppState>, session: String) {
     state.pty.kill(&session);
+}
+
+#[tauri::command]
+pub fn load_layout(state: State<AppState>) -> Vec<SessionEntry> {
+    state.store.lock().unwrap().layout()
+}
+
+#[tauri::command]
+pub fn save_layout(state: State<AppState>, sessions: Vec<SessionEntry>) -> Result<(), String> {
+    state.store.lock().unwrap().save_layout(&sessions).map_err(|e| e.to_string())
 }
 
 /// Called by main during setup to emit state changes coming from the listener.
