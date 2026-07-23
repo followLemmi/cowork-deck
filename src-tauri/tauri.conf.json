@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml --bin cowork_report && npm run dev",
     "beforeBuildCommand": "npm run build && npm run stage:reporter"
   },
   "app": {

@@ -8,15 +8,39 @@ mod pty;
 mod commands;
 
 use commands::AppState;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
 
+fn reporter_name() -> &'static str {
+    if cfg!(windows) { "cowork_report.exe" } else { "cowork_report" }
+}
+
+/// Resolve the reporter binary path by probing an ordered list of candidate
+/// locations, returning the first that exists. Order: next to the current exe
+/// (bundled sidecar / release build), then the sibling `release` dir (so
+/// `tauri dev`, whose exe lives in `target/debug`, still finds a staged
+/// reporter). Falls back to the exe-adjacent path so bundled behavior is
+/// unchanged when nothing is found.
+fn resolve_reporter_path(exe_dir: &Path, name: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let candidates = [
+        exe_dir.join(name),
+        exe_dir.join("..").join("release").join(name),
+    ];
+    for c in &candidates {
+        if exists(c) {
+            return c.clone();
+        }
+    }
+    candidates[0].clone()
+}
+
 fn reporter_path() -> String {
-    // The reporter binary is built next to the main executable.
     let exe = std::env::current_exe().unwrap_or_default();
     let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-    let name = if cfg!(windows) { "cowork_report.exe" } else { "cowork_report" };
-    dir.join(name).to_string_lossy().to_string()
+    resolve_reporter_path(&dir, reporter_name(), |p| p.exists())
+        .to_string_lossy()
+        .to_string()
 }
 
 fn main() {
@@ -69,4 +93,34 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn prefers_reporter_next_to_exe() {
+        let dir = Path::new("/app");
+        let got = resolve_reporter_path(dir, "cowork_report", |p| {
+            p == Path::new("/app/cowork_report")
+        });
+        assert_eq!(got, Path::new("/app/cowork_report"));
+    }
+
+    #[test]
+    fn falls_back_to_release_sibling_in_dev() {
+        let dir = Path::new("/proj/target/debug");
+        let release = dir.join("..").join("release").join("cowork_report");
+        let got = resolve_reporter_path(dir, "cowork_report", |p| p == release);
+        assert_eq!(got, release);
+    }
+
+    #[test]
+    fn defaults_to_exe_dir_when_none_exist() {
+        let dir = Path::new("/app");
+        let got = resolve_reporter_path(dir, "cowork_report", |_| false);
+        assert_eq!(got, Path::new("/app/cowork_report"));
+    }
 }
