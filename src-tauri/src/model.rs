@@ -28,6 +28,16 @@ pub struct Skill {
     pub workspace_id: Option<String>,
 }
 
+/// A persisted tile in the deck layout — enough to reopen it and resume its
+/// claude conversation on next launch. The PTY itself is not persisted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionEntry {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub cwd: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReporterEvent {
     pub session: String,

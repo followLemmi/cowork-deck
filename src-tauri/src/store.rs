@@ -1,4 +1,4 @@
-use crate::model::{Skill, Workspace};
+use crate::model::{SessionEntry, Skill, Workspace};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -61,6 +61,12 @@ impl Store {
         Self::write_vec(&self.sk_path(), items)
     }
 
+    fn layout_path(&self) -> PathBuf { self.dir.join("sessions.json") }
+    pub fn layout(&self) -> Vec<SessionEntry> { Self::read_vec(&self.layout_path()) }
+    pub fn save_layout(&self, items: &[SessionEntry]) -> std::io::Result<()> {
+        Self::write_vec(&self.layout_path(), items)
+    }
+
     // NOTE: upsert_*/delete_* deliberately use `try_read_vec` (not the
     // best-effort `read_vec`) so that a transient, non-NotFound read error
     // (e.g. permission denied, disk I/O error) aborts before `save_*` is
@@ -105,7 +111,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Workspace;
+    use crate::model::{SessionEntry, Workspace};
 
     fn tmp() -> std::path::PathBuf {
         let mut d = std::env::temp_dir();
@@ -192,5 +198,18 @@ mod tests {
         let items = s.workspaces();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "w1");
+    }
+
+    #[test]
+    fn layout_round_trips_and_defaults_empty() {
+        let s = Store::new(tmp());
+        assert!(s.layout().is_empty()); // NotFound -> empty
+        let entries = vec![
+            SessionEntry { session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into() },
+            SessionEntry { session_id: "s2".into(), cwd: "/tmp/b".into(), name: "терминал · P".into() },
+        ];
+        s.save_layout(&entries).unwrap();
+        let reloaded = Store::new(s.dir.clone()).layout();
+        assert_eq!(reloaded, entries);
     }
 }
