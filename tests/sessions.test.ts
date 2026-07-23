@@ -26,6 +26,8 @@ vi.mock("../src/ipc", () => ({
   onExit: vi.fn().mockResolvedValue(() => {}),
   closeSession: vi.fn(),
   saveLayout: vi.fn().mockResolvedValue(undefined),
+  gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
+  sessionTokens: vi.fn().mockResolvedValue({ input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }),
 }));
 
 vi.mock("@tauri-apps/plugin-notification", () => ({

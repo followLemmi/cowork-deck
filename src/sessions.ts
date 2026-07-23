@@ -1,5 +1,7 @@
 import { TerminalPanel } from "./terminal";
 import { onOutput, onState, onExit, closeSession, saveLayout, type SessionState, type Skill, type Workspace, type SessionEntry } from "./ipc";
+import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
+import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { nextWaitingIndex } from "./commands";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
@@ -9,7 +11,7 @@ import { broadcastInput } from "./broadcast";
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; prompt: string | null; restartBtn: HTMLButtonElement; searchBar: HTMLElement;
-  bcastCheck: HTMLInputElement;
+  bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -24,7 +26,45 @@ export class Deck {
   private broadcasting = false;
   private bcastPanel: HTMLElement | null = null;
   private restoring = false;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private usage = new Map<string, TokenUsage>();
   constructor(private deckEl: HTMLElement, private listEl: HTMLElement) {}
+
+  private startPolling() {
+    if (this.pollTimer !== null) return;
+    void this.pollOnce();
+    this.pollTimer = setInterval(() => void this.pollOnce(), 5000);
+  }
+  private stopPolling() {
+    if (this.pollTimer !== null) { clearInterval(this.pollTimer); this.pollTimer = null; }
+  }
+
+  private async pollOnce() {
+    const tiles = [...this.tiles.values()];
+    if (tiles.length === 0) { this.stopPolling(); return; }
+    // git: один вызов на уникальный cwd
+    const cwds = uniqueCwds(tiles.map((t) => ({ cwd: t.workspacePath })));
+    const gitByCwd = new Map<string, { branch: string | null; dirty: boolean }>();
+    await Promise.all(cwds.map(async (cwd) => { gitByCwd.set(cwd, await gitStatus(cwd)); }));
+    for (const t of tiles) {
+      const g = gitByCwd.get(t.workspacePath);
+      if (g && g.branch) {
+        t.gitBadge.textContent = `⎇ ${g.branch}${g.dirty ? " •" : ""}`;
+        t.gitBadge.classList.remove("hidden");
+      } else {
+        t.gitBadge.classList.add("hidden");
+      }
+    }
+    // tokens: по сессии
+    await Promise.all(tiles.map(async (t) => {
+      const u = await sessionTokens(t.session);
+      this.usage.set(t.session, u);
+      t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
+      t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} прочитано`;
+      t.tokenBadge.classList.remove("hidden");
+    }));
+    this.renderList();
+  }
 
   wireNotificationFocus() {
     return wireNotificationFocus(this.notify, (s) => this.focusTile(s));
@@ -59,6 +99,10 @@ export class Deck {
     head.className = "tile-head";
     const title = document.createElement("span");
     title.textContent = titleText;
+    const gitBadge = document.createElement("span");
+    gitBadge.className = "tile-git hidden";
+    const tokenBadge = document.createElement("span");
+    tokenBadge.className = "tile-tokens hidden";
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
     const clearBtn = document.createElement("button");
@@ -67,7 +111,7 @@ export class Deck {
     const close = document.createElement("button");
     close.textContent = "✕"; close.className = "tile-close";
     close.onclick = () => this.remove(session);
-    head.append(title, label, clearBtn, close);
+    head.append(title, gitBadge, tokenBadge, label, clearBtn, close);
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
@@ -117,8 +161,10 @@ export class Deck {
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
       workspacePath: cwd, prompt, restartBtn: restart, searchBar, bcastCheck,
+      gitBadge, tokenBadge,
     };
     this.tiles.set(session, tile);
+    this.startPolling();
     this.renderList();
     try {
       await panel.start(cwd, prompt, resume);
@@ -255,6 +301,8 @@ export class Deck {
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
+    this.usage.delete(session);
+    if (this.tiles.size === 0) this.stopPolling();
     if (this.tiles.size === 0) this.deckEl.classList.remove("has-active");
     this.renderList();
     void this.persistLayout();
@@ -273,6 +321,13 @@ export class Deck {
     const header = waiting > 0 ? `Сессии · ${waiting} ${waitingVerb(waiting)} ввода` : "Сессии";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
+    const total = sumUsage([...this.usage.values()]);
+    if (this.usage.size > 0) {
+      const sum = document.createElement("div");
+      sum.className = "sess-tokens-sum";
+      sum.textContent = `Σ токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      this.listEl.appendChild(sum);
+    }
     for (const t of this.tiles.values()) {
       const row = document.createElement("div");
       row.className = "sess-row" + (t.el.classList.contains("is-active") ? " active" : "");
