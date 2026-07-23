@@ -40,30 +40,46 @@ export class Deck {
   }
 
   private async pollOnce() {
-    const tiles = [...this.tiles.values()];
-    if (tiles.length === 0) { this.stopPolling(); return; }
-    // git: один вызов на уникальный cwd
-    const cwds = uniqueCwds(tiles.map((t) => ({ cwd: t.workspacePath })));
-    const gitByCwd = new Map<string, { branch: string | null; dirty: boolean }>();
-    await Promise.all(cwds.map(async (cwd) => { gitByCwd.set(cwd, await gitStatus(cwd)); }));
-    for (const t of tiles) {
-      const g = gitByCwd.get(t.workspacePath);
-      if (g && g.branch) {
-        t.gitBadge.textContent = `⎇ ${g.branch}${g.dirty ? " •" : ""}`;
-        t.gitBadge.classList.remove("hidden");
-      } else {
-        t.gitBadge.classList.add("hidden");
+    try {
+      const tiles = [...this.tiles.values()];
+      if (tiles.length === 0) { this.stopPolling(); return; }
+      // git: один вызов на уникальный cwd; изоляция ошибок — одна упавшая IPC не должна ронять весь тик
+      const cwds = uniqueCwds(tiles.map((t) => ({ cwd: t.workspacePath })));
+      const gitByCwd = new Map<string, { branch: string | null; dirty: boolean }>();
+      await Promise.all(cwds.map(async (cwd) => {
+        try {
+          gitByCwd.set(cwd, await gitStatus(cwd));
+        } catch (e) {
+          console.debug("gitStatus failed", cwd, e);
+        }
+      }));
+      for (const t of tiles) {
+        if (!this.tiles.has(t.session)) continue;
+        const g = gitByCwd.get(t.workspacePath);
+        if (g && g.branch) {
+          t.gitBadge.textContent = `⎇ ${g.branch}${g.dirty ? " •" : ""}`;
+          t.gitBadge.classList.remove("hidden");
+        } else {
+          t.gitBadge.classList.add("hidden");
+        }
       }
+      // tokens: по сессии; изоляция ошибок + защита от гонки с удалением тайла
+      await Promise.all(tiles.map(async (t) => {
+        try {
+          const u = await sessionTokens(t.session);
+          if (!this.tiles.has(t.session)) return;
+          this.usage.set(t.session, u);
+          t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
+          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} прочитано`;
+          t.tokenBadge.classList.remove("hidden");
+        } catch (e) {
+          console.debug("sessionTokens failed", t.session, e);
+        }
+      }));
+      this.renderList();
+    } catch (e) {
+      console.debug("pollOnce failed", e);
     }
-    // tokens: по сессии
-    await Promise.all(tiles.map(async (t) => {
-      const u = await sessionTokens(t.session);
-      this.usage.set(t.session, u);
-      t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
-      t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} прочитано`;
-      t.tokenBadge.classList.remove("hidden");
-    }));
-    this.renderList();
   }
 
   wireNotificationFocus() {
