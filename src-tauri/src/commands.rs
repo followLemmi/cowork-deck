@@ -15,11 +15,25 @@ pub struct AppState {
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
-/// session with per-session hook settings and an optional initial prompt.
-pub fn build_claude_args(settings_json: &str, initial_prompt: &Option<String>) -> Vec<String> {
+/// session. First launch pins our own session id via `--session-id`; restart/
+/// restore resumes that same conversation via `--resume` (no prompt — context
+/// already lives in the resumed session).
+pub fn build_claude_args(
+    settings_json: &str,
+    initial_prompt: &Option<String>,
+    session_id: &str,
+    resume: bool,
+) -> Vec<String> {
     let mut args = vec!["--settings".to_string(), settings_json.to_string()];
-    if let Some(p) = initial_prompt {
-        args.push(p.clone());
+    if resume {
+        args.push("--resume".to_string());
+        args.push(session_id.to_string());
+    } else {
+        args.push("--session-id".to_string());
+        args.push(session_id.to_string());
+        if let Some(p) = initial_prompt {
+            args.push(p.clone());
+        }
     }
     args
 }
@@ -89,10 +103,11 @@ pub fn start_session(
     initial_prompt: Option<String>,
     cols: u16,
     rows: u16,
+    resume: bool,
 ) -> Result<(), String> {
     let program = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let settings = build_settings_json(&state.reporter_path, state.listener_port, &session);
-    let args = build_claude_args(&settings, &initial_prompt);
+    let args = build_claude_args(&settings, &initial_prompt, &session, resume);
 
     let app_out = app.clone();
     let sess_out = session.clone();
@@ -137,16 +152,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_claude_args_with_settings_and_prompt() {
-        let args = build_claude_args("{\"hooks\":{}}", &Some("collect email report".into()));
-        assert_eq!(args[0], "--settings");
-        assert_eq!(args[1], "{\"hooks\":{}}");
-        assert_eq!(args.last().unwrap(), "collect email report");
+    fn builds_claude_args_first_launch_with_session_id_and_prompt() {
+        let args = build_claude_args("{\"hooks\":{}}", &Some("collect email report".into()), "sess-1", false);
+        assert_eq!(args, vec![
+            "--settings".to_string(), "{\"hooks\":{}}".to_string(),
+            "--session-id".to_string(), "sess-1".to_string(),
+            "collect email report".to_string(),
+        ]);
     }
 
     #[test]
-    fn builds_claude_args_without_prompt() {
-        let args = build_claude_args("{}", &None);
-        assert_eq!(args, vec!["--settings".to_string(), "{}".to_string()]);
+    fn builds_claude_args_first_launch_without_prompt() {
+        let args = build_claude_args("{}", &None, "sess-1", false);
+        assert_eq!(args, vec![
+            "--settings".to_string(), "{}".to_string(),
+            "--session-id".to_string(), "sess-1".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn builds_claude_args_resume_uses_resume_flag_and_ignores_prompt() {
+        let args = build_claude_args("{}", &Some("ignored".into()), "sess-1", true);
+        assert_eq!(args, vec![
+            "--settings".to_string(), "{}".to_string(),
+            "--resume".to_string(), "sess-1".to_string(),
+        ]);
     }
 }
