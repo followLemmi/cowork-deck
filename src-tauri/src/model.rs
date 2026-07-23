@@ -51,6 +51,16 @@ pub struct GitStatus {
     pub dirty: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
+    #[serde(rename = "cacheCreation")]
+    pub cache_creation: u64,
+    #[serde(rename = "cacheRead")]
+    pub cache_read: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReporterEvent {
     pub session: String,

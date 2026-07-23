@@ -1,5 +1,5 @@
 use crate::hooks::build_settings_json;
-use crate::model::{GitStatus, SessionEntry, Skill, UiState, Workspace};
+use crate::model::{GitStatus, SessionEntry, Skill, TokenUsage, UiState, Workspace};
 use crate::pty::PtyManager;
 use crate::store::Store;
 use base64::Engine;
@@ -187,9 +187,74 @@ pub fn git_status(cwd: String) -> GitStatus {
     GitStatus { branch, dirty }
 }
 
+/// Sum `message.usage.*` token counts across all JSONL lines. Tolerant of
+/// non-JSON lines and lines without usage (user messages, meta).
+pub fn sum_usage_lines(content: &str) -> TokenUsage {
+    let mut u = TokenUsage::default();
+    for line in content.lines() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let usage = &v["message"]["usage"];
+        if usage.is_object() {
+            u.input += usage["input_tokens"].as_u64().unwrap_or(0);
+            u.output += usage["output_tokens"].as_u64().unwrap_or(0);
+            u.cache_creation += usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            u.cache_read += usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+        }
+    }
+    u
+}
+
+/// Locate the transcript file `<session_id>.jsonl` under any project dir.
+fn find_transcript(session_id: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let base = std::path::PathBuf::from(home).join(".claude/projects");
+    let target = format!("{session_id}.jsonl");
+    for entry in std::fs::read_dir(&base).ok()? {
+        let dir = entry.ok()?.path();
+        let f = dir.join(&target);
+        if f.is_file() {
+            return Some(f);
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn session_tokens(session_id: String) -> TokenUsage {
+    match find_transcript(&session_id) {
+        Some(path) => std::fs::read_to_string(path)
+            .map(|c| sum_usage_lines(&c))
+            .unwrap_or_default(),
+        None => TokenUsage::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sum_usage_lines_adds_assistant_usage_only() {
+        let content = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}"#, "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}}"#, "\n",
+            "not json at all", "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":50}}}"#, "\n",
+        );
+        let u = sum_usage_lines(content);
+        assert_eq!(u.input, 13);
+        assert_eq!(u.output, 12);
+        assert_eq!(u.cache_creation, 100);
+        assert_eq!(u.cache_read, 250);
+    }
+
+    #[test]
+    fn sum_usage_lines_empty_is_zero() {
+        assert_eq!(sum_usage_lines(""), TokenUsage::default());
+    }
 
     #[test]
     fn builds_claude_args_first_launch_with_session_id_and_prompt() {

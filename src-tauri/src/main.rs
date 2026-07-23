@@ -97,6 +97,7 @@ fn main() {
             commands::load_ui_state,
             commands::save_ui_state,
             commands::git_status,
+            commands::session_tokens,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");
