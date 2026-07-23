@@ -45,6 +45,12 @@ pub struct UiState {
     pub active_workspace_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GitStatus {
+    pub branch: Option<String>,
+    pub dirty: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReporterEvent {
     pub session: String,

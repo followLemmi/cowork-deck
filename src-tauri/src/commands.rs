@@ -1,5 +1,5 @@
 use crate::hooks::build_settings_json;
-use crate::model::{SessionEntry, Skill, UiState, Workspace};
+use crate::model::{GitStatus, SessionEntry, Skill, UiState, Workspace};
 use crate::pty::PtyManager;
 use crate::store::Store;
 use base64::Engine;
@@ -167,6 +167,26 @@ pub fn emit_state(app: &AppHandle, session: String, state: crate::model::Session
     let _ = app.emit("session://state", StatePayload { session, state });
 }
 
+#[tauri::command]
+pub fn git_status(cwd: String) -> GitStatus {
+    use std::process::Command;
+    let branch = Command::new("git")
+        .arg("-C").arg(&cwd)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty() && s != "HEAD");
+    let dirty = branch.is_some()
+        && Command::new("git")
+            .arg("-C").arg(&cwd)
+            .args(["status", "--porcelain"])
+            .output().ok()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false);
+    GitStatus { branch, dirty }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +217,32 @@ mod tests {
             "--settings".to_string(), "{}".to_string(),
             "--resume".to_string(), "sess-1".to_string(),
         ]);
+    }
+
+    #[test]
+    fn git_status_reports_branch_and_dirty() {
+        use std::process::Command;
+        let dir = std::env::temp_dir().join(format!("cowork-git-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_str().unwrap();
+        let run = |args: &[&str]| { Command::new("git").arg("-C").arg(cwd).args(args).output().unwrap(); };
+        run(&["init"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a.txt"), "hi").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
+
+        let clean = git_status(cwd.to_string());
+        assert!(clean.branch.is_some(), "committed repo must report a branch");
+        assert!(!clean.dirty, "just-committed repo is clean");
+
+        std::fs::write(dir.join("b.txt"), "new").unwrap(); // untracked → dirty
+        let dirty = git_status(cwd.to_string());
+        assert!(dirty.dirty, "untracked file makes it dirty");
+
+        let non_repo = git_status(std::env::temp_dir().to_str().unwrap().to_string());
+        // temp_dir itself is not a repo (usually); branch None. Tolerate either but dirty must be false when branch is None.
+        if non_repo.branch.is_none() { assert!(!non_repo.dirty); }
     }
 }
