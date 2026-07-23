@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { startSession, writeSession, resizeSession } from "./ipc";
+import { matchHotkey } from "./commands";
 
 export class TerminalPanel {
   private term: Terminal;
@@ -30,9 +31,10 @@ export class TerminalPanel {
     this.fitAddon = new FitAddon();
     this.term.loadAddon(this.fitAddon);
     this.term.open(mount);
-    // Не даём xterm поглощать хоткеи-комбо приложения (Cmd/Ctrl+…).
+    // Перехватываем ТОЛЬКО распознанные хоткеи приложения; всё остальное
+    // (в т.ч. Ctrl+C/D/L, обычный ввод) отдаём терминалу.
     this.term.attachCustomKeyEventHandler((e) => {
-      if ((e.metaKey || e.ctrlKey) && e.type === "keydown") return false;
+      if (e.type === "keydown" && matchHotkey(e)) return false;
       return true;
     });
     this.fitAddon.fit();
