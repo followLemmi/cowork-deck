@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { startSession, writeSession, resizeSession } from "./ipc";
-import { matchHotkey } from "./commands";
+import { matchHotkey, isMacPlatform } from "./commands";
 
 export class TerminalPanel {
   private term: Terminal;
@@ -39,7 +39,7 @@ export class TerminalPanel {
     // Перехватываем ТОЛЬКО распознанные хоткеи приложения; всё остальное
     // (в т.ч. Ctrl+C/D/L, обычный ввод) отдаём терминалу.
     this.term.attachCustomKeyEventHandler((e) => {
-      if (e.type === "keydown" && matchHotkey(e)) return false;
+      if (e.type === "keydown" && matchHotkey(e, isMacPlatform())) return false;
       return true;
     });
     this.fitAddon.fit();
@@ -60,7 +60,8 @@ export class TerminalPanel {
   }
   write(text: string) { this.term.write(text); }
   focus() { this.term.focus(); }
-  search(term: string) { if (term) this.searchAddon.findNext(term); this.lastSearch = term; }
+  search(term: string) { if (term) { this.lastSearch = term; this.searchAddon.findNext(term); } }
+  searchPrev(term?: string) { const t = term || this.lastSearch; if (t) { this.lastSearch = t; this.searchAddon.findPrevious(t); } }
   findNext() { if (this.lastSearch) this.searchAddon.findNext(this.lastSearch); }
   findPrevious() { if (this.lastSearch) this.searchAddon.findPrevious(this.lastSearch); }
   clear() { this.term.clear(); }

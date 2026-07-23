@@ -3,7 +3,7 @@ import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { claudeAvailable } from "./ipc";
 import { alertModal } from "./modal";
-import { matchHotkey } from "./commands";
+import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
 
@@ -58,7 +58,8 @@ const COMMANDS: Record<string, () => void> = {
 };
 
 window.addEventListener("keydown", (e) => {
-  const id = matchHotkey(e);
+  if (document.querySelector(".modal-overlay")) return; // не перехватываем, пока открыта модалка/палитра/форма
+  const id = matchHotkey(e, isMacPlatform());
   if (!id) return;
   if (id.startsWith("focus-")) {
     e.preventDefault();

@@ -3,6 +3,7 @@ import { onOutput, onState, onExit, closeSession, type SessionState, type Skill,
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { nextWaitingIndex } from "./commands";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
+import { confirmModal } from "./modal";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -83,7 +84,7 @@ export class Deck {
       else if (e.key === "Escape") { e.preventDefault(); searchBar.classList.add("hidden"); tile.panel.focus(); }
     });
     sNext.onclick = () => tile.panel.search(sInput.value);
-    sPrev.onclick = () => { tile.panel.search(sInput.value); tile.panel.findPrevious(); };
+    sPrev.onclick = () => tile.panel.searchPrev(sInput.value);
     sClose.onclick = () => { searchBar.classList.add("hidden"); tile.panel.focus(); };
     el.append(head, searchBar, mount);
     this.deckEl.appendChild(el);
@@ -125,9 +126,14 @@ export class Deck {
     const idx = nextWaitingIndex(states, cur);
     if (idx != null) this.focusTile(ids[idx]);
   }
-  closeActive() {
+  async closeActive() {
     const id = this.activeSession;
-    if (id) this.remove(id);
+    if (!id) return;
+    const t = this.tiles.get(id);
+    if (t && (t.state === "working" || t.state === "waitingInput")) {
+      if (!(await confirmModal("Закрыть активную сессию?"))) return;
+    }
+    this.remove(id);
   }
   searchActive() {
     const id = this.activeSession;

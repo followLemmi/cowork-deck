@@ -19,13 +19,21 @@ vi.mock("../src/ipc", () => ({ startSession: vi.fn(), writeSession: vi.fn(), res
 
 import { TerminalPanel } from "../src/terminal";
 
-beforeEach(() => { captured = null; });
+beforeEach(() => {
+  captured = null;
+  // Force macOS so the passthrough guard treats Cmd (not Ctrl) as the app modifier.
+  Object.defineProperty(navigator, "platform", { value: "MacIntel", configurable: true });
+});
 
 describe("xterm passthrough guard", () => {
   it("passes Ctrl+C through to the terminal (not intercepted)", () => {
     new TerminalPanel("s", document.createElement("div"));
     expect(captured).toBeTypeOf("function");
     expect(captured!({ type: "keydown", key: "c", ctrlKey: true, metaKey: false, shiftKey: false })).toBe(true);
+  });
+  it("passes Ctrl+K through on macOS (readline kill-line survives)", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    expect(captured!({ type: "keydown", key: "k", ctrlKey: true, metaKey: false, shiftKey: false })).toBe(true);
   });
   it("intercepts app hotkeys like Cmd+K (xterm should not handle)", () => {
     new TerminalPanel("s", document.createElement("div"));

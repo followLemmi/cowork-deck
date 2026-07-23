@@ -42,6 +42,21 @@ describe("terminal search & clear", () => {
     expect(findPrevious).toHaveBeenCalled();
   });
 
+  it("searchPrev delegates to the addon's findPrevious", () => {
+    const panel = new TerminalPanel("s", document.createElement("div"));
+    panel.searchPrev("foo");
+    expect(findPrevious).toHaveBeenCalledWith("foo");
+  });
+
+  it("an empty search term does not reset lastSearch", () => {
+    const panel = new TerminalPanel("s", document.createElement("div"));
+    panel.search("foo");
+    panel.search("");
+    findNext.mockClear();
+    panel.findNext();
+    expect(findNext).toHaveBeenCalledWith("foo");
+  });
+
   it("clear delegates to term.clear", () => {
     const panel = new TerminalPanel("s", document.createElement("div"));
     panel.clear();

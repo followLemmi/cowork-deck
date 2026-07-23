@@ -2,8 +2,12 @@ import type { SessionState } from "./ipc";
 
 export interface Command { id: string; title: string; run: () => void; hotkey?: string }
 
-export function matchHotkey(e: { key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }): string | null {
-  const mod = e.metaKey || e.ctrlKey;
+export function isMacPlatform(): boolean {
+  return typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "");
+}
+
+export function matchHotkey(e: { key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, isMac: boolean): string | null {
+  const mod = isMac ? e.metaKey : e.ctrlKey;
   if (!mod) return null;
   const k = e.key.toLowerCase();
   if (k === "k") return "palette";
