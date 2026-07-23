@@ -175,6 +175,19 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .form-swatch { width: 18px; height: 18px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
 .form-swatch.selected { border-color: var(--fg); box-shadow: 0 0 0 2px var(--bg-panel); }
 
+/* --- Broadcast mode (tile checkboxes + bottom input panel) --- */
+.bcast-check.hidden { display: none; }
+.bcast-check { margin-right: 6px; accent-color: var(--accent); }
+.bcast-panel {
+  position: sticky; bottom: 0; display: flex; padding: var(--sp-2);
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+}
+.bcast-panel.hidden { display: none; }
+.bcast-input {
+  flex: 1; padding: 6px 10px; border-radius: var(--r-sm);
+  background: var(--bg-terminal); color: var(--fg); border: 1px solid var(--border);
+}
+
 /* --- Command palette (Cmd+K) --- */
 .palette-box { min-width: 420px; gap: var(--sp-2); }
 .palette-input { width: 100%; }

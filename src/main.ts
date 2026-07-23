@@ -52,6 +52,7 @@ function paletteCommands(): Command[] {
     { id: "next-waiting", title: "К следующей ждущей вводу", run: () => deck.focusNextWaiting() },
     { id: "search", title: "Поиск в терминале", run: () => deck.searchActive() },
     { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
+    { id: "broadcast", title: "Режим broadcast (ввод в несколько сессий)", run: () => deck.toggleBroadcast() },
   ];
 }
 
@@ -61,6 +62,7 @@ const COMMANDS: Record<string, () => void> = {
   "close-active": () => deck.closeActive(),
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),
+  "broadcast": () => deck.toggleBroadcast(),
 };
 
 window.addEventListener("keydown", (e) => {

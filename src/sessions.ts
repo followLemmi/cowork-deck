@@ -4,10 +4,12 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { nextWaitingIndex } from "./commands";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { confirmModal } from "./modal";
+import { broadcastInput } from "./broadcast";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; prompt: string | null; restartBtn: HTMLButtonElement; searchBar: HTMLElement;
+  bcastCheck: HTMLInputElement;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -19,6 +21,8 @@ export class Deck {
   private tiles = new Map<string, Tile>();
   private notifyOk = false;
   private notify = new NotifyRouter();
+  private broadcasting = false;
+  private bcastPanel: HTMLElement | null = null;
   constructor(private deckEl: HTMLElement, private listEl: HTMLElement) {}
 
   wireNotificationFocus() {
@@ -63,6 +67,9 @@ export class Deck {
     close.textContent = "✕"; close.className = "tile-close";
     close.onclick = () => this.remove(session);
     head.append(title, label, clearBtn, close);
+    const bcastCheck = document.createElement("input");
+    bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check hidden";
+    head.insertBefore(bcastCheck, title);
     const restart = document.createElement("button");
     restart.textContent = "⟳"; restart.className = "tile-close"; restart.style.display = "none";
     restart.title = "перезапустить";
@@ -106,7 +113,7 @@ export class Deck {
     const panel = new TerminalPanel(session, mount);
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
-      workspacePath: cwd, prompt, restartBtn: restart, searchBar,
+      workspacePath: cwd, prompt, restartBtn: restart, searchBar, bcastCheck,
     };
     this.tiles.set(session, tile);
     this.renderList();
@@ -167,6 +174,44 @@ export class Deck {
   clearActive() {
     const id = this.activeSession;
     if (id) this.tiles.get(id)!.panel.clear();
+  }
+
+  toggleBroadcast() {
+    this.broadcasting = !this.broadcasting;
+    for (const t of this.tiles.values()) t.bcastCheck.classList.toggle("hidden", !this.broadcasting);
+    if (this.broadcasting) this.showBroadcastPanel();
+    else this.hideBroadcastPanel();
+  }
+
+  private showBroadcastPanel() {
+    if (!this.bcastPanel) {
+      const panel = document.createElement("div");
+      panel.className = "bcast-panel";
+      const input = document.createElement("input");
+      input.className = "bcast-input"; input.type = "text";
+      input.placeholder = "broadcast: ввод во все отмеченные сессии, Enter — отправить";
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const targets = selectedFromChecks(
+            [...this.tiles.values()].map((t) => ({ session: t.session, checked: t.bcastCheck.checked })));
+          broadcastInput(targets, input.value);
+          input.value = "";
+        } else if (e.key === "Escape") {
+          e.preventDefault(); this.toggleBroadcast();
+        }
+      });
+      panel.append(input);
+      this.deckEl.appendChild(panel);
+      this.bcastPanel = panel;
+    }
+    this.bcastPanel.classList.remove("hidden");
+    (this.bcastPanel.querySelector(".bcast-input") as HTMLInputElement).focus();
+  }
+
+  private hideBroadcastPanel() {
+    this.bcastPanel?.classList.add("hidden");
+    for (const t of this.tiles.values()) t.bcastCheck.checked = false;
   }
 
   private focusTile(session: string) {
@@ -245,4 +290,8 @@ export function serializeTiles(
   tiles: { session: string; workspacePath: string; name: string }[],
 ): SessionEntry[] {
   return tiles.map((t) => ({ sessionId: t.session, cwd: t.workspacePath, name: t.name }));
+}
+
+export function selectedFromChecks(checks: { session: string; checked: boolean }[]): string[] {
+  return checks.filter((c) => c.checked).map((c) => c.session);
 }
