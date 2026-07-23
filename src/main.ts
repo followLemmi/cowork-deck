@@ -2,6 +2,10 @@ import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { claudeAvailable } from "./ipc";
+import { alertModal } from "./modal";
+import { matchHotkey, isMacPlatform } from "./commands";
+import type { Command } from "./commands";
+import { openPalette } from "./palette";
 
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
@@ -14,6 +18,7 @@ sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const deck = new Deck(deckEl, listMount);
 deck.wireEvents();
+deck.wireNotificationFocus();
 
 // NOTE: `workspaces.active` is read live (via the getter) at every launch point
 // instead of caching the workspace passed to onSelect, because
@@ -34,6 +39,37 @@ newBtn.onclick = () => {
 workspaces.load();
 skills.load();
 
+function paletteCommands(): Command[] {
+  return [
+    { id: "new-session", title: "Новая сессия", run: () => { const ws = workspaces.active; if (ws) deck.launch(ws, null); } },
+    { id: "close-active", title: "Закрыть активную сессию", run: () => deck.closeActive() },
+    { id: "next-waiting", title: "К следующей ждущей вводу", run: () => deck.focusNextWaiting() },
+    { id: "search", title: "Поиск в терминале", run: () => deck.searchActive() },
+    { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
+  ];
+}
+
+const COMMANDS: Record<string, () => void> = {
+  "palette": () => openPalette(paletteCommands()),
+  "new-session": () => { const ws = workspaces.active; if (ws) deck.launch(ws, null); },
+  "close-active": () => deck.closeActive(),
+  "search": () => deck.searchActive(),
+  "next-waiting": () => deck.focusNextWaiting(),
+};
+
+window.addEventListener("keydown", (e) => {
+  if (document.querySelector(".modal-overlay")) return; // не перехватываем, пока открыта модалка/палитра/форма
+  const id = matchHotkey(e, isMacPlatform());
+  if (!id) return;
+  if (id.startsWith("focus-")) {
+    e.preventDefault();
+    deck.focusByIndex(Number(id.slice("focus-".length)));
+    return;
+  }
+  const run = COMMANDS[id];
+  if (run) { e.preventDefault(); run(); }
+});
+
 claudeAvailable().then((ok) => {
-  if (!ok) alert("Не найден исполняемый файл claude. Укажите путь через переменную окружения COWORK_CLAUDE_PATH и перезапустите приложение.");
+  if (!ok) alertModal("Не найден исполняемый файл claude. Укажите путь через переменную окружения COWORK_CLAUDE_PATH и перезапустите приложение.");
 });

@@ -1,8 +1,18 @@
 use crate::model::{event_kind_to_state, ReporterEvent};
 use crate::model::SessionState;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
+
+/// Next accept-retry backoff: 50ms first, then doubling up to a 1s cap.
+fn next_backoff(current: Duration) -> Duration {
+    if current.is_zero() {
+        Duration::from_millis(50)
+    } else {
+        std::cmp::min(current * 2, Duration::from_secs(1))
+    }
+}
 
 /// Start a 127.0.0.1 listener; returns the bound port. For each reporter line
 /// that maps to a state, `on_state(session_id, state)` is invoked.
@@ -15,10 +25,18 @@ where
     let cb = Arc::new(on_state);
 
     tokio::spawn(async move {
+        let mut backoff = Duration::ZERO;
         loop {
             let (stream, _) = match listener.accept().await {
-                Ok(v) => v,
-                Err(_) => continue,
+                Ok(v) => {
+                    backoff = Duration::ZERO;
+                    v
+                }
+                Err(_) => {
+                    backoff = next_backoff(backoff);
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
             };
             let cb = cb.clone();
             tokio::spawn(async move {
@@ -44,6 +62,7 @@ mod tests {
     use super::*;
     use crate::model::SessionState;
     use std::sync::mpsc;
+    use std::time::Duration;
     use tokio::io::AsyncWriteExt;
 
     #[tokio::test(flavor = "multi_thread")]
@@ -65,5 +84,13 @@ mod tests {
         let (sess, state) = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
         assert_eq!(sess, "sess-1");
         assert_eq!(state, SessionState::Working);
+    }
+
+    #[test]
+    fn backoff_grows_and_caps() {
+        assert_eq!(next_backoff(Duration::ZERO), Duration::from_millis(50));
+        assert_eq!(next_backoff(Duration::from_millis(50)), Duration::from_millis(100));
+        assert_eq!(next_backoff(Duration::from_millis(800)), Duration::from_secs(1));
+        assert_eq!(next_backoff(Duration::from_secs(1)), Duration::from_secs(1));
     }
 }

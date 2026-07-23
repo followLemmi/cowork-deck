@@ -6,14 +6,17 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml --bin cowork_report && npm run dev",
     "beforeBuildCommand": "npm run build && npm run stage:reporter"
   },
   "app": {
     "windows": [
       { "title": "cowork-deck", "width": 1200, "height": 800, "resizable": true }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420"
+    }
   },
   "plugins": {},
   "bundle": {

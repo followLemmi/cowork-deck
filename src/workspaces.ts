@@ -1,4 +1,6 @@
 import { listWorkspaces, saveWorkspace, removeWorkspace, type Workspace } from "./ipc";
+import { confirmModal } from "./modal";
+import { workspaceForm } from "./forms";
 
 export class WorkspacesPanel {
   private items: Workspace[] = [];
@@ -23,17 +25,24 @@ export class WorkspacesPanel {
   }
 
   private async add() {
-    const name = prompt("Имя пространства")?.trim();
-    if (!name) return;
-    const path = prompt("Путь к папке проекта")?.trim();
-    if (!path) return;
-    const ws: Workspace = { id: crypto.randomUUID(), name, path, color: "#3b82f6" };
+    const res = await workspaceForm();
+    if (!res) return;
+    const ws: Workspace = { id: crypto.randomUUID(), ...res };
     this.items = await saveWorkspace(ws);
     this.select(ws.id);
   }
 
+  private async edit(id: string) {
+    const cur = this.items.find((w) => w.id === id);
+    if (!cur) return;
+    const res = await workspaceForm({ name: cur.name, path: cur.path, color: cur.color });
+    if (!res) return;
+    this.items = await saveWorkspace({ ...cur, ...res });
+    this.render();
+  }
+
   private async del(id: string) {
-    if (!confirm("Удалить пространство?")) return;
+    if (!(await confirmModal("Удалить пространство?"))) return;
     this.items = await removeWorkspace(id);
     if (this.activeId === id) this.activeId = this.items[0]?.id ?? null;
     this.render();
@@ -49,10 +58,13 @@ export class WorkspacesPanel {
       const label = document.createElement("button");
       label.className = "ws-label"; label.textContent = w.name;
       label.onclick = () => this.select(w.id);
+      const edit = document.createElement("button");
+      edit.className = "ws-edit"; edit.textContent = "✎"; edit.title = "изменить";
+      edit.onclick = () => this.edit(w.id);
       const x = document.createElement("button");
       x.className = "ws-del"; x.textContent = "✕";
       x.onclick = () => this.del(w.id);
-      row.append(dot, label, x);
+      row.append(dot, label, edit, x);
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");
