@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "notification:default",
-    "dialog:default"
+    "dialog:default",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
+    "core:window:allow-unminimize"
   ]
 }

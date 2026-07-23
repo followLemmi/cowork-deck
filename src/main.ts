@@ -18,6 +18,7 @@ sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const deck = new Deck(deckEl, listMount);
 deck.wireEvents();
+deck.wireNotificationFocus();
 
 // NOTE: `workspaces.active` is read live (via the getter) at every launch point
 // instead of caching the workspace passed to onSelect, because

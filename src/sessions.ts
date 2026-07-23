@@ -2,6 +2,7 @@ import { TerminalPanel } from "./terminal";
 import { onOutput, onState, onExit, closeSession, type SessionState, type Skill, type Workspace } from "./ipc";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { nextWaitingIndex } from "./commands";
+import { NotifyRouter, wireNotificationFocus } from "./notify";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -16,7 +17,12 @@ const NOTIFY_ON: SessionState[] = ["waitingInput", "ended", "error"];
 export class Deck {
   private tiles = new Map<string, Tile>();
   private notifyOk = false;
+  private notify = new NotifyRouter();
   constructor(private deckEl: HTMLElement, private listEl: HTMLElement) {}
+
+  wireNotificationFocus() {
+    return wireNotificationFocus(this.notify, (s) => this.focusTile(s));
+  }
 
   async wireEvents() {
     this.notifyOk = await isPermissionGranted();
@@ -155,7 +161,8 @@ export class Deck {
     tile.restartBtn.style.display = (state === "ended" || state === "error") ? "inline" : "none";
     this.renderList();
     if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
-      sendNotification({ title: `cowork-deck · ${LABEL[state]}`, body: tile.name });
+      const id = this.notify.register(session);
+      sendNotification({ id, title: `cowork-deck · ${LABEL[state]}`, body: tile.name });
     }
   }
 
