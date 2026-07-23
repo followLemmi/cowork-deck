@@ -42,3 +42,8 @@ export const onState = (cb: (session: string, state: SessionState) => void): Pro
 export const onExit = (cb: (session: string, ok: boolean) => void): Promise<UnlistenFn> =>
   listen<{ session: string; ok: boolean }>("session://exit", (e) =>
     cb(e.payload.session, e.payload.ok));
+
+export interface GitStatus { branch: string | null; dirty: boolean; }
+export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }
+export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
+export const sessionTokens = (sessionId: string) => invoke<TokenUsage>("session_tokens", { sessionId });
