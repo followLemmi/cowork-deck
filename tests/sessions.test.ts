@@ -53,6 +53,6 @@ describe("Deck.launch error handling", () => {
 
     const label = deckEl.querySelector(".tile-state")!;
     expect(label.className).toContain("state-error");
-    expect(writeSpy).toHaveBeenCalled();
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("claude не найден"));
   });
 });
