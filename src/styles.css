@@ -141,9 +141,13 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .state-error        { color: var(--st-error);   background: rgba(224, 108, 117, 0.16); border-color: rgba(224, 108, 117, 0.4); }
 
 .state-waitingInput::before { animation: pulse-dot 1.4s var(--ease) infinite; }
+/* transform + opacity only — GPU-composited, no per-frame repaint. Animating
+   box-shadow here forced WebKit to repaint every frame for the whole
+   animation's lifetime (a waitingInput session never leaves that state until
+   the user acts), pegging WindowServer and lagging the entire system. */
 @keyframes pulse-dot {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(229, 192, 123, 0.5); }
-  50%      { box-shadow: 0 0 0 5px rgba(229, 192, 123, 0); }
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%      { transform: scale(1.7); opacity: 0.45; }
 }
 .state-working::before { animation: breathe 1.8s ease-in-out infinite; }
 @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
