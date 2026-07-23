@@ -89,7 +89,12 @@ html, body, #app { height: 100%; margin: 0; }
 
 button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-#deck { grid-template-columns: repeat(2, 1fr); grid-auto-rows: 1fr; }
+#deck {
+  grid-template-columns: repeat(auto-fit, minmax(clamp(320px, 42vw, 560px), 1fr));
+  grid-auto-rows: minmax(240px, 1fr);
+  overflow: auto;
+}
+.tile { min-height: 240px; }
 .tile { display: flex; flex-direction: column; background: var(--bg-terminal); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; box-shadow: var(--shadow-tile); }
 .tile-head { display: flex; align-items: center; gap: var(--sp-2); padding: 6px 10px; background: var(--bg-panel); border-bottom: 1px solid var(--border); color: var(--fg); font-size: var(--fs-sm); font-weight: var(--fw-medium); user-select: none; }
 .tile-head span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); }
