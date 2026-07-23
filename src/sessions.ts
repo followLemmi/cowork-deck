@@ -23,6 +23,7 @@ export class Deck {
   private notify = new NotifyRouter();
   private broadcasting = false;
   private bcastPanel: HTMLElement | null = null;
+  private restoring = false;
   constructor(private deckEl: HTMLElement, private listEl: HTMLElement) {}
 
   wireNotificationFocus() {
@@ -68,7 +69,8 @@ export class Deck {
     close.onclick = () => this.remove(session);
     head.append(title, label, clearBtn, close);
     const bcastCheck = document.createElement("input");
-    bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check hidden";
+    bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
+    bcastCheck.classList.toggle("hidden", !this.broadcasting);
     head.insertBefore(bcastCheck, title);
     const restart = document.createElement("button");
     restart.textContent = "⟳"; restart.className = "tile-close"; restart.style.display = "none";
@@ -79,6 +81,7 @@ export class Deck {
       try {
         await tile.panel.start(tile.workspacePath, null, true);
         this.setState(session, "idle");
+        void this.persistLayout();
       } catch (e) {
         this.setState(session, "error");
         const raw = String((e as { message?: string })?.message ?? e);
@@ -117,9 +120,9 @@ export class Deck {
     };
     this.tiles.set(session, tile);
     this.renderList();
-    void this.persistLayout();
     try {
       await panel.start(cwd, prompt, resume);
+      void this.persistLayout();
     } catch (e) {
       this.setState(session, "error");
       const raw = String((e as { message?: string })?.message ?? e);
@@ -132,11 +135,17 @@ export class Deck {
   }
 
   async restore(entries: SessionEntry[]) {
-    for (const e of entries) {
-      await this.spawnTile({
-        session: e.sessionId, cwd: e.cwd, titleText: e.name, prompt: null, resume: true,
-      });
+    this.restoring = true;
+    try {
+      for (const e of entries) {
+        await this.spawnTile({
+          session: e.sessionId, cwd: e.cwd, titleText: e.name, prompt: null, resume: true,
+        });
+      }
+    } finally {
+      this.restoring = false;
     }
+    void this.persistLayout();
   }
 
   get activeSession(): string | null {
@@ -252,6 +261,7 @@ export class Deck {
   }
 
   private persistLayout() {
+    if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
       session: t.session, workspacePath: t.workspacePath, name: t.name,
     })));

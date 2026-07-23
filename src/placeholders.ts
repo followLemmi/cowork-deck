@@ -1,5 +1,12 @@
 // Scenario prompts may contain {{name}} placeholders. At launch we collect a
 // value per unique placeholder and substitute before sending the first message.
+// NOTE: this module-level regex is shared and stateful (`g` flag tracks
+// `lastIndex`). It's only safe here because `String.prototype.matchAll`
+// operates on an internal clone of the regex, and `String.prototype.replace`
+// resets `lastIndex` to 0 itself after each full pass. Do NOT call
+// `RE.exec(...)` or `RE.test(...)` directly on this shared instance — that
+// would leak `lastIndex` state across calls; use a fresh regex literal for
+// those instead.
 const RE = /\{\{\s*([\w-]+)\s*\}\}/g;
 
 export function parsePlaceholders(prompt: string): string[] {

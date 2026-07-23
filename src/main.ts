@@ -19,9 +19,13 @@ newBtn.textContent = "+ сессия"; newBtn.className = "ws-add";
 sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const deck = new Deck(deckEl, listMount);
-deck.wireEvents();
 deck.wireNotificationFocus();
-loadLayout().then((entries) => { if (entries.length) void deck.restore(entries); });
+async function boot() {
+  await deck.wireEvents();
+  const entries = await loadLayout();
+  if (entries.length) await deck.restore(entries);
+}
+void boot();
 
 // NOTE: `workspaces.active` is read live (via the getter) at every launch point
 // instead of caching the workspace passed to onSelect, because
