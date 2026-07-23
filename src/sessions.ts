@@ -5,7 +5,7 @@ import { nextWaitingIndex } from "./commands";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
-  workspacePath: string; prompt: string | null; restartBtn: HTMLButtonElement;
+  workspacePath: string; prompt: string | null; restartBtn: HTMLButtonElement; searchBar: HTMLElement;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -36,10 +36,13 @@ export class Deck {
     title.textContent = skill ? `${skill.icon} ${skill.name}` : `терминал · ${workspace.name}`;
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
+    const clearBtn = document.createElement("button");
+    clearBtn.textContent = "⌫"; clearBtn.className = "tile-close"; clearBtn.title = "очистить";
+    clearBtn.onclick = () => tile.panel.clear();
     const close = document.createElement("button");
     close.textContent = "✕"; close.className = "tile-close";
     close.onclick = () => this.remove(session);
-    head.append(title, label, close);
+    head.append(title, label, clearBtn, close);
     const restart = document.createElement("button");
     restart.textContent = "⟳"; restart.className = "tile-close"; restart.style.display = "none";
     restart.title = "перезапустить";
@@ -62,14 +65,28 @@ export class Deck {
     head.insertBefore(restart, close);
     const mount = document.createElement("div");
     mount.className = "tile-body";
-    el.append(head, mount);
+    const searchBar = document.createElement("div");
+    searchBar.className = "tile-search hidden";
+    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "поиск…";
+    const sNext = document.createElement("button"); sNext.textContent = "▼"; sNext.className = "tile-search-btn";
+    const sPrev = document.createElement("button"); sPrev.textContent = "▲"; sPrev.className = "tile-search-btn";
+    const sClose = document.createElement("button"); sClose.textContent = "✕"; sClose.className = "tile-search-btn";
+    searchBar.append(sInput, sPrev, sNext, sClose);
+    sInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); tile.panel.search(sInput.value); }
+      else if (e.key === "Escape") { e.preventDefault(); searchBar.classList.add("hidden"); tile.panel.focus(); }
+    });
+    sNext.onclick = () => tile.panel.search(sInput.value);
+    sPrev.onclick = () => { tile.panel.search(sInput.value); tile.panel.findPrevious(); };
+    sClose.onclick = () => { searchBar.classList.add("hidden"); tile.panel.focus(); };
+    el.append(head, searchBar, mount);
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
     const panel = new TerminalPanel(session, mount);
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
-      workspacePath: workspace.path, prompt: skill ? skill.prompt : null, restartBtn: restart,
+      workspacePath: workspace.path, prompt: skill ? skill.prompt : null, restartBtn: restart, searchBar,
     };
     this.tiles.set(session, tile);
     this.renderList();
@@ -107,12 +124,13 @@ export class Deck {
     if (id) this.remove(id);
   }
   searchActive() {
-    // расширяется в Task 8: полноценная строка поиска в плитке
     const id = this.activeSession;
-    if (id) this.tiles.get(id)!.panel.focus();
+    if (!id) return;
+    const t = this.tiles.get(id)!;
+    t.searchBar.classList.remove("hidden");
+    (t.searchBar.querySelector(".tile-search-input") as HTMLInputElement).focus();
   }
   clearActive() {
-    // расширяется в Task 8
     const id = this.activeSession;
     if (id) this.tiles.get(id)!.panel.clear();
   }

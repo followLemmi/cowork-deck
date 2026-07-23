@@ -1,5 +1,6 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { startSession, writeSession, resizeSession } from "./ipc";
 import { matchHotkey } from "./commands";
@@ -7,6 +8,8 @@ import { matchHotkey } from "./commands";
 export class TerminalPanel {
   private term: Terminal;
   private fitAddon: FitAddon;
+  private searchAddon: SearchAddon;
+  private lastSearch = "";
   private ro: ResizeObserver | null = null;
   private rafId: number | null = null;
   constructor(private session: string, private mount: HTMLElement) {
@@ -30,6 +33,8 @@ export class TerminalPanel {
     });
     this.fitAddon = new FitAddon();
     this.term.loadAddon(this.fitAddon);
+    this.searchAddon = new SearchAddon();
+    this.term.loadAddon(this.searchAddon);
     this.term.open(mount);
     // Перехватываем ТОЛЬКО распознанные хоткеи приложения; всё остальное
     // (в т.ч. Ctrl+C/D/L, обычный ввод) отдаём терминалу.
@@ -55,7 +60,9 @@ export class TerminalPanel {
   }
   write(text: string) { this.term.write(text); }
   focus() { this.term.focus(); }
-  // расширяется в Task 8: очистка через строку поиска/панель терминала
+  search(term: string) { if (term) this.searchAddon.findNext(term); this.lastSearch = term; }
+  findNext() { if (this.lastSearch) this.searchAddon.findNext(this.lastSearch); }
+  findPrevious() { if (this.lastSearch) this.searchAddon.findPrevious(this.lastSearch); }
   clear() { this.term.clear(); }
   fit() {
     if (this.mount.clientWidth === 0 || this.mount.clientHeight === 0) return;

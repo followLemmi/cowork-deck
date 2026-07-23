@@ -107,6 +107,13 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .tile-close { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; background: none; border: none; border-radius: var(--r-sm); color: var(--fg-subtle); cursor: pointer; font-size: 13px; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
 .tile-close:hover { background: var(--bg-raised); color: var(--fg); }
 
+.tile-search { display: flex; gap: 4px; padding: 4px 8px; background: var(--bg-panel); border-bottom: 1px solid var(--border); }
+.tile-search.hidden { display: none; }
+.tile-search-input { flex: 1; background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 2px 6px; outline: none; }
+.tile-search-input:focus { border-color: var(--accent); }
+.tile-search-btn { background: none; border: none; color: var(--fg-subtle); cursor: pointer; padding: 0 4px; }
+.tile-search-btn:hover { color: var(--accent); }
+
 .tile.is-active { border-color: var(--accent); box-shadow: var(--focus-ring), var(--shadow-tile); }
 #deck.has-active .tile:not(.is-active) { opacity: 0.82; transition: opacity var(--dur-2) var(--ease); }
 
