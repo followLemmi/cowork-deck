@@ -57,7 +57,7 @@ export class Deck {
       restart.style.display = "none";
       tile.panel.write("\r\n[перезапуск сессии...]\r\n");
       try {
-        await tile.panel.start(tile.workspacePath, tile.prompt);
+        await tile.panel.start(tile.workspacePath, null, true);
         this.setState(session, "idle");
       } catch (e) {
         this.setState(session, "error");

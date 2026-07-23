@@ -14,8 +14,8 @@ export const removeSkill = (id: string) => invoke<Skill[]>("remove_skill", { id 
 export const claudeAvailable = () => invoke<boolean>("claude_available");
 
 export const startSession = (
-  session: string, cwd: string, initialPrompt: string | null, cols: number, rows: number,
-) => invoke<void>("start_session", { session, cwd, initialPrompt, cols, rows });
+  session: string, cwd: string, initialPrompt: string | null, cols: number, rows: number, resume: boolean,
+) => invoke<void>("start_session", { session, cwd, initialPrompt, cols, rows, resume });
 export const writeSession = (session: string, data: string) => invoke<void>("write_session", { session, data });
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
