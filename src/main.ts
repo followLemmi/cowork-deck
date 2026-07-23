@@ -2,6 +2,7 @@ import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { claudeAvailable } from "./ipc";
+import { alertModal } from "./modal";
 
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
@@ -35,5 +36,5 @@ workspaces.load();
 skills.load();
 
 claudeAvailable().then((ok) => {
-  if (!ok) alert("Не найден исполняемый файл claude. Укажите путь через переменную окружения COWORK_CLAUDE_PATH и перезапустите приложение.");
+  if (!ok) alertModal("Не найден исполняемый файл claude. Укажите путь через переменную окружения COWORK_CLAUDE_PATH и перезапустите приложение.");
 });

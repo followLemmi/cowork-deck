@@ -1,4 +1,5 @@
 import { listWorkspaces, saveWorkspace, removeWorkspace, type Workspace } from "./ipc";
+import { promptModal, confirmModal } from "./modal";
 
 export class WorkspacesPanel {
   private items: Workspace[] = [];
@@ -23,9 +24,9 @@ export class WorkspacesPanel {
   }
 
   private async add() {
-    const name = prompt("Имя пространства")?.trim();
+    const name = (await promptModal("Имя пространства"))?.trim();
     if (!name) return;
-    const path = prompt("Путь к папке проекта")?.trim();
+    const path = (await promptModal("Путь к папке проекта"))?.trim();
     if (!path) return;
     const ws: Workspace = { id: crypto.randomUUID(), name, path, color: "#3b82f6" };
     this.items = await saveWorkspace(ws);
@@ -33,7 +34,7 @@ export class WorkspacesPanel {
   }
 
   private async del(id: string) {
-    if (!confirm("Удалить пространство?")) return;
+    if (!(await confirmModal("Удалить пространство?"))) return;
     this.items = await removeWorkspace(id);
     if (this.activeId === id) this.activeId = this.items[0]?.id ?? null;
     this.render();

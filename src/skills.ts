@@ -1,4 +1,5 @@
 import { listSkills, saveSkill, removeSkill, type Skill } from "./ipc";
+import { promptModal, confirmModal } from "./modal";
 
 export class SkillsPanel {
   private items: Skill[] = [];
@@ -16,12 +17,12 @@ export class SkillsPanel {
   }
 
   private async add() {
-    const name = prompt("Имя сценария")?.trim();
+    const name = (await promptModal("Имя сценария"))?.trim();
     if (!name) return;
-    const icon = prompt("Значок (эмодзи)", "▶")?.trim() || "▶";
-    const promptText = prompt("Текст задания (первое сообщение)")?.trim();
+    const icon = (await promptModal("Значок (эмодзи)", "▶"))?.trim() || "▶";
+    const promptText = (await promptModal("Текст задания (первое сообщение)"))?.trim();
     if (!promptText) return;
-    const scope = confirm("Привязать к текущему пространству? (Отмена = общий)");
+    const scope = await confirmModal("Привязать к текущему пространству? (Отмена = общий)");
     const sk: Skill = {
       id: crypto.randomUUID(), name, icon, prompt: promptText,
       workspaceId: scope ? this.getActiveWorkspaceId() : null,
@@ -31,7 +32,7 @@ export class SkillsPanel {
   }
 
   private async del(id: string) {
-    if (!confirm("Удалить сценарий?")) return;
+    if (!(await confirmModal("Удалить сценарий?"))) return;
     this.items = await removeSkill(id);
     this.render();
   }

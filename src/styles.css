@@ -138,3 +138,15 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .sess-row { display: flex; gap: 6px; align-items: center; font-size: var(--fs-sm); margin: 3px 0; padding: 4px 6px; border-radius: var(--r-sm); cursor: pointer; transition: background var(--dur-1) var(--ease); }
 .sess-row:hover { background: var(--bg-raised); }
 .sess-row.active { background: var(--accent-weak); }
+
+/* --- Modal dialogs (replace webview prompt/confirm/alert) --- */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; animation: modal-fade var(--dur-1) var(--ease); }
+.modal-box { background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: var(--r-md); padding: var(--sp-4); min-width: 340px; max-width: 90vw; box-shadow: var(--shadow-tile); display: flex; flex-direction: column; gap: var(--sp-3); }
+.modal-title { color: var(--fg); font-family: var(--font-ui); font-size: var(--fs-base); line-height: 1.5; }
+.modal-input { background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 8px 10px; outline: none; }
+.modal-input:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.modal-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
+.modal-actions button { padding: 6px 14px; border-radius: var(--r-sm); font: inherit; font-size: var(--fs-sm); cursor: pointer; border: 1px solid var(--border); background: var(--bg-raised); color: var(--fg); transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease); }
+.modal-actions button:hover { border-color: var(--accent); }
+.modal-actions .modal-ok { background: var(--accent); border-color: var(--accent); color: var(--bg-app); font-weight: var(--fw-medium); }
+@keyframes modal-fade { from { opacity: 0; } to { opacity: 1; } }
