@@ -25,6 +25,7 @@ vi.mock("../src/ipc", () => ({
   onState: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),
   closeSession: vi.fn(),
+  saveLayout: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@tauri-apps/plugin-notification", () => ({

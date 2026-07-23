@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, type SessionState, type Skill, type Workspace, type SessionEntry } from "./ipc";
+import { onOutput, onState, onExit, closeSession, saveLayout, type SessionState, type Skill, type Workspace, type SessionEntry } from "./ipc";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { nextWaitingIndex } from "./commands";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
@@ -34,13 +34,26 @@ export class Deck {
   }
 
   async launch(workspace: Workspace, skill: Skill | null) {
-    const session = crypto.randomUUID();
+    const titleText = skill ? `${skill.icon} ${skill.name}` : `терминал · ${workspace.name}`;
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd: workspace.path,
+      titleText,
+      prompt: skill ? skill.prompt : null,
+      resume: false,
+    });
+  }
+
+  private async spawnTile(opts: {
+    session: string; cwd: string; titleText: string; prompt: string | null; resume: boolean;
+  }) {
+    const { session, cwd, titleText, prompt, resume } = opts;
     const el = document.createElement("div");
     el.className = "tile";
     const head = document.createElement("div");
     head.className = "tile-head";
     const title = document.createElement("span");
-    title.textContent = skill ? `${skill.icon} ${skill.name}` : `терминал · ${workspace.name}`;
+    title.textContent = titleText;
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
     const clearBtn = document.createElement("button");
@@ -93,12 +106,13 @@ export class Deck {
     const panel = new TerminalPanel(session, mount);
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
-      workspacePath: workspace.path, prompt: skill ? skill.prompt : null, restartBtn: restart, searchBar,
+      workspacePath: cwd, prompt, restartBtn: restart, searchBar,
     };
     this.tiles.set(session, tile);
     this.renderList();
+    void this.persistLayout();
     try {
-      await panel.start(workspace.path, skill ? skill.prompt : null);
+      await panel.start(cwd, prompt, resume);
     } catch (e) {
       this.setState(session, "error");
       const raw = String((e as { message?: string })?.message ?? e);
@@ -108,6 +122,14 @@ export class Deck {
       panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
     }
     this.focusTile(session);
+  }
+
+  async restore(entries: SessionEntry[]) {
+    for (const e of entries) {
+      await this.spawnTile({
+        session: e.sessionId, cwd: e.cwd, titleText: e.name, prompt: null, resume: true,
+      });
+    }
   }
 
   get activeSession(): string | null {
@@ -181,6 +203,14 @@ export class Deck {
     this.tiles.delete(session);
     if (this.tiles.size === 0) this.deckEl.classList.remove("has-active");
     this.renderList();
+    void this.persistLayout();
+  }
+
+  private persistLayout() {
+    const entries = serializeTiles([...this.tiles.values()].map((t) => ({
+      session: t.session, workspacePath: t.workspacePath, name: t.name,
+    })));
+    return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
 
   private renderList() {

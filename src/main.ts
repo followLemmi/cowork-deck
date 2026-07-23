@@ -1,7 +1,7 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
-import { claudeAvailable } from "./ipc";
+import { claudeAvailable, loadLayout } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -21,6 +21,7 @@ sidebar.append(wsMount, skMount, newBtn, listMount);
 const deck = new Deck(deckEl, listMount);
 deck.wireEvents();
 deck.wireNotificationFocus();
+loadLayout().then((entries) => { if (entries.length) void deck.restore(entries); });
 
 // NOTE: `workspaces.active` is read live (via the getter) at every launch point
 // instead of caching the workspace passed to onSelect, because
