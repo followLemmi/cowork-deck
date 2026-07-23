@@ -6,6 +6,8 @@ import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
+import { resolvePrompt } from "./placeholders";
+import { placeholderForm } from "./forms";
 
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
@@ -27,9 +29,12 @@ deck.wireNotificationFocus();
 // a deleted workspace's path. Reading `workspaces.active` at click time keeps
 // us in sync with whatever del()/select() last did.
 const workspaces = new WorkspacesPanel(wsMount, () => {});
-const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, (skill) => {
+const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
   const ws = workspaces.active;
-  if (ws) deck.launch(ws, skill);
+  if (!ws) return;
+  const prompt = await resolvePrompt(skill.prompt, placeholderForm);
+  if (prompt === null) return;
+  deck.launch(ws, { ...skill, prompt });
 });
 newBtn.onclick = () => {
   const ws = workspaces.active;
