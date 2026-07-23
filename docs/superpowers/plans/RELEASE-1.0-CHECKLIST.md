@@ -66,20 +66,23 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 ## P0 (проверено статически по коду; поведенческая часть требует живого запуска — см. раздел ниже)
 
-- [x] CSP включён (статически, по `src-tauri/tauri.conf.json`) — консоль без нарушений: **[ ] требует человека** на десктопе (нужен реальный webview-рендер)
+- [x] CSP статически установлен в `src-tauri/tauri.conf.json` с запретом `unsafe-inline` для скриптов (P0-1, commit `5a120f9`)
 
-  Фактическая конфигурация (P0-1, commit `5a120f9`):
+  Фактическая конфигурация:
   ```json
   "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
   ```
-  Строгий CSP присутствует и не даёт `unsafe-inline` для скриптов в prod-профиле. Отсутствие
-  нарушений в devtools-консоли нужно подтвердить визуально при `npm run tauri dev`.
+  Строгий CSP присутствует в коде и не даёт `unsafe-inline` для скриптов.
 
-- [x] Резолвинг пути репортера / логика меток состояния — покрыто юнит-тестами (`tests::prefers_reporter_next_to_exe`,
-  `tests::falls_back_to_release_sibling_in_dev`, `tests::defaults_to_exe_dir_when_none_exist`,
-  `model::tests::maps_kinds_to_states`). Реальное разрешение докладчика (`докладчик резолвится`) на
-  живом `claude 2.1.217` — **[ ] требует человека**: запустить `npm run tauri dev`, стартовать сессию,
-  убедиться, что метка меняется по ходу работы claude (готов → работает → ждёт ввода → завершён).
+- [ ] Консоль webview без нарушений CSP при `npm run tauri dev` — требует человека на десктопе
+  — Запустить `npm run tauri dev`, открыть devtools и убедиться, что консоль не выводит ошибок/предупреждений о нарушении CSP-политики.
+
+- [x] Резолвинг пути репортера и логика меток состояния покрыты юнит-тестами — все 4 теста зелёные:
+  `tests::prefers_reporter_next_to_exe`, `tests::falls_back_to_release_sibling_in_dev`,
+  `tests::defaults_to_exe_dir_when_none_exist`, `model::tests::maps_kinds_to_states` (P0-4).
+
+- [ ] Метки состояния реально меняются в `tauri dev` на живом claude 2.1.217 — требует человека
+  — Запустить `npm run tauri dev`, создать сессию с реальным claude, провести через полный цикл (ввод → работа → ждёт ввода → завершение), убедиться, что метла плитки переключается корректно (готов → работает → ждёт ввода → завершён).
 
 - [x] Нет busy-loop в listener (backoff) — юнит-тест `listener::tests::backoff_grows_and_caps` зелёный
   (P0-3, commit `271cc9d`).
