@@ -123,6 +123,35 @@ describe("Deck zoom edge cases", () => {
     expect(remainingTile.parentElement).toBe(deckEl);
   });
 
+  it("closing a non-zoomed tile reconciles the deck from zoom to grid", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("a" as any)
+      .mockReturnValueOnce("b" as any);
+
+    await deck.launch(WS as any, null);
+    await deck.launch(WS as any, null);
+
+    deck.zoomTo("a");
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+    expect(deckEl.querySelector(".deck-strip")).not.toBeNull();
+
+    const allTiles = deckEl.querySelectorAll(".tile");
+    const nonZoomedTile = [...allTiles].find((t) => !t.classList.contains("zoomed")) as HTMLElement;
+    const closeBtn = [...nonZoomedTile.querySelectorAll("button")].find((b) => b.textContent === "✕")!;
+    closeBtn.click();
+
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+    expect(deckEl.querySelector(".deck-strip")).toBeNull();
+    const remainingTile = deckEl.querySelector(".tile") as HTMLElement;
+    expect(remainingTile).not.toBeNull();
+    expect(remainingTile.parentElement).toBe(deckEl);
+  });
+
   it("switching to a workspace without the zoomed tile exits zoom", async () => {
     const WS2 = { id: "w2", name: "Q", path: "/q", color: "#000" };
     const deckEl = document.createElement("div");
