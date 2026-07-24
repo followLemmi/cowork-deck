@@ -127,9 +127,17 @@ mod tests {
     use crate::model::{SessionEntry, UiState, Workspace};
 
     fn tmp() -> std::path::PathBuf {
+        // Unique per call, even under parallel test threads: SystemTime alone
+        // can collide within a clock tick, so add a monotonic counter.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let mut d = std::env::temp_dir();
         d.push(format!("coworkdeck-test-{}", std::process::id()));
-        d.push(format!("{:?}", std::time::SystemTime::now()));
+        d.push(format!(
+            "{:?}-{}",
+            std::time::SystemTime::now(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
