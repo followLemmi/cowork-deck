@@ -1,24 +1,69 @@
+<div align="center">
+
+<img src="src-tauri/icons/128x128@2x.png" alt="cowork-deck" width="128" height="128" />
+
 # cowork-deck
 
-A desktop deck for running multiple [Claude Code](https://docs.claude.com/en/docs/claude-code) sessions
-side by side. Each tile is a real terminal (backed by a PTY) attached to a `claude` process running in a
-chosen workspace directory, optionally launched with a canned skill prompt. Session state (idle, working,
-waiting for input, ended, error) is tracked per tile via Claude Code's hooks and surfaced as a label and,
-optionally, a desktop notification.
+**A desktop deck for running multiple [Claude Code](https://docs.claude.com/en/docs/claude-code) sessions side by side.**
+
+Each tile is a real terminal — a PTY-backed `claude` process in a workspace of your choice — with live
+per-session state, token usage, and git context at a glance.
+
+![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white)
+![Rust](https://img.shields.io/badge/backend-Rust-000000?logo=rust&logoColor=white)
+![TypeScript](https://img.shields.io/badge/frontend-TypeScript-3178C6?logo=typescript&logoColor=white)
+![xterm.js](https://img.shields.io/badge/terminal-xterm.js-2A2A2A)
+![No framework](https://img.shields.io/badge/UI-vanilla%20TS-informational)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-lightgrey)
+
+</div>
+
+---
+
+Each tile is a real terminal (backed by a PTY) attached to a `claude` process running in a chosen
+workspace directory, optionally launched with a canned skill prompt. Session state (idle, working,
+waiting for input, ended, error) is tracked per tile via Claude Code's hooks and surfaced as a label
+and, optionally, a desktop notification.
 
 Built with [Tauri v2](https://v2.tauri.app/) (Rust backend, PTY + process management) and a small
-TypeScript/xterm.js frontend — no UI framework.
+TypeScript / [xterm.js](https://xtermjs.org/) frontend — no UI framework. Dark theme, One Dark palette,
+memory footprint kept under ~100 MB.
+
+## Features
+
+- **Multi-session deck** — run many `claude` sessions as tiles in one window, each a full interactive terminal.
+- **Live state tracking** — per-tile `idle` / `working` / `waiting for input` / `ended` / `error`, driven by Claude Code hooks, with optional desktop notifications. Click a notification to focus that session.
+- **Floating status pill** — an always-on-top pill showing "N waiting for input" so you can step away from the app and still know when a session needs you.
+- **Workspaces** — group sessions by workspace in a color-coded sidebar, and switch the deck to show only one workspace's terminals.
+- **Zoom / juggle** — double-click a tile header to expand one terminal near-full while the rest shrink to a filmstrip; click a shrunken tile to juggle focus (animated).
+- **Scenarios & skills** — launch sessions with canned skill prompts, parameterized with `{{name}}` placeholders filled in at start.
+- **Context-preserving restart** — restart an ended/errored tile and resume its Claude Code context (`claude --resume` / `--continue`).
+- **Auto-restore** — reopen yesterday's tiles on launch; window size, position, and active workspace are persisted.
+- **Broadcast input** — type once and send the same input to several sessions at once.
+- **Observability** — token usage per session and per project, plus a git indicator on each tile.
+- **Keyboard-first** — hotkeys and a lightweight command palette; in-terminal search and clear.
 
 ## Build & run
+
+**Prerequisites:** [Node.js](https://nodejs.org/) + npm, a [Rust toolchain](https://rustup.rs/), and the
+[Tauri v2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your platform. Claude Code
+(`claude`) must be installed (see [Locating the `claude` binary](#locating-the-claude-binary)).
 
 ```bash
 npm install
 npm run tauri dev      # dev mode with hot reload
-npm run tauri build     # produces a release bundle for your platform
+npm run tauri build    # produces a release bundle for your platform
 ```
 
 `npm run tauri dev` and `npm run tauri build` drive the Tauri CLI, which in turn runs `npm run dev` /
 `npm run build` (Vite) for the frontend before launching or bundling the Rust app.
+
+### Tests
+
+```bash
+npm test                                            # frontend (vitest)
+cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
+```
 
 ## Sessions and the app window
 
@@ -26,7 +71,8 @@ Sessions are not daemonized: every running `claude` process is a child of the ap
 app window closes. There is no background/detached mode — closing the window ends all sessions. If you
 need a session to survive a restart, use the restart (⟳) affordance on a tile once it reaches `завершён`
 (ended) or `ошибка` (error) state — it starts a fresh session in the same workspace with the same initial
-prompt, but it does not resume state from before the restart.
+prompt (resuming Claude Code's context where possible), but it does not resume the app's own tracked state
+from before the restart.
 
 ## Locating the `claude` binary
 
@@ -48,3 +94,6 @@ Code hooks reporting session state back to the app. If you're running an older `
 doesn't support these hooks, or a hook fails to fire for any other reason, the terminal itself is
 unaffected — you can still type, scroll, and interact with the session normally. The only symptom is that
 the tile's state label stays on `готов` (idle) instead of reflecting the actual state.
+
+> **Note:** the app's UI strings are currently in Russian (e.g. `готов`, `идёт`, `ждёт ввода`,
+> `завершён`, `ошибка` — idle / working / waiting for input / ended / error).

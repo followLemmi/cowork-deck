@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- cowork-deck app icon — Candidate B: four tiles, one live -->
+  <rect x="72" y="72" width="880" height="880" rx="200" fill="#1d1f21"/>
+  <rect x="72.5" y="72.5" width="879" height="879" rx="199.5" fill="none" stroke="rgba(255,255,255,.09)" stroke-width="3"/>
+  <!-- 2x2 tiles, top-left lit in accent -->
+  <g>
+    <rect x="176" y="176" width="308" height="308" rx="44" fill="rgba(97,175,239,.16)"/>
+    <rect x="540" y="176" width="308" height="308" rx="44" fill="rgba(255,255,255,.045)"/>
+    <rect x="176" y="540" width="308" height="308" rx="44" fill="rgba(255,255,255,.045)"/>
+    <rect x="540" y="540" width="308" height="308" rx="44" fill="rgba(255,255,255,.045)"/>
+  </g>
+  <!-- prompt chevron + accent cursor block -->
+  <polyline points="398,392 556,512 398,632" fill="none" stroke="#e6e6e6"
+    stroke-width="70" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="590" y="470" width="150" height="84" rx="20" fill="#61afef"/>
+</svg>
