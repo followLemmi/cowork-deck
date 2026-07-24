@@ -418,6 +418,22 @@ export function waitingVerb(n: number): string {
   return n % 10 === 1 && n % 100 !== 11 ? "ждёт" : "ждут";
 }
 
+export function nextWaitingAcross(
+  tiles: { session: string; workspaceId?: string; state: SessionState }[],
+  currentSession: string | null,
+): { session: string; workspaceId?: string } | null {
+  const n = tiles.length;
+  if (n === 0) return null;
+  const start = tiles.findIndex((t) => t.session === currentSession); // -1 if not found
+  for (let i = 1; i <= n; i++) {
+    const t = tiles[(start + i + n) % n];
+    if (t.state === "waitingInput" && t.session !== currentSession) {
+      return { session: t.session, workspaceId: t.workspaceId };
+    }
+  }
+  return null;
+}
+
 export function serializeTiles(
   tiles: { session: string; workspacePath: string; name: string; workspaceId?: string }[],
 ): SessionEntry[] {
