@@ -55,7 +55,13 @@ export class WorkspacesPanel {
       const next = this.items[0]?.id ?? null;
       this.activeId = null;
       if (next) { this.select(next); return; } // select() fires onSelect + renders
+      this.render();
+      return;
     }
+    // A non-active workspace was deleted: its sessions (if any) are now orphans.
+    // Re-notify so the Deck recomputes tile visibility + sidebar grouping.
+    const active = this.active;
+    if (active) this.onSelect(active);
     this.render();
   }
 

@@ -112,15 +112,22 @@ export class Deck {
   setActiveWorkspace(id: string | null) {
     this.activeWorkspaceId = id;
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    let firstVisible: string | null = null;
     for (const t of this.tiles.values()) {
       const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
       // Orphan tiles (rid === null) stay visible everywhere so a session whose
       // workspace was deleted remains reachable.
       const visible = rid === null || rid === id;
       t.el.classList.toggle("ws-hidden", !visible);
-      if (visible) t.panel.fit();
+      if (visible) {
+        t.panel.fit();
+        if (firstVisible === null) firstVisible = t.session;
+      }
     }
-    this.renderList();
+    const active = this.activeSession;
+    const activeHidden = !active || !!this.tiles.get(active)?.el.classList.contains("ws-hidden");
+    if (activeHidden && firstVisible) this.focusTile(firstVisible); // focusTile calls renderList
+    else this.renderList();
   }
 
   private async spawnTile(opts: {
@@ -312,7 +319,13 @@ export class Deck {
     if (!tile) return;
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
     const rid = resolveWorkspaceId(tile.workspaceId, tile.workspacePath, ws);
-    if (rid !== null && rid !== this.activeWorkspaceId) this.setActiveWorkspace(rid);
+    if (rid !== null && rid !== this.activeWorkspaceId) {
+      this.setActiveWorkspace(rid);
+    } else if (tile.el.classList.contains("ws-hidden")) {
+      // Orphan (or otherwise stale-hidden) target: unhide so focus lands on a visible tile.
+      tile.el.classList.remove("ws-hidden");
+      tile.panel.fit();
+    }
     this.focusTile(session);
   }
 
@@ -387,7 +400,7 @@ export class Deck {
     const ORPHAN_KEY = "__orphan__";
     for (const g of groups) {
       const wsId = g.workspace?.id ?? ORPHAN_KEY;
-      const color = g.workspace?.color ?? "#6b7280";
+      const color = g.workspace?.color ?? "var(--fg-subtle)";
       const name = g.workspace?.name ?? "Другие";
       const collapsed = this.collapsed.has(wsId);
       const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
@@ -395,7 +408,6 @@ export class Deck {
       const head = document.createElement("div");
       head.className = "sess-group-head"
         + (g.workspace && g.workspace.id === this.activeWorkspaceId ? " active" : "");
-      head.style.setProperty("--ws-color", color);
       const toggle = document.createElement("span");
       toggle.className = "sess-group-toggle";
       toggle.textContent = collapsed ? "▸" : "▾";

@@ -1,22 +1,24 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { listWorkspacesMock, loadUiStateMock, saveUiStateMock, saveWorkspace, workspaceForm } = vi.hoisted(() => ({
+const { listWorkspacesMock, loadUiStateMock, saveUiStateMock, saveWorkspace, removeWorkspaceMock, confirmModalMock, workspaceForm } = vi.hoisted(() => ({
   listWorkspacesMock: vi.fn(),
   loadUiStateMock: vi.fn(),
   saveUiStateMock: vi.fn(),
   saveWorkspace: vi.fn(),
+  removeWorkspaceMock: vi.fn(),
+  confirmModalMock: vi.fn(),
   workspaceForm: vi.fn(),
 }));
 vi.mock("../src/ipc", () => ({
   listWorkspaces: listWorkspacesMock,
   saveWorkspace,
-  removeWorkspace: vi.fn(),
+  removeWorkspace: removeWorkspaceMock,
   loadUiState: loadUiStateMock,
   saveUiState: saveUiStateMock,
 }));
 vi.mock("../src/forms", () => ({ workspaceForm }));
-vi.mock("../src/modal", () => ({ confirmModal: vi.fn() }));
+vi.mock("../src/modal", () => ({ confirmModal: confirmModalMock }));
 
 import { WorkspacesPanel } from "../src/workspaces";
 
@@ -59,4 +61,24 @@ it("creates a workspace from the form result", async () => {
   mount.querySelector<HTMLButtonElement>(".ws-add")!.click();
   await Promise.resolve(); await Promise.resolve();
   expect(saveWorkspace).toHaveBeenCalledWith(expect.objectContaining({ name: "P", path: "/p" }));
+});
+
+it("re-notifies onSelect with the still-active workspace when a non-active workspace is deleted", async () => {
+  const items = [
+    { id: "a", name: "A", path: "/a", color: "#111" },
+    { id: "b", name: "B", path: "/b", color: "#222" },
+  ];
+  listWorkspacesMock.mockResolvedValue(items);
+  loadUiStateMock.mockResolvedValue({ activeWorkspaceId: "a" });
+  confirmModalMock.mockResolvedValueOnce(true);
+  removeWorkspaceMock.mockResolvedValueOnce([items[0]]);
+  const selected: string[] = [];
+  const mount = document.createElement("div");
+  const panel = new WorkspacesPanel(mount, (ws) => selected.push(ws.id));
+  await panel.load();
+  selected.length = 0; // clear the initial select() notification from load()
+  mount.querySelectorAll<HTMLButtonElement>(".ws-del")[1]!.click(); // delete "b", the non-active workspace
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  expect(panel.active?.id).toBe("a");
+  expect(selected).toContain("a");
 });
