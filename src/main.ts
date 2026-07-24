@@ -28,6 +28,7 @@ async function boot() {
   skills.load();
   const entries = await loadLayout();
   if (entries.length) await deck.restore(entries);
+  deck.setActiveWorkspace(workspaces.active?.id ?? null);
 }
 
 // Clicking the floating status pill raises the main window (same raise
@@ -41,13 +42,9 @@ void listen("pill://focus-next", async () => {
   deck.focusNextWaiting();
 });
 
-// NOTE: `workspaces.active` is read live (via the getter) at every launch point
-// instead of caching the workspace passed to onSelect, because
-// WorkspacesPanel.del() does not re-fire onSelect when the active workspace
-// is the one being deleted — a cached variable could go stale and point at
-// a deleted workspace's path. Reading `workspaces.active` at click time keeps
-// us in sync with whatever del()/select() last did.
-const workspaces = new WorkspacesPanel(wsMount, () => {});
+// Selecting a workspace (click, startup restore of the active one, or after a
+// deletion re-selects the next one) switches the deck to that workspace's tiles.
+const workspaces = new WorkspacesPanel(wsMount, (ws) => deck.setActiveWorkspace(ws.id));
 const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
   const ws = workspaces.active;
   if (!ws) return;

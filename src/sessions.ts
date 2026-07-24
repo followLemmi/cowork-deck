@@ -8,7 +8,7 @@ import { nextWaitingIndex } from "./commands";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
-import { groupTilesByWorkspace } from "./grouping";
+import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -108,6 +108,20 @@ export class Deck {
       prompt: skill ? skill.prompt : null,
       resume: false,
     });
+  }
+
+  setActiveWorkspace(id: string | null) {
+    this.activeWorkspaceId = id;
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    for (const t of this.tiles.values()) {
+      const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
+      // Orphan tiles (rid === null) stay visible everywhere so a session whose
+      // workspace was deleted remains reachable.
+      const visible = rid === null || rid === id;
+      t.el.classList.toggle("ws-hidden", !visible);
+      if (visible) t.panel.fit();
+    }
+    this.renderList();
   }
 
   private async spawnTile(opts: {

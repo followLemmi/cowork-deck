@@ -51,7 +51,11 @@ export class WorkspacesPanel {
   private async del(id: string) {
     if (!(await confirmModal("Удалить пространство?"))) return;
     this.items = await removeWorkspace(id);
-    if (this.activeId === id) this.activeId = this.items[0]?.id ?? null;
+    if (this.activeId === id) {
+      const next = this.items[0]?.id ?? null;
+      this.activeId = null;
+      if (next) { this.select(next); return; } // select() fires onSelect + renders
+    }
     this.render();
   }
 

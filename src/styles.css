@@ -101,6 +101,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 }
 .tile { min-height: 240px; }
 .tile { display: flex; flex-direction: column; background: var(--bg-terminal); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; box-shadow: var(--shadow-tile); }
+.tile.ws-hidden { display: none; }
 .tile-head { display: flex; align-items: center; gap: var(--sp-2); padding: 6px 10px; background: var(--bg-panel); border-bottom: 1px solid var(--border); color: var(--fg); font-size: var(--fs-sm); font-weight: var(--fw-medium); user-select: none; }
 .tile-head span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); }
 .tile-body { flex: 1; min-height: 0; background: var(--bg-terminal); padding: var(--sp-2); }
