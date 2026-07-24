@@ -113,6 +113,7 @@ export class Deck {
   }
 
   setActiveWorkspace(id: string | null) {
+    this.zoomedSession = null;
     this.activeWorkspaceId = id;
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
     let firstVisible: string | null = null;
@@ -127,6 +128,7 @@ export class Deck {
         if (firstVisible === null) firstVisible = t.session;
       }
     }
+    this.applyLayout();
     const active = this.activeSession;
     const activeHidden = !active || !!this.tiles.get(active)?.el.classList.contains("ws-hidden");
     if (activeHidden && firstVisible) this.focusTile(firstVisible); // focusTile calls renderList
@@ -433,6 +435,7 @@ export class Deck {
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
+    if (this.zoomedSession === session) { this.zoomedSession = null; this.applyLayout(); }
     this.usage.delete(session);
     if (this.tiles.size === 0) this.stopPolling();
     if (this.tiles.size === 0) this.deckEl.classList.remove("has-active");
