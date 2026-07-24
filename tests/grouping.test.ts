@@ -43,7 +43,7 @@ describe("groupTilesByWorkspace", () => {
       [tile("a", "w1", "/p/grosh"), tile("z", "gone", "/p/nope")],
       WS,
     );
-    expect(groups.at(-1)!.workspace).toBeNull();
-    expect(groups.at(-1)!.tiles.map((t) => t.session)).toEqual(["z"]);
+    expect(groups[groups.length - 1].workspace).toBeNull();
+    expect(groups[groups.length - 1].tiles.map((t) => t.session)).toEqual(["z"]);
   });
 });
