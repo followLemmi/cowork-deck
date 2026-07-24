@@ -79,6 +79,7 @@ const COMMANDS: Record<string, () => void> = {
 
 window.addEventListener("keydown", (e) => {
   if (document.querySelector(".modal-overlay")) return; // не перехватываем, пока открыта модалка/палитра/форма
+  if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
   const id = matchHotkey(e, isMacPlatform());
   if (!id) return;
   if (id.startsWith("focus-")) {

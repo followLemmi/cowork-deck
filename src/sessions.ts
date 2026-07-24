@@ -218,6 +218,7 @@ export class Deck {
       gitBadge, tokenBadge,
     };
     this.tiles.set(session, tile);
+    if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
     try {
@@ -472,7 +473,7 @@ export class Deck {
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
-    if (this.zoomedSession === session) { this.zoomedSession = null; this.applyLayout(); }
+    this.applyLayout();
     this.usage.delete(session);
     if (this.tiles.size === 0) this.stopPolling();
     if (this.tiles.size === 0) this.deckEl.classList.remove("has-active");
