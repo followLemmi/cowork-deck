@@ -8,7 +8,7 @@ import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
-import { zoomParticipants } from "./flip";
+import { zoomParticipants, flipTransform } from "./flip";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -403,6 +403,44 @@ export class Deck {
     }
   }
 
+  // FLIP: measure visible tiles (First), run the layout mutation (Last),
+  // set the inverse transform, then animate it away. transform-only, so the
+  // ResizeObserver (which fits terminals to the already-final layout box) is
+  // not retriggered — no resize feedback loop.
+  private animateLayoutChange(mutate: () => void) {
+    const before = [...this.tiles.values()].filter((t) => !t.el.classList.contains("ws-hidden"));
+    const first = new Map(before.map((t) => [t.session, t.el.getBoundingClientRect()]));
+    mutate();
+    const after = [...this.tiles.values()].filter((t) => !t.el.classList.contains("ws-hidden"));
+    const animating: Tile[] = [];
+    for (const t of after) {
+      const f = first.get(t.session);
+      if (!f) continue;
+      const last = t.el.getBoundingClientRect();
+      const { dx, dy, sx, sy } = flipTransform(f, last);
+      if (dx === 0 && dy === 0 && sx === 1 && sy === 1) continue;
+      t.el.style.transformOrigin = "top left";
+      t.el.style.transition = "none";
+      t.el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+      animating.push(t);
+    }
+    requestAnimationFrame(() => {
+      for (const t of animating) {
+        t.el.style.transition = "transform 180ms var(--ease)";
+        t.el.style.transform = "";
+      }
+    });
+    // Authoritative cleanup + refit after the morph (covers no-transition cases).
+    setTimeout(() => {
+      for (const t of after) {
+        t.el.style.transition = "";
+        t.el.style.transform = "";
+        t.el.style.transformOrigin = "";
+        t.panel.fit();
+      }
+    }, 220);
+  }
+
   zoomTo(session: string | null) {
     if (session !== null) {
       const parts = zoomParticipants(
@@ -414,8 +452,7 @@ export class Deck {
       if (parts.zoomed === null) return; // nothing to zoom (≤1 visible / not visible)
     }
     if (this.zoomedSession === session) return;
-    this.zoomedSession = session;
-    this.applyLayout();
+    this.animateLayoutChange(() => { this.zoomedSession = session; this.applyLayout(); });
   }
 
   toggleZoom(session: string) {
