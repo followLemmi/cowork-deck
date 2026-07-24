@@ -155,6 +155,14 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .sess-row:hover { background: var(--bg-raised); }
 .sess-row.active { background: var(--accent-weak); }
 
+.sess-group-head { display: flex; align-items: center; gap: 6px; margin: 8px 0 2px; padding: 3px 4px; font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--fg-muted); cursor: pointer; border-radius: var(--r-sm); user-select: none; }
+.sess-group-head:hover { background: var(--bg-raised); }
+.sess-group-head.active { color: var(--fg); }
+.sess-group-toggle { width: 1em; flex: none; color: var(--fg-subtle); }
+.sess-group-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-group-badge { font-size: var(--fs-xs); color: var(--fg-subtle); }
+.sess-row { border-left: 3px solid transparent; }
+
 .tile-git, .tile-tokens {
   font-size: var(--fs-xs); color: var(--fg-subtle); white-space: nowrap;
   padding: 0 6px; border-radius: 999px; background: var(--bg-app);
