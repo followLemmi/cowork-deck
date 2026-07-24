@@ -88,7 +88,7 @@ fn main() {
             .skip_taskbar(true)
             .transparent(true)
             .visible(false)
-            .build()?;
+            .build();
 
             Ok(())
         })

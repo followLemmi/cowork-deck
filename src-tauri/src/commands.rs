@@ -213,7 +213,7 @@ fn find_transcript(session_id: &str) -> Option<std::path::PathBuf> {
     let base = std::path::PathBuf::from(home).join(".claude/projects");
     let target = format!("{session_id}.jsonl");
     for entry in std::fs::read_dir(&base).ok()? {
-        let dir = entry.ok()?.path();
+        let dir = match entry { Ok(e) => e.path(), Err(_) => continue };
         let f = dir.join(&target);
         if f.is_file() {
             return Some(f);

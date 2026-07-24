@@ -23,7 +23,7 @@ export class WorkspacesPanel {
 
   private select(id: string) {
     this.activeId = id;
-    void saveUiState({ activeWorkspaceId: id });
+    saveUiState({ activeWorkspaceId: id }).catch((e) => console.debug("saveUiState failed", e));
     const ws = this.active;
     if (ws) this.onSelect(ws);
     this.render();
