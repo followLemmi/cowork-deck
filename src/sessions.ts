@@ -4,15 +4,15 @@ import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
-import { nextWaitingIndex } from "./commands";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
+import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
-  workspacePath: string; prompt: string | null; restartBtn: HTMLButtonElement; searchBar: HTMLElement;
-  bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
+  searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -29,7 +29,9 @@ export class Deck {
   private restoring = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private usage = new Map<string, TokenUsage>();
-  constructor(private deckEl: HTMLElement, private listEl: HTMLElement) {}
+  private activeWorkspaceId: string | null = null;
+  private collapsed = new Set<string>();
+  constructor(private deckEl: HTMLElement, private listEl: HTMLElement, private workspaces: () => Workspace[]) {}
 
   private startPolling() {
     if (this.pollTimer !== null) return;
@@ -100,16 +102,38 @@ export class Deck {
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
+      workspaceId: workspace.id,
       titleText,
       prompt: skill ? skill.prompt : null,
       resume: false,
     });
   }
 
+  setActiveWorkspace(id: string | null) {
+    this.activeWorkspaceId = id;
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    let firstVisible: string | null = null;
+    for (const t of this.tiles.values()) {
+      const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
+      // Orphan tiles (rid === null) stay visible everywhere so a session whose
+      // workspace was deleted remains reachable.
+      const visible = rid === null || rid === id;
+      t.el.classList.toggle("ws-hidden", !visible);
+      if (visible) {
+        t.panel.fit();
+        if (firstVisible === null) firstVisible = t.session;
+      }
+    }
+    const active = this.activeSession;
+    const activeHidden = !active || !!this.tiles.get(active)?.el.classList.contains("ws-hidden");
+    if (activeHidden && firstVisible) this.focusTile(firstVisible); // focusTile calls renderList
+    else this.renderList();
+  }
+
   private async spawnTile(opts: {
-    session: string; cwd: string; titleText: string; prompt: string | null; resume: boolean;
+    session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
   }) {
-    const { session, cwd, titleText, prompt, resume } = opts;
+    const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const el = document.createElement("div");
     el.className = "tile";
     const head = document.createElement("div");
@@ -177,7 +201,7 @@ export class Deck {
     const panel = new TerminalPanel(session, mount);
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
-      workspacePath: cwd, prompt, restartBtn: restart, searchBar, bcastCheck,
+      workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
       gitBadge, tokenBadge,
     };
     this.tiles.set(session, tile);
@@ -202,7 +226,8 @@ export class Deck {
     try {
       for (const e of entries) {
         await this.spawnTile({
-          session: e.sessionId, cwd: e.cwd, titleText: e.name, prompt: null, resume: true,
+          session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
+          titleText: e.name, prompt: null, resume: true,
         });
       }
     } finally {
@@ -216,16 +241,19 @@ export class Deck {
     return null;
   }
   focusByIndex(n: number) {
-    const ids = [...this.tiles.keys()];
+    const ids = [...this.tiles.values()]
+      .filter((t) => !t.el.classList.contains("ws-hidden"))
+      .map((t) => t.session);
     const id = ids[n - 1];
     if (id) this.focusTile(id);
   }
   focusNextWaiting() {
-    const ids = [...this.tiles.keys()];
-    const states = ids.map((id) => this.tiles.get(id)!.state);
-    const cur = ids.indexOf(this.activeSession ?? "");
-    const idx = nextWaitingIndex(states, cur);
-    if (idx != null) this.focusTile(ids[idx]);
+    const tiles = [...this.tiles.values()];
+    const target = nextWaitingAcross(
+      tiles.map((t) => ({ session: t.session, workspaceId: t.workspaceId, state: t.state })),
+      this.activeSession,
+    );
+    if (target) this.focusSessionAnywhere(target.session);
   }
   async closeActive() {
     const id = this.activeSession;
@@ -286,6 +314,21 @@ export class Deck {
     for (const t of this.tiles.values()) t.bcastCheck.checked = false;
   }
 
+  private focusSessionAnywhere(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    const rid = resolveWorkspaceId(tile.workspaceId, tile.workspacePath, ws);
+    if (rid !== null && rid !== this.activeWorkspaceId) {
+      this.setActiveWorkspace(rid);
+    } else if (tile.el.classList.contains("ws-hidden")) {
+      // Orphan (or otherwise stale-hidden) target: unhide so focus lands on a visible tile.
+      tile.el.classList.remove("ws-hidden");
+      tile.panel.fit();
+    }
+    this.focusTile(session);
+  }
+
   private focusTile(session: string) {
     const tile = this.tiles.get(session);
     if (!tile) return;
@@ -328,13 +371,14 @@ export class Deck {
   private persistLayout() {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
-      session: t.session, workspacePath: t.workspacePath, name: t.name,
+      session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
     })));
     return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
 
   private renderList() {
-    const waiting = waitingCount([...this.tiles.values()].map((t) => t.state));
+    const tiles = [...this.tiles.values()];
+    const waiting = waitingCount(tiles.map((t) => t.state));
     void emit("pill://count", { n: waiting });
     const header = waiting > 0 ? `Сессии · ${waiting} ${waitingVerb(waiting)} ввода` : "Сессии";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
@@ -346,17 +390,59 @@ export class Deck {
       sum.textContent = `Σ токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
       this.listEl.appendChild(sum);
     }
-    for (const t of this.tiles.values()) {
-      const row = document.createElement("div");
-      row.className = "sess-row" + (t.el.classList.contains("is-active") ? " active" : "");
-      row.onclick = () => this.focusTile(t.session);
-      const stateSpan = document.createElement("span");
-      stateSpan.className = `tile-state state-${t.state}`;
-      stateSpan.textContent = LABEL[t.state];
-      const nameSpan = document.createElement("span");
-      nameSpan.textContent = t.name;
-      row.append(stateSpan, " ", nameSpan);
-      this.listEl.appendChild(row);
+    const groups = groupTilesByWorkspace(
+      tiles.map((t) => ({
+        session: t.session, name: t.name, state: t.state,
+        workspaceId: t.workspaceId, workspacePath: t.workspacePath,
+      })),
+      this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path })),
+    );
+    const ORPHAN_KEY = "__orphan__";
+    for (const g of groups) {
+      const wsId = g.workspace?.id ?? ORPHAN_KEY;
+      const color = g.workspace?.color ?? "var(--fg-subtle)";
+      const name = g.workspace?.name ?? "Другие";
+      const collapsed = this.collapsed.has(wsId);
+      const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
+
+      const head = document.createElement("div");
+      head.className = "sess-group-head"
+        + (g.workspace && g.workspace.id === this.activeWorkspaceId ? " active" : "");
+      const toggle = document.createElement("span");
+      toggle.className = "sess-group-toggle";
+      toggle.textContent = collapsed ? "▸" : "▾";
+      const dot = document.createElement("span");
+      dot.className = "dot"; dot.style.background = color;
+      const nm = document.createElement("span");
+      nm.className = "sess-group-name"; nm.textContent = name;
+      head.append(toggle, dot, nm);
+      if (groupWaiting > 0) {
+        const badge = document.createElement("span");
+        badge.className = "sess-group-badge";
+        badge.textContent = `${groupWaiting} ${waitingVerb(groupWaiting)}`;
+        head.append(badge);
+      }
+      head.onclick = () => {
+        if (collapsed) this.collapsed.delete(wsId); else this.collapsed.add(wsId);
+        this.renderList();
+      };
+      this.listEl.appendChild(head);
+      if (collapsed) continue;
+
+      for (const t of g.tiles) {
+        const live = this.tiles.get(t.session);
+        const row = document.createElement("div");
+        row.className = "sess-row" + (live?.el.classList.contains("is-active") ? " active" : "");
+        row.style.borderLeftColor = color;
+        row.onclick = () => this.focusSessionAnywhere(t.session);
+        const stateSpan = document.createElement("span");
+        stateSpan.className = `tile-state state-${t.state}`;
+        stateSpan.textContent = LABEL[t.state];
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = t.name;
+        row.append(stateSpan, " ", nameSpan);
+        this.listEl.appendChild(row);
+      }
     }
   }
 }
@@ -369,10 +455,29 @@ export function waitingVerb(n: number): string {
   return n % 10 === 1 && n % 100 !== 11 ? "ждёт" : "ждут";
 }
 
+export function nextWaitingAcross(
+  tiles: { session: string; workspaceId?: string; state: SessionState }[],
+  currentSession: string | null,
+): { session: string; workspaceId?: string } | null {
+  const n = tiles.length;
+  if (n === 0) return null;
+  const start = tiles.findIndex((t) => t.session === currentSession); // -1 if not found
+  for (let i = 1; i <= n; i++) {
+    const t = tiles[(start + i + n) % n];
+    if (t.state === "waitingInput" && t.session !== currentSession) {
+      return { session: t.session, workspaceId: t.workspaceId };
+    }
+  }
+  return null;
+}
+
 export function serializeTiles(
-  tiles: { session: string; workspacePath: string; name: string }[],
+  tiles: { session: string; workspacePath: string; name: string; workspaceId?: string }[],
 ): SessionEntry[] {
-  return tiles.map((t) => ({ sessionId: t.session, cwd: t.workspacePath, name: t.name }));
+  return tiles.map((t) => ({
+    sessionId: t.session, cwd: t.workspacePath, name: t.name,
+    ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+  }));
 }
 
 export function selectedFromChecks(checks: { session: string; checked: boolean }[]): string[] {

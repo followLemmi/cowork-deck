@@ -54,7 +54,7 @@ describe("Deck.launch error handling", () => {
     startMock.mockRejectedValueOnce(new Error("claude-not-found"));
     const deckEl = document.createElement("div");
     const listEl = document.createElement("div");
-    const deck = new Deck(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => []);
 
     await deck.launch(WS as any, null);
 
@@ -75,7 +75,7 @@ describe("Deck.focusTile", () => {
     const deckEl = document.createElement("div");
     const listEl = document.createElement("div");
     document.body.append(deckEl, listEl);
-    const deck = new Deck(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => []);
 
     await deck.launch(WS as any, null);
     await deck.launch(WS as any, null);

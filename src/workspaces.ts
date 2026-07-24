@@ -11,6 +11,8 @@ export class WorkspacesPanel {
     return this.items.find((w) => w.id === this.activeId) ?? null;
   }
 
+  get all(): Workspace[] { return this.items; }
+
   async load() {
     this.items = await listWorkspaces();
     if (!this.activeId && this.items.length) {
@@ -49,7 +51,17 @@ export class WorkspacesPanel {
   private async del(id: string) {
     if (!(await confirmModal("Удалить пространство?"))) return;
     this.items = await removeWorkspace(id);
-    if (this.activeId === id) this.activeId = this.items[0]?.id ?? null;
+    if (this.activeId === id) {
+      const next = this.items[0]?.id ?? null;
+      this.activeId = null;
+      if (next) { this.select(next); return; } // select() fires onSelect + renders
+      this.render();
+      return;
+    }
+    // A non-active workspace was deleted: its sessions (if any) are now orphans.
+    // Re-notify so the Deck recomputes tile visibility + sidebar grouping.
+    const active = this.active;
+    if (active) this.onSelect(active);
     this.render();
   }
 

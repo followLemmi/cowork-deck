@@ -25,8 +25,13 @@ describe("layout ipc", () => {
 });
 
 describe("serializeTiles", () => {
-  it("maps tile fields to SessionEntry shape", () => {
-    expect(serializeTiles([{ session: "s1", workspacePath: "/a", name: "▶ Fix" }]))
-      .toEqual([{ sessionId: "s1", cwd: "/a", name: "▶ Fix" }]);
+  it("maps tile fields to SessionEntry shape, carrying workspaceId", () => {
+    expect(serializeTiles([{ session: "s1", workspacePath: "/a", name: "▶ Fix", workspaceId: "w1" }]))
+      .toEqual([{ sessionId: "s1", cwd: "/a", name: "▶ Fix", workspaceId: "w1" }]);
+  });
+  it("omits workspaceId when absent", () => {
+    const result = serializeTiles([{ session: "s2", workspacePath: "/b", name: "N" }]);
+    expect(result).toEqual([{ sessionId: "s2", cwd: "/b", name: "N" }]);
+    expect(Object.keys(result[0])).not.toContain("workspaceId");
   });
 });

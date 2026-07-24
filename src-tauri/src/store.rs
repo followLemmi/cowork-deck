@@ -127,9 +127,17 @@ mod tests {
     use crate::model::{SessionEntry, UiState, Workspace};
 
     fn tmp() -> std::path::PathBuf {
+        // Unique per call, even under parallel test threads: SystemTime alone
+        // can collide within a clock tick, so add a monotonic counter.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let mut d = std::env::temp_dir();
         d.push(format!("coworkdeck-test-{}", std::process::id()));
-        d.push(format!("{:?}", std::time::SystemTime::now()));
+        d.push(format!(
+            "{:?}-{}",
+            std::time::SystemTime::now(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -218,8 +226,8 @@ mod tests {
         let s = Store::new(tmp());
         assert!(s.layout().is_empty()); // NotFound -> empty
         let entries = vec![
-            SessionEntry { session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into() },
-            SessionEntry { session_id: "s2".into(), cwd: "/tmp/b".into(), name: "терминал · P".into() },
+            SessionEntry { session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into(), workspace_id: Some("w1".into()) },
+            SessionEntry { session_id: "s2".into(), cwd: "/tmp/b".into(), name: "терминал · P".into(), workspace_id: None },
         ];
         s.save_layout(&entries).unwrap();
         let reloaded = Store::new(s.dir.clone()).layout();

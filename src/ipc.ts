@@ -4,7 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export type SessionState = "idle" | "working" | "waitingInput" | "ended" | "error";
 export interface Workspace { id: string; name: string; path: string; color: string; }
 export interface Skill { id: string; name: string; icon: string; prompt: string; workspaceId?: string | null; }
-export interface SessionEntry { sessionId: string; cwd: string; name: string; }
+export interface SessionEntry { sessionId: string; cwd: string; name: string; workspaceId?: string; }
 export interface UiState { activeWorkspaceId: string | null; }
 
 export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");
