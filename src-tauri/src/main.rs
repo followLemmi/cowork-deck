@@ -47,6 +47,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -70,6 +71,25 @@ fn main() {
                 listener_port: port,
                 reporter_path: reporter_path(),
             });
+
+            // Floating "N waiting" status pill: a second, hidden-by-default
+            // window shown/hidden via the `pill://count` event (see src/pill.ts).
+            // Transparent + always-on-top confirmed working on macOS with
+            // macOSPrivateApi + the `macos-private-api` Cargo feature (spike).
+            let _ = tauri::WebviewWindowBuilder::new(
+                app,
+                "pill",
+                tauri::WebviewUrl::App("pill.html".into()),
+            )
+            .inner_size(200.0, 48.0)
+            .position(40.0, 40.0)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .transparent(true)
+            .visible(false)
+            .build();
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -93,6 +113,10 @@ fn main() {
             commands::close_session,
             commands::load_layout,
             commands::save_layout,
+            commands::load_ui_state,
+            commands::save_ui_state,
+            commands::git_status,
+            commands::session_tokens,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");

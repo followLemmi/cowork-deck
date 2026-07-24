@@ -1,5 +1,5 @@
 use crate::hooks::build_settings_json;
-use crate::model::{SessionEntry, Skill, Workspace};
+use crate::model::{GitStatus, SessionEntry, Skill, TokenUsage, UiState, Workspace};
 use crate::pty::PtyManager;
 use crate::store::Store;
 use base64::Engine;
@@ -152,14 +152,109 @@ pub fn save_layout(state: State<AppState>, sessions: Vec<SessionEntry>) -> Resul
     state.store.lock().unwrap().save_layout(&sessions).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn load_ui_state(state: State<AppState>) -> UiState {
+    state.store.lock().unwrap().ui_state()
+}
+
+#[tauri::command]
+pub fn save_ui_state(state: State<AppState>, ui: UiState) -> Result<(), String> {
+    state.store.lock().unwrap().save_ui_state(&ui).map_err(|e| e.to_string())
+}
+
 /// Called by main during setup to emit state changes coming from the listener.
 pub fn emit_state(app: &AppHandle, session: String, state: crate::model::SessionState) {
     let _ = app.emit("session://state", StatePayload { session, state });
 }
 
+#[tauri::command]
+pub fn git_status(cwd: String) -> GitStatus {
+    use std::process::Command;
+    let branch = Command::new("git")
+        .arg("-C").arg(&cwd)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty() && s != "HEAD");
+    let dirty = branch.is_some()
+        && Command::new("git")
+            .arg("-C").arg(&cwd)
+            .args(["status", "--porcelain"])
+            .output().ok()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false);
+    GitStatus { branch, dirty }
+}
+
+/// Sum `message.usage.*` token counts across all JSONL lines. Tolerant of
+/// non-JSON lines and lines without usage (user messages, meta).
+pub fn sum_usage_lines(content: &str) -> TokenUsage {
+    let mut u = TokenUsage::default();
+    for line in content.lines() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let usage = &v["message"]["usage"];
+        if usage.is_object() {
+            u.input += usage["input_tokens"].as_u64().unwrap_or(0);
+            u.output += usage["output_tokens"].as_u64().unwrap_or(0);
+            u.cache_creation += usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            u.cache_read += usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+        }
+    }
+    u
+}
+
+/// Locate the transcript file `<session_id>.jsonl` under any project dir.
+fn find_transcript(session_id: &str) -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let base = std::path::PathBuf::from(home).join(".claude/projects");
+    let target = format!("{session_id}.jsonl");
+    for entry in std::fs::read_dir(&base).ok()? {
+        let dir = match entry { Ok(e) => e.path(), Err(_) => continue };
+        let f = dir.join(&target);
+        if f.is_file() {
+            return Some(f);
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn session_tokens(session_id: String) -> TokenUsage {
+    match find_transcript(&session_id) {
+        Some(path) => std::fs::read_to_string(path)
+            .map(|c| sum_usage_lines(&c))
+            .unwrap_or_default(),
+        None => TokenUsage::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sum_usage_lines_adds_assistant_usage_only() {
+        let content = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}"#, "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}}"#, "\n",
+            "not json at all", "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":7,"cache_creation_input_tokens":0,"cache_read_input_tokens":50}}}"#, "\n",
+        );
+        let u = sum_usage_lines(content);
+        assert_eq!(u.input, 13);
+        assert_eq!(u.output, 12);
+        assert_eq!(u.cache_creation, 100);
+        assert_eq!(u.cache_read, 250);
+    }
+
+    #[test]
+    fn sum_usage_lines_empty_is_zero() {
+        assert_eq!(sum_usage_lines(""), TokenUsage::default());
+    }
 
     #[test]
     fn builds_claude_args_first_launch_with_session_id_and_prompt() {
@@ -187,5 +282,32 @@ mod tests {
             "--settings".to_string(), "{}".to_string(),
             "--resume".to_string(), "sess-1".to_string(),
         ]);
+    }
+
+    #[test]
+    fn git_status_reports_branch_and_dirty() {
+        use std::process::Command;
+        let dir = std::env::temp_dir().join(format!("cowork-git-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_str().unwrap();
+        let run = |args: &[&str]| { Command::new("git").arg("-C").arg(cwd).args(args).output().unwrap(); };
+        run(&["init"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a.txt"), "hi").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
+
+        let clean = git_status(cwd.to_string());
+        assert!(clean.branch.is_some(), "committed repo must report a branch");
+        assert!(!clean.dirty, "just-committed repo is clean");
+
+        std::fs::write(dir.join("b.txt"), "new").unwrap(); // untracked → dirty
+        let dirty = git_status(cwd.to_string());
+        assert!(dirty.dirty, "untracked file makes it dirty");
+
+        let non_repo = git_status(std::env::temp_dir().to_str().unwrap().to_string());
+        // temp_dir itself is not a repo (usually); branch None. Tolerate either but dirty must be false when branch is None.
+        if non_repo.branch.is_none() { assert!(!non_repo.dirty); }
     }
 }

@@ -10,6 +10,7 @@
     "beforeBuildCommand": "npm run build && npm run stage:reporter"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       { "title": "cowork-deck", "width": 1200, "height": 800, "resizable": true }
     ],

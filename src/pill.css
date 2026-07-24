@@ -1,0 +1,22 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+#pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: #23262b;
+  color: #e6e6e6;
+  font: 13px/1 ui-sans-serif, system-ui, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}

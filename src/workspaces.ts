@@ -1,4 +1,4 @@
-import { listWorkspaces, saveWorkspace, removeWorkspace, type Workspace } from "./ipc";
+import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiState, type Workspace, type UiState } from "./ipc";
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
 
@@ -13,12 +13,17 @@ export class WorkspacesPanel {
 
   async load() {
     this.items = await listWorkspaces();
-    if (!this.activeId && this.items[0]) this.select(this.items[0].id);
+    if (!this.activeId && this.items.length) {
+      const saved = (await loadUiState()).activeWorkspaceId;
+      const pick = saved && this.items.some((w) => w.id === saved) ? saved : this.items[0].id;
+      this.select(pick);
+    }
     this.render();
   }
 
   private select(id: string) {
     this.activeId = id;
+    saveUiState({ activeWorkspaceId: id }).catch((e) => console.debug("saveUiState failed", e));
     const ws = this.active;
     if (ws) this.onSelect(ws);
     this.render();

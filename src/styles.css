@@ -155,6 +155,13 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .sess-row:hover { background: var(--bg-raised); }
 .sess-row.active { background: var(--accent-weak); }
 
+.tile-git, .tile-tokens {
+  font-size: var(--fs-xs); color: var(--fg-subtle); white-space: nowrap;
+  padding: 0 6px; border-radius: 999px; background: var(--bg-app);
+}
+.tile-git.hidden, .tile-tokens.hidden { display: none; }
+.sess-tokens-sum { font-size: var(--fs-xs); color: var(--fg-subtle); margin: 4px 0 8px; }
+
 /* --- Modal dialogs (replace webview prompt/confirm/alert) --- */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; animation: modal-fade var(--dur-1) var(--ease); }
 .modal-box { background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: var(--r-md); padding: var(--sp-4); min-width: 340px; max-width: 90vw; box-shadow: var(--shadow-tile); display: flex; flex-direction: column; gap: var(--sp-3); }
