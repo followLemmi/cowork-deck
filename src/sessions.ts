@@ -3,6 +3,7 @@ import { onOutput, onState, onExit, closeSession, saveLayout, type SessionState,
 import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { emit } from "@tauri-apps/api/event";
 import { nextWaitingIndex } from "./commands";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { confirmModal } from "./modal";
@@ -334,6 +335,7 @@ export class Deck {
 
   private renderList() {
     const waiting = waitingCount([...this.tiles.values()].map((t) => t.state));
+    void emit("pill://count", { n: waiting });
     const header = waiting > 0 ? `Сессии · ${waiting} ${waitingVerb(waiting)} ввода` : "Сессии";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";

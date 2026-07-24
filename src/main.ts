@@ -8,6 +8,8 @@ import type { Command } from "./commands";
 import { openPalette } from "./palette";
 import { resolvePrompt } from "./placeholders";
 import { placeholderForm } from "./forms";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
@@ -26,6 +28,17 @@ async function boot() {
   if (entries.length) await deck.restore(entries);
 }
 void boot();
+
+// Clicking the floating status pill raises the main window (same raise
+// sequence as notify.ts's OS-notification click handler) and focuses the
+// next session that's waiting for input.
+void listen("pill://focus-next", async () => {
+  const w = getCurrentWindow();
+  await w.unminimize().catch(() => {});
+  await w.show().catch(() => {});
+  await w.setFocus().catch(() => {});
+  deck.focusNextWaiting();
+});
 
 // NOTE: `workspaces.active` is read live (via the getter) at every launch point
 // instead of caching the workspace passed to onSelect, because

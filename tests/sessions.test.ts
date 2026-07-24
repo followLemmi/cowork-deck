@@ -36,6 +36,10 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   sendNotification: vi.fn(),
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { Deck } from "../src/sessions";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
