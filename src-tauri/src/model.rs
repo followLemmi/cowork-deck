@@ -36,6 +36,10 @@ pub struct SessionEntry {
     pub session_id: String,
     pub cwd: String,
     pub name: String,
+    /// Workspace this session belongs to. Optional + defaulted so that
+    /// layout files written before this field existed still load (→ None).
+    #[serde(rename = "workspaceId", default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 /// Небольшое UI-состояние, переживающее перезапуск (пока — активное пространство).
@@ -107,5 +111,25 @@ mod tests {
         );
         assert_eq!(event_kind_to_state("notify", Some("other")), None);
         assert_eq!(event_kind_to_state("garbage", None), None);
+    }
+
+    #[test]
+    fn session_entry_workspace_id_is_backward_compatible() {
+        // Old file (pre-feature) has no workspaceId → deserializes to None.
+        let old = r#"[{"sessionId":"s1","cwd":"/a","name":"N"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(old).unwrap();
+        assert_eq!(v[0].workspace_id, None);
+
+        // New file carries workspaceId.
+        let new = r#"[{"sessionId":"s2","cwd":"/b","name":"M","workspaceId":"w1"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(new).unwrap();
+        assert_eq!(v[0].workspace_id.as_deref(), Some("w1"));
+
+        // None is omitted from output (keeps files clean).
+        let entry = SessionEntry {
+            session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
     }
 }
