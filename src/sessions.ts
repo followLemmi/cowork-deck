@@ -4,7 +4,6 @@ import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
-import { nextWaitingIndex } from "./commands";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
@@ -235,16 +234,19 @@ export class Deck {
     return null;
   }
   focusByIndex(n: number) {
-    const ids = [...this.tiles.keys()];
+    const ids = [...this.tiles.values()]
+      .filter((t) => !t.el.classList.contains("ws-hidden"))
+      .map((t) => t.session);
     const id = ids[n - 1];
     if (id) this.focusTile(id);
   }
   focusNextWaiting() {
-    const ids = [...this.tiles.keys()];
-    const states = ids.map((id) => this.tiles.get(id)!.state);
-    const cur = ids.indexOf(this.activeSession ?? "");
-    const idx = nextWaitingIndex(states, cur);
-    if (idx != null) this.focusTile(ids[idx]);
+    const tiles = [...this.tiles.values()];
+    const target = nextWaitingAcross(
+      tiles.map((t) => ({ session: t.session, workspaceId: t.workspaceId, state: t.state })),
+      this.activeSession,
+    );
+    if (target) this.focusSessionAnywhere(target.session);
   }
   async closeActive() {
     const id = this.activeSession;
@@ -303,6 +305,15 @@ export class Deck {
   private hideBroadcastPanel() {
     this.bcastPanel?.classList.add("hidden");
     for (const t of this.tiles.values()) t.bcastCheck.checked = false;
+  }
+
+  private focusSessionAnywhere(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    const rid = resolveWorkspaceId(tile.workspaceId, tile.workspacePath, ws);
+    if (rid !== null && rid !== this.activeWorkspaceId) this.setActiveWorkspace(rid);
+    this.focusTile(session);
   }
 
   private focusTile(session: string) {
@@ -411,7 +422,7 @@ export class Deck {
         const row = document.createElement("div");
         row.className = "sess-row" + (live?.el.classList.contains("is-active") ? " active" : "");
         row.style.borderLeftColor = color;
-        row.onclick = () => this.focusTile(t.session);
+        row.onclick = () => this.focusSessionAnywhere(t.session);
         const stateSpan = document.createElement("span");
         stateSpan.className = `tile-state state-${t.state}`;
         stateSpan.textContent = LABEL[t.state];
