@@ -8,6 +8,7 @@ import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
+import { zoomParticipants, flipTransform } from "./flip";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -31,6 +32,8 @@ export class Deck {
   private usage = new Map<string, TokenUsage>();
   private activeWorkspaceId: string | null = null;
   private collapsed = new Set<string>();
+  private zoomedSession: string | null = null;
+  private strip: HTMLElement | null = null;
   constructor(private deckEl: HTMLElement, private listEl: HTMLElement, private workspaces: () => Workspace[]) {}
 
   private startPolling() {
@@ -110,6 +113,7 @@ export class Deck {
   }
 
   setActiveWorkspace(id: string | null) {
+    this.zoomedSession = null;
     this.activeWorkspaceId = id;
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
     let firstVisible: string | null = null;
@@ -124,6 +128,7 @@ export class Deck {
         if (firstVisible === null) firstVisible = t.session;
       }
     }
+    this.applyLayout();
     const active = this.activeSession;
     const activeHidden = !active || !!this.tiles.get(active)?.el.classList.contains("ws-hidden");
     if (activeHidden && firstVisible) this.focusTile(firstVisible); // focusTile calls renderList
@@ -178,6 +183,10 @@ export class Deck {
       }
     };
     head.insertBefore(restart, close);
+    head.addEventListener("dblclick", (e) => {
+      if ((e.target as HTMLElement).closest("button")) return;
+      this.toggleZoom(session);
+    });
     const mount = document.createElement("div");
     mount.className = "tile-body";
     const searchBar = document.createElement("div");
@@ -205,6 +214,7 @@ export class Deck {
       gitBadge, tokenBadge,
     };
     this.tiles.set(session, tile);
+    if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
     try {
@@ -332,6 +342,11 @@ export class Deck {
   private focusTile(session: string) {
     const tile = this.tiles.get(session);
     if (!tile) return;
+    // While zoomed, focusing a different visible tile juggles it into the main area.
+    if (this.zoomedSession !== null && this.zoomedSession !== session
+        && !tile.el.classList.contains("ws-hidden")) {
+      this.zoomTo(session);
+    }
     for (const t of this.tiles.values()) t.el.classList.toggle("is-active", t === tile);
     this.deckEl.classList.toggle("has-active", this.tiles.size > 0);
     tile.el.scrollIntoView?.({ block: "nearest" });
@@ -354,6 +369,104 @@ export class Deck {
     }
   }
 
+  private applyLayout() {
+    const parts = zoomParticipants(
+      [...this.tiles.values()].map((t) => ({
+        session: t.session, hidden: t.el.classList.contains("ws-hidden"),
+      })),
+      this.zoomedSession,
+    );
+    if (parts.zoomed === null) {
+      // Grid mode: return every tile to #deck in Map order, drop the strip.
+      this.zoomedSession = null;
+      this.deckEl.classList.remove("is-zoomed");
+      for (const t of this.tiles.values()) {
+        t.el.classList.remove("minimized", "zoomed");
+        this.deckEl.appendChild(t.el);
+      }
+      if (this.strip) { this.strip.remove(); this.strip = null; }
+      return;
+    }
+    this.deckEl.classList.add("is-zoomed");
+    if (!this.strip) {
+      this.strip = document.createElement("div");
+      this.strip.className = "deck-strip";
+    }
+    const z = this.tiles.get(parts.zoomed)!;
+    z.el.classList.add("zoomed");
+    z.el.classList.remove("minimized");
+    this.deckEl.appendChild(z.el);
+    this.deckEl.appendChild(this.strip);
+    for (const s of parts.minimized) {
+      const t = this.tiles.get(s)!;
+      t.el.classList.add("minimized");
+      t.el.classList.remove("zoomed");
+      this.strip.appendChild(t.el);
+    }
+  }
+
+  // FLIP: measure visible tiles (First), run the layout mutation (Last),
+  // set the inverse transform, then animate it away. transform-only, so the
+  // ResizeObserver (which fits terminals to the already-final layout box) is
+  // not retriggered — no resize feedback loop.
+  private animateLayoutChange(mutate: () => void) {
+    const before = [...this.tiles.values()].filter((t) => !t.el.classList.contains("ws-hidden"));
+    const first = new Map(before.map((t) => [t.session, t.el.getBoundingClientRect()]));
+    mutate();
+    const after = [...this.tiles.values()].filter((t) => !t.el.classList.contains("ws-hidden"));
+    const animating: Tile[] = [];
+    for (const t of after) {
+      const f = first.get(t.session);
+      if (!f) continue;
+      const last = t.el.getBoundingClientRect();
+      const { dx, dy, sx, sy } = flipTransform(f, last);
+      if (dx === 0 && dy === 0 && sx === 1 && sy === 1) continue;
+      t.el.style.transformOrigin = "top left";
+      t.el.style.transition = "none";
+      t.el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+      animating.push(t);
+    }
+    requestAnimationFrame(() => {
+      for (const t of animating) {
+        t.el.style.transition = "transform 180ms var(--ease)";
+        t.el.style.transform = "";
+      }
+    });
+    // Authoritative cleanup + refit after the morph (covers no-transition cases).
+    setTimeout(() => {
+      for (const t of after) {
+        t.el.style.transition = "";
+        t.el.style.transform = "";
+        t.el.style.transformOrigin = "";
+        t.panel.fit();
+      }
+    }, 220);
+  }
+
+  zoomTo(session: string | null) {
+    if (session !== null) {
+      const parts = zoomParticipants(
+        [...this.tiles.values()].map((t) => ({
+          session: t.session, hidden: t.el.classList.contains("ws-hidden"),
+        })),
+        session,
+      );
+      if (parts.zoomed === null) return; // nothing to zoom (≤1 visible / not visible)
+    }
+    if (this.zoomedSession === session) return;
+    this.animateLayoutChange(() => { this.zoomedSession = session; this.applyLayout(); });
+  }
+
+  toggleZoom(session: string) {
+    this.zoomTo(this.zoomedSession === session ? null : session);
+  }
+
+  exitZoom(): boolean {
+    if (this.zoomedSession === null) return false;
+    this.zoomTo(null);
+    return true;
+  }
+
   private remove(session: string) {
     const tile = this.tiles.get(session);
     if (!tile) return;
@@ -361,6 +474,7 @@ export class Deck {
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
+    this.applyLayout();
     this.usage.delete(session);
     if (this.tiles.size === 0) this.stopPolling();
     if (this.tiles.size === 0) this.deckEl.classList.remove("has-active");

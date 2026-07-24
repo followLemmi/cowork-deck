@@ -118,6 +118,12 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .tile.is-active { border-color: var(--accent); box-shadow: var(--focus-ring), var(--shadow-tile); }
 #deck.has-active .tile:not(.is-active) { opacity: 0.82; transition: opacity var(--dur-2) var(--ease); }
 
+#deck.is-zoomed { grid-template-columns: 1fr; grid-template-rows: 1fr auto; overflow: hidden; }
+#deck.is-zoomed > .tile.zoomed { grid-row: 1; grid-column: 1; min-height: 0; }
+.deck-strip { grid-row: 2; grid-column: 1; display: flex; gap: var(--sp-2); overflow-x: auto; overflow-y: hidden; max-height: 132px; padding-top: var(--sp-2); }
+.deck-strip .tile.minimized { flex: 0 0 220px; min-height: 0; height: 118px; cursor: pointer; }
+.deck-strip .tile.minimized .tile-body { padding: 4px; }
+
 #deck:empty::before {
   content: "Выберите пространство и запустите сессию или сценарий";
   margin: auto; max-width: 320px; text-align: center;
