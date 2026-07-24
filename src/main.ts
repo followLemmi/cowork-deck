@@ -20,14 +20,15 @@ const newBtn = document.createElement("button");
 newBtn.textContent = "+ сессия"; newBtn.className = "ws-add";
 sidebar.append(wsMount, skMount, newBtn, listMount);
 
-const deck = new Deck(deckEl, listMount);
+const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
 async function boot() {
   await deck.wireEvents();
+  await workspaces.load();
+  skills.load();
   const entries = await loadLayout();
   if (entries.length) await deck.restore(entries);
 }
-void boot();
 
 // Clicking the floating status pill raises the main window (same raise
 // sequence as notify.ts's OS-notification click handler) and focuses the
@@ -58,9 +59,6 @@ newBtn.onclick = () => {
   const ws = workspaces.active;
   if (ws) deck.launch(ws, null);
 };
-
-workspaces.load();
-skills.load();
 
 function paletteCommands(): Command[] {
   return [
@@ -98,3 +96,5 @@ window.addEventListener("keydown", (e) => {
 claudeAvailable().then((ok) => {
   if (!ok) alertModal("Не найден исполняемый файл claude. Укажите путь через переменную окружения COWORK_CLAUDE_PATH и перезапустите приложение.");
 });
+
+void boot();

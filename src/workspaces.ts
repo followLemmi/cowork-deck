@@ -11,6 +11,8 @@ export class WorkspacesPanel {
     return this.items.find((w) => w.id === this.activeId) ?? null;
   }
 
+  get all(): Workspace[] { return this.items; }
+
   async load() {
     this.items = await listWorkspaces();
     if (!this.activeId && this.items.length) {

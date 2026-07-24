@@ -11,8 +11,8 @@ import { broadcastInput } from "./broadcast";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
-  workspacePath: string; prompt: string | null; restartBtn: HTMLButtonElement; searchBar: HTMLElement;
-  bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
+  searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -29,7 +29,7 @@ export class Deck {
   private restoring = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private usage = new Map<string, TokenUsage>();
-  constructor(private deckEl: HTMLElement, private listEl: HTMLElement) {}
+  constructor(private deckEl: HTMLElement, private listEl: HTMLElement, private workspaces: () => Workspace[]) {}
 
   private startPolling() {
     if (this.pollTimer !== null) return;
@@ -100,6 +100,7 @@ export class Deck {
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
+      workspaceId: workspace.id,
       titleText,
       prompt: skill ? skill.prompt : null,
       resume: false,
@@ -107,9 +108,9 @@ export class Deck {
   }
 
   private async spawnTile(opts: {
-    session: string; cwd: string; titleText: string; prompt: string | null; resume: boolean;
+    session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
   }) {
-    const { session, cwd, titleText, prompt, resume } = opts;
+    const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const el = document.createElement("div");
     el.className = "tile";
     const head = document.createElement("div");
@@ -177,7 +178,7 @@ export class Deck {
     const panel = new TerminalPanel(session, mount);
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
-      workspacePath: cwd, prompt, restartBtn: restart, searchBar, bcastCheck,
+      workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
       gitBadge, tokenBadge,
     };
     this.tiles.set(session, tile);
@@ -202,7 +203,8 @@ export class Deck {
     try {
       for (const e of entries) {
         await this.spawnTile({
-          session: e.sessionId, cwd: e.cwd, titleText: e.name, prompt: null, resume: true,
+          session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
+          titleText: e.name, prompt: null, resume: true,
         });
       }
     } finally {
@@ -328,7 +330,7 @@ export class Deck {
   private persistLayout() {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
-      session: t.session, workspacePath: t.workspacePath, name: t.name,
+      session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
     })));
     return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
@@ -370,9 +372,12 @@ export function waitingVerb(n: number): string {
 }
 
 export function serializeTiles(
-  tiles: { session: string; workspacePath: string; name: string }[],
+  tiles: { session: string; workspacePath: string; name: string; workspaceId?: string }[],
 ): SessionEntry[] {
-  return tiles.map((t) => ({ sessionId: t.session, cwd: t.workspacePath, name: t.name }));
+  return tiles.map((t) => ({
+    sessionId: t.session, cwd: t.workspacePath, name: t.name,
+    ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+  }));
 }
 
 export function selectedFromChecks(checks: { session: string; checked: boolean }[]): string[] {
