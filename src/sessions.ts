@@ -8,6 +8,7 @@ import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
+import { zoomParticipants } from "./flip";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -31,6 +32,8 @@ export class Deck {
   private usage = new Map<string, TokenUsage>();
   private activeWorkspaceId: string | null = null;
   private collapsed = new Set<string>();
+  private zoomedSession: string | null = null;
+  private strip: HTMLElement | null = null;
   constructor(private deckEl: HTMLElement, private listEl: HTMLElement, private workspaces: () => Workspace[]) {}
 
   private startPolling() {
@@ -178,6 +181,7 @@ export class Deck {
       }
     };
     head.insertBefore(restart, close);
+    head.addEventListener("dblclick", () => this.toggleZoom(session));
     const mount = document.createElement("div");
     mount.className = "tile-body";
     const searchBar = document.createElement("div");
@@ -196,7 +200,14 @@ export class Deck {
     sClose.onclick = () => { searchBar.classList.add("hidden"); tile.panel.focus(); };
     el.append(head, searchBar, mount);
     this.deckEl.appendChild(el);
-    el.addEventListener("mousedown", () => this.focusTile(session));
+    el.addEventListener("mousedown", () => {
+      this.focusTile(session);
+      // Clicking a shrunken thumbnail while zoomed juggles it to the main area.
+      if (this.zoomedSession !== null && this.zoomedSession !== session
+          && !tile.el.classList.contains("ws-hidden")) {
+        this.zoomTo(session);
+      }
+    });
 
     const panel = new TerminalPanel(session, mount);
     const tile: Tile = {
@@ -352,6 +363,67 @@ export class Deck {
       const id = this.notify.register(session);
       sendNotification({ id, title: `cowork-deck · ${LABEL[state]}`, body: tile.name });
     }
+  }
+
+  private applyLayout() {
+    const parts = zoomParticipants(
+      [...this.tiles.values()].map((t) => ({
+        session: t.session, hidden: t.el.classList.contains("ws-hidden"),
+      })),
+      this.zoomedSession,
+    );
+    if (parts.zoomed === null) {
+      // Grid mode: return every tile to #deck in Map order, drop the strip.
+      this.zoomedSession = null;
+      this.deckEl.classList.remove("is-zoomed");
+      for (const t of this.tiles.values()) {
+        t.el.classList.remove("minimized", "zoomed");
+        this.deckEl.appendChild(t.el);
+      }
+      if (this.strip) { this.strip.remove(); this.strip = null; }
+      return;
+    }
+    this.deckEl.classList.add("is-zoomed");
+    if (!this.strip) {
+      this.strip = document.createElement("div");
+      this.strip.className = "deck-strip";
+    }
+    const z = this.tiles.get(parts.zoomed)!;
+    z.el.classList.add("zoomed");
+    z.el.classList.remove("minimized");
+    this.deckEl.appendChild(z.el);
+    this.deckEl.appendChild(this.strip);
+    for (const s of parts.minimized) {
+      const t = this.tiles.get(s)!;
+      t.el.classList.add("minimized");
+      t.el.classList.remove("zoomed");
+      this.strip.appendChild(t.el);
+    }
+  }
+
+  zoomTo(session: string | null) {
+    if (session !== null) {
+      const parts = zoomParticipants(
+        [...this.tiles.values()].map((t) => ({
+          session: t.session, hidden: t.el.classList.contains("ws-hidden"),
+        })),
+        session,
+      );
+      if (parts.zoomed === null) return; // nothing to zoom (≤1 visible / not visible)
+    }
+    if (this.zoomedSession === session) return;
+    this.zoomedSession = session;
+    this.applyLayout();
+  }
+
+  toggleZoom(session: string) {
+    this.zoomTo(this.zoomedSession === session ? null : session);
+  }
+
+  exitZoom(): boolean {
+    if (this.zoomedSession === null) return false;
+    this.zoomTo(null);
+    return true;
   }
 
   private remove(session: string) {
