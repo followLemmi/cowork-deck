@@ -30,7 +30,8 @@ describe("serializeTiles", () => {
       .toEqual([{ sessionId: "s1", cwd: "/a", name: "▶ Fix", workspaceId: "w1" }]);
   });
   it("omits workspaceId when absent", () => {
-    expect(serializeTiles([{ session: "s2", workspacePath: "/b", name: "N" }]))
-      .toEqual([{ sessionId: "s2", cwd: "/b", name: "N" }]);
+    const result = serializeTiles([{ session: "s2", workspacePath: "/b", name: "N" }]);
+    expect(result).toEqual([{ sessionId: "s2", cwd: "/b", name: "N" }]);
+    expect(Object.keys(result[0])).not.toContain("workspaceId");
   });
 });
