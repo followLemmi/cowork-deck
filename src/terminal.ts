@@ -1,6 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { startSession, writeSession, resizeSession } from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
@@ -35,6 +36,15 @@ export class TerminalPanel {
     this.term.loadAddon(this.fitAddon);
     this.searchAddon = new SearchAddon();
     this.term.loadAddon(this.searchAddon);
+    // Align xterm's character-width table with Claude Code's (modern Unicode via
+    // string-width). Without this xterm uses its built-in Unicode 6 widths, which
+    // disagree with Claude on ambiguous/wide glyphs (emoji, CJK, powerline/Nerd
+    // Font symbols) — shifting every cell after such a glyph on a line and breaking
+    // box-drawing/input-box alignment. Requires allowProposedApi: true (set above).
+    this.term.loadAddon(new Unicode11Addon());
+    // `unicode` is a proposed API (present when allowProposedApi is true); guard so
+    // the mocked terminal in unit tests, which lacks it, doesn't throw.
+    if (this.term.unicode) this.term.unicode.activeVersion = "11";
     this.term.open(mount);
     // Перехватываем ТОЛЬКО распознанные хоткеи приложения; всё остальное
     // (в т.ч. Ctrl+C/D/L, обычный ввод) отдаём терминалу.
