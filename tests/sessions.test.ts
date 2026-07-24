@@ -175,4 +175,82 @@ describe("Deck zoom edge cases", () => {
     deck.setActiveWorkspace(WS2.id);
     expect(deckEl.classList.contains("is-zoomed")).toBe(false);
   });
+
+  it("launching a new session while zoomed exits zoom", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("a" as any)
+      .mockReturnValueOnce("b" as any)
+      .mockReturnValueOnce("c" as any);
+
+    await deck.launch(WS as any, null);
+    await deck.launch(WS as any, null);
+
+    deck.zoomTo("a");
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+
+    await deck.launch(WS as any, null);
+
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+    expect(deckEl.querySelector(".deck-strip")).toBeNull();
+  });
+
+  it("exitZoom() reports whether it actually exited zoom", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("a" as any)
+      .mockReturnValueOnce("b" as any);
+
+    await deck.launch(WS as any, null);
+    await deck.launch(WS as any, null);
+
+    expect(deck.exitZoom()).toBe(false);
+
+    deck.zoomTo("a");
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+
+    expect(deck.exitZoom()).toBe(true);
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+  });
+
+  it("focusing another visible tile while zoomed juggles it into the main area", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("a" as any)
+      .mockReturnValueOnce("b" as any);
+
+    await deck.launch(WS as any, null);
+    await deck.launch(WS as any, null);
+
+    deck.zoomTo("a");
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+    const firstZoomed = deckEl.querySelector(".tile.zoomed") as HTMLElement;
+    expect(firstZoomed).not.toBeNull();
+
+    // "b" is the other visible tile — focusByIndex(2) targets it in launch order.
+    deck.focusByIndex(2);
+
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+    const strip = deckEl.querySelector(".deck-strip") as HTMLElement;
+    expect(strip).not.toBeNull();
+    // The tile that was zoomed is now the one juggled into the strip...
+    expect(firstZoomed.classList.contains("zoomed")).toBe(false);
+    expect(strip.contains(firstZoomed)).toBe(true);
+    // ...and a different tile now occupies the zoomed slot.
+    const zoomedTile = deckEl.querySelector(".tile.zoomed") as HTMLElement;
+    expect(zoomedTile).not.toBeNull();
+    expect(zoomedTile).not.toBe(firstZoomed);
+  });
 });

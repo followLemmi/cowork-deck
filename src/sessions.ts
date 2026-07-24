@@ -183,7 +183,10 @@ export class Deck {
       }
     };
     head.insertBefore(restart, close);
-    head.addEventListener("dblclick", () => this.toggleZoom(session));
+    head.addEventListener("dblclick", (e) => {
+      if ((e.target as HTMLElement).closest("button")) return;
+      this.toggleZoom(session);
+    });
     const mount = document.createElement("div");
     mount.className = "tile-body";
     const searchBar = document.createElement("div");
@@ -202,14 +205,7 @@ export class Deck {
     sClose.onclick = () => { searchBar.classList.add("hidden"); tile.panel.focus(); };
     el.append(head, searchBar, mount);
     this.deckEl.appendChild(el);
-    el.addEventListener("mousedown", () => {
-      this.focusTile(session);
-      // Clicking a shrunken thumbnail while zoomed juggles it to the main area.
-      if (this.zoomedSession !== null && this.zoomedSession !== session
-          && !tile.el.classList.contains("ws-hidden")) {
-        this.zoomTo(session);
-      }
-    });
+    el.addEventListener("mousedown", () => this.focusTile(session));
 
     const panel = new TerminalPanel(session, mount);
     const tile: Tile = {
@@ -346,6 +342,11 @@ export class Deck {
   private focusTile(session: string) {
     const tile = this.tiles.get(session);
     if (!tile) return;
+    // While zoomed, focusing a different visible tile juggles it into the main area.
+    if (this.zoomedSession !== null && this.zoomedSession !== session
+        && !tile.el.classList.contains("ws-hidden")) {
+      this.zoomTo(session);
+    }
     for (const t of this.tiles.values()) t.el.classList.toggle("is-active", t === tile);
     this.deckEl.classList.toggle("has-active", this.tiles.size > 0);
     tile.el.scrollIntoView?.({ block: "nearest" });
