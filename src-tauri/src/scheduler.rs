@@ -1,5 +1,10 @@
 use crate::model::SchedulePreset;
+use crate::store::Store;
 use chrono::{Datelike, Duration, NaiveDateTime, Timelike};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
+use tokio::sync::Notify;
 
 /// Wall-clock `h:m` on the day of `base`. Hour/minute are clamped into range:
 /// the form validates them, but a hand-edited `skills.json` must degrade
@@ -65,6 +70,85 @@ pub fn is_due(preset: &SchedulePreset, last_run_ms: Option<i64>, now: NaiveDateT
             Some(dt) => dt.naive_utc() < prev,
             None => true,
         },
+    }
+}
+
+#[derive(Clone, serde::Serialize)]
+struct FirePayload {
+    #[serde(rename = "skillId")]
+    skill_id: String,
+}
+
+/// Ceiling on one tick's sleep. Even when the next occurrence is far away we
+/// wake up this often so system sleep, a clock change or DST is picked up.
+const TICK_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Backend scheduler loop. Waits for the frontend to signal readiness (so the
+/// `schedule://fire` listener is attached and startup catch-up isn't lost),
+/// then re-evaluates all enabled schedules each tick. Reads skills fresh every
+/// tick from disk so user edits are picked up. Writes only `schedule_state.json`.
+pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
+    ready.notified().await;
+    loop {
+        let now = chrono::Local::now().naive_local();
+        let store = Store::new(dir.clone());
+        let skills = store.skills();
+        let mut state = store.schedule_state();
+        let mut soonest: Option<NaiveDateTime> = None;
+        let mut changed = false;
+
+        for sk in &skills {
+            let Some(sched) = &sk.schedule else { continue };
+            if !sched.enabled { continue }
+            let occ = prev_occurrence(&sched.preset, now);
+            match state.get(&sk.id).copied() {
+                // First time we see this schedule: arm it at the most recent
+                // occurrence without firing. A schedule that has never run owes
+                // no catch-up — the user just created it; firing here would
+                // launch a session the moment they hit save.
+                None => {
+                    state.insert(sk.id.clone(), occ.and_utc().timestamp_millis());
+                    changed = true;
+                }
+                last => {
+                    if is_due(&sched.preset, last, now) {
+                        let _ = app.emit("schedule://fire", FirePayload { skill_id: sk.id.clone() });
+                        // Stamp the occurrence, not `now` — otherwise repeated
+                        // fires drift later and later. For a catch-up this is
+                        // the missed time; for an on-time run it is ≈ `now`.
+                        state.insert(sk.id.clone(), occ.and_utc().timestamp_millis());
+                        changed = true;
+                    }
+                }
+            }
+            let nxt = next_occurrence(&sched.preset, now);
+            soonest = Some(soonest.map_or(nxt, |s| s.min(nxt)));
+        }
+
+        // Drop state for scenarios that no longer exist so the file can't grow
+        // without bound. Disabled schedules keep their entry: re-enabling one
+        // should not look like a never-seen schedule.
+        let known: std::collections::HashSet<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        let before = state.len();
+        state.retain(|id, _| known.contains(id.as_str()));
+        if state.len() != before { changed = true; }
+
+        if changed {
+            if let Err(e) = store.save_schedule_state(&state) {
+                eprintln!("warning: failed to save schedule_state.json ({e})");
+            }
+        }
+
+        // Sleep until the soonest upcoming occurrence, capped so we re-evaluate
+        // after system sleep / clock or DST changes.
+        let dur = match soonest {
+            Some(s) => {
+                let ms = (s - now).num_milliseconds().max(0) as u64;
+                std::time::Duration::from_millis(ms).min(TICK_CAP)
+            }
+            None => TICK_CAP,
+        };
+        tokio::time::sleep(dur).await;
     }
 }
 

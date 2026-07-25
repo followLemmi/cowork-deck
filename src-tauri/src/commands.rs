@@ -12,6 +12,10 @@ pub struct AppState {
     pub pty: PtyManager,
     pub listener_port: u16,
     pub reporter_path: String,
+    /// Signalled once by the frontend (`scheduler_ready`) after it attaches its
+    /// `schedule://fire` listener, so the scheduler's first (catch-up) tick is
+    /// not emitted into the void.
+    pub scheduler_ready: std::sync::Arc<tokio::sync::Notify>,
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
@@ -68,6 +72,13 @@ pub fn save_skill(state: State<AppState>, sk: Skill) -> Result<Vec<Skill>, Strin
 #[tauri::command]
 pub fn remove_skill(state: State<AppState>, id: String) -> Result<Vec<Skill>, String> {
     state.store.lock().unwrap().delete_skill(&id).map_err(|e| e.to_string())
+}
+
+/// The frontend calls this once, after its `schedule://fire` listener is
+/// attached, to release the scheduler loop's first tick.
+#[tauri::command]
+pub fn scheduler_ready(state: State<AppState>) {
+    state.scheduler_ready.notify_one();
 }
 
 #[tauri::command]

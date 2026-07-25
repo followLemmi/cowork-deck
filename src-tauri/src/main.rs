@@ -54,7 +54,7 @@ fn main() {
 
             // Config dir for the store.
             let dir = app.path().app_config_dir().expect("app config dir");
-            let store = store::Store::new(dir);
+            let store = store::Store::new(dir.clone());
 
             // Start the status listener on the tokio runtime Tauri provides.
             let handle_for_cb = handle.clone();
@@ -66,11 +66,20 @@ fn main() {
                 .expect("listener bind")
             });
 
+            let scheduler_ready = std::sync::Arc::new(tokio::sync::Notify::new());
             app.manage(AppState {
                 store: Mutex::new(store),
                 pty: pty::PtyManager::new(),
                 listener_port: port,
                 reporter_path: reporter_path(),
+                scheduler_ready: scheduler_ready.clone(),
+            });
+
+            // Scheduled scenarios: the backend decides *when* and emits
+            // `schedule://fire`; the frontend launches the session.
+            let sched_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                scheduler::run(sched_handle, dir, scheduler_ready).await;
             });
 
             // Floating "N waiting" status pill: a second, hidden-by-default
@@ -118,6 +127,7 @@ fn main() {
             commands::save_ui_state,
             commands::git_status,
             commands::session_tokens,
+            commands::scheduler_ready,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");
