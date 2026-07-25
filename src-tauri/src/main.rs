@@ -6,6 +6,7 @@ mod hooks;
 mod listener;
 mod pty;
 mod commands;
+mod scheduler;
 
 use commands::AppState;
 use std::path::{Path, PathBuf};
