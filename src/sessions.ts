@@ -9,11 +9,14 @@ import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
+import { shouldSkipOverlap } from "./schedule";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  /** Set when the tile came from a scheduled run — keys the overlap guard. */
+  scheduledSkillId?: string;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -23,6 +26,8 @@ const NOTIFY_ON: SessionState[] = ["waitingInput", "ended", "error"];
 
 export class Deck {
   private tiles = new Map<string, Tile>();
+  /** skillId -> session of that scenario's most recent scheduled run. */
+  private scheduledSessions = new Map<string, string>();
   private notifyOk = false;
   private notify = new NotifyRouter();
   private broadcasting = false;
@@ -112,6 +117,29 @@ export class Deck {
     });
   }
 
+  /** Fire a scheduled scenario as a fresh tile. Returns false (and does not
+   *  launch) if this scenario's previous scheduled session is still active. */
+  async launchScheduled(workspace: Workspace, skill: Skill, filledPrompt: string): Promise<boolean> {
+    const prevSession = this.scheduledSessions.get(skill.id);
+    const prevState = prevSession ? (this.tiles.get(prevSession)?.state ?? null) : null;
+    if (shouldSkipOverlap(prevState)) {
+      console.info("scheduled run skipped: previous still active", skill.id);
+      return false;
+    }
+    const session = crypto.randomUUID();
+    this.scheduledSessions.set(skill.id, session);
+    await this.spawnTile({
+      session,
+      cwd: workspace.path,
+      workspaceId: workspace.id,
+      titleText: `⏰ ${skill.icon} ${skill.name}`,
+      prompt: filledPrompt,
+      resume: false,
+      scheduledSkillId: skill.id,
+    });
+    return true;
+  }
+
   setActiveWorkspace(id: string | null) {
     this.zoomedSession = null;
     this.activeWorkspaceId = id;
@@ -137,6 +165,7 @@ export class Deck {
 
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
+    scheduledSkillId?: string;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const el = document.createElement("div");
@@ -211,7 +240,7 @@ export class Deck {
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, tokenBadge,
+      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
     };
     this.tiles.set(session, tile);
     if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
@@ -474,6 +503,9 @@ export class Deck {
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
+    if (tile.scheduledSkillId && this.scheduledSessions.get(tile.scheduledSkillId) === session) {
+      this.scheduledSessions.delete(tile.scheduledSkillId);
+    }
     this.applyLayout();
     this.usage.delete(session);
     if (this.tiles.size === 0) this.stopPolling();

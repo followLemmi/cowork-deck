@@ -225,3 +225,15 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .palette-list { display: flex; flex-direction: column; max-height: 300px; overflow: auto; }
 .palette-item { padding: 8px 10px; border-radius: var(--r-sm); color: var(--fg); font-size: var(--fs-base); cursor: pointer; }
 .palette-item:hover, .palette-item.selected { background: var(--accent-weak); color: var(--accent); }
+
+/* Расписание в форме сценария */
+.form-sched-body { display: flex; flex-direction: column; gap: var(--sp-2); margin: 6px 0; }
+.form-sched-time { display: flex; gap: var(--sp-2); align-items: center; }
+.form-sched-time select { background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 6px 8px; }
+.form-sched-time input[type="number"] { width: 4rem; background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 6px 8px; }
+.form-sched-defaults { display: flex; flex-direction: column; gap: 6px; }
+.form-sched-error { color: var(--st-error); font-size: var(--fs-sm); }
+/* Кнопка «прогнать сейчас»; она же индикатор расписания, поэтому видна
+   всегда, в отличие от .sk-edit/.sk-del, всплывающих по ховеру строки. */
+.sk-now { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; font-size: var(--fs-xs); transition: color var(--dur-1) var(--ease); }
+.sk-now:hover { color: var(--accent); }

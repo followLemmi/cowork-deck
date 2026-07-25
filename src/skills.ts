@@ -1,6 +1,7 @@
 import { listSkills, saveSkill, removeSkill, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { skillForm } from "./forms";
+import { describeSchedule, nextRunLabel } from "./schedule";
 
 export class SkillsPanel {
   private items: Skill[] = [];
@@ -8,9 +9,12 @@ export class SkillsPanel {
     private mount: HTMLElement,
     private getActiveWorkspaceId: () => string | null,
     private onLaunch: (skill: Skill) => void,
+    private onRunScheduled: (skill: Skill) => void,
   ) {}
 
   async load() { this.items = await listSkills(); this.render(); }
+
+  find(id: string): Skill | undefined { return this.items.find((s) => s.id === id); }
 
   private visible(): Skill[] {
     const wid = this.getActiveWorkspaceId();
@@ -30,6 +34,7 @@ export class SkillsPanel {
     if (!cur) return;
     const res = await skillForm(this.getActiveWorkspaceId(), {
       name: cur.name, icon: cur.icon, prompt: cur.prompt, workspaceId: cur.workspaceId ?? null,
+      schedule: cur.schedule ?? null,
     });
     if (!res) return;
     this.items = await saveSkill({ ...cur, ...res });
@@ -51,13 +56,25 @@ export class SkillsPanel {
       run.className = "sk-run"; run.textContent = `${s.icon} ${s.name}`;
       run.title = s.prompt;
       run.onclick = () => this.onLaunch(s);
+
+      // Doubles as the schedule indicator: the rule and next run live in its
+      // tooltip, so a scheduled scenario carries exactly one ⏰.
+      const sched = s.schedule;
+      let now: HTMLButtonElement | null = null;
+      if (sched?.enabled) {
+        now = document.createElement("button");
+        now.className = "sk-now"; now.textContent = "⏰";
+        now.title = `прогнать сейчас · ${describeSchedule(sched)} · след.: ${nextRunLabel(sched.preset, new Date())}`;
+        now.onclick = () => this.onRunScheduled(s);
+      }
+
       const edit = document.createElement("button");
       edit.className = "sk-edit"; edit.textContent = "✎"; edit.title = "изменить";
       edit.onclick = () => this.edit(s.id);
       const x = document.createElement("button");
       x.className = "sk-del"; x.textContent = "✕";
       x.onclick = () => this.del(s.id);
-      row.append(run, edit, x);
+      row.append(run, ...(now ? [now] : []), edit, x);
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");

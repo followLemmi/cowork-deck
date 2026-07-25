@@ -1,12 +1,14 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
-import { claudeAvailable, loadLayout } from "./ipc";
+import { claudeAvailable, loadLayout, onScheduledFire, schedulerReady } from "./ipc";
+import type { Skill } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
-import { resolvePrompt } from "./placeholders";
+import { resolvePrompt, fillPlaceholders } from "./placeholders";
+import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm } from "./forms";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -24,11 +26,49 @@ const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
 async function boot() {
   await deck.wireEvents();
+  await onScheduledFire((skillId) => {
+    void handleScheduledFire(skillId).then((outcome) => {
+      if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
+    });
+  });
   await workspaces.load();
-  skills.load();
+  await skills.load();
   const entries = await loadLayout();
   if (entries.length) await deck.restore(entries);
   deck.setActiveWorkspace(workspaces.active?.id ?? null);
+  // Release the backend scheduler only once skills/workspaces are loaded, so a
+  // catch-up fire arriving immediately can be resolved to a scenario.
+  await schedulerReady();
+}
+
+/** Why a scheduled fire did or did not produce a run. The backend-driven path
+ *  only logs it; a user-initiated run surfaces it in a modal. */
+type FireOutcome = "launched" | "skipped-overlap" | "no-workspace" | "not-scheduled";
+
+/** A scheduled scenario came due (from the backend scheduler or from the ⏰
+ *  button): resolve it to a scenario + workspace, fill placeholder defaults (a
+ *  scheduled run cannot ask) and launch it as a fresh tile. */
+async function handleScheduledFire(skillId: string): Promise<FireOutcome> {
+  const skill = skills.find(skillId);
+  if (!skill?.schedule?.enabled) return "not-scheduled";
+  const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
+  if (!res.ok) return res.reason;
+  const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
+  const launched = await deck.launchScheduled(res.workspace, skill, filled);
+  return launched ? "launched" : "skipped-overlap";
+}
+
+/** ⏰ button: run a scheduled scenario now, exactly as the schedule would. The
+ *  schedule itself is untouched — `lastRun` is written only by the backend
+ *  loop, so the regular occurrence still fires. Unlike a backend-driven fire,
+ *  a click must say why nothing happened. */
+async function runScheduledNow(skill: Skill) {
+  const outcome = await handleScheduledFire(skill.id);
+  if (outcome === "skipped-overlap") {
+    await alertModal("Прогон пропущен: предыдущий ещё активен.");
+  } else if (outcome === "no-workspace") {
+    await alertModal("У сценария нет доступного пространства: привяжите его или выберите пространство.");
+  }
 }
 
 // Clicking the floating status pill raises the main window (same raise
@@ -51,7 +91,7 @@ const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, asy
   const prompt = await resolvePrompt(skill.prompt, placeholderForm);
   if (prompt === null) return;
   deck.launch(ws, { ...skill, prompt });
-});
+}, (skill) => { void runScheduledNow(skill); });
 newBtn.onclick = () => {
   const ws = workspaces.active;
   if (ws) deck.launch(ws, null);

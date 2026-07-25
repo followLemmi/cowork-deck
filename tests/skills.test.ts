@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { it, expect, vi, beforeEach } from "vitest";
 
-const { saveSkill, skillForm } = vi.hoisted(() => ({ saveSkill: vi.fn(), skillForm: vi.fn() }));
+const { saveSkill, skillForm, listSkills } = vi.hoisted(() => ({
+  saveSkill: vi.fn(), skillForm: vi.fn(), listSkills: vi.fn().mockResolvedValue([]),
+}));
 vi.mock("../src/ipc", () => ({
-  listSkills: vi.fn().mockResolvedValue([]),
+  listSkills,
   saveSkill,
   removeSkill: vi.fn(),
 }));
@@ -18,9 +20,49 @@ it("creates a skill from the form result", async () => {
   skillForm.mockResolvedValueOnce({ name: "Fix", icon: "▶", prompt: "do", workspaceId: null });
   saveSkill.mockResolvedValueOnce([{ id: "s", name: "Fix", icon: "▶", prompt: "do", workspaceId: null }]);
   const mount = document.createElement("div");
-  const panel = new SkillsPanel(mount, () => null, () => {});
+  const panel = new SkillsPanel(mount, () => null, () => {}, () => {});
   await panel.load();
   mount.querySelector<HTMLButtonElement>(".sk-add")!.click();
   await Promise.resolve(); await Promise.resolve();
   expect(saveSkill).toHaveBeenCalledWith(expect.objectContaining({ name: "Fix", prompt: "do" }));
+});
+
+it("gives a scheduled scenario a ⏰ run-now button with the rule in its tooltip", async () => {
+  listSkills.mockResolvedValueOnce([
+    { id: "s1", name: "Отчёт", icon: "▶", prompt: "go", workspaceId: null,
+      schedule: { preset: { kind: "daily", hour: 9, minute: 0 }, defaults: {}, enabled: true } },
+    { id: "s2", name: "Ручной", icon: "▶", prompt: "go", workspaceId: null },
+  ]);
+  const mount = document.createElement("div");
+  const panel = new SkillsPanel(mount, () => null, () => {}, () => {});
+  await panel.load();
+  const buttons = mount.querySelectorAll<HTMLButtonElement>(".sk-now");
+  expect(buttons).toHaveLength(1); // only the scheduled one
+  expect(buttons[0].title).toContain("прогнать сейчас");
+  expect(buttons[0].title).toContain("ежедневно 09:00");
+  expect(buttons[0].title).toContain("след.:");
+  expect(mount.querySelectorAll(".sk-sched")).toHaveLength(0); // indicator replaced by the button
+});
+
+it("clicking ⏰ runs the scenario without triggering the normal launch", async () => {
+  listSkills.mockResolvedValueOnce([
+    { id: "s1", name: "Отчёт", icon: "▶", prompt: "go", workspaceId: null,
+      schedule: { preset: { kind: "daily", hour: 9, minute: 0 }, defaults: {}, enabled: true } },
+  ]);
+  const onLaunch = vi.fn();
+  const onRunScheduled = vi.fn();
+  const mount = document.createElement("div");
+  const panel = new SkillsPanel(mount, () => null, onLaunch, onRunScheduled);
+  await panel.load();
+  mount.querySelector<HTMLButtonElement>(".sk-now")!.click();
+  expect(onRunScheduled).toHaveBeenCalledWith(expect.objectContaining({ id: "s1" }));
+  expect(onLaunch).not.toHaveBeenCalled();
+});
+
+it("find() resolves a scenario by id for scheduled fires", async () => {
+  listSkills.mockResolvedValueOnce([{ id: "s1", name: "Отчёт", icon: "▶", prompt: "go", workspaceId: null }]);
+  const panel = new SkillsPanel(document.createElement("div"), () => null, () => {}, () => {});
+  await panel.load();
+  expect(panel.find("s1")?.name).toBe("Отчёт");
+  expect(panel.find("nope")).toBeUndefined();
 });

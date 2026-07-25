@@ -80,6 +80,37 @@ impl Store {
         std::fs::write(self.ui_path(), json)
     }
 
+    fn schedule_state_path(&self) -> PathBuf { self.dir.join("schedule_state.json") }
+
+    /// Runtime schedule state (skillId -> last-fired epoch millis), written
+    /// ONLY by the scheduler. Kept separate from `Skill.schedule` so a user
+    /// editing a scenario (which rewrites the whole Skill) can't clobber
+    /// `lastRun`. Missing file -> empty map (first run). Any other read or
+    /// parse failure is warned about rather than swallowed silently: losing
+    /// this map makes the scheduler re-arm every schedule from scratch.
+    pub fn schedule_state(&self) -> std::collections::HashMap<String, i64> {
+        let path = self.schedule_state_path();
+        match std::fs::read_to_string(&path) {
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(map) => map,
+                Err(e) => {
+                    eprintln!("warning: {} is unparsable ({e}); re-arming schedules", path.display());
+                    std::collections::HashMap::new()
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::collections::HashMap::new(),
+            Err(e) => {
+                eprintln!("warning: failed to read {} ({e}); re-arming schedules", path.display());
+                std::collections::HashMap::new()
+            }
+        }
+    }
+    pub fn save_schedule_state(&self, st: &std::collections::HashMap<String, i64>) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(st)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(self.schedule_state_path(), json)
+    }
+
     // NOTE: upsert_*/delete_* deliberately use `try_read_vec` (not the
     // best-effort `read_vec`) so that a transient, non-NotFound read error
     // (e.g. permission denied, disk I/O error) aborts before `save_*` is
@@ -241,5 +272,16 @@ mod tests {
         let st = UiState { active_workspace_id: Some("w-1".into()) };
         s.save_ui_state(&st).unwrap();
         assert_eq!(Store::new(s.dir.clone()).ui_state(), st);
+    }
+
+    #[test]
+    fn schedule_state_round_trips_and_defaults_empty() {
+        use std::collections::HashMap;
+        let s = Store::new(tmp());
+        assert!(s.schedule_state().is_empty()); // NotFound -> empty
+        let mut st: HashMap<String, i64> = HashMap::new();
+        st.insert("skill-1".into(), 1_700_000_000_000);
+        s.save_schedule_state(&st).unwrap();
+        assert_eq!(Store::new(s.dir.clone()).schedule_state(), st);
     }
 }
