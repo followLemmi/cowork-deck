@@ -1,4 +1,4 @@
-import type { Schedule, SchedulePreset, SessionState } from "./ipc";
+import type { Schedule, SchedulePreset, SessionState, Skill, Workspace } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
 
 const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
@@ -73,4 +73,23 @@ export function validateSchedule(
  *  scheduled session is still running or waiting for input. */
 export function shouldSkipOverlap(prev: SessionState | null): boolean {
   return prev === "working" || prev === "waitingInput";
+}
+
+export type WorkspaceResolution =
+  | { ok: true; workspace: Workspace }
+  | { ok: false; reason: "no-workspace" };
+
+/** Where a scheduled run of `skill` should happen. A scenario pinned to a
+ *  workspace runs there; an unpinned one runs in the active workspace (as a
+ *  manual launch would). A pinned workspace that no longer exists refuses
+ *  rather than running the prompt in the wrong folder. */
+export function resolveScheduledWorkspace(
+  skill: Skill,
+  all: Workspace[],
+  active: Workspace | null,
+): WorkspaceResolution {
+  const ws = skill.workspaceId
+    ? all.find((w) => w.id === skill.workspaceId) ?? null
+    : active;
+  return ws ? { ok: true, workspace: ws } : { ok: false, reason: "no-workspace" };
 }

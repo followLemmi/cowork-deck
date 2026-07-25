@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { describeSchedule, nextRun, nextRunLabel, validateSchedule, shouldSkipOverlap } from "../src/schedule";
+import {
+  describeSchedule, nextRun, nextRunLabel, validateSchedule, shouldSkipOverlap,
+  resolveScheduledWorkspace,
+} from "../src/schedule";
+import type { Skill, Workspace } from "../src/ipc";
 
 describe("describeSchedule", () => {
   it("formats each preset in Russian", () => {
@@ -85,5 +89,29 @@ describe("shouldSkipOverlap", () => {
     expect(shouldSkipOverlap("error")).toBe(false);
     expect(shouldSkipOverlap("idle")).toBe(false);
     expect(shouldSkipOverlap(null)).toBe(false);
+  });
+});
+
+describe("resolveScheduledWorkspace", () => {
+  const wsA: Workspace = { id: "a", name: "A", path: "/a", color: "#61afef" };
+  const wsB: Workspace = { id: "b", name: "B", path: "/b", color: "#98c379" };
+  const skill = (workspaceId: string | null): Skill =>
+    ({ id: "s1", name: "Отчёт", icon: "▶", prompt: "go", workspaceId });
+
+  it("uses the workspace the scenario is pinned to", () => {
+    const r = resolveScheduledWorkspace(skill("b"), [wsA, wsB], wsA);
+    expect(r).toEqual({ ok: true, workspace: wsB });
+  });
+  it("falls back to the active workspace when the scenario is not pinned", () => {
+    const r = resolveScheduledWorkspace(skill(null), [wsA, wsB], wsA);
+    expect(r).toEqual({ ok: true, workspace: wsA });
+  });
+  it("refuses when the pinned workspace was deleted", () => {
+    const r = resolveScheduledWorkspace(skill("gone"), [wsA, wsB], wsA);
+    expect(r).toEqual({ ok: false, reason: "no-workspace" });
+  });
+  it("refuses when not pinned and there is no active workspace", () => {
+    const r = resolveScheduledWorkspace(skill(null), [wsA], null);
+    expect(r).toEqual({ ok: false, reason: "no-workspace" });
   });
 });
