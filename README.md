@@ -37,6 +37,8 @@ memory footprint kept under ~100 MB.
 - **Workspaces** — group sessions by workspace in a color-coded sidebar, and switch the deck to show only one workspace's terminals.
 - **Zoom / juggle** — double-click a tile header to expand one terminal near-full while the rest shrink to a filmstrip; click a shrunken tile to juggle focus (animated).
 - **Scenarios & skills** — launch sessions with canned skill prompts, parameterized with `{{name}}` placeholders filled in at start.
+- **Scheduled scenarios** — attach a schedule (hourly / daily at `HH:MM` / weekly) to a scenario and it fires unattended into a fresh session, using stored defaults for its placeholders. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra cost, full local context and permissions.
+- **Run a schedule now** — a ⏰ button on a scheduled scenario runs it immediately, exactly as the schedule would, without consuming the upcoming scheduled run.
 - **Context-preserving restart** — restart an ended/errored tile and resume its Claude Code context (`claude --resume` / `--continue`).
 - **Auto-restore** — reopen yesterday's tiles on launch; window size, position, and active workspace are persisted.
 - **Broadcast input** — type once and send the same input to several sessions at once.
@@ -74,6 +76,12 @@ need a session to survive a restart, use the restart (⟳) affordance on a tile 
 prompt (resuming Claude Code's context where possible), but it does not resume the app's own tracked state
 from before the restart.
 
+The same applies to schedules: the scheduler lives inside the app, so a scheduled scenario only fires
+while the window is open. Runs missed while the app was closed are not lost — each scheduled scenario
+catches up once on the next launch, however long it has been. A scenario whose previous scheduled run is
+still `работает` (working) or `ждёт ввода` (waiting for input) skips the new run rather than stacking a
+second one.
+
 ## Locating the `claude` binary
 
 By default cowork-deck looks for `claude` (or `claude.cmd` on Windows) on `PATH`. If Claude Code isn't on
@@ -96,4 +104,26 @@ unaffected — you can still type, scroll, and interact with the session normall
 the tile's state label stays on `готов` (idle) instead of reflecting the actual state.
 
 > **Note:** the app's UI strings are currently in Russian (e.g. `готов`, `идёт`, `ждёт ввода`,
-> `завершён`, `ошибка` — idle / working / waiting for input / ended / error).
+> `завершён`, `ошибка` — idle / working / waiting for input / ended / error). English strings are on the
+> [roadmap](#roadmap).
+
+## Roadmap
+
+**Next**
+
+- **Scheduling v2** — cron expressions, more than one schedule per scenario, and last-run info in the ⏰ tooltip (all deliberately left out of the first cut).
+- **UI localization** — English strings and a language switch; the interface is Russian-only today.
+- **Windows / Linux hotkeys** — `Ctrl+Shift` bindings, because bare `Ctrl+K` / `Ctrl+F` / `Ctrl+N` shadow readline inside the terminal on those platforms.
+
+**Later**
+
+- **Session diff review** — a side-by-side diff of what a session changed, without leaving the deck.
+- **Project memory** — a per-project store of decisions, architecture, and gotchas that scenarios pick up automatically.
+- **Multi-provider** — agent CLIs beyond Claude Code (Codex, Gemini CLI, Ollama, …), with keys going straight to the provider.
+- **Agent teams** — handing work along Dev → QA → PM, including delegation to cheaper agents.
+
+**Non-goals**
+
+- **Cloud agents.** Every session is a local process on your machine, and scheduled work uses your own Claude Code install rather than a hosted runner.
+- **Token markup or proxying.** The app never sits between you and your provider.
+- **A UI framework.** Vanilla TypeScript and xterm.js; the sub-100 MB footprint is a feature, not an accident.
