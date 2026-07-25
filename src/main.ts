@@ -7,6 +7,7 @@ import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
+import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm } from "./forms";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -24,7 +25,11 @@ const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
 async function boot() {
   await deck.wireEvents();
-  await onScheduledFire((skillId) => { void handleScheduledFire(skillId); });
+  await onScheduledFire((skillId) => {
+    void handleScheduledFire(skillId).then((outcome) => {
+      if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
+    });
+  });
   await workspaces.load();
   await skills.load();
   const entries = await loadLayout();
@@ -35,21 +40,21 @@ async function boot() {
   await schedulerReady();
 }
 
-/** A scheduled scenario came due in the backend: resolve it to a scenario +
- *  workspace, fill placeholder defaults (a scheduled run cannot ask) and
- *  launch it as a fresh tile. */
-async function handleScheduledFire(skillId: string) {
+/** Why a scheduled fire did or did not produce a run. The backend-driven path
+ *  only logs it; a user-initiated run surfaces it in a modal. */
+type FireOutcome = "launched" | "skipped-overlap" | "no-workspace" | "not-scheduled";
+
+/** A scheduled scenario came due (from the backend scheduler or from the ⏰
+ *  button): resolve it to a scenario + workspace, fill placeholder defaults (a
+ *  scheduled run cannot ask) and launch it as a fresh tile. */
+async function handleScheduledFire(skillId: string): Promise<FireOutcome> {
   const skill = skills.find(skillId);
-  if (!skill?.schedule?.enabled) return;
-  // Scenario pinned to a workspace runs there; a workspace-agnostic scenario
-  // runs in the active one (as a manual launch would). A pinned workspace that
-  // no longer exists is skipped rather than run in the wrong folder.
-  const ws = skill.workspaceId
-    ? workspaces.all.find((w) => w.id === skill.workspaceId) ?? null
-    : workspaces.active;
-  if (!ws) { console.warn("scheduled fire: no workspace for", skillId); return; }
+  if (!skill?.schedule?.enabled) return "not-scheduled";
+  const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
+  if (!res.ok) return res.reason;
   const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
-  await deck.launchScheduled(ws, skill, filled);
+  const launched = await deck.launchScheduled(res.workspace, skill, filled);
+  return launched ? "launched" : "skipped-overlap";
 }
 
 // Clicking the floating status pill raises the main window (same raise
