@@ -32,6 +32,7 @@ export class SkillsPanel {
     if (!cur) return;
     const res = await skillForm(this.getActiveWorkspaceId(), {
       name: cur.name, icon: cur.icon, prompt: cur.prompt, workspaceId: cur.workspaceId ?? null,
+      schedule: cur.schedule ?? null,
     });
     if (!res) return;
     this.items = await saveSkill({ ...cur, ...res });

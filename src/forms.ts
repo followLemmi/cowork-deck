@@ -4,6 +4,9 @@
 // their own DOM here rather than extending modal.ts's single-field helpers.
 
 import { pickFolder } from "./dialog";
+import type { Schedule, SchedulePreset } from "./ipc";
+import { parsePlaceholders } from "./placeholders";
+import { validateSchedule } from "./schedule";
 
 const COLORS = ["#61afef", "#98c379", "#e5c07b", "#c678dd", "#e06c75", "#56b6c2"];
 
@@ -112,8 +115,8 @@ export function workspaceForm(
  *  collected values on OK, or null on Cancel/backdrop click. */
 export function skillForm(
   activeWorkspaceId: string | null,
-  initial?: { name: string; icon: string; prompt: string; workspaceId: string | null },
-): Promise<{ name: string; icon: string; prompt: string; workspaceId: string | null } | null> {
+  initial?: { name: string; icon: string; prompt: string; workspaceId: string | null; schedule?: Schedule | null },
+): Promise<{ name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null> {
   return new Promise((resolve) => {
     const { overlay: ov, box } = overlay();
     const title = document.createElement("div");
@@ -136,19 +139,107 @@ export function skillForm(
     scope.className = "form-scope"; scope.type = "checkbox";
     scope.checked = initial ? initial.workspaceId != null : false;
 
+    // --- schedule section: hidden until «По расписанию» is ticked ---
+    const schedEnabled = document.createElement("input");
+    schedEnabled.type = "checkbox"; schedEnabled.className = "form-sched-enabled";
+    schedEnabled.checked = !!initial?.schedule?.enabled;
+
+    const kind = document.createElement("select");
+    kind.className = "form-sched-kind";
+    for (const [v, t] of [["hourly", "каждый час"], ["daily", "ежедневно"], ["weekly", "еженедельно"]] as const) {
+      const o = document.createElement("option"); o.value = v; o.textContent = t; kind.append(o);
+    }
+    const weekday = document.createElement("select");
+    weekday.className = "form-sched-weekday";
+    ["вс", "пн", "вт", "ср", "чт", "пт", "сб"].forEach((w, i) => {
+      const o = document.createElement("option"); o.value = String(i); o.textContent = w; weekday.append(o);
+    });
+    const hour = document.createElement("input");
+    hour.type = "number"; hour.min = "0"; hour.max = "23"; hour.className = "form-sched-hour"; hour.value = "9";
+    hour.title = "часы";
+    const minute = document.createElement("input");
+    minute.type = "number"; minute.min = "0"; minute.max = "59"; minute.className = "form-sched-minute"; minute.value = "0";
+    minute.title = "минуты";
+
+    const ip = initial?.schedule?.preset;
+    if (ip) {
+      kind.value = ip.kind;
+      if (ip.kind === "hourly") minute.value = String(ip.minute);
+      else if (ip.kind === "daily") { hour.value = String(ip.hour); minute.value = String(ip.minute); }
+      else { weekday.value = String(ip.weekday); hour.value = String(ip.hour); minute.value = String(ip.minute); }
+    }
+
+    const timeRow = document.createElement("div");
+    timeRow.className = "form-sched-time";
+    const syncTimeRow = () => {
+      weekday.style.display = kind.value === "weekly" ? "" : "none";
+      hour.style.display = kind.value === "hourly" ? "none" : "";
+    };
+    kind.addEventListener("change", syncTimeRow);
+    timeRow.append(kind, weekday, hour, minute);
+
+    // One default per `{{placeholder}}`, rebuilt as the prompt is edited —
+    // a scheduled run is unattended, so it can't prompt for values.
+    const defWrap = document.createElement("div");
+    defWrap.className = "form-sched-defaults";
+    const defInputs = new Map<string, HTMLInputElement>();
+    const renderDefaults = () => {
+      const names = parsePlaceholders(promptField.value);
+      defWrap.innerHTML = "";
+      const kept = new Map(defInputs);
+      defInputs.clear();
+      for (const n of names) {
+        const inp = document.createElement("input");
+        inp.className = "modal-input form-sched-def"; inp.type = "text"; inp.placeholder = `значение {{${n}}}`;
+        inp.value = kept.get(n)?.value ?? initial?.schedule?.defaults?.[n] ?? "";
+        defInputs.set(n, inp);
+        defWrap.append(labeled(n, inp));
+      }
+    };
+    promptField.addEventListener("input", renderDefaults);
+    renderDefaults();
+
+    const schedBody = document.createElement("div");
+    schedBody.className = "form-sched-body";
+    schedBody.append(timeRow, defWrap);
+    const syncSchedBody = () => { schedBody.style.display = schedEnabled.checked ? "" : "none"; };
+    schedEnabled.addEventListener("change", syncSchedBody);
+    syncSchedBody(); syncTimeRow();
+
+    const schedError = document.createElement("div");
+    schedError.className = "form-sched-error"; schedError.style.display = "none";
+
+    const readPreset = (): SchedulePreset => {
+      const h = Number(hour.value), m = Number(minute.value);
+      if (kind.value === "hourly") return { kind: "hourly", minute: m };
+      if (kind.value === "daily") return { kind: "daily", hour: h, minute: m };
+      return { kind: "weekly", weekday: Number(weekday.value), hour: h, minute: m };
+    };
+    const readDefaults = (): Record<string, string> => {
+      const defaults: Record<string, string> = {};
+      for (const [n, inp] of defInputs) defaults[n] = inp.value.trim();
+      return defaults;
+    };
+
     const { row, ok, cancel } = actions();
     box.append(
       title, labeled("Имя", name), labeled("Значок", icon),
-      labeled("Задание", promptField), labeled("Только для текущего пространства", scope), row,
+      labeled("Задание", promptField), labeled("Только для текущего пространства", scope),
+      labeled("По расписанию", schedEnabled), schedBody, schedError, row,
     );
 
-    const close = (v: { name: string; icon: string; prompt: string; workspaceId: string | null } | null) => { ov.remove(); resolve(v); };
+    const close = (v: { name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null) => { ov.remove(); resolve(v); };
     ok.onclick = () => {
       const n = name.value.trim(); const pr = promptField.value.trim();
       if (!n || !pr) return;
+      const defaults = readDefaults();
+      const preset = readPreset();
+      const v = validateSchedule(schedEnabled.checked, preset, pr, defaults);
+      if (!v.ok) { schedError.textContent = v.error; schedError.style.display = ""; return; }
       close({
         name: n, icon: icon.value.trim() || "▶", prompt: pr,
         workspaceId: scope.checked ? activeWorkspaceId : null,
+        schedule: schedEnabled.checked ? { preset, defaults, enabled: true } : null,
       });
     };
     cancel.onclick = () => close(null);
