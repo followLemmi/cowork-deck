@@ -1,12 +1,12 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
-import { claudeAvailable, loadLayout } from "./ipc";
+import { claudeAvailable, loadLayout, onScheduledFire, schedulerReady } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
-import { resolvePrompt } from "./placeholders";
+import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { placeholderForm } from "./forms";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -24,11 +24,32 @@ const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
 async function boot() {
   await deck.wireEvents();
+  await onScheduledFire((skillId) => { void handleScheduledFire(skillId); });
   await workspaces.load();
-  skills.load();
+  await skills.load();
   const entries = await loadLayout();
   if (entries.length) await deck.restore(entries);
   deck.setActiveWorkspace(workspaces.active?.id ?? null);
+  // Release the backend scheduler only once skills/workspaces are loaded, so a
+  // catch-up fire arriving immediately can be resolved to a scenario.
+  await schedulerReady();
+}
+
+/** A scheduled scenario came due in the backend: resolve it to a scenario +
+ *  workspace, fill placeholder defaults (a scheduled run cannot ask) and
+ *  launch it as a fresh tile. */
+async function handleScheduledFire(skillId: string) {
+  const skill = skills.find(skillId);
+  if (!skill?.schedule?.enabled) return;
+  // Scenario pinned to a workspace runs there; a workspace-agnostic scenario
+  // runs in the active one (as a manual launch would). A pinned workspace that
+  // no longer exists is skipped rather than run in the wrong folder.
+  const ws = skill.workspaceId
+    ? workspaces.all.find((w) => w.id === skill.workspaceId) ?? null
+    : workspaces.active;
+  if (!ws) { console.warn("scheduled fire: no workspace for", skillId); return; }
+  const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
+  await deck.launchScheduled(ws, skill, filled);
 }
 
 // Clicking the floating status pill raises the main window (same raise

@@ -12,6 +12,8 @@ export class SkillsPanel {
 
   async load() { this.items = await listSkills(); this.render(); }
 
+  find(id: string): Skill | undefined { return this.items.find((s) => s.id === id); }
+
   private visible(): Skill[] {
     const wid = this.getActiveWorkspaceId();
     return this.items.filter((s) => !s.workspaceId || s.workspaceId === wid);
