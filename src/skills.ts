@@ -1,6 +1,7 @@
 import { listSkills, saveSkill, removeSkill, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { skillForm } from "./forms";
+import { describeSchedule, nextRunLabel } from "./schedule";
 
 export class SkillsPanel {
   private items: Skill[] = [];
@@ -54,6 +55,13 @@ export class SkillsPanel {
       run.className = "sk-run"; run.textContent = `${s.icon} ${s.name}`;
       run.title = s.prompt;
       run.onclick = () => this.onLaunch(s);
+      if (s.schedule?.enabled) {
+        const clock = document.createElement("span");
+        clock.className = "sk-sched";
+        clock.textContent = "⏰";
+        clock.title = `${describeSchedule(s.schedule)} · след.: ${nextRunLabel(s.schedule.preset, new Date())}`;
+        run.append(clock);
+      }
       const edit = document.createElement("button");
       edit.className = "sk-edit"; edit.textContent = "✎"; edit.title = "изменить";
       edit.onclick = () => this.edit(s.id);
