@@ -9,6 +9,7 @@ export class SkillsPanel {
     private mount: HTMLElement,
     private getActiveWorkspaceId: () => string | null,
     private onLaunch: (skill: Skill) => void,
+    private onRunScheduled: (skill: Skill) => void,
   ) {}
 
   async load() { this.items = await listSkills(); this.render(); }
@@ -55,20 +56,25 @@ export class SkillsPanel {
       run.className = "sk-run"; run.textContent = `${s.icon} ${s.name}`;
       run.title = s.prompt;
       run.onclick = () => this.onLaunch(s);
-      if (s.schedule?.enabled) {
-        const clock = document.createElement("span");
-        clock.className = "sk-sched";
-        clock.textContent = "⏰";
-        clock.title = `${describeSchedule(s.schedule)} · след.: ${nextRunLabel(s.schedule.preset, new Date())}`;
-        run.append(clock);
+
+      // Doubles as the schedule indicator: the rule and next run live in its
+      // tooltip, so a scheduled scenario carries exactly one ⏰.
+      const sched = s.schedule;
+      let now: HTMLButtonElement | null = null;
+      if (sched?.enabled) {
+        now = document.createElement("button");
+        now.className = "sk-now"; now.textContent = "⏰";
+        now.title = `прогнать сейчас · ${describeSchedule(sched)} · след.: ${nextRunLabel(sched.preset, new Date())}`;
+        now.onclick = () => this.onRunScheduled(s);
       }
+
       const edit = document.createElement("button");
       edit.className = "sk-edit"; edit.textContent = "✎"; edit.title = "изменить";
       edit.onclick = () => this.edit(s.id);
       const x = document.createElement("button");
       x.className = "sk-del"; x.textContent = "✕";
       x.onclick = () => this.del(s.id);
-      row.append(run, edit, x);
+      row.append(run, ...(now ? [now] : []), edit, x);
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");

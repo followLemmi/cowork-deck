@@ -2,6 +2,7 @@ import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { claudeAvailable, loadLayout, onScheduledFire, schedulerReady } from "./ipc";
+import type { Skill } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -57,6 +58,19 @@ async function handleScheduledFire(skillId: string): Promise<FireOutcome> {
   return launched ? "launched" : "skipped-overlap";
 }
 
+/** ⏰ button: run a scheduled scenario now, exactly as the schedule would. The
+ *  schedule itself is untouched — `lastRun` is written only by the backend
+ *  loop, so the regular occurrence still fires. Unlike a backend-driven fire,
+ *  a click must say why nothing happened. */
+async function runScheduledNow(skill: Skill) {
+  const outcome = await handleScheduledFire(skill.id);
+  if (outcome === "skipped-overlap") {
+    await alertModal("Прогон пропущен: предыдущий ещё активен.");
+  } else if (outcome === "no-workspace") {
+    await alertModal("У сценария нет доступного пространства: привяжите его или выберите пространство.");
+  }
+}
+
 // Clicking the floating status pill raises the main window (same raise
 // sequence as notify.ts's OS-notification click handler) and focuses the
 // next session that's waiting for input.
@@ -77,7 +91,7 @@ const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, asy
   const prompt = await resolvePrompt(skill.prompt, placeholderForm);
   if (prompt === null) return;
   deck.launch(ws, { ...skill, prompt });
-});
+}, (skill) => { void runScheduledNow(skill); });
 newBtn.onclick = () => {
   const ws = workspaces.active;
   if (ws) deck.launch(ws, null);

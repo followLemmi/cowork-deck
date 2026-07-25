@@ -233,4 +233,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .form-sched-time input[type="number"] { width: 4rem; background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 6px 8px; }
 .form-sched-defaults { display: flex; flex-direction: column; gap: 6px; }
 .form-sched-error { color: var(--st-error); font-size: var(--fs-sm); }
-.sk-sched { margin-left: 6px; opacity: 0.8; font-size: var(--fs-xs); }
+/* Кнопка «прогнать сейчас»; она же индикатор расписания, поэтому видна
+   всегда, в отличие от .sk-edit/.sk-del, всплывающих по ховеру строки. */
+.sk-now { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; font-size: var(--fs-xs); transition: color var(--dur-1) var(--ease); }
+.sk-now:hover { color: var(--accent); }
