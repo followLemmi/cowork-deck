@@ -26,6 +26,35 @@ pub struct Skill {
     pub prompt: String,
     #[serde(rename = "workspaceId")]
     pub workspace_id: Option<String>,
+    /// Optional schedule attached to this scenario. Absent (→ None) in
+    /// `skills.json` files written before the feature existed; None is not
+    /// serialized so unscheduled scenarios keep their old on-disk shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Schedule>,
+}
+
+/// How often a scheduled scenario fires. Presets only — no cron expressions
+/// (see the design spec). Weekday is 0=Sunday..6=Saturday, matching both
+/// `chrono::Weekday::num_days_from_sunday` and JS `Date.getDay()`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SchedulePreset {
+    Hourly { minute: u32 },
+    Daily { hour: u32, minute: u32 },
+    Weekly { weekday: u32, hour: u32, minute: u32 },
+}
+
+/// Schedule *definition* — edited by the user, stored on the `Skill`. The
+/// runtime `lastRun` lives in a separate `schedule_state.json` so editing a
+/// scenario cannot clobber it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Schedule {
+    pub preset: SchedulePreset,
+    /// Value per `{{placeholder}}` of the prompt — a scheduled run is
+    /// unattended, so it cannot ask the user.
+    #[serde(default)]
+    pub defaults: std::collections::HashMap<String, String>,
+    pub enabled: bool,
 }
 
 /// A persisted tile in the deck layout — enough to reopen it and resume its
@@ -111,6 +140,35 @@ mod tests {
         );
         assert_eq!(event_kind_to_state("notify", Some("other")), None);
         assert_eq!(event_kind_to_state("garbage", None), None);
+    }
+
+    #[test]
+    fn old_skill_without_schedule_deserializes_to_none() {
+        let old = r#"{"id":"s1","name":"Report","icon":"▶","prompt":"hi","workspaceId":null}"#;
+        let sk: Skill = serde_json::from_str(old).unwrap();
+        assert!(sk.schedule.is_none());
+        // None schedule must be omitted on re-serialize (no "schedule" key).
+        let json = serde_json::to_string(&sk).unwrap();
+        assert!(!json.contains("schedule"), "None schedule must be omitted, got {json}");
+    }
+
+    #[test]
+    fn schedule_preset_round_trips_with_kind_tag() {
+        let daily = Schedule {
+            preset: SchedulePreset::Daily { hour: 9, minute: 30 },
+            defaults: std::collections::HashMap::new(),
+            enabled: true,
+        };
+        let json = serde_json::to_string(&daily).unwrap();
+        assert!(json.contains(r#""kind":"daily""#), "got {json}");
+        let back: Schedule = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, daily);
+
+        let weekly: Schedule = serde_json::from_str(
+            r#"{"preset":{"kind":"weekly","weekday":1,"hour":8,"minute":0},"defaults":{"name":"Bob"},"enabled":true}"#,
+        ).unwrap();
+        assert_eq!(weekly.preset, SchedulePreset::Weekly { weekday: 1, hour: 8, minute: 0 });
+        assert_eq!(weekly.defaults.get("name").map(String::as_str), Some("Bob"));
     }
 
     #[test]
