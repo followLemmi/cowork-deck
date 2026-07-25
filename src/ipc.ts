@@ -3,7 +3,14 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type SessionState = "idle" | "working" | "waitingInput" | "ended" | "error";
 export interface Workspace { id: string; name: string; path: string; color: string; }
-export interface Skill { id: string; name: string; icon: string; prompt: string; workspaceId?: string | null; }
+export type SchedulePreset =
+  | { kind: "hourly"; minute: number }
+  | { kind: "daily"; hour: number; minute: number }
+  | { kind: "weekly"; weekday: number; hour: number; minute: number };
+/** Schedule definition stored on the scenario. `defaults` carries one value per
+ *  `{{placeholder}}` — a scheduled run is unattended and cannot ask. */
+export interface Schedule { preset: SchedulePreset; defaults: Record<string, string>; enabled: boolean; }
+export interface Skill { id: string; name: string; icon: string; prompt: string; workspaceId?: string | null; schedule?: Schedule | null; }
 export interface SessionEntry { sessionId: string; cwd: string; name: string; workspaceId?: string; }
 export interface UiState { activeWorkspaceId: string | null; }
 
@@ -42,6 +49,12 @@ export const onState = (cb: (session: string, state: SessionState) => void): Pro
 export const onExit = (cb: (session: string, ok: boolean) => void): Promise<UnlistenFn> =>
   listen<{ session: string; ok: boolean }>("session://exit", (e) =>
     cb(e.payload.session, e.payload.ok));
+
+/** Released once, after the fire listener below is attached, so the backend
+ *  scheduler's first (catch-up) tick has somewhere to land. */
+export const schedulerReady = () => invoke<void>("scheduler_ready");
+export const onScheduledFire = (cb: (skillId: string) => void): Promise<UnlistenFn> =>
+  listen<{ skillId: string }>("schedule://fire", (e) => cb(e.payload.skillId));
 
 export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }
