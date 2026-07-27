@@ -2,6 +2,7 @@
 
 mod model;
 mod store;
+mod gh;
 mod hooks;
 mod listener;
 mod pty;
