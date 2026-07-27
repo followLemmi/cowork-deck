@@ -19,6 +19,7 @@
 - **Каждый асинхронный вызов в опросе — в своём `try/catch`.** Одна упавшая IPC не должна ронять весь тик.
 - **Токены дизайн-системы сверять по `:root` в `src/styles.css`.** Существующие: `--st-idle --st-working --st-waiting --st-ended --st-error`, `--bg-app --bg-panel --bg-raised`, `--fg --fg-muted --fg-subtle`, `--border --border-strong`, `--accent --accent-weak`, `--sp-1..4`, `--r-sm --r-md`, `--fs-xs --fs-sm --fs-base`, `--dur-1 --dur-2`, `--ease`, `--focus-ring`. Новых токенов не вводить.
 - **Модалки только свои** (`src/modal.ts`, `src/forms.ts`). `window.prompt/confirm/alert` в webview Tauri возвращают null молча.
+- **Иконочные контролы: `aria-label` обязателен, `title` его не заменяет.** У кнопки с непустым содержимым name-from-content побеждает `title`, поэтому вспомогательные технологии прочитают глиф (`▶`), а не смысл. Плюс focus-visible ring и минимум 24×24. Кнопкам с осмысленным видимым текстом (`+ задача`, `Настроить`) `aria-label` не нужен — там это шум.
 - **`<label>` только для одиночного контрола.** Поле с несколькими кнопками (выбор `kind`) в `<label>` не оборачивать.
 - **Гейт задачи = `npm test` И `npm run build` И `cargo test`.** Vitest идёт через esbuild и не проверяет типы; красный `tsc` за зелёными юнит-тестами не видно.
 - **UI-строки русские**, в тон существующим (`готов`, `работает`, `ждёт ввода`).
@@ -2614,6 +2615,9 @@ export class BoardView {
     if (status === "open") {
       const run = el("button", "tk-run", "▶");
       run.title = "Запустить сессию из задачи";
+      // aria-label обязателен: у кнопки непустое содержимое, а name-from-content
+      // побеждает title — иначе скринридер прочитает глиф «▶», а не смысл.
+      run.setAttribute("aria-label", "Запустить сессию из задачи");
       run.onclick = () => this.h.onLaunch(t);
       acts.append(run);
     }
@@ -2622,6 +2626,7 @@ export class BoardView {
     if (caps.canResolve && t.status === "open" && !t.conflict) {
       const done = el("button", "tk-done", "✓");
       done.title = "Закрыть задачу";
+      done.setAttribute("aria-label", "Закрыть задачу");
       done.onclick = () => this.h.onResolve(t);
       acts.append(done);
     }
@@ -2795,14 +2800,19 @@ async function refreshBoard() {
     board.render({ project: "", caps: null, error: null, tasks: [], links: [] });
     return;
   }
+  const wsId = ws.id;
   let caps = null;
-  try { caps = await taskCapabilities(ws.id); } catch (e) { console.debug("caps failed", e); }
+  try { caps = await taskCapabilities(wsId); } catch (e) { console.debug("caps failed", e); }
   let tasks: Task[] = [];
   let error: string | null = null;
   if (caps) {
-    try { tasks = await listTasks(ws.id); }
+    try { tasks = await listTasks(wsId); }
     catch (e) { error = String(e); }
   }
+  // Пространство могли переключить, пока мы ждали IPC. Без этой проверки поздний
+  // ответ перерисует доску данными чужого пространства поверх актуальных —
+  // воспроизводится обычным кликом, лечится только следующим тиком опроса.
+  if (workspaces.active?.id !== wsId) return;
   board.render({ project: ws.name, caps, error, tasks, links: deck.taskLinks() });
 }
 
