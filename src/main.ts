@@ -107,14 +107,18 @@ async function refreshBoard() {
     board.render({ project: "", caps: null, error: null, tasks: [], links: [] });
     return;
   }
+  const wsId = ws.id;
   let caps = null;
-  try { caps = await taskCapabilities(ws.id); } catch (e) { console.debug("caps failed", e); }
+  try { caps = await taskCapabilities(wsId); } catch (e) { console.debug("caps failed", e); }
   let tasks: Task[] = [];
   let error: string | null = null;
   if (caps) {
-    try { tasks = await listTasks(ws.id); }
+    try { tasks = await listTasks(wsId); }
     catch (e) { error = String(e); }
   }
+  // Пространство могли переключить, пока мы ждали IPC: поздний ответ не должен
+  // перерисовать доску данными чужого пространства поверх актуальных.
+  if (workspaces.active?.id !== wsId) return;
   board.render({ project: ws.name, caps, error, tasks, links: deck.taskLinks() });
 }
 

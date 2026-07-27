@@ -125,6 +125,7 @@ export class BoardView {
     if (status === "open") {
       const run = el("button", "tk-run", "▶");
       run.title = "Запустить сессию из задачи";
+      run.setAttribute("aria-label", "Запустить сессию из задачи");
       run.onclick = () => this.h.onLaunch(t);
       acts.append(run);
     }
@@ -133,6 +134,7 @@ export class BoardView {
     if (caps.canResolve && t.status === "open" && !t.conflict) {
       const done = el("button", "tk-done", "✓");
       done.title = "Закрыть задачу";
+      done.setAttribute("aria-label", "Закрыть задачу");
       done.onclick = () => this.h.onResolve(t);
       acts.append(done);
     }

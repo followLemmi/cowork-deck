@@ -94,4 +94,13 @@ describe("BoardView", () => {
     v.mount.querySelector<HTMLButtonElement>(".tk-run")!.click();
     expect(launched).toBe("01AAA");
   });
+
+  // Fix round 1: name-from-content wins over `title` for a button with visible
+  // glyph content, so assistive tech would announce "▶"/"✓" without this.
+  it("gives ▶ and ✓ an aria-label, since their visible glyph is not a name", () => {
+    const v = new BoardView({ onLaunch: () => {}, onResolve: () => {}, onNew: () => {}, onConfigure: () => {} });
+    v.render({ project: "deck", caps, error: null, links: [], tasks: [card()] });
+    expect(v.mount.querySelector(".tk-run")!.getAttribute("aria-label")).toBe("Запустить сессию из задачи");
+    expect(v.mount.querySelector(".tk-done")!.getAttribute("aria-label")).toBe("Закрыть задачу");
+  });
 });
