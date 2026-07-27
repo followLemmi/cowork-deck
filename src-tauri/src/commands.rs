@@ -82,6 +82,48 @@ pub fn scheduler_ready(state: State<AppState>) {
     state.scheduler_ready.notify_one();
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct HostPlatform {
+    /// "macos" | "windows" | "linux"
+    pub os: String,
+    /// ID дистрибутива из /etc/os-release; None на macOS/Windows.
+    pub distro: Option<String>,
+}
+
+/// Достаёт `ID=` из /etc/os-release. Кавычки вокруг значения допустимы.
+pub fn parse_os_release_id(contents: &str) -> Option<String> {
+    contents.lines().find_map(|l| {
+        l.strip_prefix("ID=")
+            .map(|v| v.trim().trim_matches('"').to_string())
+            .filter(|v| !v.is_empty())
+    })
+}
+
+/// Сообщает факты об ОС. Строку команды установки собирает фронт — так вся
+/// матрица платформ покрывается одним набором тестов, а не двумя на разных
+/// языках.
+#[tauri::command]
+pub fn host_platform() -> HostPlatform {
+    let os = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    };
+    let distro = if os == "linux" {
+        std::fs::read_to_string("/etc/os-release").ok().as_deref().and_then(parse_os_release_id)
+    } else {
+        None
+    };
+    HostPlatform { os: os.to_string(), distro }
+}
+
+#[tauri::command]
+pub fn gh_status() -> gh::GhStatus {
+    gh::status()
+}
+
 #[tauri::command]
 pub fn claude_available() -> bool {
     which_claude().is_some()
@@ -387,6 +429,18 @@ mod tests {
         let non_repo = git_status(std::env::temp_dir().to_str().unwrap().to_string());
         // temp_dir itself is not a repo (usually); branch None. Tolerate either but dirty must be false when branch is None.
         if non_repo.branch.is_none() { assert!(!non_repo.dirty); }
+    }
+
+    #[test]
+    fn linux_distro_id_is_taken_from_os_release() {
+        let sample = "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n";
+        assert_eq!(parse_os_release_id(sample).as_deref(), Some("ubuntu"));
+        assert_eq!(parse_os_release_id("ID=fedora\n").as_deref(), Some("fedora"));
+        assert_eq!(parse_os_release_id("ID=\"opensuse-tumbleweed\"\n").as_deref(), Some("opensuse-tumbleweed"));
+        assert_eq!(parse_os_release_id("NAME=\"Weird\"\n"), None);
+        assert_eq!(parse_os_release_id(""), None);
+        // ID_LIKE не должен побеждать: strip_prefix("ID=") его не матчит.
+        assert_eq!(parse_os_release_id("ID_LIKE=debian\nID=pop\n").as_deref(), Some("pop"));
     }
 
     #[test]

@@ -37,6 +37,13 @@ export const saveSkill = (sk: Skill) => invoke<Skill[]>("save_skill", { sk });
 export const removeSkill = (id: string) => invoke<Skill[]>("remove_skill", { id });
 export const claudeAvailable = () => invoke<boolean>("claude_available");
 
+export interface GhAccount { host: string; login: string; active: boolean; scopes: string[]; state: string; }
+export interface GhStatus { path: string | null; version: string | null; accounts: GhAccount[]; }
+export interface HostPlatform { os: "macos" | "windows" | "linux"; distro: string | null; }
+
+export const ghStatus = () => invoke<GhStatus>("gh_status");
+export const hostPlatform = () => invoke<HostPlatform>("host_platform");
+
 /** Исход привязки аккаунта для стартовавшей сессии. Токена тут нет: только имя
  *  аккаунта и, если резолв не удался, причина — её показывает бейдж на тайле. */
 export interface SessionAuth { account: string | null; degraded: string | null; }
