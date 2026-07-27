@@ -1,5 +1,6 @@
 pub mod corpus;
 pub mod embed;
+pub mod index;
 pub mod scan;
 
 /// Bytes. Above this, only the TL;DR plus a head excerpt is indexed.
