@@ -1,4 +1,4 @@
-import type { Schedule, SchedulePreset, SessionState, Skill, Workspace } from "./ipc";
+import type { Schedule, SchedulePreset, ScheduleRun, SessionState, Skill, Workspace } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
 
 const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
@@ -39,6 +39,70 @@ export function nextRunLabel(p: SchedulePreset, now: Date): string {
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
   if (d.toDateString() === tomorrow.toDateString()) return `завтра ${t}`;
+  return `${WEEKDAYS[d.getDay()]} ${t}`;
+}
+
+/** One sentence saying what the controls in the schedule editor add up to:
+ *  the rule, when it next fires, and which folder it will fire in.
+ *
+ *  The last part is not decoration. An unpinned scenario runs in whatever
+ *  workspace happens to be active at the time (`resolveScheduledWorkspace`),
+ *  so a nightly job can land in a different project than the one it was set
+ *  up in, and nothing in the form used to hint at that. */
+export function schedulePreview(
+  p: SchedulePreset,
+  now: Date,
+  workspaceName: string | null,
+): string {
+  const rule = describeSchedule({ preset: p, defaults: {}, enabled: true });
+  const where = workspaceName
+    ? `в пространстве «${workspaceName}»`
+    : "в активном пространстве на момент запуска";
+  return `Будет запускаться ${rule} · следующий запуск ${nextRunLabel(p, now)} · ${where}.`;
+}
+
+/** Why an attempt produced nothing, in words the user can act on. */
+const OUTCOME_TEXT: Record<string, string> = {
+  "no-workspace": "нет пространства",
+  "skipped-overlap": "предыдущий прогон ещё активен",
+  "not-scheduled": "расписание выключено",
+};
+
+/** The line under a scenario's name: rule, next run, and what came of the
+ *  last attempt. Replaces a native tooltip that no keyboard user could reach
+ *  and that went stale as soon as the panel stopped re-rendering. */
+export function scheduleRowText(s: Schedule, run: ScheduleRun | null, now: Date): string {
+  const rule = describeSchedule(s);
+  if (!s.enabled) return `расписание выключено · ${rule}`;
+
+  // Prefer what the backend says: it owns the firing, and a second copy of
+  // the arithmetic here would drift from it with nothing to catch the drift.
+  const next = run?.nextRunMs != null ? stamp(run.nextRunMs, now) : nextRunLabel(s.preset, now);
+  const parts = [rule, `следующий запуск ${next}`];
+  const failed = run?.lastOutcome && run.lastOutcome !== "launched";
+  if (failed) {
+    const why = OUTCOME_TEXT[run!.lastOutcome!] ?? run!.lastOutcome!;
+    parts.push(`${stamp(run!.lastAttempt, now)} не запустился: ${why}`);
+  } else if (run?.lastRun) {
+    parts.push(`последний запуск ${stamp(run.lastRun, now)}`);
+  } else if (run) {
+    parts.push("ещё не запускался");
+  }
+  return parts.join(" · ");
+}
+
+/** An instant as "сегодня 09:00" / "вчера 09:00" / "завтра 09:00" / "пн 09:00". */
+function stamp(ms: number, now: Date): string {
+  const d = new Date(ms);
+  const t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.toDateString() === now.toDateString()) return `сегодня ${t}`;
+  const shifted = (days: number) => {
+    const x = new Date(now);
+    x.setDate(now.getDate() + days);
+    return x.toDateString();
+  };
+  if (d.toDateString() === shifted(-1)) return `вчера ${t}`;
+  if (d.toDateString() === shifted(1)) return `завтра ${t}`;
   return `${WEEKDAYS[d.getDay()]} ${t}`;
 }
 

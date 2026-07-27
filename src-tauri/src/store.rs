@@ -1,4 +1,4 @@
-use crate::model::{SessionEntry, Skill, UiState, Workspace};
+use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, Workspace, SCHEDULE_STATE_VERSION};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -88,10 +88,10 @@ impl Store {
     /// `lastRun`. Missing file -> empty map (first run). Any other read or
     /// parse failure is warned about rather than swallowed silently: losing
     /// this map makes the scheduler re-arm every schedule from scratch.
-    pub fn schedule_state(&self) -> std::collections::HashMap<String, i64> {
+    pub fn schedule_state(&self) -> std::collections::HashMap<String, ScheduleRun> {
         let path = self.schedule_state_path();
         match std::fs::read_to_string(&path) {
-            Ok(s) => match serde_json::from_str(&s) {
+            Ok(s) => match crate::model::parse_schedule_state(&s) {
                 Ok(map) => map,
                 Err(e) => {
                     eprintln!("warning: {} is unparsable ({e}); re-arming schedules", path.display());
@@ -105,7 +105,10 @@ impl Store {
             }
         }
     }
-    pub fn save_schedule_state(&self, st: &std::collections::HashMap<String, i64>) -> std::io::Result<()> {
+    pub fn save_schedule_state(
+        &self,
+        st: &std::collections::HashMap<String, ScheduleRun>,
+    ) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(st)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(self.schedule_state_path(), json)
@@ -259,8 +262,8 @@ mod tests {
         let s = Store::new(tmp());
         assert!(s.layout().is_empty()); // NotFound -> empty
         let entries = vec![
-            SessionEntry { session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into(), workspace_id: Some("w1".into()) },
-            SessionEntry { session_id: "s2".into(), cwd: "/tmp/b".into(), name: "терминал · P".into(), workspace_id: None },
+            SessionEntry { session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into(), workspace_id: Some("w1".into()), scheduled_skill_id: None },
+            SessionEntry { session_id: "s2".into(), cwd: "/tmp/b".into(), name: "терминал · P".into(), workspace_id: None, scheduled_skill_id: None },
         ];
         s.save_layout(&entries).unwrap();
         let reloaded = Store::new(s.dir.clone()).layout();
@@ -281,9 +284,28 @@ mod tests {
         use std::collections::HashMap;
         let s = Store::new(tmp());
         assert!(s.schedule_state().is_empty()); // NotFound -> empty
-        let mut st: HashMap<String, i64> = HashMap::new();
-        st.insert("skill-1".into(), 1_700_000_000_000);
+        let mut st: HashMap<String, ScheduleRun> = HashMap::new();
+        st.insert("skill-1".into(), ScheduleRun {
+            last_attempt: 1_700_000_000_000,
+            last_run: Some(1_700_000_000_000),
+            last_outcome: Some("launched".into()), preset: None, version: SCHEDULE_STATE_VERSION });
         s.save_schedule_state(&st).unwrap();
         assert_eq!(Store::new(s.dir.clone()).schedule_state(), st);
+    }
+
+    /// Files written before the record existed hold a bare epoch-millis number
+    /// per scenario. Reading one as "attempted and ran at that time" keeps an
+    /// upgrade from re-arming (and so silently skipping) every schedule.
+    #[test]
+    fn schedule_state_reads_legacy_bare_numbers() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.schedule_state_path(), r#"{"skill-1": 1700000000000}"#).unwrap();
+
+        let st = s.schedule_state();
+        let run = st.get("skill-1").expect("legacy entry survives");
+        assert_eq!(run.last_attempt, 1_700_000_000_000);
+        assert_eq!(run.last_run, Some(1_700_000_000_000));
+        assert_eq!(run.last_outcome, None);
     }
 }

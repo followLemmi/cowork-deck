@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/api/event");
 
-import { listWorkspaces, startSession, decodeB64 } from "../src/ipc";
+import { listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck } from "../src/ipc";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 describe("ipc", () => {
   beforeEach(() => {
@@ -35,6 +36,27 @@ describe("ipc", () => {
       workspaceId: "w1",
     });
     expect(auth).toEqual({ account: "followLemmi", degraded: null });
+  });
+
+  // The occurrence has to survive the round trip: the backend records only
+  // that it attempted a fire, and matches the ack against that exact
+  // occurrence before it will record a run.
+  it("onScheduledFire hands the occurrence to the callback", async () => {
+    const cb = vi.fn();
+    await onScheduledFire(cb);
+
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: unknown) => void;
+    handler({ payload: { skillId: "s1", occurrenceMs: 1_700_000_000_000, catchUp: true } });
+
+    expect(cb).toHaveBeenCalledWith("s1", 1_700_000_000_000, true);
+  });
+
+  it("scheduleAck reports the outcome for that occurrence", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await scheduleAck("s1", 1_700_000_000_000, "no-workspace");
+    expect(invoke).toHaveBeenCalledWith("schedule_ack", {
+      skillId: "s1", occurrenceMs: 1_700_000_000_000, outcome: "no-workspace",
+    });
   });
 
   it("decodeB64 round-trips utf8", () => {

@@ -6,17 +6,44 @@ export function isMacPlatform(): boolean {
   return typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "");
 }
 
-export function matchHotkey(e: { key: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }, isMac: boolean): string | null {
+/** Map a keydown to a command id, or null to let the terminal have it.
+ *
+ *  Matches on `e.code` (the physical key), not `e.key` (the character
+ *  produced): with a Cyrillic layout active, Cmd+K arrives as "л" and the old
+ *  key-based matching matched nothing at all — in an app whose interface is
+ *  Russian.
+ *
+ *  On Windows and Linux the app modifier is Ctrl, which is also readline
+ *  inside claude: Ctrl+W deletes the last word, Ctrl+B moves back a character,
+ *  Ctrl+K kills to end of line. Claiming those bare broke muscle memory in
+ *  every prompt, so there the bindings require Shift as well. macOS has no
+ *  such clash — Cmd is free — and keeps its plain bindings. */
+export function matchHotkey(
+  e: { code: string; key?: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
+  isMac: boolean,
+): string | null {
+  // Region cycling has no modifier: it is the only way out of the terminal,
+  // which swallows Tab in both directions.
+  if (e.code === "F6") return e.shiftKey ? "prev-region" : "next-region";
+
   const mod = isMac ? e.metaKey : e.ctrlKey;
   if (!mod) return null;
-  const k = e.key.toLowerCase();
-  if (k === "k") return "palette";
-  if (k === "n" && !e.shiftKey) return "new-session";
-  if (k === "w" && !e.shiftKey) return "close-active";
-  if (k === "f" && !e.shiftKey) return "search";
-  if (k === "b" && !e.shiftKey) return "broadcast";
-  if (k === "]" && e.shiftKey) return "next-waiting";
-  if (/^[1-9]$/.test(k) && !e.shiftKey) return `focus-${k}`;
+  // Windows/Linux need Shift to stay clear of readline; macOS must not have it
+  // (Cmd+Shift+K is a different binding to the user's eye).
+  const letterOk = isMac ? !e.shiftKey : e.shiftKey;
+
+  if (e.code === "Enter" && letterOk) return "zoom";
+  if (e.code === "BracketRight" && e.shiftKey) return "next-waiting";
+
+  const letters: Record<string, string> = {
+    KeyK: "palette", KeyN: "new-session", KeyW: "close-active",
+    KeyF: "search", KeyB: "broadcast",
+  };
+  const cmd = letters[e.code];
+  if (cmd && letterOk) return cmd;
+
+  const digit = /^Digit([1-9])$/.exec(e.code);
+  if (digit && !e.shiftKey) return `focus-${digit[1]}`;
   return null;
 }
 

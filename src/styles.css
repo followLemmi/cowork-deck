@@ -14,6 +14,7 @@
 }
 
 :root {
+  color-scheme: dark; /* native selects, checkboxes, spinners and scrollbars */
   --bg-app: #16181d;
   --bg-panel: #1b1e24;
   --bg-raised: #21252b;
@@ -24,7 +25,10 @@
 
   --fg: #e6e6e6;
   --fg-muted: #abb2bf;
-  --fg-subtle: #6b727d;
+  /* 5.0:1 on --bg-panel, 4.61:1 on --bg-raised. The old #6b727d was 3.44 and
+     carried nine different meanings, from section headings to the schedule
+     indicator, so one token was failing AA across most of the sidebar. */
+  --fg-subtle: #868d99;
 
   --accent: #61afef;
   --accent-weak: rgba(97, 175, 239, 0.14);
@@ -141,9 +145,25 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
   background: currentColor; flex: none;
 }
 
-.state-idle         { color: var(--st-idle);    background: rgba(107, 114, 125, 0.14); }
+/* The most common state label of all was the least readable at 2.98:1. */
+.state-idle         { color: var(--fg-muted);   background: rgba(107, 114, 125, 0.14); }
 .state-working      { color: var(--st-working); background: rgba(152, 195, 121, 0.14); }
 .state-waitingInput { color: var(--st-waiting); background: rgba(229, 192, 123, 0.16); border-color: rgba(229, 192, 123, 0.4); }
+/* Тот же зелёный, что у working, но без дыхания: работа сделана, ничего не
+   происходит. Различение состояний формой, а не только цветом — волна 4. */
+.state-done         { color: var(--st-working); background: rgba(152, 195, 121, 0.10); }
+.sk-orphan .sk-run { opacity: 0.55; cursor: not-allowed; text-decoration: line-through; }
+.sk-orphan-note { font-size: var(--fs-xs); color: var(--st-error); margin: -2px 0 6px 2px; }
+.form-sched-unit { font-size: var(--fs-xs); color: var(--fg-muted); align-self: center; }
+.form-sched-preview { font-size: var(--fs-sm); color: var(--fg); background: var(--bg-raised);
+  border-radius: var(--r-sm); padding: 6px 8px; }
+.form-sched-hint { font-size: var(--fs-xs); color: var(--fg-muted); line-height: 1.35; }
+.form-sched-defhead { font-size: var(--fs-sm); color: var(--fg); margin-top: 4px; }
+.sk-sched { font-size: var(--fs-xs); color: var(--fg-muted); margin: -2px 0 6px 2px; line-height: 1.35; }
+.sk-sched-off { opacity: 0.7; font-style: italic; }
+.form-error { font-size: var(--fs-sm); color: var(--st-error); }
+.palette-item { display: flex; justify-content: space-between; gap: var(--sp-3); align-items: baseline; }
+.palette-key { font-size: var(--fs-xs); color: var(--fg-subtle); white-space: nowrap; }
 .state-ended        { color: var(--st-ended);   background: rgba(86, 182, 194, 0.14); }
 .state-error        { color: var(--st-error);   background: rgba(224, 108, 117, 0.16); border-color: rgba(224, 108, 117, 0.4); }
 
@@ -237,6 +257,140 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    всегда, в отличие от .sk-edit/.sk-del, всплывающих по ховеру строки. */
 .sk-now { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; font-size: var(--fs-xs); transition: color var(--dur-1) var(--ease); }
 .sk-now:hover { color: var(--accent); }
+
+/* --- Кнопки: одна главная, остальные тише ------------------------------- */
+
+/* "+ сессия" — основное действие приложения, а выглядело так же, как две
+   настроечные кнопки рядом: один и тот же пунктирный ghost-стиль на все три. */
+.btn-primary {
+  width: 100%; padding: var(--sp-2); margin-top: var(--sp-1);
+  background: var(--accent); color: var(--bg-app);
+  border: none; border-radius: var(--r-sm);
+  font: inherit; font-size: var(--fs-base); font-weight: var(--fw-medium);
+  cursor: pointer; transition: filter var(--dur-1) var(--ease);
+}
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-primary:active { filter: brightness(0.92); }
+
+/* Одна трактовка «кнопка-значок» вместо четырёх. Ключевое — opacity .45 вместо
+   0: кнопки правки и удаления перестают быть невидимыми до наведения, оставаясь
+   приглушёнными, и перестают быть ловушкой при обходе с клавиатуры. Габарит
+   24×24 — минимальная цель по WCAG 2.2; было около 12×14. */
+.btn--icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 24px; min-height: 24px; padding: 0;
+  background: none; border: none; border-radius: var(--r-sm);
+  color: var(--fg-muted); font-size: var(--fs-base);
+  cursor: pointer; opacity: 0.45;
+  transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+              background var(--dur-1) var(--ease);
+}
+.sk-row:hover .btn--icon, .ws-row:hover .btn--icon, .tile:hover .btn--icon,
+.sk-row:focus-within .btn--icon, .ws-row:focus-within .btn--icon,
+.tile:focus-within .btn--icon { opacity: 1; }
+.btn--icon:hover { background: var(--bg-raised); color: var(--fg); }
+.btn--icon:active { background: var(--bg-app); }
+.btn--icon--danger:hover { color: var(--st-error); }
+
+/* Скрытые до наведения кнопки принимали фокус, а outline гасился opacity: 0 —
+   Tab приземлялся на невидимую кнопку удаления. */
+.sk-row:focus-within .sk-del, .sk-row:focus-within .sk-edit,
+.ws-row:focus-within .ws-del, .ws-row:focus-within .ws-edit { opacity: 1; }
+
+/* Нажатие и недоступность были без отклика вообще: одно правило :active на всё
+   приложение и ни одного :disabled. */
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled, .sk-run:disabled {
+  opacity: 0.5; cursor: not-allowed; filter: grayscale(0.4);
+}
+
+/* Фокус был виден только на button. Поля редактора расписания — select и два
+   number-инпута — не подсвечивались вовсе. */
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+/* Поля ввода опознаются заливкой, а не рамкой: --border даёт 1.28:1 к панели,
+   а поднять его до 3:1 на тёмной теме — это почти белая рамка. */
+.modal-input, .tile-search-input, .bcast-input {
+  background: var(--bg-app); border-color: var(--border-strong);
+}
+
+/* Строки списка и заголовки групп стали кнопками — сбрасываем нативный вид,
+   сохраняя раскладку. До этого они были div с onclick: не фокусируемые,
+   недостижимые с клавиатуры, и сессия №10 не выбиралась вообще. */
+.sess-row, .sess-group-head {
+  width: 100%; text-align: left; font: inherit; color: inherit;
+  background: none; border: none; border-left: 2px solid transparent;
+}
+.sess-row { font-size: var(--fs-sm); }
+
+/* Единственное правило на весь набор: наследуемые свойства обводки проходят
+   внутрь клона <use>, поэтому иконка везде берёт цвет своей кнопки. */
+.icon {
+  width: 16px; height: 16px; flex: none; display: block;
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.icon--up .icon { transform: rotate(-90deg); }
+.icon--down .icon { transform: rotate(90deg); }
+.sess-group-toggle .icon { width: 12px; height: 12px; }
+.tile-git .icon, .sk-sched .icon { width: 12px; height: 12px; display: inline-block;
+  vertical-align: -2px; }
+.tile-sched-mark { width: 12px; height: 12px; flex: none; color: var(--accent); }
+.form-icon-swatch { width: 26px; height: 26px; border-radius: var(--r-sm);
+  background: var(--bg-app); color: var(--fg-muted); display: inline-flex;
+  align-items: center; justify-content: center; border: 1px solid var(--border); }
+.form-icon-swatch.selected { color: var(--accent); border-color: var(--accent); }
+.sk-run .icon { display: inline-block; vertical-align: -3px; }
+
+/* --- Формы: ширина, чекбоксы, селекты ----------------------------------- */
+
+/* Форма сценария несёт длинное задание, ряд иконок и целую секцию расписания.
+   На 340px всё это сдавливается в колонку из узких полей. */
+.modal-box--form { min-width: 480px; width: min(560px, 92vw); }
+.modal-box--form .form-prompt { min-height: 110px; }
+
+/* Чекбокс рядом с подписью, а не под ней, и не 13px системного размера.
+   accent-color красит нативный контрол в тему — своя отрисовка тут не нужна. */
+.form-check {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px var(--sp-2);
+  align-items: center; cursor: pointer; padding: 2px 0;
+}
+.form-check input[type="checkbox"] {
+  width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer;
+}
+.form-check-text { font-size: var(--fs-base); color: var(--fg); }
+.form-check-hint {
+  grid-column: 2; font-size: var(--fs-xs); color: var(--fg-muted); line-height: 1.3;
+}
+
+/* Нативный select выше и толще наших полей, и стрелка у него платформенная.
+   Рисуем свою — уголком на псевдоэлементе, без внешних ассетов. */
+.select-wrap { position: relative; display: inline-flex; }
+.select-wrap::after {
+  content: ""; position: absolute; right: 9px; top: 50%; width: 6px; height: 6px;
+  border-right: 1.5px solid var(--fg-muted); border-bottom: 1.5px solid var(--fg-muted);
+  transform: translateY(-70%) rotate(45deg); pointer-events: none;
+}
+.select-wrap select {
+  appearance: none; -webkit-appearance: none;
+  background: var(--bg-app); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  font: inherit; font-size: var(--fs-base);
+  padding: 6px 26px 6px 10px; line-height: 1.2; cursor: pointer;
+}
+.select-wrap select:hover { border-color: var(--border-strong); }
+
+/* Числовые поля времени: под две цифры, не во всю строку. */
+.form-sched-hour, .form-sched-minute { width: 4.5rem; }
+
+/* Секция расписания читается как секция, а не как продолжение плоской формы. */
+.form-sched-body {
+  border-left: 2px solid var(--border-strong);
+  padding-left: var(--sp-3); margin-left: 2px;
+}
+.form-sched-time { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
 
 /* --- Экран «GitHub» ------------------------------------------------------ */
 .gh-screen { min-width: 420px; max-width: 560px; }

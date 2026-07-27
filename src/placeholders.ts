@@ -7,7 +7,10 @@
 // `RE.exec(...)` or `RE.test(...)` directly on this shared instance — that
 // would leak `lastIndex` state across calls; use a fresh regex literal for
 // those instead.
-const RE = /\{\{\s*([\w-]+)\s*\}\}/g;
+// `\w` is ASCII-only in JavaScript, so {{ветка}} matched nothing: no field was
+// offered and the braces went to claude verbatim. The interface is Russian —
+// Russian placeholder names are the normal case, not an edge one.
+const RE = /\{\{\s*([\p{L}\p{N}_-]+)\s*\}\}/gu;
 
 export function parsePlaceholders(prompt: string): string[] {
   const seen = new Set<string>();

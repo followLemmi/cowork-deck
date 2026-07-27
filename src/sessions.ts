@@ -10,6 +10,7 @@ import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
+import { icon, iconButton } from "./icons";
 
 /** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
  *  команды (установка gh, `gh auth login`): без хуков состояния, без
@@ -32,9 +33,13 @@ interface Tile {
 }
 
 const LABEL: Record<SessionState, string> = {
-  idle: "готов", working: "работает", waitingInput: "ждёт ввода", ended: "завершён", error: "ошибка",
+  idle: "готов", working: "работает", waitingInput: "ждёт ввода", done: "доделал",
+  ended: "завершён", error: "ошибка",
 };
-const NOTIFY_ON: SessionState[] = ["waitingInput", "ended", "error"];
+// `done` здесь, потому что «агент доделал задание» — это ровно то, ради чего
+// запускают сессию без надзора. В пилюлю оно при этом не идёт: пилюля
+// отвечает на вопрос «сколько сессий заблокировано на мне».
+const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
 
 export class Deck {
   private tiles = new Map<string, Tile>();
@@ -80,7 +85,10 @@ export class Deck {
         if (!this.tiles.has(t.session)) continue;
         const g = gitByCwd.get(t.workspacePath);
         if (g && g.branch) {
-          t.gitBadge.textContent = `⎇ ${g.branch}${g.dirty ? " •" : ""}`;
+          t.gitBadge.replaceChildren(
+            icon("git-branch", 12),
+            document.createTextNode(` ${g.branch}${g.dirty ? " •" : ""}`),
+          );
           t.gitBadge.classList.remove("hidden");
         } else {
           t.gitBadge.classList.add("hidden");
@@ -118,7 +126,7 @@ export class Deck {
   }
 
   async launch(workspace: Workspace, skill: Skill | null) {
-    const titleText = skill ? `${skill.icon} ${skill.name}` : `терминал · ${workspace.name}`;
+    const titleText = skill ? `${skill.icon} ${skill.name}` : `сессия · ${workspace.name}`;
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
@@ -175,24 +183,41 @@ export class Deck {
   }
 
   /** Fire a scheduled scenario as a fresh tile. Returns false (and does not
-   *  launch) if this scenario's previous scheduled session is still active. */
-  async launchScheduled(workspace: Workspace, skill: Skill, filledPrompt: string): Promise<boolean> {
+   *  launch) if this scenario's previous scheduled session is still active.
+   *
+   *  A scheduled scenario keeps at most one tile: once the guard lets a new
+   *  run through, the previous one is finished by definition, and leaving it
+   *  behind would add a tile per run — 24 a day for an hourly schedule. */
+  async launchScheduled(
+    workspace: Workspace,
+    skill: Skill,
+    filledPrompt: string,
+    /** Occurrence this run is making up for, when it is not running on time.
+     *  Without it a tile appearing at 14:20 for a 09:00 schedule reads as a
+     *  fault rather than as catch-up. */
+    catchUpFor?: string,
+  ): Promise<boolean> {
     const prevSession = this.scheduledSessions.get(skill.id);
     const prevState = prevSession ? (this.tiles.get(prevSession)?.state ?? null) : null;
     if (shouldSkipOverlap(prevState)) {
       console.info("scheduled run skipped: previous still active", skill.id);
       return false;
     }
+    if (prevSession && this.tiles.has(prevSession)) this.remove(prevSession);
     const session = crypto.randomUUID();
     this.scheduledSessions.set(skill.id, session);
     await this.spawnTile({
       session,
       cwd: workspace.path,
       workspaceId: workspace.id,
-      titleText: `⏰ ${skill.icon} ${skill.name}`,
+      titleText: catchUpFor
+        ? `${skill.icon} ${skill.name} · догоняет ${catchUpFor}`
+        : `${skill.icon} ${skill.name}`,
+      scheduled: true,
       prompt: filledPrompt,
       resume: false,
       scheduledSkillId: skill.id,
+      grabAttention: false,
     });
     return true;
   }
@@ -223,11 +248,19 @@ export class Deck {
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
     scheduledSkillId?: string;
+    /** Marks the tile as started by a schedule. Shown as its own icon rather
+     *  than glued to the title, which gets clipped by text-overflow. */
+    scheduled?: boolean;
+    /** Whether the new tile should take over the keyboard and the layout.
+     *  False for unattended work: a scheduled run announces itself through a
+     *  notification, not by yanking the caret out of whatever is being typed. */
+    grabAttention?: boolean;
     /** "command" — разовый запуск `command` вместо сессии claude. */
     kind?: TileKind;
     command?: string;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
+    const grabAttention = opts.grabAttention ?? true;
     const isCommand = opts.kind === "command";
     const el = document.createElement("div");
     el.className = "tile";
@@ -235,28 +268,38 @@ export class Deck {
     head.className = "tile-head";
     const title = document.createElement("span");
     title.textContent = titleText;
+    const schedMark = opts.scheduled ? icon("clock", 12) : null;
+    if (schedMark) {
+      schedMark.classList.add("tile-sched-mark");
+      schedMark.setAttribute("aria-hidden", "false");
+      schedMark.setAttribute("role", "img");
+      schedMark.setAttribute("aria-label", "запущено по расписанию");
+    }
     const gitBadge = document.createElement("span");
     gitBadge.className = "tile-git hidden";
     const tokenBadge = document.createElement("span");
     tokenBadge.className = "tile-tokens hidden";
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
-    const clearBtn = document.createElement("button");
-    clearBtn.textContent = "⌫"; clearBtn.className = "tile-close"; clearBtn.title = "очистить";
+    const clearBtn = iconButton("eraser", "Очистить терминал", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
-    const close = document.createElement("button");
-    close.textContent = "✕"; close.className = "tile-close";
-    close.onclick = () => this.remove(session);
+    const close = iconButton("x", "Закрыть сессию", "tile-close btn--icon--danger");
+    // Same question Cmd+W asks. Without it the mouse was the more dangerous
+    // of the two ways to do the same thing: one stray click killed a live
+    // session outright, while the keyboard asked first.
+    close.onclick = () => { void this.requestClose(session); };
     const authBadge = document.createElement("span");
     authBadge.className = "tile-auth hidden";
-    head.append(title, gitBadge, authBadge, tokenBadge, label, clearBtn, close);
+    head.append(
+      ...(schedMark ? [schedMark] : []),
+      title, gitBadge, authBadge, tokenBadge, label, clearBtn, close,
+    );
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
     head.insertBefore(bcastCheck, title);
-    const restart = document.createElement("button");
-    restart.textContent = "⟳"; restart.className = "tile-close"; restart.style.display = "none";
-    restart.title = "перезапустить";
+    const restart = iconButton("rotate", "Перезапустить сессию", "tile-close");
+    restart.style.display = "none";
     restart.onclick = async () => {
       restart.style.display = "none";
       tile.panel.write("\r\n[перезапуск сессии...]\r\n");
@@ -286,9 +329,9 @@ export class Deck {
     const searchBar = document.createElement("div");
     searchBar.className = "tile-search hidden";
     const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "поиск…";
-    const sNext = document.createElement("button"); sNext.textContent = "▼"; sNext.className = "tile-search-btn";
-    const sPrev = document.createElement("button"); sPrev.textContent = "▲"; sPrev.className = "tile-search-btn";
-    const sClose = document.createElement("button"); sClose.textContent = "✕"; sClose.className = "tile-search-btn";
+    const sNext = iconButton("chevron", "Следующее совпадение", "tile-search-btn icon--down");
+    const sPrev = iconButton("chevron", "Предыдущее совпадение", "tile-search-btn icon--up");
+    const sClose = iconButton("x", "Закрыть поиск", "tile-search-btn");
     searchBar.append(sInput, sPrev, sNext, sClose);
     sInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); tile.panel.search(sInput.value); }
@@ -308,7 +351,7 @@ export class Deck {
       gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId, kind: opts.kind,
     };
     this.tiles.set(session, tile);
-    if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
+    if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
     try {
@@ -328,16 +371,38 @@ export class Deck {
         : raw;
       panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
     }
-    this.focusTile(session);
+    if (grabAttention) this.focusTile(session);
+    else {
+      // Still needs to obey the workspace filter, which focusTile would have
+      // triggered via renderList/applyLayout.
+      this.applyWorkspaceVisibility(session);
+      this.renderList();
+    }
+  }
+
+  /** Apply the active-workspace filter to one tile. Tiles used to be created
+   *  without it, so a scheduled run for another workspace appeared in whatever
+   *  deck was on screen and disappeared at the next switch. */
+  private applyWorkspaceVisibility(session: string) {
+    const t = this.tiles.get(session);
+    if (!t) return;
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
+    // Orphans stay visible everywhere, as in setActiveWorkspace.
+    const visible = rid === null || rid === this.activeWorkspaceId;
+    t.el.classList.toggle("ws-hidden", !visible);
+    this.applyLayout();
   }
 
   async restore(entries: SessionEntry[]) {
     this.restoring = true;
     try {
       for (const e of entries) {
+        if (e.scheduledSkillId) this.scheduledSessions.set(e.scheduledSkillId, e.sessionId);
         await this.spawnTile({
           session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
           titleText: e.name, prompt: null, resume: true,
+          scheduledSkillId: e.scheduledSkillId,
         });
       }
     } finally {
@@ -367,12 +432,16 @@ export class Deck {
   }
   async closeActive() {
     const id = this.activeSession;
-    if (!id) return;
-    const t = this.tiles.get(id);
-    if (t && (t.state === "working" || t.state === "waitingInput")) {
-      if (!(await confirmModal("Закрыть активную сессию?"))) return;
-    }
-    this.remove(id);
+    if (id) await this.requestClose(id);
+  }
+
+  /** Close a session, asking first when it is still alive. `ended`/`error`
+   *  tiles hold nothing but scrollback, so those go without a question. */
+  private async requestClose(session: string) {
+    const t = this.tiles.get(session);
+    const alive = t && (t.state === "working" || t.state === "waitingInput" || t.state === "done");
+    if (alive && !(await confirmModal(`Закрыть сессию «${t.name}»? Она ещё живёт.`))) return;
+    this.remove(session);
   }
   searchActive() {
     const id = this.activeSession;
@@ -560,6 +629,22 @@ export class Deck {
     this.animateLayoutChange(() => { this.zoomedSession = session; this.applyLayout(); });
   }
 
+  /** Zoom the active tile. Until now the only way in was a double-click on the
+   *  header — a headline feature with no keyboard path at all. */
+  toggleZoomActive() {
+    const id = this.activeSession;
+    if (id) this.toggleZoom(id);
+  }
+
+  /** Move keyboard focus into the active terminal. Half of region cycling: the
+   *  terminal swallows Tab, so getting back in needs an explicit route too. */
+  focusActiveTerminal(): boolean {
+    const id = this.activeSession;
+    if (!id) return false;
+    this.tiles.get(id)?.panel.focus();
+    return true;
+  }
+
   toggleZoom(session: string) {
     this.zoomTo(this.zoomedSession === session ? null : session);
   }
@@ -593,11 +678,20 @@ export class Deck {
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
       session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
       kind: t.kind,
+      scheduledSkillId: t.scheduledSkillId,
     })));
     return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
 
   private renderList() {
+    // The whole list is rebuilt via innerHTML, and the poll rebuilds it every
+    // five seconds. That was harmless only while nothing in it could hold
+    // focus; now that rows are buttons, the focused key has to be remembered
+    // and restored, or keyboard focus would jump to the top of the page twice
+    // a minute.
+    const focusKey = this.listEl.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement).dataset.focusKey ?? null
+      : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
     void emit("pill://count", { n: waiting });
@@ -608,7 +702,7 @@ export class Deck {
     if (this.usage.size > 0) {
       const sum = document.createElement("div");
       sum.className = "sess-tokens-sum";
-      sum.textContent = `Σ токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      sum.textContent = `Всего токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
@@ -626,12 +720,17 @@ export class Deck {
       const collapsed = this.collapsed.has(wsId);
       const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
 
-      const head = document.createElement("div");
+      const head = document.createElement("button");
+      head.dataset.focusKey = `group:${wsId}`;
+      head.setAttribute("aria-expanded", String(!collapsed));
       head.className = "sess-group-head"
         + (g.workspace && g.workspace.id === this.activeWorkspaceId ? " active" : "");
       const toggle = document.createElement("span");
       toggle.className = "sess-group-toggle";
-      toggle.textContent = collapsed ? "▸" : "▾";
+      // One chevron, rotated: every arrow in the app now opens at the same
+      // angle and carries the same stroke weight.
+      toggle.append(icon("chevron", 12));
+      toggle.classList.toggle("icon--down", !collapsed);
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = color;
       const nm = document.createElement("span");
@@ -652,7 +751,9 @@ export class Deck {
 
       for (const t of g.tiles) {
         const live = this.tiles.get(t.session);
-        const row = document.createElement("div");
+        const row = document.createElement("button");
+        row.dataset.focusKey = `session:${t.session}`;
+        row.setAttribute("aria-label", `${t.name} — ${LABEL[t.state]}`);
         row.className = "sess-row" + (live?.el.classList.contains("is-active") ? " active" : "");
         row.style.borderLeftColor = color;
         row.onclick = () => this.focusSessionAnywhere(t.session);
@@ -664,6 +765,9 @@ export class Deck {
         row.append(stateSpan, " ", nameSpan);
         this.listEl.appendChild(row);
       }
+    }
+    if (focusKey) {
+      this.listEl.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
     }
   }
 }
@@ -695,6 +799,7 @@ export function nextWaitingAcross(
 export function serializeTiles(
   tiles: {
     session: string; workspacePath: string; name: string; workspaceId?: string;
+    scheduledSkillId?: string;
     kind?: TileKind;
   }[],
 ): SessionEntry[] {
@@ -706,6 +811,7 @@ export function serializeTiles(
     .map((t) => ({
       sessionId: t.session, cwd: t.workspacePath, name: t.name,
       ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+      ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
     }));
 }
 
