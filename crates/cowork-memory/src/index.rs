@@ -219,6 +219,92 @@ pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, U
     Ok((ix, report))
 }
 
+use crate::DIARY_SCOPE;
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Hit {
+    pub score: f32,
+    pub file: String,
+    pub scope: String,
+    pub room: Option<String>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum SearchScope {
+    /// This workspace plus the global diaries.
+    Project(String),
+    /// Global diaries only.
+    Lessons,
+    /// Everything.
+    All,
+}
+
+impl SearchScope {
+    fn admits(&self, c: &ChunkRecord) -> bool {
+        match self {
+            SearchScope::All => true,
+            SearchScope::Lessons => c.scope == DIARY_SCOPE,
+            SearchScope::Project(id) => c.scope == *id || c.scope == DIARY_SCOPE,
+        }
+    }
+}
+
+/// Brute-force cosine over unit vectors, at most one hit per file.
+pub fn search(
+    ix: &Index,
+    emb: &dyn Embedder,
+    query: &str,
+    scope: &SearchScope,
+    top: usize,
+    min_score: f32,
+) -> Result<Vec<Hit>> {
+    if ix.meta.chunks.is_empty() || ix.meta.dim == 0 {
+        return Ok(Vec::new());
+    }
+    let dim = ix.meta.dim;
+    let q = emb.embed(&[query.to_string()])?.remove(0);
+    if q.len() != dim {
+        anyhow::bail!(
+            "embedder dimension {} does not match index dimension {dim}; reindex is required",
+            q.len()
+        );
+    }
+
+    let mut scored: Vec<(f32, usize)> = (0..ix.meta.chunks.len())
+        .map(|i| {
+            let row = &ix.emb[i * dim..(i + 1) * dim];
+            let s: f32 = row.iter().zip(q.iter()).map(|(a, b)| a * b).sum();
+            (s, i)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+    let mut hits = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (score, i) in scored {
+        if score < min_score {
+            break;
+        }
+        let c = &ix.meta.chunks[i];
+        if !scope.admits(c) || !seen.insert(&c.file) {
+            continue;
+        }
+        hits.push(Hit {
+            score,
+            file: c.file.clone(),
+            scope: c.scope.clone(),
+            room: c.room.clone(),
+            text: c.text.clone(),
+        });
+        if hits.len() >= top {
+            break;
+        }
+    }
+    Ok(hits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,5 +568,74 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_respects_scope_dedupes_by_file_and_honours_threshold() {
+        use crate::embed::{Embedder, FakeEmbedder};
+        let e = FakeEmbedder::new();
+        let dim = e.dim();
+
+        let mut meta = Meta { dim, ..Default::default() };
+        for (file, scope, room, text) in [
+            ("ws-1/Facts.md", "ws-1", None, "первый чанк файла ws-1"),
+            ("ws-1/Facts.md", "ws-1", None, "второй чанк того же файла"),
+            ("ws-2/Facts.md", "ws-2", None, "чанк чужого воркспейса"),
+            ("Diaries/reviewer/2026-07.md", crate::DIARY_SCOPE, Some("reviewer"), "урок ревьюера"),
+        ] {
+            meta.chunks.push(ChunkRecord {
+                file: file.into(),
+                scope: scope.into(),
+                room: room.map(str::to_string),
+                text: text.into(),
+            });
+        }
+        let texts: Vec<String> = meta.chunks.iter().map(|c| c.text.clone()).collect();
+        let emb: Vec<f32> = e.embed(&texts).unwrap().into_iter().flatten().collect();
+        let ix = Index { meta, emb };
+
+        let hits = search(&ix, &e, "любой запрос", &SearchScope::Project("ws-1".into()), 10, -1.0).unwrap();
+        let files: Vec<&str> = hits.iter().map(|h| h.file.as_str()).collect();
+        assert!(files.contains(&"ws-1/Facts.md"), "own workspace must match");
+        assert!(files.contains(&"Diaries/reviewer/2026-07.md"), "diaries are always in scope");
+        assert!(!files.contains(&"ws-2/Facts.md"), "other workspaces must not match");
+        assert_eq!(files.len(), 2, "one hit per file, got {files:?}");
+
+        let lessons = search(&ix, &e, "любой запрос", &SearchScope::Lessons, 10, -1.0).unwrap();
+        assert_eq!(lessons.len(), 1);
+        assert_eq!(lessons[0].room.as_deref(), Some("reviewer"));
+
+        let all = search(&ix, &e, "любой запрос", &SearchScope::All, 10, -1.0).unwrap();
+        assert_eq!(all.len(), 3, "three distinct files");
+
+        let capped = search(&ix, &e, "любой запрос", &SearchScope::All, 1, -1.0).unwrap();
+        assert_eq!(capped.len(), 1, "top must cap results");
+
+        let none = search(&ix, &e, "любой запрос", &SearchScope::All, 10, 1.01).unwrap();
+        assert!(none.is_empty(), "nothing scores above 1.01");
+    }
+
+    #[test]
+    fn search_returns_hits_in_descending_score_order() {
+        use crate::embed::{Embedder, FakeEmbedder};
+        let e = FakeEmbedder::new();
+        let dim = e.dim();
+        let mut meta = Meta { dim, ..Default::default() };
+        for i in 0..8 {
+            meta.chunks.push(ChunkRecord {
+                file: format!("ws-1/n{i}.md"),
+                scope: "ws-1".into(),
+                room: None,
+                text: format!("чанк номер {i}"),
+            });
+        }
+        let texts: Vec<String> = meta.chunks.iter().map(|c| c.text.clone()).collect();
+        let emb: Vec<f32> = e.embed(&texts).unwrap().into_iter().flatten().collect();
+        let ix = Index { meta, emb };
+
+        let hits = search(&ix, &e, "чанк номер 3", &SearchScope::All, 8, -1.0).unwrap();
+        for w in hits.windows(2) {
+            assert!(w[0].score >= w[1].score, "not sorted: {:?}", hits);
+        }
     }
 }
