@@ -16,6 +16,36 @@ pub struct Workspace {
     pub name: String,
     pub path: String,
     pub color: String,
+    /// Absent for every workspace created before the tracker existed, and for
+    /// any workspace the user never configured. `default` is what keeps an old
+    /// settings file readable — a failed read would let the next upsert
+    /// truncate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<TrackerConfig>,
+}
+
+/// Per-workspace tracker configuration. A list of providers rather than a
+/// single one, so GitHub/Jira arrive as an added element instead of a schema
+/// rewrite. Tokens never live here — they belong in the system keychain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackerConfig {
+    #[serde(default)]
+    pub providers: Vec<TrackerProvider>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum TrackerProvider {
+    Fs { root: TrackerRoot },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum TrackerRoot {
+    /// `<workspace.path>/.cowork/tasks`, tracked in git like any other project file.
+    Project,
+    /// Any folder the user picked: a dedicated repo, an Obsidian vault, a synced dir.
+    Path { path: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +199,38 @@ mod tests {
         ).unwrap();
         assert_eq!(weekly.preset, SchedulePreset::Weekly { weekday: 1, hour: 8, minute: 0 });
         assert_eq!(weekly.defaults.get("name").map(String::as_str), Some("Bob"));
+    }
+
+    #[test]
+    fn workspace_without_tracker_still_deserializes() {
+        // Настройки, записанные до этой фичи, должны читаться без потерь —
+        // иначе первый же upsert усечёт файл пространств.
+        let old = r##"{"id":"w1","name":"deck","path":"/p","color":"#61afef"}"##;
+        let ws: Workspace = serde_json::from_str(old).expect("old workspace must still parse");
+        assert_eq!(ws.name, "deck");
+        assert!(ws.tracker.is_none());
+    }
+
+    #[test]
+    fn tracker_config_round_trips_both_root_kinds() {
+        let in_project = TrackerConfig {
+            providers: vec![TrackerProvider::Fs { root: TrackerRoot::Project }],
+        };
+        let json = serde_json::to_string(&in_project).unwrap();
+        let back: TrackerConfig = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back.providers[0], TrackerProvider::Fs { root: TrackerRoot::Project }));
+
+        let external = TrackerConfig {
+            providers: vec![TrackerProvider::Fs {
+                root: TrackerRoot::Path { path: "/home/u/vault/Tasks".into() },
+            }],
+        };
+        let json = serde_json::to_string(&external).unwrap();
+        let back: TrackerConfig = serde_json::from_str(&json).unwrap();
+        match &back.providers[0] {
+            TrackerProvider::Fs { root: TrackerRoot::Path { path } } => assert_eq!(path, "/home/u/vault/Tasks"),
+            other => panic!("wrong root: {other:?}"),
+        }
     }
 
     #[test]

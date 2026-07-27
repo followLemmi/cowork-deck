@@ -7,6 +7,8 @@ mod listener;
 mod pty;
 mod commands;
 mod scheduler;
+mod tasks_cmd;
+use cowork_deck::tasks;
 
 use commands::AppState;
 use std::path::{Path, PathBuf};
@@ -128,6 +130,11 @@ fn main() {
             commands::git_status,
             commands::session_tokens,
             commands::scheduler_ready,
+            tasks_cmd::tasks_list,
+            tasks_cmd::tasks_create,
+            tasks_cmd::tasks_resolve,
+            tasks_cmd::tasks_capabilities,
+            tasks_cmd::tasks_open_counts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");

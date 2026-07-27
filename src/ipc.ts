@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type SessionState = "idle" | "working" | "waitingInput" | "ended" | "error";
-export interface Workspace { id: string; name: string; path: string; color: string; }
+export interface Workspace { id: string; name: string; path: string; color: string; tracker?: TrackerConfig | null; }
 export type SchedulePreset =
   | { kind: "hourly"; minute: number }
   | { kind: "daily"; hour: number; minute: number }
@@ -60,3 +60,30 @@ export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
 export const sessionTokens = (sessionId: string) => invoke<TokenUsage>("session_tokens", { sessionId });
+
+export type TaskKind = "bug" | "task" | "idea";
+export type TaskStatus = "open" | "done";
+export type TaskOrigin = "human" | "session";
+
+export interface Task {
+  id: string; title: string; kind: TaskKind; status: TaskStatus; project: string;
+  created: string; resolved: string | null; origin: TaskOrigin; session: string | null;
+  body: string; path: string;
+  /** Причина, если карточку не удалось разобрать до конца. Показывается, не скрывается. */
+  damaged: string | null;
+  /** Больше одного файла с этим id. */
+  conflict: boolean;
+}
+export interface TaskDraft { title: string; kind: TaskKind; body: string; }
+export interface ProviderCapabilities { canCreate: boolean; canResolve: boolean; statuses: string[] }
+export type TrackerRoot = { kind: "project" } | { kind: "path"; path: string };
+export interface TrackerConfig { providers: { type: "fs"; root: TrackerRoot }[] }
+
+export const listTasks = (workspaceId: string) => invoke<Task[]>("tasks_list", { workspaceId });
+export const createTask = (workspaceId: string, draft: TaskDraft) =>
+  invoke<Task>("tasks_create", { workspaceId, draft });
+export const resolveTask = (workspaceId: string, id: string) =>
+  invoke<Task>("tasks_resolve", { workspaceId, id });
+export const taskCapabilities = (workspaceId: string) =>
+  invoke<ProviderCapabilities | null>("tasks_capabilities", { workspaceId });
+export const taskOpenCounts = () => invoke<Record<string, number>>("tasks_open_counts");
