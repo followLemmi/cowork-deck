@@ -30,9 +30,9 @@ it("creates a skill from the form result", async () => {
 
 it("gives a scheduled scenario a run-now button and a visible schedule line", async () => {
   listSkills.mockResolvedValueOnce([
-    { id: "s1", name: "Отчёт", icon: "▶", prompt: "go", workspaceId: null,
+    { id: "s1", name: "Report", icon: "▶", prompt: "go", workspaceId: null,
       schedule: { preset: { kind: "daily", hour: 9, minute: 0 }, defaults: {}, enabled: true } },
-    { id: "s2", name: "Ручной", icon: "▶", prompt: "go", workspaceId: null },
+    { id: "s2", name: "Manual", icon: "▶", prompt: "go", workspaceId: null },
   ]);
   const mount = document.createElement("div");
   const panel = new SkillsPanel(mount, () => null, () => {}, () => {});
@@ -42,15 +42,15 @@ it("gives a scheduled scenario a run-now button and a visible schedule line", as
   // The button now says only what it does. What the schedule *is* lives in
   // visible text, because a title attribute is unreachable from the keyboard
   // and went stale between renders.
-  expect(buttons[0].title).toContain("Прогнать сейчас");
+  expect(buttons[0].title).toContain("Run now");
   const line = mount.querySelector(".sk-sched")!;
-  expect(line.textContent).toContain("ежедневно 09:00");
-  expect(line.textContent).toContain("следующий запуск");
+  expect(line.textContent).toContain("daily at 09:00");
+  expect(line.textContent).toContain("next run");
 });
 
 it("clicking ⏰ runs the scenario without triggering the normal launch", async () => {
   listSkills.mockResolvedValueOnce([
-    { id: "s1", name: "Отчёт", icon: "▶", prompt: "go", workspaceId: null,
+    { id: "s1", name: "Report", icon: "▶", prompt: "go", workspaceId: null,
       schedule: { preset: { kind: "daily", hour: 9, minute: 0 }, defaults: {}, enabled: true } },
   ]);
   const onLaunch = vi.fn();
@@ -64,9 +64,9 @@ it("clicking ⏰ runs the scenario without triggering the normal launch", async 
 });
 
 it("find() resolves a scenario by id for scheduled fires", async () => {
-  listSkills.mockResolvedValueOnce([{ id: "s1", name: "Отчёт", icon: "▶", prompt: "go", workspaceId: null }]);
+  listSkills.mockResolvedValueOnce([{ id: "s1", name: "Report", icon: "▶", prompt: "go", workspaceId: null }]);
   const panel = new SkillsPanel(document.createElement("div"), () => null, () => {}, () => {});
   await panel.load();
-  expect(panel.find("s1")?.name).toBe("Отчёт");
+  expect(panel.find("s1")?.name).toBe("Report");
   expect(panel.find("nope")).toBeUndefined();
 });

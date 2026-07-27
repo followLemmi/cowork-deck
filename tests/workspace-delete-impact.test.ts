@@ -12,23 +12,23 @@ const sk = (id: string, workspaceId: string | null, scheduled = false): Skill =>
 describe("describeDeleteImpact", () => {
   it("asks plainly when nothing else is affected", () => {
     expect(describeDeleteImpact("w1", [sk("a", null), sk("b", "w2")]))
-      .toBe("Удалить пространство?");
+      .toBe("Delete workspace?");
   });
 
   // Deleting a workspace strands every scenario pinned to it: they cannot run
   // and the schedule quietly stops producing anything.
   it("counts the scenarios that will be stranded", () => {
     const msg = describeDeleteImpact("w1", [sk("a", "w1"), sk("b", "w1"), sk("c", null)]);
-    expect(msg).toContain("2 сценария");
+    expect(msg).toContain("2 scenarios");
   });
 
   it("calls out schedules separately, since those stop running silently", () => {
     const msg = describeDeleteImpact("w1", [sk("a", "w1", true), sk("b", "w1")]);
-    expect(msg).toContain("2 сценария");
-    expect(msg).toContain("1 из них по расписанию");
+    expect(msg).toContain("2 scenarios");
+    expect(msg).toContain("1 of them scheduled");
   });
 
   it("uses singular wording for a single scenario", () => {
-    expect(describeDeleteImpact("w1", [sk("a", "w1")])).toContain("1 сценарий");
+    expect(describeDeleteImpact("w1", [sk("a", "w1")])).toContain("1 scenario");
   });
 });

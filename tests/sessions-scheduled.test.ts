@@ -43,7 +43,7 @@ import { sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#61afef" };
-const SKILL = { id: "s1", name: "Ночной обзор", icon: "▶", prompt: "review", workspaceId: null };
+const SKILL = { id: "s1", name: "Nightly review", icon: "▶", prompt: "review", workspaceId: null };
 
 /** Boots a deck with events wired and hands back a way to drive session state
  *  the way the Rust listener would. */
@@ -102,8 +102,8 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
 
     expect(vi.mocked(sendNotification)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendNotification).mock.calls[0][0]).toMatchObject({
-      title: "cowork-deck · доделал",
-      body: "▶ Ночной обзор", // the clock is its own icon now, not part of the name
+      title: "cowork-deck · done",
+      body: "▶ Nightly review", // the clock is its own icon now, not part of the name
     });
   });
 
@@ -125,7 +125,7 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
   it("keeps the guard aware of a restored scheduled run", async () => {
     const { deck, emitState } = await makeDeck();
     await deck.restore([
-      { sessionId: "yesterday", cwd: "/p", name: "⏰ ▶ Ночной обзор", workspaceId: "w", scheduledSkillId: "s1" },
+      { sessionId: "yesterday", cwd: "/p", name: "⏰ ▶ Nightly review", workspaceId: "w", scheduledSkillId: "s1" },
     ]);
     emitState("yesterday", "working");
 

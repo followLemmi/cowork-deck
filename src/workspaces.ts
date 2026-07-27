@@ -9,12 +9,12 @@ import { iconButton } from "./icons";
  *  not in a surprise afterwards. */
 export function describeDeleteImpact(workspaceId: string, skills: Skill[]): string {
   const pinned = skills.filter((s) => s.workspaceId === workspaceId);
-  if (pinned.length === 0) return "Удалить пространство?";
+  if (pinned.length === 0) return "Delete workspace?";
   const scheduled = pinned.filter((s) => s.schedule?.enabled).length;
-  const noun = pinned.length === 1 ? "сценарий" : pinned.length < 5 ? "сценария" : "сценариев";
-  const tail = scheduled > 0 ? `, ${scheduled} из них по расписанию` : "";
-  return `Удалить пространство? К нему привязан${pinned.length === 1 ? "" : "ы"} `
-    + `${pinned.length} ${noun}${tail} — они перестанут запускаться.`;
+  const noun = pinned.length === 1 ? "scenario is" : "scenarios are";
+  const tail = scheduled > 0 ? `, ${scheduled} of them scheduled` : "";
+  return `Delete workspace? ${pinned.length} ${noun} pinned to it${tail}`
+    + " — they will stop running.";
 }
 
 export class WorkspacesPanel {
@@ -85,7 +85,7 @@ export class WorkspacesPanel {
   }
 
   private render() {
-    this.mount.innerHTML = "<h3>Пространства</h3>";
+    this.mount.innerHTML = "<h3>Workspaces</h3>";
     for (const w of this.items) {
       const row = document.createElement("div");
       row.className = "ws-row" + (w.id === this.activeId ? " active" : "");
@@ -94,15 +94,15 @@ export class WorkspacesPanel {
       const label = document.createElement("button");
       label.className = "ws-label"; label.textContent = w.name;
       label.onclick = () => this.select(w.id);
-      const edit = iconButton("pencil", `Изменить пространство: ${w.name}`, "ws-edit");
+      const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
       edit.onclick = () => this.edit(w.id);
-      const x = iconButton("trash", `Удалить пространство: ${w.name}`, "ws-del btn--icon--danger");
+      const x = iconButton("trash", `Delete workspace: ${w.name}`, "ws-del btn--icon--danger");
       x.onclick = () => this.del(w.id);
       row.append(dot, label, edit, x);
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");
-    addBtn.className = "ws-add"; addBtn.textContent = "+ пространство";
+    addBtn.className = "ws-add"; addBtn.textContent = "+ workspace";
     addBtn.onclick = () => this.add();
     this.mount.appendChild(addBtn);
   }
