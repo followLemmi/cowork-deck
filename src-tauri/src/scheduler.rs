@@ -78,6 +78,16 @@ pub enum TickAction {
     Idle,
 }
 
+/// Identity of a firing rule. Compared, never parsed — two schedules are "the
+/// same rule" when this matches.
+pub fn fingerprint(preset: &SchedulePreset) -> String {
+    match preset {
+        SchedulePreset::Hourly { minute } => format!("hourly:{minute}"),
+        SchedulePreset::Daily { hour, minute } => format!("daily:{hour}:{minute}"),
+        SchedulePreset::Weekly { weekday, hour, minute } => format!("weekly:{weekday}:{hour}:{minute}"),
+    }
+}
+
 /// Decide what to do with one scenario this tick.
 ///
 /// The gate is `last_attempt`, not `last_run`: an occurrence is attempted at
@@ -90,12 +100,15 @@ pub fn decide(
     now: NaiveDateTime,
 ) -> TickAction {
     let occ = prev_occurrence(preset, now);
-    match entry {
-        None => TickAction::Arm(occ),
-        Some(run) => match chrono::DateTime::from_timestamp_millis(run.last_attempt) {
-            Some(dt) if dt.naive_utc() >= occ => TickAction::Idle,
-            _ => TickAction::Fire(occ),
-        },
+    let Some(run) = entry else { return TickAction::Arm(occ) };
+    // The attempt only means anything under the rule it was made for. A
+    // changed or resumed rule owes nothing yet.
+    if run.preset.as_deref() != Some(fingerprint(preset).as_str()) {
+        return TickAction::Arm(occ);
+    }
+    match chrono::DateTime::from_timestamp_millis(run.last_attempt) {
+        Some(dt) if dt.naive_utc() >= occ => TickAction::Idle,
+        _ => TickAction::Fire(occ),
     }
 }
 
@@ -115,6 +128,7 @@ pub fn apply_ack(
         last_attempt: cur.last_attempt,
         last_run: if outcome == "launched" { Some(occurrence_ms) } else { cur.last_run },
         last_outcome: Some(outcome.to_string()),
+        preset: cur.preset.clone(),
     })
 }
 
@@ -137,17 +151,35 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
         let mut changed = false;
 
         for sk in &skills {
-            let Some(sched) = &sk.schedule else { continue };
-            if !sched.enabled { continue }
+            // Not scheduled right now — off, or the schedule was removed. Clear
+            // the rule the last attempt belonged to, so switching it back on
+            // arms afresh instead of looking like a run that is owed. The rest
+            // of the record survives, so "last ran on Tuesday" is not lost.
+            let active = sk.schedule.as_ref().filter(|s| s.enabled);
+            let Some(sched) = active else {
+                if let Some(run) = state.get(&sk.id) {
+                    if run.preset.is_some() {
+                        let mut cleared = run.clone();
+                        cleared.preset = None;
+                        state.insert(sk.id.clone(), cleared);
+                        changed = true;
+                    }
+                }
+                continue;
+            };
             // Stamp the occurrence, not `now` — otherwise repeated fires drift
             // later and later. For a catch-up this is the missed time; for an
             // on-time run it is ≈ `now`.
             match decide(&sched.preset, state.get(&sk.id), now) {
                 TickAction::Arm(occ) => {
+                    // Keep whatever history the entry already had: an armed
+                    // rule is a new rule, not a new scenario.
+                    let prev = state.get(&sk.id);
                     state.insert(sk.id.clone(), ScheduleRun {
                         last_attempt: occ.and_utc().timestamp_millis(),
-                        last_run: None,
-                        last_outcome: None,
+                        last_run: prev.and_then(|r| r.last_run),
+                        last_outcome: prev.and_then(|r| r.last_outcome.clone()),
+                        preset: Some(fingerprint(&sched.preset)),
                     });
                     changed = true;
                 }
@@ -164,6 +196,7 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
                         last_attempt: occurrence_ms,
                         last_run: prev_run,
                         last_outcome: None,
+                        preset: Some(fingerprint(&sched.preset)),
                     });
                     changed = true;
                 }
@@ -246,11 +279,13 @@ mod tests {
         assert_eq!(prev_occurrence(&p, now), dt(2026, 7, 20, 8, 0)); // last Monday
     }
 
-    fn run_at(attempt: NaiveDateTime) -> ScheduleRun {
+    /// A record left by a successful run of `preset` at `attempt`.
+    fn run_at(preset: &SchedulePreset, attempt: NaiveDateTime) -> ScheduleRun {
         ScheduleRun {
             last_attempt: attempt.and_utc().timestamp_millis(),
             last_run: Some(attempt.and_utc().timestamp_millis()),
             last_outcome: Some("launched".into()),
+            preset: Some(fingerprint(preset)),
         }
     }
 
@@ -259,7 +294,7 @@ mod tests {
     #[test]
     fn a_launched_ack_records_the_run() {
         let occ = dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis();
-        let attempted = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None };
+        let attempted = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None, preset: None };
 
         let updated = apply_ack(Some(&attempted), occ, "launched").expect("ack applies");
         assert_eq!(updated.last_run, Some(occ));
@@ -276,8 +311,7 @@ mod tests {
         let attempted = ScheduleRun {
             last_attempt: occ,
             last_run: Some(yesterday),
-            last_outcome: Some("launched".into()),
-        };
+            last_outcome: Some("launched".into()), preset: None };
 
         let updated = apply_ack(Some(&attempted), occ, "no-workspace").expect("ack applies");
         assert_eq!(updated.last_run, Some(yesterday));
@@ -290,10 +324,45 @@ mod tests {
     fn a_stale_ack_is_ignored() {
         let occ = dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis();
         let older = dt(2026, 7, 23, 9, 0).and_utc().timestamp_millis();
-        let current = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None };
+        let current = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None, preset: None };
 
         assert_eq!(apply_ack(Some(&current), older, "launched"), None);
         assert_eq!(apply_ack(None, occ, "launched"), None);
+    }
+
+    /// Moving a daily run from 18:00 to 09:00 at 10:00 must not fire on the
+    /// spot. The old attempt belongs to the old rule and owes nothing under
+    /// the new one.
+    #[test]
+    fn changing_the_rule_re_arms_instead_of_firing() {
+        let old = SchedulePreset::Daily { hour: 18, minute: 0 };
+        let new = SchedulePreset::Daily { hour: 9, minute: 0 };
+        let now = dt(2026, 7, 24, 10, 0);
+        let entry = ScheduleRun {
+            last_attempt: dt(2026, 7, 23, 18, 0).and_utc().timestamp_millis(),
+            last_run: Some(dt(2026, 7, 23, 18, 0).and_utc().timestamp_millis()),
+            last_outcome: Some("launched".into()),
+            preset: Some(fingerprint(&old)),
+        };
+
+        assert_eq!(decide(&new, Some(&entry), now), TickAction::Arm(dt(2026, 7, 24, 9, 0)));
+    }
+
+    /// Same story for a schedule switched off and back on a week later: the
+    /// loop clears the fingerprint while it is paused, so resuming arms rather
+    /// than firing a week's worth of "owed" run.
+    #[test]
+    fn resuming_a_paused_schedule_re_arms() {
+        let p = SchedulePreset::Daily { hour: 9, minute: 0 };
+        let now = dt(2026, 7, 24, 10, 0);
+        let paused = ScheduleRun {
+            last_attempt: dt(2026, 7, 17, 9, 0).and_utc().timestamp_millis(),
+            last_run: Some(dt(2026, 7, 17, 9, 0).and_utc().timestamp_millis()),
+            last_outcome: Some("launched".into()),
+            preset: None,
+        };
+
+        assert_eq!(decide(&p, Some(&paused), now), TickAction::Arm(dt(2026, 7, 24, 9, 0)));
     }
 
     /// A schedule the loop has never seen is armed, not fired: the user just
@@ -316,6 +385,7 @@ mod tests {
             last_attempt: dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis(),
             last_run: Some(dt(2026, 7, 23, 9, 0).and_utc().timestamp_millis()),
             last_outcome: Some("no-workspace".into()),
+            preset: Some(fingerprint(&p)),
         };
         assert_eq!(decide(&p, Some(&failed), now), TickAction::Idle);
     }
@@ -326,7 +396,7 @@ mod tests {
     fn a_missed_occurrence_fires_once() {
         let p = SchedulePreset::Daily { hour: 9, minute: 0 };
         let now = dt(2026, 7, 24, 10, 0);
-        let stale = run_at(dt(2026, 7, 21, 9, 0));
+        let stale = run_at(&p, dt(2026, 7, 21, 9, 0));
         assert_eq!(
             decide(&p, Some(&stale), now),
             TickAction::Fire(dt(2026, 7, 24, 9, 0))
@@ -338,7 +408,7 @@ mod tests {
     fn an_up_to_date_schedule_stays_idle() {
         let p = SchedulePreset::Daily { hour: 9, minute: 0 };
         let now = dt(2026, 7, 24, 10, 0);
-        assert_eq!(decide(&p, Some(&run_at(dt(2026, 7, 24, 9, 0))), now), TickAction::Idle);
+        assert_eq!(decide(&p, Some(&run_at(&p, dt(2026, 7, 24, 9, 0))), now), TickAction::Idle);
     }
 
 }

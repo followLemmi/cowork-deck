@@ -286,8 +286,7 @@ mod tests {
         st.insert("skill-1".into(), ScheduleRun {
             last_attempt: 1_700_000_000_000,
             last_run: Some(1_700_000_000_000),
-            last_outcome: Some("launched".into()),
-        });
+            last_outcome: Some("launched".into()), preset: None });
         s.save_schedule_state(&st).unwrap();
         assert_eq!(Store::new(s.dir.clone()).schedule_state(), st);
     }

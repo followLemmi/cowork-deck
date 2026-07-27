@@ -34,6 +34,11 @@ pub struct ScheduleRun {
     /// How the last attempt ended, as reported by the frontend.
     #[serde(rename = "lastOutcome", default, skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<String>,
+    /// The rule `last_attempt` belongs to. Cleared while the schedule is off,
+    /// so switching it back on — or moving the time earlier in the day — is
+    /// treated as a fresh arming rather than a run that is owed right now.
+    #[serde(rename = "preset", default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
 }
 
 /// Accepts both the current record and the bare epoch-millis number written
@@ -53,6 +58,7 @@ impl From<ScheduleRunOnDisk> for ScheduleRun {
                 last_attempt: ms,
                 last_run: Some(ms),
                 last_outcome: None,
+                preset: None,
             },
         }
     }
