@@ -39,6 +39,7 @@ memory footprint kept under ~100 MB.
 - **Scenarios & skills** — launch sessions with canned skill prompts, parameterized with `{{name}}` placeholders filled in at start.
 - **Scheduled scenarios** — attach a schedule (hourly / daily at `HH:MM` / weekly) to a scenario and it fires unattended into a fresh session, using stored defaults for its placeholders. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra cost, full local context and permissions.
 - **Run a schedule now** — a ⏰ button on a scheduled scenario runs it immediately, exactly as the schedule would, without consuming the upcoming scheduled run.
+- **Task tracker** — a per-workspace backlog of markdown cards (`.cowork/tasks/` in the project, or any folder you point at — a dedicated repo, an Obsidian vault). A Board view next to Terminals, `Cmd/Ctrl+Shift+T` to file one without leaving the deck, and ▶ on a card launches a session with the card as its prompt. Sessions file their own tickets via a bundled `cowork_task` CLI, so a side finding becomes a card instead of scope creep. "In progress" is derived from live sessions, never stored, so nothing gets stuck.
 - **Context-preserving restart** — restart an ended/errored tile and resume its Claude Code context (`claude --resume` / `--continue`).
 - **Auto-restore** — reopen yesterday's tiles on launch; window size, position, and active workspace are persisted.
 - **Broadcast input** — type once and send the same input to several sessions at once.
@@ -114,6 +115,7 @@ the tile's state label stays on `готов` (idle) instead of reflecting the ac
 - **Scheduling v2** — cron expressions, more than one schedule per scenario, and last-run info in the ⏰ tooltip (all deliberately left out of the first cut).
 - **UI localization** — English strings and a language switch; the interface is Russian-only today.
 - **Windows / Linux hotkeys** — `Ctrl+Shift` bindings, because bare `Ctrl+K` / `Ctrl+F` / `Ctrl+N` shadow readline inside the terminal on those platforms.
+- **Tracker providers** — GitHub Issues and Jira boards inside the deck, configured per workspace on top of the existing `TaskProvider` port (needs system-keychain token storage).
 
 **Later**
 
