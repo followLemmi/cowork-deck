@@ -1714,6 +1714,9 @@ fn search_respects_scope_dedupes_by_file_and_honours_threshold() {
     let capped = search(&ix, &e, "любой запрос", &SearchScope::All, 1, -1.0).unwrap();
     assert_eq!(capped.len(), 1, "top must cap results");
 
+    let nothing = search(&ix, &e, "любой запрос", &SearchScope::All, 0, -1.0).unwrap();
+    assert!(nothing.is_empty(), "top = 0 must return nothing, not one hit");
+
     let none = search(&ix, &e, "любой запрос", &SearchScope::All, 10, 1.01).unwrap();
     assert!(none.is_empty(), "nothing scores above 1.01");
 }
@@ -1818,7 +1821,9 @@ pub fn search(
     let mut hits = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
     for (score, i) in scored {
-        if score < min_score {
+        // The cap is checked before pushing, not after: checking afterwards
+        // lets `top == 0` return one hit.
+        if hits.len() >= top || score < min_score {
             break;
         }
         let c = &ix.meta.chunks[i];
@@ -1832,9 +1837,6 @@ pub fn search(
             room: c.room.clone(),
             text: c.text.clone(),
         });
-        if hits.len() >= top {
-            break;
-        }
     }
     Ok(hits)
 }
