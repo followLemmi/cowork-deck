@@ -324,3 +324,17 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   background: none; border: none; border-left: 2px solid transparent;
 }
 .sess-row { font-size: var(--fs-sm); }
+
+/* Единственное правило на весь набор: наследуемые свойства обводки проходят
+   внутрь клона <use>, поэтому иконка везде берёт цвет своей кнопки. */
+.icon {
+  width: 16px; height: 16px; flex: none; display: block;
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.icon--up .icon { transform: rotate(-90deg); }
+.icon--down .icon { transform: rotate(90deg); }
+.sess-group-toggle .icon { width: 12px; height: 12px; }
+.tile-git .icon, .sk-sched .icon { width: 12px; height: 12px; display: inline-block;
+  vertical-align: -2px; }
+.tile-sched-mark { width: 12px; height: 12px; flex: none; color: var(--accent); }

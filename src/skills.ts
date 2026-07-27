@@ -2,6 +2,7 @@ import { listSkills, saveSkill, removeSkill, loadScheduleState, type ScheduleRun
 import { confirmModal } from "./modal";
 import { skillForm } from "./forms";
 import { scheduleRowText } from "./schedule";
+import { iconButton } from "./icons";
 
 /** A scenario pinned to a workspace that no longer exists. It cannot run —
  *  `resolveScheduledWorkspace` refuses rather than picking the wrong folder —
@@ -122,18 +123,13 @@ export class SkillsPanel {
       const sched = s.schedule;
       let now: HTMLButtonElement | null = null;
       if (sched?.enabled && !orphan) {
-        now = document.createElement("button");
-        now.className = "sk-now btn--icon"; now.textContent = "⏰";
-        now.title = "прогнать сейчас, как это сделало бы расписание";
-        now.setAttribute("aria-label", `Прогнать сейчас: ${s.name}`);
+        now = iconButton("clock-play", `Прогнать сейчас: ${s.name}`, "sk-now");
         now.onclick = () => this.onRunScheduled(s);
       }
 
-      const edit = document.createElement("button");
-      edit.className = "sk-edit btn--icon"; edit.textContent = "✎"; edit.title = "изменить";
+      const edit = iconButton("pencil", `Изменить сценарий: ${s.name}`, "sk-edit");
       edit.onclick = () => this.edit(s.id);
-      const x = document.createElement("button");
-      x.className = "sk-del btn--icon btn--icon--danger"; x.textContent = "✕";
+      const x = iconButton("trash", `Удалить сценарий: ${s.name}`, "sk-del btn--icon--danger");
       x.onclick = () => this.del(s.id);
       row.append(run, ...(now ? [now] : []), edit, x);
       this.mount.appendChild(row);

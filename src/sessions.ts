@@ -10,6 +10,7 @@ import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
+import { icon, iconButton } from "./icons";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -72,7 +73,10 @@ export class Deck {
         if (!this.tiles.has(t.session)) continue;
         const g = gitByCwd.get(t.workspacePath);
         if (g && g.branch) {
-          t.gitBadge.textContent = `⎇ ${g.branch}${g.dirty ? " •" : ""}`;
+          t.gitBadge.replaceChildren(
+            icon("git-branch", 12),
+            document.createTextNode(` ${g.branch}${g.dirty ? " •" : ""}`),
+          );
           t.gitBadge.classList.remove("hidden");
         } else {
           t.gitBadge.classList.add("hidden");
@@ -150,8 +154,9 @@ export class Deck {
       cwd: workspace.path,
       workspaceId: workspace.id,
       titleText: catchUpFor
-        ? `⏰ ${skill.icon} ${skill.name} · догоняет ${catchUpFor}`
-        : `⏰ ${skill.icon} ${skill.name}`,
+        ? `${skill.icon} ${skill.name} · догоняет ${catchUpFor}`
+        : `${skill.icon} ${skill.name}`,
+      scheduled: true,
       prompt: filledPrompt,
       resume: false,
       scheduledSkillId: skill.id,
@@ -186,6 +191,9 @@ export class Deck {
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
     scheduledSkillId?: string;
+    /** Marks the tile as started by a schedule. Shown as its own icon rather
+     *  than glued to the title, which gets clipped by text-overflow. */
+    scheduled?: boolean;
     /** Whether the new tile should take over the keyboard and the layout.
      *  False for unattended work: a scheduled run announces itself through a
      *  notification, not by yanking the caret out of whatever is being typed. */
@@ -199,30 +207,33 @@ export class Deck {
     head.className = "tile-head";
     const title = document.createElement("span");
     title.textContent = titleText;
+    const schedMark = opts.scheduled ? icon("clock", 12) : null;
+    if (schedMark) {
+      schedMark.classList.add("tile-sched-mark");
+      schedMark.setAttribute("aria-hidden", "false");
+      schedMark.setAttribute("role", "img");
+      schedMark.setAttribute("aria-label", "запущено по расписанию");
+    }
     const gitBadge = document.createElement("span");
     gitBadge.className = "tile-git hidden";
     const tokenBadge = document.createElement("span");
     tokenBadge.className = "tile-tokens hidden";
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
-    const clearBtn = document.createElement("button");
-    clearBtn.textContent = "⌫"; clearBtn.className = "tile-close btn--icon"; clearBtn.title = "очистить";
+    const clearBtn = iconButton("eraser", "Очистить терминал", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
-    const close = document.createElement("button");
-    close.textContent = "✕"; close.className = "tile-close btn--icon btn--icon--danger"; close.title = "закрыть сессию";
-    close.setAttribute("aria-label", "Закрыть сессию");
+    const close = iconButton("x", "Закрыть сессию", "tile-close btn--icon--danger");
     // Same question Cmd+W asks. Without it the mouse was the more dangerous
     // of the two ways to do the same thing: one stray click killed a live
     // session outright, while the keyboard asked first.
     close.onclick = () => { void this.requestClose(session); };
-    head.append(title, gitBadge, tokenBadge, label, clearBtn, close);
+    head.append(...(schedMark ? [schedMark] : []), title, gitBadge, tokenBadge, label, clearBtn, close);
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
     head.insertBefore(bcastCheck, title);
-    const restart = document.createElement("button");
-    restart.textContent = "⟳"; restart.className = "tile-close btn--icon"; restart.style.display = "none";
-    restart.title = "перезапустить";
+    const restart = iconButton("rotate", "Перезапустить сессию", "tile-close");
+    restart.style.display = "none";
     restart.onclick = async () => {
       restart.style.display = "none";
       tile.panel.write("\r\n[перезапуск сессии...]\r\n");
@@ -250,9 +261,9 @@ export class Deck {
     const searchBar = document.createElement("div");
     searchBar.className = "tile-search hidden";
     const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "поиск…";
-    const sNext = document.createElement("button"); sNext.textContent = "▼"; sNext.className = "tile-search-btn";
-    const sPrev = document.createElement("button"); sPrev.textContent = "▲"; sPrev.className = "tile-search-btn";
-    const sClose = document.createElement("button"); sClose.textContent = "✕"; sClose.className = "tile-search-btn";
+    const sNext = iconButton("chevron", "Следующее совпадение", "tile-search-btn icon--down");
+    const sPrev = iconButton("chevron", "Предыдущее совпадение", "tile-search-btn icon--up");
+    const sClose = iconButton("x", "Закрыть поиск", "tile-search-btn");
     searchBar.append(sInput, sPrev, sNext, sClose);
     sInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); tile.panel.search(sInput.value); }
@@ -613,7 +624,7 @@ export class Deck {
     if (this.usage.size > 0) {
       const sum = document.createElement("div");
       sum.className = "sess-tokens-sum";
-      sum.textContent = `Σ токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      sum.textContent = `Всего токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
@@ -638,7 +649,10 @@ export class Deck {
         + (g.workspace && g.workspace.id === this.activeWorkspaceId ? " active" : "");
       const toggle = document.createElement("span");
       toggle.className = "sess-group-toggle";
-      toggle.textContent = collapsed ? "▸" : "▾";
+      // One chevron, rotated: every arrow in the app now opens at the same
+      // angle and carries the same stroke weight.
+      toggle.append(icon("chevron", 12));
+      toggle.classList.toggle("icon--down", !collapsed);
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = color;
       const nm = document.createElement("span");

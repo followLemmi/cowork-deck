@@ -1,6 +1,7 @@
 import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiState, type Workspace, type UiState, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
+import { iconButton } from "./icons";
 
 /** Confirmation text for deleting a workspace. Deleting one strands every
  *  scenario pinned to it — they stop being runnable, and any schedule on them
@@ -93,11 +94,9 @@ export class WorkspacesPanel {
       const label = document.createElement("button");
       label.className = "ws-label"; label.textContent = w.name;
       label.onclick = () => this.select(w.id);
-      const edit = document.createElement("button");
-      edit.className = "ws-edit btn--icon"; edit.textContent = "✎"; edit.title = "изменить";
+      const edit = iconButton("pencil", `Изменить пространство: ${w.name}`, "ws-edit");
       edit.onclick = () => this.edit(w.id);
-      const x = document.createElement("button");
-      x.className = "ws-del btn--icon btn--icon--danger"; x.textContent = "✕";
+      const x = iconButton("trash", `Удалить пространство: ${w.name}`, "ws-del btn--icon--danger");
       x.onclick = () => this.del(w.id);
       row.append(dot, label, edit, x);
       this.mount.appendChild(row);

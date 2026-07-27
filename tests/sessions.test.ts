@@ -113,7 +113,8 @@ describe("Deck zoom edge cases", () => {
     expect(deckEl.classList.contains("is-zoomed")).toBe(true);
 
     const zoomedTile = deckEl.querySelector(".tile.zoomed") as HTMLElement;
-    const closeBtn = [...zoomedTile.querySelectorAll("button")].find((b) => b.textContent === "✕")!;
+    // data-action, not glyph text: an SVG icon has no textContent.
+    const closeBtn = zoomedTile.querySelector<HTMLButtonElement>('[data-action="x"]')!;
     closeBtn.click();
 
     expect(deckEl.classList.contains("is-zoomed")).toBe(false);
@@ -142,7 +143,8 @@ describe("Deck zoom edge cases", () => {
 
     const allTiles = deckEl.querySelectorAll(".tile");
     const nonZoomedTile = [...allTiles].find((t) => !t.classList.contains("zoomed")) as HTMLElement;
-    const closeBtn = [...nonZoomedTile.querySelectorAll("button")].find((b) => b.textContent === "✕")!;
+    // data-action, not glyph text: an SVG icon has no textContent.
+    const closeBtn = nonZoomedTile.querySelector<HTMLButtonElement>('[data-action="x"]')!;
     closeBtn.click();
 
     expect(deckEl.classList.contains("is-zoomed")).toBe(false);

@@ -42,7 +42,7 @@ it("gives a scheduled scenario a run-now button and a visible schedule line", as
   // The button now says only what it does. What the schedule *is* lives in
   // visible text, because a title attribute is unreachable from the keyboard
   // and went stale between renders.
-  expect(buttons[0].title).toContain("прогнать сейчас");
+  expect(buttons[0].title).toContain("Прогнать сейчас");
   const line = mount.querySelector(".sk-sched")!;
   expect(line.textContent).toContain("ежедневно 09:00");
   expect(line.textContent).toContain("следующий запуск");

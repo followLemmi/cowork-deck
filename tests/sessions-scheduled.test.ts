@@ -103,7 +103,7 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     expect(vi.mocked(sendNotification)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(sendNotification).mock.calls[0][0]).toMatchObject({
       title: "cowork-deck · доделал",
-      body: "⏰ ▶ Ночной обзор",
+      body: "▶ Ночной обзор", // the clock is its own icon now, not part of the name
     });
   });
 

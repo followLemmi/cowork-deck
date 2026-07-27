@@ -8,12 +8,14 @@ import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
 import { runBoot } from "./boot";
+import { installSprite } from "./icons";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm } from "./forms";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+installSprite();
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
 const wsMount = document.createElement("div");
