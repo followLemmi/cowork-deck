@@ -2,21 +2,30 @@
 
 ## Language
 
-**Everything written into this repository or its GitHub project is in English.**
+**All documentation, all tasks and all pull requests are written in English.**
+So is everything else committed to this repository or filed in its GitHub
+project. The only exceptions are the ones written down below; anything not on
+that list is English, and the list does not grow by argument.
 
-That covers:
+In full, that covers:
 
-- Code — identifiers, UI strings, log and error messages.
-- Comments and doc comments.
-- Commit messages and branch names.
-- Pull request titles and bodies.
-- Issue titles and bodies, including checklists and epics.
-- New documents under `docs/`, specs and plans included.
-- `README.md` and this file.
+- **Documentation** — `README.md`, this file, and every document under `docs/`
+  written or edited from 2026-07-27 onward, specs and plans included. The one
+  carve-out is the pre-existing record described under "History stays as
+  written" below.
+- **Tasks** — GitHub issue titles and bodies, checklists, epics, and comments
+  posted on them.
+- **Pull requests** — titles, bodies, review comments, and replies.
+- **Code** — identifiers, UI strings, log and error messages.
+- **Comments and doc comments**, TypeScript and Rust alike.
+- **Commit messages and branch names.**
 
 Conversation with the user is **not** covered. Reply in whatever language the
-user writes in — the rule is about artefacts that outlive the conversation, not
-the conversation.
+user writes in — the rule governs artefacts that outlive the conversation, not
+the conversation itself.
+
+Writing something in another language and translating it afterwards is not the
+intent: draft it in English in the first place.
 
 ### Two deliberate exceptions
 
