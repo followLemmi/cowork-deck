@@ -74,12 +74,23 @@ fn main() -> Result<()> {
         }
         Cmd::Status { json } => {
             let ix = cowork_memory::index::load(&cache);
+            // Counts alone cannot tell "never indexed" from "indexed an empty
+            // corpus" — both are zero — and the app's memory panel has to
+            // show those as different states.
+            let state = if !cache.join("meta.json").exists() {
+                "absent"
+            } else if ix.meta.chunks.is_empty() {
+                "empty"
+            } else {
+                "ready"
+            };
             if json {
                 println!(
                     "{}",
                     serde_json::json!({
                         "root": cli.root.display().to_string(),
                         "cache": cache.display().to_string(),
+                        "state": state,
                         "files": ix.meta.files.len(),
                         "chunks": ix.meta.chunks.len(),
                         "dim": ix.meta.dim,
@@ -88,6 +99,7 @@ fn main() -> Result<()> {
             } else {
                 println!("root:   {}", cli.root.display());
                 println!("cache:  {}", cache.display());
+                println!("state:  {state}");
                 println!("files:  {}", ix.meta.files.len());
                 println!("chunks: {} (dim {})", ix.meta.chunks.len(), ix.meta.dim);
             }
