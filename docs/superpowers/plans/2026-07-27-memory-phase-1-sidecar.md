@@ -1577,6 +1577,22 @@ pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, U
         .count();
 
     if changed.is_empty() && deleted == 0 && !dim_changed {
+        // A first run over a corpus with nothing to index still has to leave a
+        // trace, or `status` cannot tell "an update ran and found nothing"
+        // from "no update has ever run" — both would report an absent cache.
+        if !cache.join("meta.json").exists() {
+            let ix = Index {
+                meta: Meta { files: current, chunks: Vec::new(), dim },
+                emb: Vec::new(),
+            };
+            save(cache, &ix)?;
+            let report = UpdateReport {
+                files: ix.meta.files.len(),
+                chunks: 0,
+                changed: 0,
+            };
+            return Ok((ix, report));
+        }
         let report = UpdateReport {
             files: old.meta.files.len(),
             chunks: old.meta.chunks.len(),
@@ -1968,6 +1984,30 @@ fn search_scoped_to_a_workspace_also_returns_diaries() {
         .find(|h| h["file"].as_str().unwrap().starts_with("ws-1/"))
         .expect("workspace hit");
     assert!(ws["room"].is_null(), "a workspace hit has no room");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// The state a corpus with nothing to index lands in. Reaching `"empty"` any
+/// other way requires indexing files and then deleting all of them, which is
+/// not the case the memory panel cares about.
+#[test]
+fn an_update_over_an_empty_corpus_reports_empty_not_absent() {
+    let root = std::env::temp_dir().join(format!("cwm-cli-void-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("ws-1")).unwrap();
+
+    let (stdout, _, _) = run(&root, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["state"], "absent", "no update has run yet: {stdout}");
+
+    let (_, stderr, ok) = run(&root, &["update"]);
+    assert!(ok, "update failed: {stderr}");
+
+    let (stdout, _, _) = run(&root, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["state"], "empty", "an update ran and found nothing: {stdout}");
+    assert_eq!(v["chunks"], 0);
 
     fs::remove_dir_all(&root).unwrap();
 }
