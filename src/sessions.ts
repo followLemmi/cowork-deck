@@ -541,6 +541,22 @@ export class Deck {
     this.animateLayoutChange(() => { this.zoomedSession = session; this.applyLayout(); });
   }
 
+  /** Zoom the active tile. Until now the only way in was a double-click on the
+   *  header — a headline feature with no keyboard path at all. */
+  toggleZoomActive() {
+    const id = this.activeSession;
+    if (id) this.toggleZoom(id);
+  }
+
+  /** Move keyboard focus into the active terminal. Half of region cycling: the
+   *  terminal swallows Tab, so getting back in needs an explicit route too. */
+  focusActiveTerminal(): boolean {
+    const id = this.activeSession;
+    if (!id) return false;
+    this.tiles.get(id)?.panel.focus();
+    return true;
+  }
+
   toggleZoom(session: string) {
     this.zoomTo(this.zoomedSession === session ? null : session);
   }

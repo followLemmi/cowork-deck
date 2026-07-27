@@ -137,15 +137,57 @@ const newSession = async () => {
 };
 newBtn.onclick = () => { void newSession(); };
 
+/** Human-readable binding for the palette. Filled in because the `hotkey`
+ *  field existed on Command from the start and was never populated, so the
+ *  palette — and with it every binding, including Cmd+K itself — was
+ *  undiscoverable. */
+function hotkeyLabel(letter: string): string {
+  return isMacPlatform() ? `Cmd+${letter}` : `Ctrl+Shift+${letter}`;
+}
+
 function paletteCommands(): Command[] {
   return [
-    { id: "new-session", title: "Новая сессия", run: () => { void newSession(); } },
-    { id: "close-active", title: "Закрыть активную сессию", run: () => deck.closeActive() },
-    { id: "next-waiting", title: "К следующей ждущей вводу", run: () => deck.focusNextWaiting() },
-    { id: "search", title: "Поиск в терминале", run: () => deck.searchActive() },
+    { id: "new-session", title: "Новая сессия", hotkey: hotkeyLabel("N"), run: () => { void newSession(); } },
+    { id: "close-active", title: "Закрыть активную сессию", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
+    { id: "next-waiting", title: "К следующей ждущей вводу", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
+    { id: "zoom", title: "Развернуть активную сессию", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
+    { id: "search", title: "Поиск в терминале", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
     { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
-    { id: "broadcast", title: "Режим broadcast (ввод в несколько сессий)", run: () => deck.toggleBroadcast() },
+    { id: "broadcast", title: "Режим broadcast (ввод в несколько сессий)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
+    { id: "next-region", title: "Перейти к следующей области (F6)", hotkey: "F6", run: () => cycleRegion(1) },
+    { id: "scenarios", title: "Сценарии: к списку в боковой панели", run: () => focusRegion("sidebar") },
   ];
+}
+
+/** Focus cycling between the sidebar and the active terminal.
+ *
+ *  Without it the terminal is a one-way door: xterm consumes Tab and Shift+Tab
+ *  (they go to the PTY), so once focus landed in a tile — which happens
+ *  automatically on launch — the sidebar, the scenario buttons and the
+ *  run-now button were unreachable by keyboard entirely. */
+type Region = "sidebar" | "terminal";
+const REGIONS: Region[] = ["sidebar", "terminal"];
+
+function currentRegion(): Region {
+  return sidebar.contains(document.activeElement) ? "sidebar" : "terminal";
+}
+
+function focusRegion(r: Region): void {
+  if (r === "terminal") {
+    if (deck.focusActiveTerminal()) return;
+    // No session to go to — stay where something is focusable.
+    focusRegion("sidebar");
+    return;
+  }
+  const first = sidebar.querySelector<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  );
+  first?.focus();
+}
+
+function cycleRegion(step: number): void {
+  const i = REGIONS.indexOf(currentRegion());
+  focusRegion(REGIONS[(i + step + REGIONS.length) % REGIONS.length]);
 }
 
 const COMMANDS: Record<string, () => void> = {
@@ -155,6 +197,9 @@ const COMMANDS: Record<string, () => void> = {
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),
   "broadcast": () => deck.toggleBroadcast(),
+  "zoom": () => deck.toggleZoomActive(),
+  "next-region": () => cycleRegion(1),
+  "prev-region": () => cycleRegion(-1),
 };
 
 window.addEventListener("keydown", (e) => {

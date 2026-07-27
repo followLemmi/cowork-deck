@@ -3,27 +3,56 @@ import { matchHotkey, nextWaitingIndex } from "../src/commands";
 import type { SessionState } from "../src/ipc";
 
 describe("matchHotkey", () => {
-  const base = { metaKey: false, ctrlKey: false, shiftKey: false };
+  const base = { code: "", key: "", metaKey: false, ctrlKey: false, shiftKey: false };
   it("maps Cmd+K to palette on macOS", () => {
-    expect(matchHotkey({ ...base, key: "k", metaKey: true }, true)).toBe("palette");
+    expect(matchHotkey({ ...base, code: "KeyK", metaKey: true }, true)).toBe("palette");
   });
   it("on macOS, Ctrl+K is NOT an app modifier — passes through to terminal", () => {
-    expect(matchHotkey({ key: "k", metaKey: false, ctrlKey: true, shiftKey: false }, true)).toBeNull();
-  });
-  it("on Windows/Linux, Ctrl+K IS the app modifier", () => {
-    expect(matchHotkey({ key: "k", metaKey: false, ctrlKey: true, shiftKey: false }, false)).toBe("palette");
+    expect(matchHotkey({ ...base, code: "KeyK", ctrlKey: true }, true)).toBeNull();
   });
   it("maps Cmd+digit to focus-N", () => {
-    expect(matchHotkey({ ...base, key: "3", metaKey: true }, true)).toBe("focus-3");
+    expect(matchHotkey({ ...base, code: "Digit3", metaKey: true }, true)).toBe("focus-3");
   });
   it("maps Cmd+Shift+] to next-waiting", () => {
-    expect(matchHotkey({ ...base, key: "]", metaKey: true, shiftKey: true }, true)).toBe("next-waiting");
+    expect(matchHotkey({ ...base, code: "BracketRight", metaKey: true, shiftKey: true }, true))
+      .toBe("next-waiting");
   });
   it("maps Cmd+B to broadcast on macOS", () => {
-    expect(matchHotkey({ ...base, key: "b", metaKey: true }, true)).toBe("broadcast");
+    expect(matchHotkey({ ...base, code: "KeyB", metaKey: true }, true)).toBe("broadcast");
   });
   it("returns null without modifier", () => {
-    expect(matchHotkey({ ...base, key: "k" }, true)).toBeNull();
+    expect(matchHotkey({ ...base, code: "KeyK" }, true)).toBeNull();
+  });
+
+  // Bare Ctrl+W/B/K/F/N are readline inside claude: Ctrl+W deletes the last
+  // word, Ctrl+B moves back a character. Claiming them broke muscle memory in
+  // every prompt on Windows and Linux, where Ctrl is also the app modifier.
+  it("leaves readline keys to the terminal on Windows and Linux", () => {
+    for (const code of ["KeyW", "KeyB", "KeyK", "KeyF", "KeyN"]) {
+      expect(matchHotkey({ ...base, code, ctrlKey: true }, false)).toBeNull();
+    }
+  });
+  it("uses Ctrl+Shift on Windows and Linux instead", () => {
+    expect(matchHotkey({ ...base, code: "KeyK", ctrlKey: true, shiftKey: true }, false)).toBe("palette");
+    expect(matchHotkey({ ...base, code: "KeyW", ctrlKey: true, shiftKey: true }, false)).toBe("close-active");
+    expect(matchHotkey({ ...base, code: "KeyF", ctrlKey: true, shiftKey: true }, false)).toBe("search");
+  });
+
+  // e.key is the produced character, so on a Cyrillic layout Cmd+K arrives as
+  // "л" and nothing matched at all — in an app whose UI is Russian.
+  it("matches by physical key, not by the character produced", () => {
+    expect(matchHotkey({ ...base, code: "KeyK", key: "л", metaKey: true }, true)).toBe("palette");
+  });
+
+  it("maps the zoom hotkey", () => {
+    expect(matchHotkey({ ...base, code: "Enter", metaKey: true }, true)).toBe("zoom");
+    expect(matchHotkey({ ...base, code: "Enter", ctrlKey: true, shiftKey: true }, false)).toBe("zoom");
+  });
+
+  // The only way out of the terminal, which otherwise swallows Tab.
+  it("maps F6 to region cycling without any modifier", () => {
+    expect(matchHotkey({ ...base, code: "F6" }, true)).toBe("next-region");
+    expect(matchHotkey({ ...base, code: "F6", shiftKey: true }, true)).toBe("prev-region");
   });
 });
 
