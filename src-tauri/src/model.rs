@@ -125,6 +125,12 @@ pub struct SessionEntry {
     /// layout files written before this field existed still load (→ None).
     #[serde(rename = "workspaceId", default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Scenario this session was started by, when it came from a schedule.
+    /// Restoring it is what keeps the overlap guard from raising a duplicate
+    /// run right after auto-restore. Optional + defaulted like the field
+    /// above, so older layout files still load.
+    #[serde(rename = "scheduledSkillId", default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_skill_id: Option<String>,
 }
 
 /// Небольшое UI-состояние, переживающее перезапуск (пока — активное пространство).
@@ -265,8 +271,15 @@ mod tests {
         // None is omitted from output (keeps files clean).
         let entry = SessionEntry {
             session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
+            scheduled_skill_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
+        assert!(!json.contains("scheduledSkillId"), "None scheduledSkillId must be omitted, got {json}");
+
+        // A layout written before the field existed still loads.
+        let old_entry = r#"{"sessionId":"s4","cwd":"/c","name":"K"}"#;
+        let e: SessionEntry = serde_json::from_str(old_entry).unwrap();
+        assert_eq!(e.scheduled_skill_id, None);
     }
 }

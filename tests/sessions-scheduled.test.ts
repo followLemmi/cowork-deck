@@ -118,6 +118,20 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     expect(vi.mocked(emit)).toHaveBeenCalledWith("pill://count", { n: 0 });
   });
 
+  // Auto-restore brings yesterday's scheduled tile back, but the link from
+  // scenario to session used not to survive: the guard saw nothing, and a
+  // catch-up fire seconds later raised a second copy of the same scenario in
+  // the same folder.
+  it("keeps the guard aware of a restored scheduled run", async () => {
+    const { deck, emitState } = await makeDeck();
+    await deck.restore([
+      { sessionId: "yesterday", cwd: "/p", name: "⏰ ▶ Ночной обзор", workspaceId: "w", scheduledSkillId: "s1" },
+    ]);
+    emitState("yesterday", "working");
+
+    expect(await deck.launchScheduled(WS as never, SKILL as never, "review")).toBe(false);
+  });
+
   // The guard still earns its keep: a run blocked on a permission prompt is
   // genuinely active, and stacking a second one on top of it would be worse
   // than skipping.

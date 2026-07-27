@@ -273,9 +273,11 @@ export class Deck {
     this.restoring = true;
     try {
       for (const e of entries) {
+        if (e.scheduledSkillId) this.scheduledSessions.set(e.scheduledSkillId, e.sessionId);
         await this.spawnTile({
           session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
           titleText: e.name, prompt: null, resume: true,
+          scheduledSkillId: e.scheduledSkillId,
         });
       }
     } finally {
@@ -527,6 +529,7 @@ export class Deck {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
       session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
+      scheduledSkillId: t.scheduledSkillId,
     })));
     return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
@@ -627,11 +630,15 @@ export function nextWaitingAcross(
 }
 
 export function serializeTiles(
-  tiles: { session: string; workspacePath: string; name: string; workspaceId?: string }[],
+  tiles: {
+    session: string; workspacePath: string; name: string; workspaceId?: string;
+    scheduledSkillId?: string;
+  }[],
 ): SessionEntry[] {
   return tiles.map((t) => ({
     sessionId: t.session, cwd: t.workspacePath, name: t.name,
     ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+    ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
   }));
 }
 
