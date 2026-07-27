@@ -5,7 +5,13 @@ use serde::{Deserialize, Serialize};
 pub enum SessionState {
     Idle,
     Working,
+    /// Blocked until a human decides — a tool or MCP server is asking for
+    /// permission. The session cannot progress on its own.
     WaitingInput,
+    /// The agent finished its turn and the prompt is free again. Looks idle,
+    /// but unlike `Idle` it means work was actually done, so it is worth a
+    /// notification. Distinct from `WaitingInput`: nothing is blocked.
+    Done,
     Ended,
     Error,
 }
@@ -109,11 +115,13 @@ pub fn event_kind_to_state(kind: &str, notification_type: Option<&str>) -> Optio
         "start" => Some(SessionState::Idle),
         "working" => Some(SessionState::Working),
         "waiting" => Some(SessionState::WaitingInput),
+        "done" => Some(SessionState::Done),
         "ended" => Some(SessionState::Ended),
+        // Only a permission prompt blocks. An idle nudge says nothing new:
+        // after `Stop` the state is already `Done`, and while a permission
+        // prompt is open, downgrading would let the overlap guard through.
         "notify" => match notification_type {
-            Some(t) if t.contains("permission") || t.contains("idle") => {
-                Some(SessionState::WaitingInput)
-            }
+            Some(t) if t.contains("permission") => Some(SessionState::WaitingInput),
             _ => None,
         },
         _ => None,
@@ -134,12 +142,33 @@ mod tests {
             event_kind_to_state("notify", Some("permission_prompt")),
             Some(SessionState::WaitingInput)
         );
-        assert_eq!(
-            event_kind_to_state("notify", Some("idle_prompt")),
-            Some(SessionState::WaitingInput)
-        );
         assert_eq!(event_kind_to_state("notify", Some("other")), None);
         assert_eq!(event_kind_to_state("garbage", None), None);
+    }
+
+    /// `Stop` means the agent finished its turn and the prompt is free again;
+    /// a permission request means it is blocked until a human decides. The
+    /// overlap guard, the pill and notifications treat these differently, so
+    /// they must not share one state.
+    #[test]
+    fn finished_turn_is_distinct_from_waiting_for_a_decision() {
+        assert_eq!(event_kind_to_state("done", None), Some(SessionState::Done));
+        assert_eq!(
+            event_kind_to_state("waiting", None),
+            Some(SessionState::WaitingInput)
+        );
+        assert_eq!(
+            event_kind_to_state("notify", Some("permission_prompt")),
+            Some(SessionState::WaitingInput)
+        );
+    }
+
+    /// An idle nudge carries no new information: after `Stop` the state is
+    /// already `Done`, and while a permission prompt is open it must not be
+    /// downgraded to something the guard would let through.
+    #[test]
+    fn idle_notification_does_not_change_state() {
+        assert_eq!(event_kind_to_state("notify", Some("idle_prompt")), None);
     }
 
     #[test]

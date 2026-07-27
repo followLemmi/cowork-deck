@@ -20,9 +20,13 @@ interface Tile {
 }
 
 const LABEL: Record<SessionState, string> = {
-  idle: "готов", working: "работает", waitingInput: "ждёт ввода", ended: "завершён", error: "ошибка",
+  idle: "готов", working: "работает", waitingInput: "ждёт ввода", done: "доделал",
+  ended: "завершён", error: "ошибка",
 };
-const NOTIFY_ON: SessionState[] = ["waitingInput", "ended", "error"];
+// `done` здесь, потому что «агент доделал задание» — это ровно то, ради чего
+// запускают сессию без надзора. В пилюлю оно при этом не идёт: пилюля
+// отвечает на вопрос «сколько сессий заблокировано на мне».
+const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
 
 export class Deck {
   private tiles = new Map<string, Tile>();
@@ -118,7 +122,11 @@ export class Deck {
   }
 
   /** Fire a scheduled scenario as a fresh tile. Returns false (and does not
-   *  launch) if this scenario's previous scheduled session is still active. */
+   *  launch) if this scenario's previous scheduled session is still active.
+   *
+   *  A scheduled scenario keeps at most one tile: once the guard lets a new
+   *  run through, the previous one is finished by definition, and leaving it
+   *  behind would add a tile per run — 24 a day for an hourly schedule. */
   async launchScheduled(workspace: Workspace, skill: Skill, filledPrompt: string): Promise<boolean> {
     const prevSession = this.scheduledSessions.get(skill.id);
     const prevState = prevSession ? (this.tiles.get(prevSession)?.state ?? null) : null;
@@ -126,6 +134,7 @@ export class Deck {
       console.info("scheduled run skipped: previous still active", skill.id);
       return false;
     }
+    if (prevSession && this.tiles.has(prevSession)) this.remove(prevSession);
     const session = crypto.randomUUID();
     this.scheduledSessions.set(skill.id, session);
     await this.spawnTile({
@@ -298,7 +307,7 @@ export class Deck {
     const id = this.activeSession;
     if (!id) return;
     const t = this.tiles.get(id);
-    if (t && (t.state === "working" || t.state === "waitingInput")) {
+    if (t && (t.state === "working" || t.state === "waitingInput" || t.state === "done")) {
       if (!(await confirmModal("Закрыть активную сессию?"))) return;
     }
     this.remove(id);

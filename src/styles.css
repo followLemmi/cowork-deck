@@ -144,6 +144,9 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .state-idle         { color: var(--st-idle);    background: rgba(107, 114, 125, 0.14); }
 .state-working      { color: var(--st-working); background: rgba(152, 195, 121, 0.14); }
 .state-waitingInput { color: var(--st-waiting); background: rgba(229, 192, 123, 0.16); border-color: rgba(229, 192, 123, 0.4); }
+/* Тот же зелёный, что у working, но без дыхания: работа сделана, ничего не
+   происходит. Различение состояний формой, а не только цветом — волна 4. */
+.state-done         { color: var(--st-working); background: rgba(152, 195, 121, 0.10); }
 .state-ended        { color: var(--st-ended);   background: rgba(86, 182, 194, 0.14); }
 .state-error        { color: var(--st-error);   background: rgba(224, 108, 117, 0.16); border-color: rgba(224, 108, 117, 0.4); }
 

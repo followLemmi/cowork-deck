@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type SessionState = "idle" | "working" | "waitingInput" | "ended" | "error";
+/** `waitingInput` — заблокирована до решения человека (запрос разрешения).
+ *  `done` — агент доделал ход, приглашение свободно: ничего не блокирует,
+ *  но работа была сделана, поэтому об этом стоит уведомить. */
+export type SessionState = "idle" | "working" | "waitingInput" | "done" | "ended" | "error";
 export interface Workspace { id: string; name: string; path: string; color: string; }
 export type SchedulePreset =
   | { kind: "hourly"; minute: number }

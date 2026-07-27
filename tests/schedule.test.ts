@@ -90,6 +90,14 @@ describe("shouldSkipOverlap", () => {
     expect(shouldSkipOverlap("idle")).toBe(false);
     expect(shouldSkipOverlap(null)).toBe(false);
   });
+
+  // An interactive `claude` never exits after finishing its task — it returns
+  // to the prompt, which is `done`. Treating that as an active run is what
+  // made a daily schedule fire once and then go silent until the tile was
+  // closed by hand.
+  it("does not skip when the previous run finished its task", () => {
+    expect(shouldSkipOverlap("done")).toBe(false);
+  });
 });
 
 describe("resolveScheduledWorkspace", () => {
