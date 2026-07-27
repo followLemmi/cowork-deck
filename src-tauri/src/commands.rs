@@ -16,6 +16,9 @@ pub struct AppState {
     /// `schedule://fire` listener, so the scheduler's first (catch-up) tick is
     /// not emitted into the void.
     pub scheduler_ready: std::sync::Arc<tokio::sync::Notify>,
+    /// Live directory watchers for configured tracker roots. Rebuilt via
+    /// `tasks_watch_sync` whenever the workspace set or its config changes.
+    pub watchers: std::sync::Arc<cowork_deck::tasks::watch::TaskWatchers>,
 }
 
 /// Build the argv (after the program name) for launching an interactive claude

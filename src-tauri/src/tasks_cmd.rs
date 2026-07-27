@@ -132,6 +132,34 @@ pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::Has
     Ok(out)
 }
 
+/// Point the watcher set at every configured tracker root. Called by the
+/// frontend at boot and after any workspace change, because a root can appear,
+/// move, or disappear at runtime.
+#[tauri::command]
+pub fn tasks_watch_sync(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
+    let all = {
+        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        store.workspaces()
+    };
+    let wanted: Vec<(String, PathBuf)> = all
+        .iter()
+        .filter_map(|ws| resolve_root(ws).map(|(root, _)| (ws.id.clone(), root)))
+        .collect();
+
+    let handle = app.clone();
+    state.watchers.sync(&wanted, move |workspace_id| {
+        use tauri::Emitter;
+        let _ = handle.emit("tasks://changed", TasksChanged { workspace_id });
+    });
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TasksChanged {
+    workspace_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

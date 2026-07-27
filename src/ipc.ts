@@ -89,3 +89,6 @@ export const resolveTask = (workspaceId: string, id: string) =>
 export const taskCapabilities = (workspaceId: string) =>
   invoke<ProviderCapabilities | null>("tasks_capabilities", { workspaceId });
 export const taskOpenCounts = () => invoke<Record<string, number>>("tasks_open_counts");
+export const taskWatchSync = () => invoke<void>("tasks_watch_sync");
+export const onTasksChanged = (cb: (workspaceId: string) => void): Promise<UnlistenFn> =>
+  listen<{ workspaceId: string }>("tasks://changed", (e) => cb(e.payload.workspaceId));

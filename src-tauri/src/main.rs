@@ -75,6 +75,7 @@ fn main() {
                 listener_port: port,
                 reporter_path: reporter_path(),
                 scheduler_ready: scheduler_ready.clone(),
+                watchers: std::sync::Arc::new(tasks::watch::TaskWatchers::new()),
             });
 
             // Scheduled scenarios: the backend decides *when* and emits
@@ -135,6 +136,7 @@ fn main() {
             tasks_cmd::tasks_resolve,
             tasks_cmd::tasks_capabilities,
             tasks_cmd::tasks_open_counts,
+            tasks_cmd::tasks_watch_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");
