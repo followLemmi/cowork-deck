@@ -2652,6 +2652,12 @@ Prepend to `crates/cowork-memory/src/onnx.rs`:
 use crate::embed::Embedder;
 use anyhow::{bail, Context, Result};
 use ndarray::Array2;
+
+/// The dimension `paraphrase-multilingual-MiniLM-L12-v2` produces. The probe
+/// checks against it, so a differently sized model fails loudly at load rather
+/// than quietly poisoning the index.
+const EXPECTED_DIM: usize = 384;
+const MODEL_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::TensorRef;
 use std::path::Path;
@@ -2701,12 +2707,31 @@ impl OnnxEmbedder {
         let e = OnnxEmbedder { session, tokenizer, has_token_type_ids, dim: 0 };
         let probe = e.forward(&["проверка".to_string()])?;
         let v = &probe[0];
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if v.is_empty() || !v.iter().all(|x| x.is_finite()) || (norm - 1.0).abs() > 1e-2 {
-            bail!("model loaded but produced an invalid probe vector — the file is likely corrupt");
+
+        // What this actually guarantees, stated plainly: the graph loads and
+        // produces finite numbers of the expected width. It does NOT
+        // authenticate the model — `forward` L2-normalises its own output, so
+        // the unit-norm test passes for any non-degenerate hidden state. The
+        // width check is what carries the weight here: it rejects a different
+        // model variant, which is the realistic way a wrong file gets staged.
+        // A different 384-dimensional sentence transformer would still pass,
+        // and that is accepted: it degrades retrieval quality rather than
+        // breaking correctness, and the corpus is re-indexed with it wholesale.
+        if !v.iter().all(|x| x.is_finite()) {
+            bail!("model loaded but produced a non-finite probe vector — the file is likely corrupt");
         }
-        let dim = v.len();
-        Ok(OnnxEmbedder { dim, ..e })
+        if v.len() != EXPECTED_DIM {
+            bail!(
+                "model produced {}-dimensional vectors, expected {EXPECTED_DIM} — \
+                 this is not {MODEL_REPO}",
+                v.len()
+            );
+        }
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if (norm - 1.0).abs() > 1e-2 {
+            bail!("probe vector is not unit length ({norm}) — the file is likely corrupt");
+        }
+        Ok(OnnxEmbedder { dim: v.len(), ..e })
     }
 
     fn forward(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
