@@ -10,12 +10,37 @@ pub enum SessionState {
     Error,
 }
 
+/// Привязка воркспейса к GitHub-аккаунту.
+///
+/// Здесь лежит ТОЛЬКО имя аккаунта — публичное значение. Токен не хранится
+/// ни тут, ни где-либо ещё в приложении: он читается из keyring `gh` в момент
+/// старта сессии и живёт лишь в памяти дочернего процесса.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkspaceGithub {
+    /// Хост GitHub. В UI всегда "github.com"; поле существует, чтобы GHES
+    /// можно было добавить без миграции файла.
+    pub host: String,
+    /// Имя аккаунта в gh (как в `gh auth status`).
+    pub login: String,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "gitName")]
+    pub git_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "gitEmail")]
+    pub git_email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "sshKey")]
+    pub ssh_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: String,
     pub name: String,
     pub path: String,
     pub color: String,
+    /// Привязка к GitHub-аккаунту. Отсутствует в файлах, записанных до
+    /// появления фичи; None не сериализуется, поэтому непривязанные
+    /// воркспейсы сохраняют прежнюю форму на диске.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<WorkspaceGithub>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,5 +214,41 @@ mod tests {
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
+    }
+
+    #[test]
+    fn old_workspace_without_github_deserializes_to_none() {
+        let old = r##"{"id":"w1","name":"proj","path":"/tmp/proj","color":"#61afef"}"##;
+        let ws: Workspace = serde_json::from_str(old).unwrap();
+        assert!(ws.github.is_none());
+    }
+
+    #[test]
+    fn workspace_without_github_serializes_without_the_field() {
+        let ws = Workspace {
+            id: "w1".into(), name: "proj".into(), path: "/tmp/proj".into(),
+            color: "#61afef".into(), github: None,
+        };
+        let json = serde_json::to_string(&ws).unwrap();
+        assert!(!json.contains("github"), "старая форма файла должна остаться байт-в-байт: {json}");
+    }
+
+    #[test]
+    fn workspace_github_round_trips_with_camel_case_keys() {
+        let ws = Workspace {
+            id: "w1".into(), name: "proj".into(), path: "/tmp/proj".into(), color: "#61afef".into(),
+            github: Some(WorkspaceGithub {
+                host: "github.com".into(),
+                login: "followLemmi".into(),
+                git_name: Some("Evgeny".into()),
+                git_email: Some("e@example.com".into()),
+                ssh_key: None,
+            }),
+        };
+        let json = serde_json::to_string(&ws).unwrap();
+        assert!(json.contains(r#""gitName":"Evgeny""#), "{json}");
+        assert!(!json.contains("sshKey"), "пустые поля не сериализуются: {json}");
+        let back: Workspace = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.github, ws.github);
     }
 }

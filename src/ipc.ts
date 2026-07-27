@@ -2,7 +2,20 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type SessionState = "idle" | "working" | "waitingInput" | "ended" | "error";
-export interface Workspace { id: string; name: string; path: string; color: string; }
+/** Привязка воркспейса к GitHub-аккаунту. Здесь только имя аккаунта —
+ *  публичное значение. Токены приложение не хранит: они читаются из keyring
+ *  `gh` на старте сессии и живут лишь в памяти дочернего процесса. */
+export interface WorkspaceGithub {
+  host: string;
+  login: string;
+  gitName?: string;
+  gitEmail?: string;
+  sshKey?: string;
+}
+export interface Workspace {
+  id: string; name: string; path: string; color: string;
+  github?: WorkspaceGithub | null;
+}
 export type SchedulePreset =
   | { kind: "hourly"; minute: number }
   | { kind: "daily"; hour: number; minute: number }

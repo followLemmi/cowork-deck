@@ -177,7 +177,7 @@ mod tests {
     fn empty_store_reads_empty_then_upserts_and_deletes() {
         let s = Store::new(tmp());
         assert!(s.workspaces().is_empty());
-        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into() };
+        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into(), github: None };
         let after = s.upsert_workspace(w.clone()).unwrap();
         assert_eq!(after.len(), 1);
         // reload from disk
@@ -216,6 +216,7 @@ mod tests {
             name: "First".into(),
             path: "/tmp/a".into(),
             color: "#111111".into(),
+            github: None,
         };
         s.upsert_workspace(w1.clone()).unwrap();
 
@@ -237,6 +238,7 @@ mod tests {
             name: "Second".into(),
             path: "/tmp/b".into(),
             color: "#222222".into(),
+            github: None,
         };
         let result = s.upsert_workspace(w2);
         assert!(
