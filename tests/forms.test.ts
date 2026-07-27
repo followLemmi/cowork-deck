@@ -60,7 +60,7 @@ describe("workspaceForm", () => {
   });
 });
 
-describe("workspaceForm — трекер", () => {
+describe("workspaceForm — tracker", () => {
   const ov = () => document.querySelector(".modal-overlay")!;
   const fill = () => {
     ov().querySelector<HTMLInputElement>(".form-name")!.value = "deck";
@@ -104,10 +104,40 @@ describe("workspaceForm — трекер", () => {
     ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
     ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
     ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
-    // Пустой путь — опечатка, а не «выключено»: форма остаётся открытой.
+    // An empty path is a typo, not "off": the form stays open.
     expect(document.querySelector(".modal-overlay")).not.toBeNull();
     ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
     await expect(p).resolves.toBeNull();
+  });
+
+  it("fills the tracker root via its own pickFolder button", async () => {
+    pickFolderMock.mockResolvedValueOnce("/home/u/vault/Tasks");
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    ov().querySelector<HTMLButtonElement>(".tk-f-pick")!.click();
+    await Promise.resolve();
+    expect(ov().querySelector<HTMLInputElement>(".tk-f-path")!.value).toBe("/home/u/vault/Tasks");
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.tracker).toEqual({
+      providers: [{ type: "fs", root: { kind: "path", path: "/home/u/vault/Tasks" } }],
+    });
+  });
+
+  // The pick button sits beside the field inside one row. Toggling visibility on
+  // the field alone left the button stranded on an otherwise empty line.
+  it("hides the pick button together with the tracker path field", () => {
+    workspaceForm();
+    const row = () => ov().querySelector<HTMLElement>(".tk-f-path")!.closest(".form-pathrow")!;
+    expect(row().classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    expect(row().classList.contains("tk-hidden")).toBe(false);
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=project]")!.click();
+    expect(row().classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
   });
 
   it("pre-fills from an existing workspace so editing does not wipe the config", async () => {

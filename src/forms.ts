@@ -158,10 +158,26 @@ export function workspaceForm(
     trackerPath.className = "modal-input tk-f-path";
     trackerPath.type = "text";
     trackerPath.placeholder = "/home/…/vault/Tasks";
+    // Same native picker as the project folder above. Typing an absolute path
+    // by hand is the one thing a desktop app should not ask for, and this field
+    // is the more likely of the two to point somewhere far from the project.
+    const trackerPick = document.createElement("button");
+    trackerPick.className = "form-pick tk-f-pick";
+    trackerPick.type = "button";
+    trackerPick.textContent = "Choose folder…";
+    trackerPick.onclick = async () => {
+      const p = await pickFolder();
+      if (p) trackerPath.value = p;
+    };
+    const trackerPathRow = document.createElement("div");
+    trackerPathRow.className = "form-pathrow";
+    trackerPathRow.append(trackerPath, trackerPick);
 
     const syncTracker = () => {
       rootRow.classList.toggle("tk-hidden", !onInput.checked);
-      trackerPath.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
+      // Hide the row, not just the input: the pick button lives beside it and
+      // would otherwise stay behind on its own.
+      trackerPathRow.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
     };
     onInput.onchange = syncTracker;
     projectRadio.onchange = syncTracker;
@@ -183,7 +199,7 @@ export function workspaceForm(
     error.className = "form-error"; error.style.display = "none";
     const { row, ok, cancel } = actions();
     box.append(title, labeled("Name", name), labeled("Folder", pathRow), colorRow,
-      onRow, rootRow, trackerPath, error, row);
+      onRow, rootRow, trackerPathRow, error, row);
 
     const close = (v: WorkspaceFormResult | null) => { closeDialog(); resolve(v); };
     const submit = () => {
