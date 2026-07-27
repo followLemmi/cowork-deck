@@ -7,6 +7,7 @@ import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
+import { runBoot } from "./boot";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm } from "./forms";
@@ -24,26 +25,38 @@ sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
-async function boot() {
-  await deck.wireEvents();
-  await onScheduledFire((skillId, occurrenceMs) => {
-    void handleScheduledFire(skillId).then(async (outcome) => {
-      if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
-      // Tell the backend what came of it: an occurrence it emitted counts as
-      // a run only once a session has actually started.
-      await scheduleAck(skillId, occurrenceMs, outcome).catch((e) =>
-        console.warn("schedule ack failed:", skillId, e));
-    });
-  });
-  await workspaces.load();
-  await skills.load();
-  const entries = await loadLayout();
-  if (entries.length) await deck.restore(entries);
-  deck.setActiveWorkspace(workspaces.active?.id ?? null);
-  // Release the backend scheduler only once skills/workspaces are loaded, so a
-  // catch-up fire arriving immediately can be resolved to a scenario.
-  await schedulerReady();
-}
+const boot = () => runBoot({
+  steps: [
+    () => deck.wireEvents(),
+    () => onScheduledFire((skillId, occurrenceMs) => {
+      void handleScheduledFire(skillId).then(async (outcome) => {
+        if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
+        // Tell the backend what came of it: an occurrence it emitted counts as
+        // a run only once a session has actually started.
+        await scheduleAck(skillId, occurrenceMs, outcome).catch((e) =>
+          console.warn("schedule ack failed:", skillId, e));
+      });
+    }).then(() => {}),
+    () => workspaces.load(),
+    () => skills.load(),
+    async () => {
+      const entries = await loadLayout();
+      if (entries.length) await deck.restore(entries);
+    },
+    () => { deck.setActiveWorkspace(workspaces.active?.id ?? null); },
+  ],
+  // Sent last so a catch-up fire arriving immediately can be resolved to a
+  // scenario — but sent even if a step above failed, or the scheduler stays
+  // parked forever.
+  releaseScheduler: schedulerReady,
+  onError: (e) => {
+    console.error("boot failed:", e);
+    void alertModal(
+      "Приложение запустилось не полностью — часть сессий или настроек могла не загрузиться. " +
+      "Перезапустите приложение; если повторится, посмотрите консоль разработчика.",
+    );
+  },
+});
 
 /** Why a scheduled fire did or did not produce a run. The backend-driven path
  *  only logs it; a user-initiated run surfaces it in a modal. */
