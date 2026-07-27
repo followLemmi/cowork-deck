@@ -42,7 +42,40 @@ const PATHS: Record<string, string> = {
     + '<path d="M11.5 5 v1.4 a2.6 2.6 0 0 1-2.6 2.6 H7.1 a2.6 2.6 0 0 0-2.6 2.6"/>',
   play: '<path d="M5.8 3.6 l7 4.4 -7 4.4 z" fill="currentColor" stroke="none"/>',
   plus: '<path d="M8 3.5 V12.5"/><path d="M3.5 8 H12.5"/>',
+
+  // --- Scenario icons -----------------------------------------------------
+  // Offered in the scenario form instead of free-text emoji. Same grid and
+  // stroke as the service set, so a user's choice cannot reintroduce the
+  // mismatch this whole set exists to remove.
+  rocket: '<path d="M8 2.5 c2.4 1.8 3.4 4.2 3.2 7.2 l-3.2 2.3 -3.2-2.3 c-.2-3 .8-5.4 3.2-7.2 z"/>'
+    + '<circle cx="8" cy="6.6" r="1.2"/><path d="M5.6 11.2 L4 13.5 l2.6-.7"/>'
+    + '<path d="M10.4 11.2 L12 13.5 l-2.6-.7"/>',
+  bug: '<rect x="5" y="5.5" width="6" height="7" rx="3"/><path d="M6.2 4 l1.1 1.5"/>'
+    + '<path d="M9.8 4 l-1.1 1.5"/><path d="M5 7.5 H2.8"/><path d="M11 7.5 H13.2"/>'
+    + '<path d="M5 10.5 H2.8"/><path d="M11 10.5 H13.2"/>',
+  search: '<circle cx="7" cy="7" r="4"/><path d="M10 10 L13.5 13.5"/>',
+  check: '<polyline points="3.5,8.5 6.5,11.5 12.5,4.5"/>',
+  flask: '<path d="M6.5 2.5 v4 L3.2 12 a1 1 0 0 0 .9 1.5 h7.8 a1 1 0 0 0 .9-1.5 L9.5 6.5 v-4"/>'
+    + '<path d="M5.8 2.5 h4.4"/><path d="M4.8 9.5 h6.4"/>',
+  book: '<path d="M3 3.5 h4 a2 2 0 0 1 2 2 v8 a1.6 1.6 0 0 0-1.6-1.2 H3 z"/>'
+    + '<path d="M13 3.5 H9 a2 2 0 0 0-2 2 v8 a1.6 1.6 0 0 1 1.6-1.2 H13 z"/>',
+  broom: '<path d="M9.5 2.5 L6 6"/><path d="M4 8 l4-4 4 4 -4 1.5 z"/>'
+    + '<path d="M5.4 9.6 L3.5 13.5"/><path d="M8 9.9 v3.6"/><path d="M10.6 9.6 L12.5 13.5"/>',
+  chart: '<path d="M2.5 13.5 H13.5"/><path d="M4.5 13.5 V9"/><path d="M8 13.5 V4.5"/>'
+    + '<path d="M11.5 13.5 V7"/>',
+  shield: '<path d="M8 2.5 l4.5 1.8 v3.6 c0 2.6-1.8 4.6-4.5 5.6 -2.7-1-4.5-3-4.5-5.6 V4.3 z"/>',
+  wrench: '<path d="M10.8 2.8 a3.6 3.6 0 0 0-4.6 4.6 L2.8 10.8 a1.4 1.4 0 0 0 2 2 l3.4-3.4 '
+    + 'a3.6 3.6 0 0 0 4.6-4.6 L11 6.6 9.4 5 z"/>',
+  sparkle: '<path d="M8 2.5 l1.3 3.6 3.6 1.3 -3.6 1.3 -1.3 3.6 -1.3-3.6 -3.6-1.3 3.6-1.3 z"/>'
+    + '<path d="M12.6 11 l.5 1.4 1.4.5 -1.4.5 -.5 1.4 -.5-1.4 -1.4-.5 1.4-.5 z"/>',
 };
+
+/** Icons offered as a scenario's mark. `play` is the default and comes from
+ *  the service set. */
+export const SCENARIO_ICONS = [
+  "play", "rocket", "bug", "search", "check", "flask",
+  "book", "broom", "chart", "shield", "wrench", "sparkle",
+] as const;
 
 export const ICON_NAMES = Object.keys(PATHS);
 export type IconName = keyof typeof PATHS & string;

@@ -338,3 +338,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tile-git .icon, .sk-sched .icon { width: 12px; height: 12px; display: inline-block;
   vertical-align: -2px; }
 .tile-sched-mark { width: 12px; height: 12px; flex: none; color: var(--accent); }
+.form-icon-swatch { width: 26px; height: 26px; border-radius: var(--r-sm);
+  background: var(--bg-app); color: var(--fg-muted); display: inline-flex;
+  align-items: center; justify-content: center; border: 1px solid var(--border); }
+.form-icon-swatch.selected { color: var(--accent); border-color: var(--accent); }
+.sk-run .icon { display: inline-block; vertical-align: -3px; }

@@ -8,6 +8,7 @@ import type { Schedule, SchedulePreset } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule, schedulePreview } from "./schedule";
 import { openDialog } from "./dialog-shell";
+import { icon, SCENARIO_ICONS, type IconName } from "./icons";
 
 const COLORS = ["#61afef", "#98c379", "#e5c07b", "#c678dd", "#e06c75", "#56b6c2"];
 
@@ -137,9 +138,34 @@ export function skillForm(
     name.className = "modal-input form-name"; name.type = "text";
     name.value = initial?.name ?? "";
 
-    const icon = document.createElement("input");
-    icon.className = "modal-input form-icon"; icon.type = "text";
-    icon.value = initial?.icon ?? ""; icon.placeholder = "▶";
+    // Free-text emoji was the one remaining way to put a foreign glyph next to
+    // the icon set — the exact mismatch the set exists to remove. Stored as an
+    // icon name; the Rust field is a String either way, so no migration. An
+    // emoji saved earlier stays as it is and still renders.
+    let iconName = initial?.icon ?? "play";
+    const iconPicker = document.createElement("div");
+    iconPicker.className = "form-swatches";
+    iconPicker.setAttribute("role", "radiogroup");
+    iconPicker.setAttribute("aria-label", "Значок сценария");
+    for (const n of SCENARIO_ICONS) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "form-swatch form-icon-swatch";
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-label", n);
+      b.setAttribute("aria-checked", String(n === iconName));
+      b.classList.toggle("selected", n === iconName);
+      b.append(icon(n as IconName));
+      b.onclick = () => {
+        iconName = n;
+        for (const other of iconPicker.querySelectorAll(".form-icon-swatch")) {
+          other.classList.remove("selected");
+          other.setAttribute("aria-checked", "false");
+        }
+        b.classList.add("selected");
+        b.setAttribute("aria-checked", "true");
+      };
+      iconPicker.append(b);
+    }
 
     const promptField = document.createElement("textarea");
     promptField.className = "modal-input form-prompt"; promptField.rows = 4;
@@ -274,7 +300,7 @@ export function skillForm(
 
     const { row, ok, cancel } = actions();
     box.append(
-      title, labeled("Имя", name), labeled("Значок", icon),
+      title, labeled("Имя", name), labeled("Значок", iconPicker),
       labeled("Задание", promptField), labeled("Только для текущего пространства", scope),
       labeled("По расписанию", schedEnabled), schedBody, schedError, row,
     );
@@ -289,7 +315,7 @@ export function skillForm(
       const v = validateSchedule(schedEnabled.checked, preset, pr, defaults);
       if (!v.ok) return showError(schedError, v.error);
       close({
-        name: n, icon: icon.value.trim() || "▶", prompt: pr,
+        name: n, icon: iconName, prompt: pr,
         workspaceId: scope.checked ? activeWorkspaceId : null,
         // Unticking pauses, it does not erase: keeping the rule and the
         // defaults is what makes "off for a week" a checkbox instead of a

@@ -2,7 +2,7 @@ import { listSkills, saveSkill, removeSkill, loadScheduleState, type ScheduleRun
 import { confirmModal } from "./modal";
 import { skillForm } from "./forms";
 import { scheduleRowText } from "./schedule";
-import { iconButton } from "./icons";
+import { icon, iconButton, SCENARIO_ICONS, type IconName } from "./icons";
 
 /** A scenario pinned to a workspace that no longer exists. It cannot run —
  *  `resolveScheduledWorkspace` refuses rather than picking the wrong folder —
@@ -29,6 +29,14 @@ export function visibleSkills(
     || s.workspaceId === activeWorkspaceId
     || s.schedule?.enabled // fires regardless of what is on screen
     || isOrphan(s, knownWorkspaceIds));
+}
+
+/** A scenario's mark: an icon name renders from the sprite, anything else is
+ *  an emoji saved before the picker existed and is shown untouched. */
+function scenarioMark(name: string): Node {
+  return (SCENARIO_ICONS as readonly string[]).includes(name)
+    ? icon(name as IconName, 14)
+    : document.createTextNode(name);
 }
 
 export class SkillsPanel {
@@ -110,7 +118,8 @@ export class SkillsPanel {
       const orphan = isOrphan(s, this.getWorkspaceIds());
       if (orphan) row.classList.add("sk-orphan");
       const run = document.createElement("button");
-      run.className = "sk-run"; run.textContent = `${s.icon} ${s.name}`;
+      run.className = "sk-run";
+      run.append(scenarioMark(s.icon), document.createTextNode(` ${s.name}`));
       run.title = orphan
         ? "Пространство этого сценария удалено — запустить нельзя. Откройте изменение и выберите пространство."
         : s.prompt;
