@@ -460,8 +460,10 @@ dropped — a silently vanished task is the worst tracker bug there is."
 `src-tauri/Cargo.toml` — в `[dependencies]`:
 
 ```toml
-ulid = "1"
+ulid = "3"
 ```
+
+Версия и имя функции проверены на живом крейте: в `ulid` 3.x генератор — `Ulid::generate()`, **не** `Ulid::new()` (та была в 1.x). Результат — 26 символов, лексикографически монотонный во времени, на чём и держится сортировка карточек.
 
 и новая секция в конце файла:
 
@@ -780,7 +782,7 @@ impl TaskProvider for FsTaskProvider {
 
     fn create(&self, draft: TaskDraft) -> Result<Task, TaskError> {
         self.ensure_root()?;
-        let id = ulid::Ulid::new().to_string();
+        let id = ulid::Ulid::generate().to_string();
         let name = format!("{}-{}.md", id, slugify(&draft.title));
         let path = self.root.join(&name);
         let card = Task {
