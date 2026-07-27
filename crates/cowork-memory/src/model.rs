@@ -109,6 +109,16 @@ pub fn download_one(
 
     let got = std::fs::metadata(&part)?.len();
     if got != f.expected {
+        if got > f.expected {
+            // Only an oversized .part is unrecoverable. A server that ignores
+            // Range re-sends the whole body, append grows the file past the
+            // target, and from then on every run breaks out at
+            // `have >= expected` and fails here identically — with no route
+            // back to a good download short of deleting the file by hand.
+            // Discard it so the next attempt starts clean. A short .part is
+            // kept: that is the ordinary resume case and it is worth bytes.
+            let _ = std::fs::remove_file(&part);
+        }
         bail!("{} is {got} bytes, expected {}", f.name, f.expected);
     }
     std::fs::rename(&part, &final_path)?;
@@ -186,6 +196,36 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A server that ignores Range re-sends the whole body, which append grows
+    /// past the target. Without discarding the result, the download is wedged
+    /// for good.
+    #[test]
+    fn an_oversized_part_is_discarded_so_the_next_attempt_can_recover() {
+        struct IgnoresRange {
+            body: Vec<u8>,
+        }
+        impl Fetcher for IgnoresRange {
+            fn fetch(&self, _url: &str, _from: u64) -> anyhow::Result<Box<dyn std::io::Read>> {
+                Ok(Box::new(Cursor::new(self.body.clone())))
+            }
+        }
+
+        let dir = tmp("oversize");
+        let file = ModelFile { url: "x".into(), name: "model.onnx", expected: 1000 };
+        // What an interrupted earlier run would have left behind.
+        fs::write(dir.join("model.onnx.part"), vec![1u8; 600]).unwrap();
+
+        let err = download_one(&dir, &file, &IgnoresRange { body: vec![2u8; 1000] }, &mut |_, _| {})
+            .unwrap_err();
+        assert!(err.to_string().contains("expected"), "got: {err}");
+        assert!(
+            !dir.join("model.onnx.part").exists(),
+            "an oversized .part must not survive, or every later attempt fails the same way"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn is_present_requires_both_files_at_exact_size() {
         let dir = tmp("present");
@@ -193,6 +233,16 @@ mod tests {
         fs::write(dir.join("model.onnx"), vec![0u8; 10]).unwrap();
         fs::write(dir.join("tokenizer.json"), vec![0u8; 10]).unwrap();
         assert!(!is_present(&dir), "wrong sizes must not count as present");
+
+        // The success path too: this is the gate task 10 uses to skip the
+        // download entirely, so it must be able to return true. set_len makes
+        // a sparse file — allocating 470 MB in a unit test would not do.
+        for f in files() {
+            let fh = fs::File::create(dir.join(f.name)).unwrap();
+            fh.set_len(f.expected).unwrap();
+        }
+        assert!(is_present(&dir), "both files at their exact size must count as present");
+
         fs::remove_dir_all(&dir).unwrap();
     }
 }
