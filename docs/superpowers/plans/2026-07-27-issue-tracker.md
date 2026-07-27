@@ -1244,7 +1244,7 @@ Watcher — это только ускорение. Доска в Task 8 всё 
 
 **Interfaces:**
 - Consumes: `tasks_cmd::resolve_root`, `commands::AppState`.
-- Produces: `tasks::watch::{TaskWatchers, debounce_keys}`; TS `onTasksChanged(cb)`, `taskWatchSync()`.
+- Produces: `tasks::watch::{TaskWatchers, card_hits, is_card_path}`; TS `onTasksChanged(cb)`, `taskWatchSync()`.
 
 - [ ] **Step 1: Добавить зависимость**
 
@@ -1264,14 +1264,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn collapses_repeated_workspace_ids_preserving_first_seen_order() {
-        let got = debounce_keys(&["w2".into(), "w1".into(), "w2".into(), "w2".into()]);
-        assert_eq!(got, vec!["w2".to_string(), "w1".to_string()]);
+    fn empty_burst_has_no_hits() {
+        assert_eq!(card_hits(&[]), 0);
     }
 
     #[test]
-    fn empty_burst_yields_nothing() {
-        assert!(debounce_keys(&[]).is_empty());
+    fn only_markdown_paths_count_as_hits() {
+        let burst: Vec<std::path::PathBuf> = vec![
+            "/r/01ABC-slug.md".into(),
+            "/r/.01ABC-slug.md.tmp".into(),
+            "/r/readme.txt".into(),
+        ];
+        assert_eq!(card_hits(&burst), 1, "our own temp write must not wake the UI");
+    }
+
+    #[test]
+    fn several_cards_in_one_burst_are_all_counted() {
+        let burst: Vec<std::path::PathBuf> =
+            vec!["/r/a.md".into(), "/r/b.md".into(), "/r/c.md".into()];
+        assert_eq!(card_hits(&burst), 3, "a count, not a boolean");
     }
 
     #[test]
@@ -1286,17 +1297,19 @@ mod tests {
 - [ ] **Step 3: Запустить — должно упасть**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib`
-Expected: FAIL — `cannot find function debounce_keys`.
+Expected: FAIL — `cannot find function card_hits`.
 
 - [ ] **Step 4: Написать watcher**
 
 Дописать в начало `src-tauri/src/tasks/watch.rs`:
 
 ```rust
-//! Directory watching. Deliberately thin: all logic that can be tested without
-//! a real filesystem lives in `debounce_keys`/`is_card_path`. A watcher that
-//! fails to start is not an error — the board polls anyway, so the only
-//! consequence is latency.
+//! Directory watching. Deliberately thin: the parts testable without a real
+//! filesystem live in `card_hits`/`is_card_path`. The deadline loop itself is
+//! verified by reasoning rather than by a test — a real-inotify test is flaky,
+//! and the loop's termination follows from the deadline being fixed at
+//! first-event time rather than sliding. A watcher that fails to start is not
+//! an error: the board polls anyway, so the only consequence is latency.
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1305,15 +1318,10 @@ use std::time::Duration;
 
 const DEBOUNCE: Duration = Duration::from_millis(200);
 
-/// Distinct workspace ids from a burst of events, in first-seen order.
-pub fn debounce_keys(burst: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for k in burst {
-        if !out.iter().any(|s| s == k) {
-            out.push(k.clone());
-        }
-    }
-    out
+/// How many paths in one burst are cards. The thread calls this; it is the
+/// filter that decides whether a burst is worth waking the UI for.
+pub fn card_hits(paths: &[PathBuf]) -> usize {
+    paths.iter().filter(|p| is_card_path(p)).count()
 }
 
 /// Only `.md` files are cards; our temp files end in `.tmp` and must not wake
@@ -1339,11 +1347,20 @@ impl TaskWatchers {
     where
         F: Fn(String) + Send + Clone + 'static,
     {
-        let Ok(mut map) = self.inner.lock() else { return };
-        map.retain(|id, (root, _)| wanted.iter().any(|(w, r)| w == id && r == root));
+        // Which roots are already watched — read under the lock, then release it.
+        // Creating a watcher touches the filesystem (`inotify_add_watch`) and
+        // spawns a thread; holding the map lock across either would violate the
+        // project's "no lock across blocking IO" rule, and a panic in
+        // `spawn` while holding it would poison the lock and silently disable
+        // every future sync.
+        let already: Vec<String> = match self.inner.lock() {
+            Ok(map) => map.keys().cloned().collect(),
+            Err(_) => return,
+        };
 
+        let mut created: Vec<(String, PathBuf, RecommendedWatcher)> = Vec::new();
         for (id, root) in wanted {
-            if map.contains_key(id) { continue; }
+            if already.contains(id) { continue; }
             if !root.is_dir() { continue; }
             let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
             let Ok(mut watcher) = RecommendedWatcher::new(tx, notify::Config::default()) else {
@@ -1355,18 +1372,18 @@ impl TaskWatchers {
 
             let id_for_thread = id.clone();
             let cb = on_change.clone();
-            std::thread::spawn(move || {
+            let spawned = std::thread::Builder::new().spawn(move || {
                 // Coalesce a burst into a single notification: an editor save
                 // is several events, and the UI only needs to know "reload".
                 while let Ok(first) = rx.recv() {
                     let mut hits = match first {
-                        Ok(ev) => ev.paths.iter().filter(|p| is_card_path(p)).count(),
+                        Ok(ev) => card_hits(&ev.paths),
                         Err(_) => 0,
                     };
                     let deadline = std::time::Instant::now() + DEBOUNCE;
                     while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
                         match rx.recv_timeout(left) {
-                            Ok(Ok(ev)) => hits += ev.paths.iter().filter(|p| is_card_path(p)).count(),
+                            Ok(Ok(ev)) => hits += card_hits(&ev.paths),
                             Ok(Err(_)) => {}
                             Err(_) => break,
                         }
@@ -1376,8 +1393,19 @@ impl TaskWatchers {
                     }
                 }
             });
+            // Thread-creation failure joins the same per-root isolation path as
+            // every other failure here.
+            if spawned.is_err() { continue; }
 
-            map.insert(id.clone(), (root.clone(), watcher));
+            created.push((id.clone(), root.clone(), watcher));
+        }
+
+        // Now the only lock-holding work is bookkeeping.
+        if let Ok(mut map) = self.inner.lock() {
+            map.retain(|id, (root, _)| wanted.iter().any(|(w, r)| w == id && r == root));
+            for (id, root, watcher) in created {
+                map.insert(id, (root, watcher));
+            }
         }
     }
 }
