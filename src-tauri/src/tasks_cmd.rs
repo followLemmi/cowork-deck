@@ -4,10 +4,27 @@
 use crate::commands::AppState;
 use crate::model::{TrackerProvider, TrackerRoot, Workspace};
 use crate::tasks::fs::FsTaskProvider;
-use crate::tasks::model::{Task, TaskDraft};
+use crate::tasks::model::{Task, TaskDraft, TaskKind, TaskOrigin};
 use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
+use serde::Deserialize;
 use std::path::PathBuf;
 use tauri::State;
+
+/// What the frontend is allowed to supply when creating a card. Deliberately
+/// narrower than `tasks::model::TaskDraft`: `project` is always this
+/// workspace's name (the caller does not get to pick it), and `origin`/
+/// `session` are set by the backend to `Human`/`None` — every card created
+/// through IPC is human-created by definition, so this type has no field
+/// through which a caller could claim otherwise. `deny_unknown_fields` turns
+/// an attempt to smuggle e.g. `"origin":"session"` into a hard deserialize
+/// error instead of a silently ignored key.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskDraftInput {
+    pub title: String,
+    pub kind: TaskKind,
+    pub body: String,
+}
 
 /// The provider root for a workspace, plus whether we may create it.
 /// `None` means "no tracker configured" — a legal, non-error state.
@@ -61,13 +78,22 @@ pub fn tasks_list(state: State<AppState>, workspace_id: String) -> Result<Vec<Ta
 pub fn tasks_create(
     state: State<AppState>,
     workspace_id: String,
-    draft: TaskDraft,
+    draft: TaskDraftInput,
 ) -> Result<Task, String> {
     let ws = workspace(&state, &workspace_id)?;
     let p = provider_for(&ws)?;
-    // The caller does not get to pick the project: it is always this
-    // workspace's name, so a shared root stays sortable by project.
-    let draft = TaskDraft { project: ws.name.clone(), ..draft };
+    // project/origin/session are never taken from the caller: project is
+    // always this workspace's name, and every card created through IPC is
+    // human-created by definition (the `cowork_task` CLI is the only path
+    // that produces `origin: Session`, and it writes files directly).
+    let draft = TaskDraft {
+        title: draft.title,
+        kind: draft.kind,
+        body: draft.body,
+        project: ws.name.clone(),
+        origin: TaskOrigin::Human,
+        session: None,
+    };
     p.create(draft).map_err(|e| e.to_string())
 }
 
@@ -147,5 +173,24 @@ mod tests {
     fn no_tracker_is_a_legal_state_not_an_error() {
         assert!(resolve_root(&ws(None)).is_none());
         assert!(resolve_root(&ws(Some(TrackerConfig { providers: vec![] }))).is_none());
+    }
+
+    #[test]
+    fn task_draft_input_deserializes_from_exactly_what_the_frontend_sends() {
+        let json = r#"{"title":"Fix the thing","kind":"bug","body":"details here"}"#;
+        let draft: TaskDraftInput = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(draft.title, "Fix the thing");
+        assert!(matches!(draft.kind, crate::tasks::model::TaskKind::Bug));
+        assert_eq!(draft.body, "details here");
+    }
+
+    #[test]
+    fn task_draft_input_rejects_a_smuggled_origin_field() {
+        // deny_unknown_fields: a payload that tries to claim `origin: session`
+        // must fail to deserialize rather than silently drop the key — the
+        // guarantee is that IPC cannot forge a card's origin at all.
+        let json = r#"{"title":"t","kind":"bug","body":"b","origin":"session"}"#;
+        let result: Result<TaskDraftInput, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "smuggled `origin` must be rejected, got {result:?}");
     }
 }

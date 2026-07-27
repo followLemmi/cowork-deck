@@ -74,6 +74,8 @@ export interface Task {
   /** Больше одного файла с этим id. */
   conflict: boolean;
 }
+// project/origin are set by the backend (workspace name / "human") and are
+// deliberately not settable from here — see tasks_cmd::TaskDraftInput.
 export interface TaskDraft { title: string; kind: TaskKind; body: string; }
 export interface ProviderCapabilities { canCreate: boolean; canResolve: boolean; statuses: string[] }
 export type TrackerRoot = { kind: "project" } | { kind: "path"; path: string };
