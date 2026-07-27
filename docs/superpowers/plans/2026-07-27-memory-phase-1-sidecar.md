@@ -388,10 +388,11 @@ This is the highest-risk task in the phase. Everything downstream depends on chu
 
 > **Before generating the golden file, confirm the reference is the fixed version:**
 > ```bash
-> grep -n "has_tldr_chunk" ~/.claude/bin/vault_index.py
+> grep -c "has_tldr_chunk" ~/.claude/bin/vault_index.py
 > ```
-> Two hits expected. No hits means an unfixed copy (another machine, a Dropbox
-> conflict) — do not generate the golden file from it.
+> Exactly `3` expected — the assignment, the emit condition, and the threshold
+> gate. `0` means an unfixed copy (another machine, a Dropbox conflict): do not
+> generate the golden file from it, and report NEEDS_CONTEXT instead.
 
 - [ ] **Step 1: Write the fixture notes**
 
