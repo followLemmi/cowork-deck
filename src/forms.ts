@@ -4,7 +4,8 @@
 // their own DOM here rather than extending modal.ts's single-field helpers.
 
 import { pickFolder } from "./dialog";
-import type { Schedule, SchedulePreset } from "./ipc";
+import { ghStatus, type Schedule, type SchedulePreset, type WorkspaceGithub } from "./ipc";
+import { accountChoices } from "./github";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule } from "./schedule";
 
@@ -45,8 +46,8 @@ function actions(): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButto
  *  a color swatch picker. Resolves the collected values on OK, or null on
  *  Cancel/backdrop click. */
 export function workspaceForm(
-  initial?: { name: string; path: string; color: string },
-): Promise<{ name: string; path: string; color: string } | null> {
+  initial?: { name: string; path: string; color: string; github?: WorkspaceGithub | null },
+): Promise<{ name: string; path: string; color: string; github: WorkspaceGithub | null } | null> {
   return new Promise((resolve) => {
     const { overlay: ov, box } = overlay();
     const title = document.createElement("div");
@@ -95,14 +96,80 @@ export function workspaceForm(
     colorLabel.textContent = "Цвет";
     colorRow.append(colorLabel, swatches);
 
-    const { row, ok, cancel } = actions();
-    box.append(title, labeled("Имя", name), labeled("Папка", pathRow), colorRow, row);
+    // --- GitHub: аккаунт и идентичность коммитов ---
+    const account = document.createElement("select");
+    account.className = "modal-input form-gh-account";
+    // gh может отсутствовать — тогда останется единственный пункт «не привязан».
+    void ghStatus()
+      .then((st) => {
+        for (const c of accountChoices(st, initial?.github?.login ?? null)) {
+          const opt = document.createElement("option");
+          opt.value = c.value;
+          opt.textContent = c.label;
+          if (c.missing) opt.classList.add("gh-missing");
+          account.append(opt);
+        }
+        account.value = initial?.github?.login ?? "";
+      })
+      .catch((e) => {
+        console.debug("ghStatus failed", e);
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "— gh недоступен —";
+        account.append(opt);
+      });
 
-    const close = (v: { name: string; path: string; color: string } | null) => { ov.remove(); resolve(v); };
+    const gitName = document.createElement("input");
+    gitName.className = "modal-input"; gitName.type = "text";
+    gitName.placeholder = "как в глобальном .gitconfig";
+    gitName.value = initial?.github?.gitName ?? "";
+
+    const gitEmail = document.createElement("input");
+    gitEmail.className = "modal-input"; gitEmail.type = "text";
+    gitEmail.placeholder = "как в глобальном .gitconfig";
+    gitEmail.value = initial?.github?.gitEmail ?? "";
+
+    const sshKey = document.createElement("input");
+    sshKey.className = "modal-input"; sshKey.type = "text";
+    sshKey.placeholder = "ключ для ssh-ремоутов (необязательно)";
+    sshKey.value = initial?.github?.sshKey ?? "";
+
+    const ghHint = document.createElement("p");
+    ghHint.className = "form-hint";
+    ghHint.textContent =
+      "Применится к новым и перезапущенным сессиям — у живых окружение уже зафиксировано.";
+
+    const { row, ok, cancel } = actions();
+    box.append(
+      title, labeled("Имя", name), labeled("Папка", pathRow), colorRow,
+      labeled("Аккаунт GitHub", account),
+      labeled("Имя в коммитах", gitName),
+      labeled("Почта в коммитах", gitEmail),
+      labeled("SSH-ключ", sshKey),
+      ghHint,
+      row,
+    );
+
+    const close = (
+      v: { name: string; path: string; color: string; github: WorkspaceGithub | null } | null,
+    ) => { ov.remove(); resolve(v); };
     ok.onclick = () => {
       const n = name.value.trim(); const p = path.value.trim();
       if (!n || !p) return; // требуются оба
-      close({ name: n, path: p, color });
+      const login = account.value.trim();
+      const opt = (el: HTMLInputElement) => { const v = el.value.trim(); return v ? v : undefined; };
+      // Пустой логин снимает привязку целиком: git-идентичность без аккаунта —
+      // отдельная фича, которой мы не обещали.
+      const github: WorkspaceGithub | null = login
+        ? {
+            host: initial?.github?.host ?? "github.com",
+            login,
+            gitName: opt(gitName),
+            gitEmail: opt(gitEmail),
+            sshKey: opt(sshKey),
+          }
+        : null;
+      close({ name: n, path: p, color, github });
     };
     cancel.onclick = () => close(null);
     ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(null); });

@@ -42,7 +42,9 @@ export class WorkspacesPanel {
   private async edit(id: string) {
     const cur = this.items.find((w) => w.id === id);
     if (!cur) return;
-    const res = await workspaceForm({ name: cur.name, path: cur.path, color: cur.color });
+    const res = await workspaceForm({
+      name: cur.name, path: cur.path, color: cur.color, github: cur.github ?? null,
+    });
     if (!res) return;
     this.items = await saveWorkspace({ ...cur, ...res });
     this.render();

@@ -253,3 +253,5 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .gh-acc-login { color: var(--fg); font-size: var(--fs-base); font-weight: var(--fw-medium); }
 .gh-acc-meta { color: var(--fg-subtle); font-size: var(--fs-xs); }
 .gh-acc-warn { color: var(--st-waiting); font-size: var(--fs-xs); }
+.form-hint { margin: 0 0 var(--sp-1); color: var(--fg-subtle); font-size: var(--fs-xs); line-height: 1.4; }
+.gh-missing { color: var(--st-error); }
