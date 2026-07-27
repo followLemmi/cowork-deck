@@ -65,6 +65,10 @@ struct FirePayload {
     /// `schedule_ack` so a late or duplicated ack cannot stamp the wrong run.
     #[serde(rename = "occurrenceMs")]
     occurrence_ms: i64,
+    /// True when this fire is making up for a missed occurrence, so the tile
+    /// can say why it appeared at a time nobody scheduled.
+    #[serde(rename = "catchUp")]
+    catch_up: bool,
 }
 
 /// What one tick owes a single scenario.
@@ -86,6 +90,14 @@ pub fn fingerprint(preset: &SchedulePreset) -> String {
         SchedulePreset::Daily { hour, minute } => format!("daily:{hour}:{minute}"),
         SchedulePreset::Weekly { weekday, hour, minute } => format!("weekly:{weekday}:{hour}:{minute}"),
     }
+}
+
+/// Whether a fire is making up for a missed occurrence rather than running on
+/// time. The loop ticks every 30 s, so an on-time fire is always close to its
+/// occurrence; anything further behind was owed from a period when the app was
+/// closed or parked.
+pub fn is_catch_up(occurrence: NaiveDateTime, now: NaiveDateTime) -> bool {
+    (now - occurrence).num_seconds() > 120
 }
 
 /// Decide what to do with one scenario this tick.
@@ -188,6 +200,7 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
                     let _ = app.emit("schedule://fire", FirePayload {
                         skill_id: sk.id.clone(),
                         occurrence_ms,
+                        catch_up: is_catch_up(occ, now),
                     });
                     // Record the attempt only. Whether a session actually
                     // started is the frontend's to report, via `schedule_ack`.
@@ -287,6 +300,18 @@ mod tests {
             last_outcome: Some("launched".into()),
             preset: Some(fingerprint(preset)),
         }
+    }
+
+    /// A tile that appears at 14:20 for a 09:00 schedule looks like a fault
+    /// unless it says it is catching up. The tick runs every 30 s, so an
+    /// on-time fire is always within a couple of minutes of its occurrence.
+    #[test]
+    fn a_fire_long_after_its_occurrence_is_a_catch_up() {
+        let occ = dt(2026, 7, 24, 9, 0);
+        assert!(!is_catch_up(occ, dt(2026, 7, 24, 9, 0)));
+        assert!(!is_catch_up(occ, dt(2026, 7, 24, 9, 1)));
+        assert!(is_catch_up(occ, dt(2026, 7, 24, 14, 20)));
+        assert!(is_catch_up(occ, dt(2026, 7, 26, 9, 0)));
     }
 
     /// A launch is the only thing that advances `last_run` — that field is

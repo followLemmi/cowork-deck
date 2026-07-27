@@ -35,9 +35,9 @@ describe("ipc", () => {
     await onScheduledFire(cb);
 
     const handler = vi.mocked(listen).mock.calls[0][1] as (e: unknown) => void;
-    handler({ payload: { skillId: "s1", occurrenceMs: 1_700_000_000_000 } });
+    handler({ payload: { skillId: "s1", occurrenceMs: 1_700_000_000_000, catchUp: true } });
 
-    expect(cb).toHaveBeenCalledWith("s1", 1_700_000_000_000);
+    expect(cb).toHaveBeenCalledWith("s1", 1_700_000_000_000, true);
   });
 
   it("scheduleAck reports the outcome for that occurrence", async () => {

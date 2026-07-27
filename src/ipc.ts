@@ -66,10 +66,10 @@ export const onExit = (cb: (session: string, ok: boolean) => void): Promise<Unli
  *  scheduler's first (catch-up) tick has somewhere to land. */
 export const schedulerReady = () => invoke<void>("scheduler_ready");
 export const onScheduledFire = (
-  cb: (skillId: string, occurrenceMs: number) => void,
+  cb: (skillId: string, occurrenceMs: number, catchUp: boolean) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ skillId: string; occurrenceMs: number }>("schedule://fire", (e) =>
-    cb(e.payload.skillId, e.payload.occurrenceMs));
+  listen<{ skillId: string; occurrenceMs: number; catchUp: boolean }>("schedule://fire", (e) =>
+    cb(e.payload.skillId, e.payload.occurrenceMs, e.payload.catchUp ?? false));
 
 /** Report what a fire produced. The backend records only that it attempted a
  *  run; `lastRun` advances only when this says a session actually started. */

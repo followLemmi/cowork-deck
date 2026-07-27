@@ -127,7 +127,15 @@ export class Deck {
    *  A scheduled scenario keeps at most one tile: once the guard lets a new
    *  run through, the previous one is finished by definition, and leaving it
    *  behind would add a tile per run — 24 a day for an hourly schedule. */
-  async launchScheduled(workspace: Workspace, skill: Skill, filledPrompt: string): Promise<boolean> {
+  async launchScheduled(
+    workspace: Workspace,
+    skill: Skill,
+    filledPrompt: string,
+    /** Occurrence this run is making up for, when it is not running on time.
+     *  Without it a tile appearing at 14:20 for a 09:00 schedule reads as a
+     *  fault rather than as catch-up. */
+    catchUpFor?: string,
+  ): Promise<boolean> {
     const prevSession = this.scheduledSessions.get(skill.id);
     const prevState = prevSession ? (this.tiles.get(prevSession)?.state ?? null) : null;
     if (shouldSkipOverlap(prevState)) {
@@ -141,10 +149,13 @@ export class Deck {
       session,
       cwd: workspace.path,
       workspaceId: workspace.id,
-      titleText: `⏰ ${skill.icon} ${skill.name}`,
+      titleText: catchUpFor
+        ? `⏰ ${skill.icon} ${skill.name} · догоняет ${catchUpFor}`
+        : `⏰ ${skill.icon} ${skill.name}`,
       prompt: filledPrompt,
       resume: false,
       scheduledSkillId: skill.id,
+      grabAttention: false,
     });
     return true;
   }
@@ -175,8 +186,13 @@ export class Deck {
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
     scheduledSkillId?: string;
+    /** Whether the new tile should take over the keyboard and the layout.
+     *  False for unattended work: a scheduled run announces itself through a
+     *  notification, not by yanking the caret out of whatever is being typed. */
+    grabAttention?: boolean;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
+    const grabAttention = opts.grabAttention ?? true;
     const el = document.createElement("div");
     el.className = "tile";
     const head = document.createElement("div");
@@ -252,7 +268,7 @@ export class Deck {
       gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
     };
     this.tiles.set(session, tile);
-    if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
+    if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
     try {
@@ -266,7 +282,27 @@ export class Deck {
         : raw;
       panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
     }
-    this.focusTile(session);
+    if (grabAttention) this.focusTile(session);
+    else {
+      // Still needs to obey the workspace filter, which focusTile would have
+      // triggered via renderList/applyLayout.
+      this.applyWorkspaceVisibility(session);
+      this.renderList();
+    }
+  }
+
+  /** Apply the active-workspace filter to one tile. Tiles used to be created
+   *  without it, so a scheduled run for another workspace appeared in whatever
+   *  deck was on screen and disappeared at the next switch. */
+  private applyWorkspaceVisibility(session: string) {
+    const t = this.tiles.get(session);
+    if (!t) return;
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
+    // Orphans stay visible everywhere, as in setActiveWorkspace.
+    const visible = rid === null || rid === this.activeWorkspaceId;
+    t.el.classList.toggle("ws-hidden", !visible);
+    this.applyLayout();
   }
 
   async restore(entries: SessionEntry[]) {

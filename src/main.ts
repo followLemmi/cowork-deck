@@ -28,8 +28,11 @@ deck.wireNotificationFocus();
 const boot = () => runBoot({
   steps: [
     () => deck.wireEvents(),
-    () => onScheduledFire((skillId, occurrenceMs) => {
-      void handleScheduledFire(skillId).then(async (outcome) => {
+    () => onScheduledFire((skillId, occurrenceMs, catchUp) => {
+      const missedAt = catchUp
+        ? new Date(occurrenceMs).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+        : undefined;
+      void handleScheduledFire(skillId, missedAt).then(async (outcome) => {
         if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
         // Tell the backend what came of it: an occurrence it emitted counts as
         // a run only once a session has actually started.
@@ -68,13 +71,13 @@ type FireOutcome = "launched" | "skipped-overlap" | "no-workspace" | "not-schedu
 /** A scheduled scenario came due (from the backend scheduler or from the ⏰
  *  button): resolve it to a scenario + workspace, fill placeholder defaults (a
  *  scheduled run cannot ask) and launch it as a fresh tile. */
-async function handleScheduledFire(skillId: string): Promise<FireOutcome> {
+async function handleScheduledFire(skillId: string, catchUpFor?: string): Promise<FireOutcome> {
   const skill = skills.find(skillId);
   if (!skill?.schedule?.enabled) return "not-scheduled";
   const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
   if (!res.ok) return res.reason;
   const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
-  const launched = await deck.launchScheduled(res.workspace, skill, filled);
+  const launched = await deck.launchScheduled(res.workspace, skill, filled, catchUpFor);
   return launched ? "launched" : "skipped-overlap";
 }
 

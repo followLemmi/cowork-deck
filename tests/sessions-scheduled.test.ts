@@ -132,6 +132,29 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     expect(await deck.launchScheduled(WS as never, SKILL as never, "review")).toBe(false);
   });
 
+  // Unattended work must not yank the user out of what they are typing. The
+  // notification and the pill are how a scheduled run announces itself.
+  it("does not take keyboard focus when a schedule fires", async () => {
+    const { deck, deckEl } = await makeDeck();
+    await deck.launch(WS as never, null);
+    const manual = deckEl.querySelector<HTMLElement>(".tile")!;
+
+    await deck.launchScheduled(WS as never, SKILL as never, "review");
+
+    expect(manual.classList.contains("is-active")).toBe(true);
+  });
+
+  // A tile belonging to another workspace used to appear in whatever deck was
+  // on screen and vanish again at the next workspace switch.
+  it("hides a scheduled tile that belongs to another workspace", async () => {
+    const { deck, deckEl } = await makeDeck();
+    deck.setActiveWorkspace("other");
+
+    await deck.launchScheduled(WS as never, SKILL as never, "review");
+
+    expect(deckEl.querySelector(".tile")!.classList.contains("ws-hidden")).toBe(true);
+  });
+
   // The guard still earns its keep: a run blocked on a permission prompt is
   // genuinely active, and stacking a second one on top of it would be worse
   // than skipping.
