@@ -50,17 +50,22 @@ const PATHS: Record<string, string> = {
   rocket: '<path d="M8 2.5 c2.4 1.8 3.4 4.2 3.2 7.2 l-3.2 2.3 -3.2-2.3 c-.2-3 .8-5.4 3.2-7.2 z"/>'
     + '<circle cx="8" cy="6.6" r="1.2"/><path d="M5.6 11.2 L4 13.5 l2.6-.7"/>'
     + '<path d="M10.4 11.2 L12 13.5 l-2.6-.7"/>',
-  bug: '<rect x="5" y="5.5" width="6" height="7" rx="3"/><path d="M6.2 4 l1.1 1.5"/>'
-    + '<path d="M9.8 4 l-1.1 1.5"/><path d="M5 7.5 H2.8"/><path d="M11 7.5 H13.2"/>'
-    + '<path d="M5 10.5 H2.8"/><path d="M11 10.5 H13.2"/>',
+  // A beetle needs body, head and six legs, and at 16px that is a smudge that
+  // reads as a gear whichever way it is drawn. "Something is wrong" is the
+  // meaning that was wanted, and a warning triangle says it unambiguously.
+  alert: '<path d="M8 2.8 L14 13 H2 z"/><path d="M8 6.4 v3.1"/>'
+    + '<circle cx="8" cy="11.4" r="0.75" fill="currentColor" stroke="none"/>',
   search: '<circle cx="7" cy="7" r="4"/><path d="M10 10 L13.5 13.5"/>',
   check: '<polyline points="3.5,8.5 6.5,11.5 12.5,4.5"/>',
   flask: '<path d="M6.5 2.5 v4 L3.2 12 a1 1 0 0 0 .9 1.5 h7.8 a1 1 0 0 0 .9-1.5 L9.5 6.5 v-4"/>'
     + '<path d="M5.8 2.5 h4.4"/><path d="M4.8 9.5 h6.4"/>',
   book: '<path d="M3 3.5 h4 a2 2 0 0 1 2 2 v8 a1.6 1.6 0 0 0-1.6-1.2 H3 z"/>'
     + '<path d="M13 3.5 H9 a2 2 0 0 0-2 2 v8 a1.6 1.6 0 0 1 1.6-1.2 H13 z"/>',
-  broom: '<path d="M9.5 2.5 L6 6"/><path d="M4 8 l4-4 4 4 -4 1.5 z"/>'
-    + '<path d="M5.4 9.6 L3.5 13.5"/><path d="M8 9.9 v3.6"/><path d="M10.6 9.6 L12.5 13.5"/>',
+  // A broom is a handle plus a fan of bristles; at this size the fan reads as
+  // a roof and the whole thing as a building. A terminal window is both
+  // legible and closer to what these scenarios actually do.
+  terminal: '<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/>'
+    + '<polyline points="5,7 6.9,9 5,11"/><path d="M8.6 11 H11"/>',
   chart: '<path d="M2.5 13.5 H13.5"/><path d="M4.5 13.5 V9"/><path d="M8 13.5 V4.5"/>'
     + '<path d="M11.5 13.5 V7"/>',
   shield: '<path d="M8 2.5 l4.5 1.8 v3.6 c0 2.6-1.8 4.6-4.5 5.6 -2.7-1-4.5-3-4.5-5.6 V4.3 z"/>',
@@ -73,8 +78,8 @@ const PATHS: Record<string, string> = {
 /** Icons offered as a scenario's mark. `play` is the default and comes from
  *  the service set. */
 export const SCENARIO_ICONS = [
-  "play", "rocket", "bug", "search", "check", "flask",
-  "book", "broom", "chart", "shield", "wrench", "sparkle",
+  "play", "rocket", "alert", "search", "check", "flask",
+  "book", "terminal", "chart", "shield", "wrench", "sparkle",
 ] as const;
 
 export const ICON_NAMES = Object.keys(PATHS);

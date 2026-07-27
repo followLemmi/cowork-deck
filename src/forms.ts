@@ -29,6 +29,35 @@ function labeled(labelText: string, field: HTMLElement): HTMLElement {
   return wrap;
 }
 
+/** A checkbox belongs beside its label, not under it. `labeled()` stacks the
+ *  label above the field, which is right for text inputs and leaves a lone
+ *  16px box adrift on its own line for a checkbox. */
+function labeledCheck(labelText: string, box: HTMLInputElement, hint?: string): HTMLElement {
+  const wrap = document.createElement("label");
+  wrap.className = "form-check";
+  const text = document.createElement("span");
+  text.className = "form-check-text";
+  text.textContent = labelText;
+  wrap.append(box, text);
+  if (hint) {
+    const h = document.createElement("span");
+    h.className = "form-check-hint";
+    h.textContent = hint;
+    wrap.append(h);
+  }
+  return wrap;
+}
+
+/** Wraps a <select> so the chevron can be drawn in CSS. Native select controls
+ *  render tall and chunky next to our inputs, and their arrow is whatever the
+ *  platform feels like. */
+function selectWrap(select: HTMLSelectElement): HTMLElement {
+  const wrap = document.createElement("span");
+  wrap.className = "select-wrap";
+  wrap.append(select);
+  return wrap;
+}
+
 function actions(): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButtonElement } {
   const row = document.createElement("div");
   row.className = "modal-actions";
@@ -51,6 +80,7 @@ export function workspaceForm(
       onCancel: () => close(null),
       onAccept: () => submit(),
     });
+    box.classList.add("modal-box--form");
     const title = document.createElement("div");
     title.className = "modal-title";
     title.textContent = initial ? "Изменить пространство" : "Новое пространство";
@@ -130,6 +160,7 @@ export function skillForm(
       onCancel: () => close(null),
       onAccept: () => submit(),
     });
+    box.classList.add("modal-box--form");
     const title = document.createElement("div");
     title.className = "modal-title";
     title.textContent = initial ? "Изменить сценарий" : "Новый сценарий";
@@ -218,16 +249,19 @@ export function skillForm(
 
     const timeRow = document.createElement("div");
     timeRow.className = "form-sched-time";
+    const weekdayWrap = selectWrap(weekday);
     const syncTimeRow = () => {
       const weekly = kind.value === "weekly";
       const hourly = kind.value === "hourly";
-      weekday.style.display = weekly ? "" : "none";
+      // Hide the wrapper, not the select: the wrapper draws the chevron, so
+      // hiding only the select leaves a stray arrow floating in the row.
+      weekdayWrap.style.display = weekly ? "" : "none";
       hour.style.display = hourly ? "none" : "";
       hourLabel.style.display = hourly ? "none" : "";
       minuteLabel.textContent = hourly ? "минута часа" : "мин";
     };
     kind.addEventListener("change", syncTimeRow);
-    timeRow.append(kind, weekday, hour, hourLabel, minute, minuteLabel);
+    timeRow.append(selectWrap(kind), weekdayWrap, hour, hourLabel, minute, minuteLabel);
 
     // One default per `{{placeholder}}`, rebuilt as the prompt is edited —
     // a scheduled run is unattended, so it can't prompt for values.
@@ -301,8 +335,12 @@ export function skillForm(
     const { row, ok, cancel } = actions();
     box.append(
       title, labeled("Имя", name), labeled("Значок", iconPicker),
-      labeled("Задание", promptField), labeled("Только для текущего пространства", scope),
-      labeled("По расписанию", schedEnabled), schedBody, schedError, row,
+      labeled("Задание", promptField),
+      labeledCheck("Только для текущего пространства", scope,
+        "иначе сценарий виден и запускается в любом"),
+      labeledCheck("По расписанию", schedEnabled,
+        "запускать без участия человека"),
+      schedBody, schedError, row,
     );
 
     const close = (v: { name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null) => { closeDialog(); resolve(v); };

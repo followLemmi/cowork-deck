@@ -39,3 +39,14 @@ describe("resolvePrompt", () => {
     expect(await resolvePrompt("on {{branch}}", ask)).toBeNull();
   });
 });
+
+// The interface is Russian, so people write Russian placeholder names. `\w` is
+// ASCII-only in JavaScript, so {{ветка}} matched nothing: no field was offered
+// and the literal braces were sent to claude as part of the prompt.
+it("recognises non-ASCII placeholder names", () => {
+  expect(parsePlaceholders("Разбери {{ветка}} и {{задача}}")).toEqual(["ветка", "задача"]);
+});
+
+it("substitutes them too", () => {
+  expect(fillPlaceholders("Ветка {{ветка}}", { "ветка": "main" })).toBe("Ветка main");
+});
