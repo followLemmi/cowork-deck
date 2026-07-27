@@ -317,8 +317,8 @@ mod tests {
 
     #[test]
     fn workspace_without_tracker_still_deserializes() {
-        // Настройки, записанные до этой фичи, должны читаться без потерь —
-        // иначе первый же upsert усечёт файл пространств.
+        // Settings written before this feature existed must still read back
+        // whole — otherwise the first upsert truncates the workspaces file.
         let old = r##"{"id":"w1","name":"deck","path":"/p","color":"#61afef"}"##;
         let ws: Workspace = serde_json::from_str(old).expect("old workspace must still parse");
         assert_eq!(ws.name, "deck");

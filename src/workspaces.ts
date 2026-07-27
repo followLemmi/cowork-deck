@@ -17,17 +17,11 @@ export function describeDeleteImpact(workspaceId: string, skills: Skill[]): stri
     + " — they will stop running.";
 }
 
-/** Russian plural agreement for the open-task badge tooltip: 1 / 2-4 / 5+ each
- *  take a different noun+adjective form ("1 открытая задача", "2 открытые
- *  задачи", "5 открытых задач") — "N открытых задач" is wrong for 1 and for
- *  2-4. The 11-14 exception is genitive plural like 5+, same as in English
- *  "11th" not "11st". */
+/** Tooltip for the open-task badge. English needs one distinction rather than
+ *  the three the Russian original agreed with, but it still needs that one:
+ *  "1 open tasks" reads as a bug in the code, not as a count. */
 export function openTaskCountLabel(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return `${n} открытая задача`;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${n} открытые задачи`;
-  return `${n} открытых задач`;
+  return `${n} open task${n === 1 ? "" : "s"}`;
 }
 
 export class WorkspacesPanel {
@@ -37,7 +31,7 @@ export class WorkspacesPanel {
   setSkillsSource(get: () => Skill[]) { this.getSkills = get; }
   private items: Workspace[] = [];
   private activeId: string | null = null;
-  /** Открытых задач на пространство; заполняет main.ts. */
+  /** Open tasks per workspace; filled in by main.ts. */
   private counts = new Map<string, number>();
   constructor(
     private mount: HTMLElement,

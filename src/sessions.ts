@@ -19,7 +19,7 @@ interface Tile {
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
-  /** Set when the tile was launched from a tracker card — keys the "в работе" state. */
+  /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
   taskId?: string;
 }
 
@@ -168,9 +168,9 @@ export class Deck {
     return true;
   }
 
-  /** Запуск сессии из карточки трекера. Если по карточке уже есть живая
-   *  сессия — фокусируем её, а не поднимаем вторую: так же, как плановый
-   *  сценарий пропускает наложившийся прогон. */
+  /** Launch a session from a tracker card. If the card already has a live
+   *  session, focus it rather than raise a second one — the same call a
+   *  scheduled scenario makes when it skips an overlapping run. */
   async launchFromTask(
     workspace: Workspace, task: { id: string; title: string }, prompt: string,
   ): Promise<"launched" | "focused"> {
@@ -362,7 +362,7 @@ export class Deck {
     void this.persistLayout();
   }
 
-  /** Живые тайлы в виде, который нужен доске. */
+  /** Live tiles in the shape the board needs. */
   taskLinks(): { session: string; taskId?: string; state: SessionState }[] {
     return [...this.tiles.values()].map((t) => ({ session: t.session, taskId: t.taskId, state: t.state }));
   }

@@ -3,54 +3,53 @@ name: file-a-task
 description: Use when you notice a problem, bug, or improvement that is outside the current task's scope - files it as a tracker card instead of expanding scope or forgetting it
 ---
 
-# Оформить задачу в трекер
+# File a task in the tracker
 
-Ты работаешь внутри cowork-deck. Если по ходу дела ты замечаешь проблему,
-которая **не входит** в текущую задачу, — не расширяй скоуп и не забывай о ней.
-Оформи карточку и продолжай своё.
+You are working inside cowork-deck. If you notice a problem along the way that
+is **not part** of the current task, do not widen your scope and do not let it
+drop. File a card and carry on with what you were doing.
 
-## Когда применять
+## When to use this
 
-- Нашёл баг в коде, который не трогаешь.
-- Увидел TODO/хак, который стоит починить отдельно.
-- Придумал улучшение, о котором тебя не просили.
+- You found a bug in code you are not touching.
+- You saw a TODO or a hack worth fixing separately.
+- You thought of an improvement nobody asked you for.
 
-## Когда НЕ применять
+## When NOT to use this
 
-- Проблема **входит** в твою задачу — просто почини её.
-- Ты не уверен, что это проблема, — сначала проверь, потом оформляй.
-- Карточка уже есть: сначала посмотри `ls "$COWORK_TASKS_DIR"`.
+- The problem **is** part of your task — just fix it.
+- You are not sure it is a problem — check first, then file.
+- A card already exists: look at `ls "$COWORK_TASKS_DIR"` first.
 
-## Как
+## How
 
 ```bash
-"$COWORK_TASK_BIN" new --kind bug --title "Короткий заголовок" <<'EOF'
-Что не так, как воспроизвести, где смотреть.
+"$COWORK_TASK_BIN" new --kind bug --title "A short title" <<'EOF'
+What is wrong, how to reproduce it, where to look.
 EOF
 ```
 
-`--kind` — `bug`, `task` или `idea`. Тело читается со stdin и необязательно, но
-без репро карточка почти бесполезна.
+`--kind` is `bug`, `task` or `idea`. The body is read from stdin and is
+optional, but a card without a repro is close to useless.
 
-Если переменных окружения нет, трекер для этого пространства не настроен —
-скажи об этом человеку и не пытайся угадать путь.
+If the environment variables are missing, no tracker is configured for this
+workspace — say so to the human rather than guessing at a path.
 
-## Закрыть карточку
+## Closing a card
 
-Если ты работаешь **по** карточке (её id есть в твоём первом промпте) и работа
-закончена:
+If you are working **on** a card (its id is in your first prompt) and the work
+is finished:
 
 ```bash
 "$COWORK_TASK_BIN" done <id>
 ```
 
-Не закрывай карточки, по которым не работал. `done` находит карточку по id
-где угодно в `$COWORK_TASKS_DIR` и не проверяет `project:` — на общем корне
-(например, том же волте на несколько пространств) это значит, что можно
-случайно закрыть чужую карточку, если угадать её id. Закрывай только ту
-карточку, которую тебе дали в промпте.
+Do not close cards you did not work on. `done` finds a card by id anywhere
+under `$COWORK_TASKS_DIR` and does not check `project:` — on a shared root (the
+same vault serving several workspaces, say) that means guessing an id can close
+someone else's card. Close only the card you were given in your prompt.
 
-## Прочитать бэклог
+## Reading the backlog
 
-Обычными тулами, никаких обёрток: `ls "$COWORK_TASKS_DIR"`, grep по каталогу.
-Карточки — markdown с frontmatter.
+With ordinary tools, no wrappers: `ls "$COWORK_TASKS_DIR"`, grep the directory.
+Cards are markdown with frontmatter.

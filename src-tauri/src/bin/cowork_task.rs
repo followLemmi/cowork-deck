@@ -36,47 +36,47 @@ pub fn parse_args(argv: &[String]) -> Result<Cmd, String> {
             while i < argv.len() {
                 match argv[i].as_str() {
                     "--kind" => {
-                        kind = argv.get(i + 1).ok_or("--kind без значения")?.clone();
+                        kind = argv.get(i + 1).ok_or("--kind needs a value")?.clone();
                         i += 2;
                     }
                     "--title" => {
-                        title = Some(argv.get(i + 1).ok_or("--title без значения")?.clone());
+                        title = Some(argv.get(i + 1).ok_or("--title needs a value")?.clone());
                         i += 2;
                     }
-                    other => return Err(format!("неизвестный аргумент: {other}")),
+                    other => return Err(format!("unknown argument: {other}")),
                 }
             }
-            let title = title.ok_or("нужен --title")?;
+            let title = title.ok_or("--title is required")?;
             if title.trim().is_empty() {
-                return Err("--title пустой".into());
+                return Err("--title is empty".into());
             }
             Ok(Cmd::New { kind, title })
         }
         "done" => {
-            let id = argv.get(2).ok_or("нужен id карточки")?.clone();
+            let id = argv.get(2).ok_or("a card id is required")?.clone();
             Ok(Cmd::Done { id })
         }
-        "" => Err("нужна подкоманда: new | done".into()),
-        other => Err(format!("неизвестная подкоманда: {other}")),
+        "" => Err("a subcommand is required: new | done".into()),
+        other => Err(format!("unknown subcommand: {other}")),
     }
 }
 
 const USAGE: &str = "\
-cowork_task — оформить карточку в трекере cowork-deck.
+cowork_task — file a card in the cowork-deck tracker.
 
-  cowork_task new --kind bug|task|idea --title \"…\"   (тело читается со stdin)
+  cowork_task new --kind bug|task|idea --title \"…\"   (the body is read from stdin)
   cowork_task done <id>
 
-Требует переменных окружения, которые дека выставляет сессии:
-  COWORK_TASKS_DIR  каталог карточек
-  COWORK_PROJECT    имя проекта (пишется в поле project:)
-  COWORK_SESSION    id сессии (необязательно)
+Requires the environment variables the deck sets on a session:
+  COWORK_TASKS_DIR  folder the cards live in
+  COWORK_PROJECT    project name (written to the project: field)
+  COWORK_SESSION    session id (optional)
 ";
 
 fn env_var(name: &str) -> Result<String, String> {
     match std::env::var(name) {
         Ok(v) if !v.trim().is_empty() => Ok(v),
-        _ => Err(format!("не задана переменная окружения {name}\n\n{USAGE}")),
+        _ => Err(format!("environment variable {name} is not set\n\n{USAGE}")),
     }
 }
 
@@ -97,7 +97,7 @@ fn run() -> Result<String, String> {
     match cmd {
         Cmd::New { kind, title } => {
             let kind = kind_from_str(&kind)
-                .ok_or_else(|| format!("неизвестный --kind: {kind} (bug|task|idea)"))?;
+                .ok_or_else(|| format!("unknown --kind: {kind} (bug|task|idea)"))?;
             let mut body = String::new();
             // Best effort: a session may pipe a body or may not pipe anything.
             let _ = std::io::stdin().read_to_string(&mut body);
@@ -111,11 +111,11 @@ fn run() -> Result<String, String> {
                     session,
                 })
                 .map_err(|e| e.to_string())?;
-            Ok(format!("создана карточка {} — {}", card.id, card.path))
+            Ok(format!("created card {} — {}", card.id, card.path))
         }
         Cmd::Done { id } => {
             let card = provider.resolve(&id).map_err(|e| e.to_string())?;
-            Ok(format!("закрыта карточка {}", card.id))
+            Ok(format!("closed card {}", card.id))
         }
     }
 }
@@ -136,12 +136,12 @@ mod tests {
 
     #[test]
     fn parses_new_with_kind_and_title() {
-        let argv = ["cowork_task", "new", "--kind", "bug", "--title", "Пилюля мигает"]
+        let argv = ["cowork_task", "new", "--kind", "bug", "--title", "The pill keeps blinking"]
             .map(String::from).to_vec();
         match parse_args(&argv) {
             Ok(Cmd::New { kind, title }) => {
                 assert_eq!(kind, "bug");
-                assert_eq!(title, "Пилюля мигает");
+                assert_eq!(title, "The pill keeps blinking");
             }
             other => panic!("got {other:?}"),
         }
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn kind_defaults_to_task() {
-        let argv = ["cowork_task", "new", "--title", "Просто задача"].map(String::from).to_vec();
+        let argv = ["cowork_task", "new", "--title", "Just a task"].map(String::from).to_vec();
         match parse_args(&argv) {
             Ok(Cmd::New { kind, .. }) => assert_eq!(kind, "task"),
             other => panic!("got {other:?}"),
@@ -182,6 +182,6 @@ mod tests {
         assert_eq!(kind_from_str("bug"), Some(TaskKind::Bug));
         assert_eq!(kind_from_str("idea"), Some(TaskKind::Idea));
         assert_eq!(kind_from_str("task"), Some(TaskKind::Task));
-        assert_eq!(kind_from_str("нечто"), None);
+        assert_eq!(kind_from_str("whatever"), None);
     }
 }

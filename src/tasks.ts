@@ -3,13 +3,13 @@ import type { SessionState, Task, TaskKind } from "./ipc";
 /** A live tile, as far as the board cares: which card it came from and how it is doing. */
 export interface TaskSessionLink { session: string; taskId?: string; state: SessionState }
 
-const KIND_LABEL: Record<TaskKind, string> = { bug: "баг", task: "задача", idea: "идея" };
+const KIND_LABEL: Record<TaskKind, string> = { bug: "bug", task: "task", idea: "idea" };
 export function kindLabel(kind: TaskKind): string { return KIND_LABEL[kind]; }
 
 /** States in which a session still counts as alive — launching a second session
  *  for the same card would duplicate the work. */
 const ALIVE: SessionState[] = ["idle", "working", "waitingInput"];
-/** States in which the card should read as "в работе" on the board. */
+/** States in which the card should read as "in progress" on the board. */
 const BUSY: SessionState[] = ["working", "waitingInput"];
 
 export function liveSessionForTask(taskId: string, links: TaskSessionLink[]): string | null {
@@ -28,18 +28,18 @@ export function derivedStatus(task: Task, links: TaskSessionLink[]): "open" | "d
 /** Initial prompt for a session launched from a card. */
 export function taskPrompt(task: Task): string {
   const lines = [
-    "Задача из трекера cowork-deck.",
+    "A task from the cowork-deck tracker.",
     "",
-    `Заголовок: ${task.title}`,
-    `Тип: ${kindLabel(task.kind)}`,
+    `Title: ${task.title}`,
+    `Kind: ${kindLabel(task.kind)}`,
     `id: ${task.id}`,
-    `Файл карточки: ${task.path}`,
+    `Card file: ${task.path}`,
   ];
   const body = task.body.trim();
   if (body) lines.push("", body);
   lines.push(
     "",
-    `Когда работа закончена, закрой карточку: "$COWORK_TASK_BIN" done ${task.id}`,
+    `When the work is finished, close the card: "$COWORK_TASK_BIN" done ${task.id}`,
   );
   return lines.join("\n");
 }
@@ -47,9 +47,9 @@ export function taskPrompt(task: Task): string {
 export interface BoardColumns {
   open: Task[];
   done: Task[];
-  /** Сколько закрытых карточек не показано из-за лимита. */
+  /** How many done cards the limit is hiding. */
   doneHidden: number;
-  /** Карточки чужих проектов в общем корне — считаем, а не прячем молча. */
+  /** Cards belonging to other projects in a shared root — counted, not silently hidden. */
   foreign: { project: string; count: number }[];
 }
 

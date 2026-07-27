@@ -5,23 +5,23 @@ import type { Task } from "../src/ipc";
 
 function card(over: Partial<Task> = {}): Task {
   return {
-    id: "01AAA", title: "Пилюля мигает", kind: "bug", status: "open", project: "deck",
+    id: "01AAA", title: "The pill keeps blinking", kind: "bug", status: "open", project: "deck",
     created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
-    body: "тело", path: "/r/01AAA-pill.md", damaged: null, conflict: false, ...over,
+    body: "body", path: "/r/01AAA-pill.md", damaged: null, conflict: false, ...over,
   };
 }
 
 describe("emptyStateMessage", () => {
   it("invites configuration when no tracker is set up — that is not an error", () => {
     const m = emptyStateMessage(null, null);
-    expect(m.text).toContain("не настроен");
+    expect(m.text).toContain("No task tracker is configured");
     expect(m.canConfigure).toBe(true);
   });
 
   it("shows the failing path verbatim so a typo is findable", () => {
     const m = emptyStateMessage({ canCreate: true, canResolve: true, statuses: [] },
-      "каталог задач недоступен: /home/u/опечатка");
-    expect(m.text).toContain("/home/u/опечатка");
+      "the task folder is unreachable: /home/u/typo");
+    expect(m.text).toContain("/home/u/typo");
   });
 });
 
@@ -38,7 +38,7 @@ describe("BoardView", () => {
     expect(v.mount.textContent).toContain("<img src=x onerror=alert(1)>");
   });
 
-  it("marks a card whose session is alive as в работе", () => {
+  it("marks a card whose session is alive as in progress", () => {
     const v = new BoardView({ onLaunch: () => {}, onResolve: () => {}, onNew: () => {}, onConfigure: () => {} });
     v.render({
       project: "deck", caps, error: null,
@@ -47,26 +47,26 @@ describe("BoardView", () => {
     });
     const el = v.mount.querySelector(".tk-card")!;
     expect(el.classList.contains("working")).toBe(true);
-    expect(el.querySelector(".tk-run")).toBeNull(); // повторный запуск не предлагаем
+    expect(el.querySelector(".tk-run")).toBeNull(); // no offer to launch it a second time
   });
 
   it("flags a bot-filed card so agent work is never silent", () => {
     const v = new BoardView({ onLaunch: () => {}, onResolve: () => {}, onNew: () => {}, onConfigure: () => {} });
     v.render({ project: "deck", caps, error: null, links: [], tasks: [card({ origin: "session" })] });
-    expect(v.mount.querySelector(".tk-card")!.textContent).toContain("сессия");
+    expect(v.mount.querySelector(".tk-card")!.textContent).toContain("session");
   });
 
   it("shows damaged and conflicting cards with their reason", () => {
     const v = new BoardView({ onLaunch: () => {}, onResolve: () => {}, onNew: () => {}, onConfigure: () => {} });
     v.render({
       project: "deck", caps, error: null, links: [],
-      tasks: [card({ damaged: "нет поля status", conflict: true })],
+      tasks: [card({ damaged: "no status field", conflict: true })],
     });
     const el = v.mount.querySelector(".tk-card")!;
     expect(el.classList.contains("damaged")).toBe(true);
-    expect(el.textContent).toContain("нет поля status");
+    expect(el.textContent).toContain("no status field");
     expect(el.textContent).toContain("id");
-    expect(el.querySelector(".tk-done")).toBeNull(); // закрывать конфликтную нельзя
+    expect(el.querySelector(".tk-done")).toBeNull(); // a conflicting card must not be closed
   });
 
   // C1: an ordinary Obsidian note can carry an `id:` for unrelated reasons and
@@ -76,7 +76,7 @@ describe("BoardView", () => {
     const v = new BoardView({ onLaunch: () => {}, onResolve: () => {}, onNew: () => {}, onConfigure: () => {} });
     v.render({
       project: "deck", caps, error: null, links: [],
-      tasks: [card({ damaged: "нет поля project", conflict: false })],
+      tasks: [card({ damaged: "no project field", conflict: false })],
     });
     const el = v.mount.querySelector(".tk-card")!;
     expect(el.querySelector(".tk-done")).toBeNull();
@@ -114,7 +114,7 @@ describe("BoardView", () => {
   it("gives ▶ and ✓ an aria-label, since their visible glyph is not a name", () => {
     const v = new BoardView({ onLaunch: () => {}, onResolve: () => {}, onNew: () => {}, onConfigure: () => {} });
     v.render({ project: "deck", caps, error: null, links: [], tasks: [card()] });
-    expect(v.mount.querySelector(".tk-run")!.getAttribute("aria-label")).toBe("Запустить сессию из задачи");
-    expect(v.mount.querySelector(".tk-done")!.getAttribute("aria-label")).toBe("Закрыть задачу");
+    expect(v.mount.querySelector(".tk-run")!.getAttribute("aria-label")).toBe("Start a session from this task");
+    expect(v.mount.querySelector(".tk-done")!.getAttribute("aria-label")).toBe("Close this task");
   });
 });

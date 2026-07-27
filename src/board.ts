@@ -22,10 +22,10 @@ export function emptyStateMessage(
   error: string | null,
 ): { text: string; canConfigure: boolean } {
   if (caps === null) {
-    return { text: "Трекер не настроен для этого пространства.", canConfigure: true };
+    return { text: "No task tracker is configured for this workspace.", canConfigure: true };
   }
   if (error) return { text: error, canConfigure: true };
-  return { text: "Задач нет.", canConfigure: false };
+  return { text: "No tasks.", canConfigure: false };
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -48,9 +48,9 @@ export class BoardView {
     const { caps, error } = state;
 
     const head = el("div", "tk-head");
-    head.append(el("h3", "tk-title", "Задачи"));
+    head.append(el("h3", "tk-title", "Tasks"));
     if (caps?.canCreate) {
-      const add = el("button", "tk-new", "+ задача");
+      const add = el("button", "tk-new", "+ task");
       add.onclick = () => this.h.onNew();
       head.append(add);
     }
@@ -61,7 +61,7 @@ export class BoardView {
       const box = el("div", "tk-empty");
       box.append(el("p", undefined, msg.text));
       if (msg.canConfigure) {
-        const btn = el("button", "tk-configure", "Настроить");
+        const btn = el("button", "tk-configure", "Configure");
         btn.onclick = () => this.h.onConfigure();
         box.append(btn);
       }
@@ -87,7 +87,7 @@ export class BoardView {
     for (const f of cols.foreign) {
       this.mount.append(el(
         "p", "tk-foreign",
-        `${f.count} карточк(и) с другим project: ${f.project} — переименовано пространство?`,
+        `${f.count} card(s) name a different project: ${f.project} — was the workspace renamed?`,
       ));
     }
   }
@@ -108,19 +108,19 @@ export class BoardView {
 
     const meta = el("div", "tk-meta");
     meta.append(el("span", "tk-kind", kindLabel(t.kind)));
-    if (t.origin === "session") meta.append(el("span", "tk-bot", "сессия"));
-    if (status === "working") meta.append(el("span", "tk-busy", "в работе"));
+    if (t.origin === "session") meta.append(el("span", "tk-bot", "session"));
+    if (status === "working") meta.append(el("span", "tk-busy", "in progress"));
     box.append(meta);
 
     if (t.damaged) {
-      box.append(el("p", "tk-warn", `повреждена: ${t.damaged} · id ${t.id} · ${t.path}`));
+      box.append(el("p", "tk-warn", `damaged: ${t.damaged} · id ${t.id} · ${t.path}`));
     }
     if (t.conflict) {
-      box.append(el("p", "tk-warn", `несколько файлов с id ${t.id} — исправьте вручную`));
+      box.append(el("p", "tk-warn", `more than one file carries id ${t.id} — fix it by hand`));
     }
 
     const acts = el("div", "tk-acts");
-    // ▶ is hidden while the card reads as "в работе" (a working/waitingInput
+    // ▶ is hidden while the card reads as "in progress" (a working/waitingInput
     // session). An idle session still linked to the card slips through here —
     // that's fine: the launch guard in Deck.launchFromTask catches it and
     // focuses the existing session instead of starting a second one.
@@ -129,8 +129,8 @@ export class BoardView {
     // workspace — hide ▶ the same way ✓ is hidden below.
     if (status === "open" && !t.damaged) {
       const run = el("button", "tk-run", "▶");
-      run.title = "Запустить сессию из задачи";
-      run.setAttribute("aria-label", "Запустить сессию из задачи");
+      run.title = "Start a session from this task";
+      run.setAttribute("aria-label", "Start a session from this task");
       run.onclick = () => this.h.onLaunch(t);
       acts.append(run);
     }
@@ -140,8 +140,8 @@ export class BoardView {
     // resolving it would rewrite a file we do not own (see fs.rs::resolve).
     if (caps.canResolve && t.status === "open" && !t.conflict && !t.damaged) {
       const done = el("button", "tk-done", "✓");
-      done.title = "Закрыть задачу";
-      done.setAttribute("aria-label", "Закрыть задачу");
+      done.title = "Close this task";
+      done.setAttribute("aria-label", "Close this task");
       done.onclick = () => this.h.onResolve(t);
       acts.append(done);
     }

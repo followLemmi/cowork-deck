@@ -49,7 +49,7 @@ pub fn parse_card(text: &str, path: &str) -> Option<Task> {
     let title = match field(head, "title") {
         Some(t) => t.to_string(),
         None => {
-            damage("нет поля title");
+            damage("no title field");
             file_name(path)
         }
     };
@@ -59,31 +59,31 @@ pub fn parse_card(text: &str, path: &str) -> Option<Task> {
         Some("bug") => TaskKind::Bug,
         Some("task") => TaskKind::Task,
         Some("idea") => TaskKind::Idea,
-        Some(_) => { damage("неизвестный kind"); TaskKind::Task }
+        Some(_) => { damage("unknown kind"); TaskKind::Task }
     };
 
     let status = match field(head, "status") {
         Some("open") => TaskStatus::Open,
         Some("done") => TaskStatus::Done,
-        None => { damage("нет поля status"); TaskStatus::Open }
-        Some(_) => { damage("неизвестный status"); TaskStatus::Open }
+        None => { damage("no status field"); TaskStatus::Open }
+        Some(_) => { damage("unknown status"); TaskStatus::Open }
     };
 
     let project = match field(head, "project") {
         Some(p) => p.to_string(),
-        None => { damage("нет поля project"); String::new() }
+        None => { damage("no project field"); String::new() }
     };
 
     let created = match field(head, "created") {
         Some(c) => c.to_string(),
-        None => { damage("нет поля created"); String::new() }
+        None => { damage("no created field"); String::new() }
     };
 
     let origin = match field(head, "origin") {
         Some("human") => TaskOrigin::Human,
         Some("session") => TaskOrigin::Session,
         None => TaskOrigin::Human,
-        Some(_) => { damage("неизвестный origin"); TaskOrigin::Human }
+        Some(_) => { damage("unknown origin"); TaskOrigin::Human }
     };
 
     Some(Task {
@@ -210,7 +210,7 @@ mod tests {
 
     const VALID: &str = "---\n\
 id: 01K1B7QW9XZ3M4N5P6R7S8T9V0\n\
-title: Пилюля мигает при переключении\n\
+title: The pill blinks when switching\n\
 kind: bug\n\
 status: open\n\
 project: cowork-deck\n\
@@ -218,49 +218,49 @@ created: 2026-07-27T13:20:11Z\n\
 origin: session\n\
 session: a3f1c2\n\
 ---\n\
-Репро: три воркспейса, Cmd+2.\n";
+Repro: three workspaces, Cmd+2.\n";
 
     #[test]
     fn parses_a_valid_card() {
         let card = parse_card(VALID, "/r/01K1-pill.md").expect("card");
         assert_eq!(card.id, "01K1B7QW9XZ3M4N5P6R7S8T9V0");
-        assert_eq!(card.title, "Пилюля мигает при переключении");
+        assert_eq!(card.title, "The pill blinks when switching");
         assert_eq!(card.kind, TaskKind::Bug);
         assert_eq!(card.status, TaskStatus::Open);
         assert_eq!(card.project, "cowork-deck");
         assert_eq!(card.origin, TaskOrigin::Session);
         assert_eq!(card.session.as_deref(), Some("a3f1c2"));
-        assert_eq!(card.body.trim(), "Репро: три воркспейса, Cmd+2.");
+        assert_eq!(card.body.trim(), "Repro: three workspaces, Cmd+2.");
         assert!(card.damaged.is_none());
     }
 
     #[test]
     fn a_file_without_id_is_not_a_card() {
-        let text = "---\ntitle: Обычная заметка\n---\nтекст\n";
+        let text = "---\ntitle: An ordinary note\n---\ntext\n";
         assert!(parse_card(text, "/r/note.md").is_none());
     }
 
     #[test]
     fn a_file_without_frontmatter_is_not_a_card() {
-        assert!(parse_card("# просто заметка\n", "/r/note.md").is_none());
+        assert!(parse_card("# just a note\n", "/r/note.md").is_none());
     }
 
     #[test]
     fn id_present_but_broken_rest_is_damaged_not_dropped() {
-        let text = "---\nid: 01K1B7QW9XZ3M4N5P6R7S8T9V0\nstatus: неизвестно\n---\nтело\n";
+        let text = "---\nid: 01K1B7QW9XZ3M4N5P6R7S8T9V0\nstatus: nonsense\n---\nbody\n";
         let card = parse_card(text, "/r/01K1-x.md").expect("still a card");
         assert_eq!(card.id, "01K1B7QW9XZ3M4N5P6R7S8T9V0");
         assert!(card.damaged.is_some(), "must be flagged, never silently hidden");
-        // Заголовок берётся из имени файла, чтобы карточку было видно на доске.
+        // The title falls back to the file name so the card stays visible on the board.
         assert_eq!(card.title, "01K1-x.md");
         assert_eq!(card.status, TaskStatus::Open);
     }
 
     #[test]
     fn title_may_contain_a_colon() {
-        let text = "---\nid: 01K1\ntitle: Баг: пилюля мигает\nproject: p\n---\n";
+        let text = "---\nid: 01K1\ntitle: Bug: the pill blinks\nproject: p\n---\n";
         let card = parse_card(text, "/r/x.md").expect("card");
-        assert_eq!(card.title, "Баг: пилюля мигает");
+        assert_eq!(card.title, "Bug: the pill blinks");
     }
 
     #[test]
@@ -280,6 +280,11 @@ session: a3f1c2\n\
     }
 
     #[test]
+    // Deliberately Cyrillic, like the placeholder fixtures in src/placeholders.ts:
+    // a card title is written in whatever language its author thinks in, which the
+    // interface language does not constrain. slugify keeps letters via `char::is_alphanumeric`
+    // rather than an ASCII test, and the file name has to stay usable either way.
+    // Rewriting these two cases in ASCII would delete the coverage, not translate it.
     fn slugify_keeps_cyrillic_and_strips_punctuation() {
         assert_eq!(slugify("Баг: пилюля мигает!"), "баг-пилюля-мигает");
         assert_eq!(slugify("  a//b  "), "a-b");
@@ -289,7 +294,7 @@ session: a3f1c2\n\
 
     #[test]
     fn set_status_done_preserves_an_unknown_key() {
-        let text = "---\nid: 01K1\ntitle: t\nstatus: open\nproject: p\ntags: [inbox]\n---\nтело\n";
+        let text = "---\nid: 01K1\ntitle: t\nstatus: open\nproject: p\ntags: [inbox]\n---\nbody\n";
         let out = set_status_done(text, "2026-07-27T14:00:00Z").expect("has frontmatter");
         assert!(out.contains("tags: [inbox]"), "unknown key must survive: {out}");
         assert!(out.contains("status: done"));
@@ -298,7 +303,7 @@ session: a3f1c2\n\
 
     #[test]
     fn set_status_done_inserts_resolved_when_missing() {
-        let text = "---\nid: 01K1\nstatus: open\n---\nтело\n";
+        let text = "---\nid: 01K1\nstatus: open\n---\nbody\n";
         let out = set_status_done(text, "2026-07-27T14:00:00Z").unwrap();
         assert_eq!(out.matches("resolved:").count(), 1);
         assert!(out.contains("resolved: 2026-07-27T14:00:00Z"));
@@ -306,7 +311,7 @@ session: a3f1c2\n\
 
     #[test]
     fn set_status_done_replaces_resolved_when_already_present() {
-        let text = "---\nid: 01K1\nstatus: open\nresolved: 2020-01-01T00:00:00Z\n---\nтело\n";
+        let text = "---\nid: 01K1\nstatus: open\nresolved: 2020-01-01T00:00:00Z\n---\nbody\n";
         let out = set_status_done(text, "2026-07-27T14:00:00Z").unwrap();
         assert_eq!(out.matches("resolved:").count(), 1, "must not duplicate the line");
         assert!(out.contains("resolved: 2026-07-27T14:00:00Z"));
@@ -315,14 +320,14 @@ session: a3f1c2\n\
 
     #[test]
     fn set_status_done_leaves_the_body_untouched() {
-        let text = "---\nid: 01K1\nstatus: open\n---\nПервая строка.\nВторая строка.\n";
+        let text = "---\nid: 01K1\nstatus: open\n---\nFirst line.\nSecond line.\n";
         let out = set_status_done(text, "ts").unwrap();
-        assert!(out.ends_with("Первая строка.\nВторая строка.\n"));
+        assert!(out.ends_with("First line.\nSecond line.\n"));
     }
 
     #[test]
     fn set_status_done_keeps_crlf_input_crlf() {
-        let text = "---\r\nid: 01K1\r\nstatus: open\r\n---\r\nтело\r\n";
+        let text = "---\r\nid: 01K1\r\nstatus: open\r\n---\r\nbody\r\n";
         let out = set_status_done(text, "ts").unwrap();
         assert!(!out.contains("open"));
         assert!(out.contains("\r\n"), "line endings must stay CRLF: {out:?}");
@@ -331,7 +336,7 @@ session: a3f1c2\n\
 
     #[test]
     fn set_status_done_returns_none_without_frontmatter() {
-        assert!(set_status_done("просто текст\n", "ts").is_none());
+        assert!(set_status_done("just text\n", "ts").is_none());
     }
 
     #[test]
@@ -339,7 +344,7 @@ session: a3f1c2\n\
         let crlf = VALID.replace('\n', "\r\n");
         let card = parse_card(&crlf, "/r/01K1-pill.md").expect("card");
         assert_eq!(card.id, "01K1B7QW9XZ3M4N5P6R7S8T9V0");
-        assert_eq!(card.title, "Пилюля мигает при переключении");
+        assert_eq!(card.title, "The pill blinks when switching");
         assert_eq!(card.status, TaskStatus::Open);
         assert_eq!(card.project, "cowork-deck");
         assert!(card.damaged.is_none(), "a stray \\r must not leak into a field value");
@@ -349,7 +354,7 @@ session: a3f1c2\n\
     fn multiline_title_flattens_through_render_and_reparse() {
         let card = Task {
             id: "01K1".to_string(),
-            title: "Баг:\nпилюля\nмигает".to_string(),
+            title: "Bug:\nthe pill\nblinks".to_string(),
             kind: TaskKind::Bug,
             status: TaskStatus::Open,
             project: "cowork-deck".to_string(),
@@ -369,7 +374,7 @@ session: a3f1c2\n\
             "exactly one opening and one closing delimiter"
         );
         let again = parse_card(&text, "/r/x.md").expect("card");
-        assert_eq!(again.title, "Баг: пилюля мигает");
+        assert_eq!(again.title, "Bug: the pill blinks");
         assert!(again.damaged.is_none());
     }
 }

@@ -64,16 +64,16 @@ pub enum TaskError {
 impl std::fmt::Display for TaskError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TaskError::NotConfigured => write!(f, "трекер не настроен для этого пространства"),
-            TaskError::RootMissing(p) => write!(f, "каталог задач недоступен: {p}"),
-            TaskError::Io(e) => write!(f, "ошибка файловой системы: {e}"),
-            TaskError::NotFound(id) => write!(f, "карточка не найдена: {id}"),
+            TaskError::NotConfigured => write!(f, "no task tracker is configured for this workspace"),
+            TaskError::RootMissing(p) => write!(f, "the task folder is unreachable: {p}"),
+            TaskError::Io(e) => write!(f, "filesystem error: {e}"),
+            TaskError::NotFound(id) => write!(f, "card not found: {id}"),
             TaskError::Conflict(id) => {
-                write!(f, "несколько файлов с одним id ({id}) — исправьте вручную")
+                write!(f, "more than one file carries id {id} — fix it by hand")
             }
             TaskError::Damaged(path) => write!(
                 f,
-                "карточка повреждена и не будет закрыта автоматически — почините вручную: {path}"
+                "the card is damaged and will not be closed automatically — repair it by hand: {path}"
             ),
         }
     }

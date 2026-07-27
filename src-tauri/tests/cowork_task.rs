@@ -14,7 +14,7 @@ fn missing_required_env_var_exits_nonzero_and_writes_no_file() {
 
     let bin = env!("CARGO_BIN_EXE_cowork_task");
     let mut child = Command::new(bin)
-        .args(["new", "--kind", "bug", "--title", "не должно записаться"])
+        .args(["new", "--kind", "bug", "--title", "must not be written"])
         .env("COWORK_TASKS_DIR", dir.path())
         .env_remove("COWORK_PROJECT")
         .stdin(Stdio::piped())
@@ -22,7 +22,7 @@ fn missing_required_env_var_exits_nonzero_and_writes_no_file() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all("тело".as_bytes()).unwrap();
+    child.stdin.take().unwrap().write_all("body".as_bytes()).unwrap();
     let status = child.wait().unwrap();
 
     assert!(!status.success(), "must exit non-zero when a required env var is missing");

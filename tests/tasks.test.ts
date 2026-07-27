@@ -7,9 +7,9 @@ import type { Task } from "../src/ipc";
 
 function card(over: Partial<Task> = {}): Task {
   return {
-    id: "01AAA", title: "Пилюля мигает", kind: "bug", status: "open", project: "deck",
+    id: "01AAA", title: "The pill keeps blinking", kind: "bug", status: "open", project: "deck",
     created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
-    body: "Репро: три воркспейса.", path: "/r/01AAA-pill.md", damaged: null, conflict: false,
+    body: "Repro: three workspaces.", path: "/r/01AAA-pill.md", damaged: null, conflict: false,
     ...over,
   };
 }
@@ -17,16 +17,16 @@ function card(over: Partial<Task> = {}): Task {
 describe("taskPrompt", () => {
   it("carries title, kind, body and the close instruction", () => {
     const p = taskPrompt(card());
-    expect(p).toContain("Пилюля мигает");
-    expect(p).toContain("баг");
-    expect(p).toContain("Репро: три воркспейса.");
+    expect(p).toContain("The pill keeps blinking");
+    expect(p).toContain("bug");
+    expect(p).toContain("Repro: three workspaces.");
     expect(p).toContain("01AAA");
     expect(p).toContain("COWORK_TASK_BIN");
   });
 
   it("works for a card with no body", () => {
     const p = taskPrompt(card({ body: "" }));
-    expect(p).toContain("Пилюля мигает");
+    expect(p).toContain("The pill keeps blinking");
     expect(p).not.toContain("undefined");
     expect(p.trim().endsWith(" ")).toBe(false);
   });
@@ -111,7 +111,7 @@ describe("boardColumns", () => {
   });
 
   it("keeps damaged cards in the open column whatever their project says", () => {
-    const cards = [card({ id: "bad", project: "", damaged: "нет поля project" })];
+    const cards = [card({ id: "bad", project: "", damaged: "no project field" })];
     const b = boardColumns(cards, "deck");
     expect(b.open.map((t) => t.id)).toEqual(["bad"]);
     expect(b.foreign).toEqual([]);
@@ -125,8 +125,8 @@ describe("boardColumns", () => {
 
 describe("kindLabel", () => {
   it("is Russian, matching the rest of the UI", () => {
-    expect(kindLabel("bug")).toBe("баг");
-    expect(kindLabel("task")).toBe("задача");
-    expect(kindLabel("idea")).toBe("идея");
+    expect(kindLabel("bug")).toBe("bug");
+    expect(kindLabel("task")).toBe("task");
+    expect(kindLabel("idea")).toBe("idea");
   });
 });

@@ -33,14 +33,14 @@ sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const boardEl = document.querySelector<HTMLElement>("#board")!;
 
-// Переключатель «Терминалы | Доска»: доска берёт всю ширину, потому что позже
-// сюда приедут доски GitHub/Jira, которым нужно место, а не полоска.
+// The "Terminals | Board" switch. The board takes the full width because
+// GitHub and Jira boards land here later, and those need room rather than a strip.
 const views = document.createElement("div");
 views.className = "tk-views";
 const termBtn = document.createElement("button");
-termBtn.textContent = "Терминалы"; termBtn.className = "active";
+termBtn.textContent = "Terminals"; termBtn.className = "active";
 const boardBtn = document.createElement("button");
-boardBtn.textContent = "Доска";
+boardBtn.textContent = "Board";
 views.append(termBtn, boardBtn);
 sidebar.prepend(views);
 
@@ -49,7 +49,7 @@ const board = new BoardView({
   onResolve: (t) => void closeTask(t),
   onNew: () => void captureTask(),
   onConfigure: () => void alertModal(
-    "Настройте трекер в свойствах пространства (✎): каталог в проекте или свой путь."),
+    "Configure the tracker in the workspace settings (✎): a folder in the project, or one of your own."),
 });
 boardEl.append(board.mount);
 
@@ -64,13 +64,13 @@ function setView(showBoard: boolean) {
   boardBtn.classList.toggle("active", showBoard);
   if (showBoard) {
     void refreshBoard();
-    // Опрос — основной путь обновления; watcher лишь ускоряет его, поэтому
-    // его отказ деградирует в задержку и не требует детекции. Счётчики в
-    // сайдбаре идут по тому же пути деградации (см. спеку), поэтому тик
-    // опроса освежает и их — иначе на воркспейсе без watcher'а (например,
-    // SMB-том) бейдж застревает на числе с загрузки. Каждый вызов в своём
-    // try/catch внутри refreshBoard/refreshCounts — упавшая ручка не должна
-    // ронять другую.
+    // Polling is the primary refresh path; the watcher only makes it faster, so
+    // a watcher failure degrades into a delay and needs no detection. The
+    // sidebar counts degrade the same way (see the spec), which is why this tick
+    // refreshes them too — otherwise on a workspace without a watcher (an SMB
+    // volume, say) the badge stays stuck at whatever it was at load. Each call
+    // has its own try/catch inside refreshBoard/refreshCounts: one failing
+    // handle must not take the other down.
     if (boardTimer === null) {
       boardTimer = setInterval(() => { void refreshBoard(); void refreshCounts(); }, 5000);
     }
@@ -129,14 +129,14 @@ const boot = () => runBoot({
   },
 });
 
-/** Быстрый захват: модалка, карточка в активное пространство, доска и
- *  счётчики обновляются сразу, не дожидаясь watcher'а. */
+/** Quick capture: a modal, a card in the active workspace, and the board and
+ *  counts refreshed straight away rather than waiting on the watcher. */
 async function captureTask() {
   const ws = workspaces.active;
-  if (!ws) { await alertModal("Выберите пространство."); return; }
+  if (!ws) { await alertModal("Pick a workspace first."); return; }
   const caps = await taskCapabilities(ws.id).catch(() => null);
   if (!caps?.canCreate) {
-    await alertModal("Трекер не настроен для этого пространства. Настройте его в свойствах пространства (✎).");
+    await alertModal("No task tracker is configured for this workspace. Set one up in its settings (✎).");
     return;
   }
   const draft = await taskForm();
@@ -144,31 +144,32 @@ async function captureTask() {
   try {
     await createTask(ws.id, draft);
   } catch (e) {
-    await alertModal(`Не удалось создать задачу: ${String(e)}`);
+    await alertModal(`Could not create the task: ${String(e)}`);
     return;
   }
   if (boardVisible) await refreshBoard();
   await refreshCounts();
 }
-/** ▶ на карточке. Пространство берётся из `project:` карточки, а не активное:
- *  на общем корне (например, папка волта на три проекта) активное пространство
- *  уронило бы работу в чужой каталог. */
+/** ▶ on a card. The workspace comes from the card's `project:` field, not from
+ *  whichever one is active: on a shared root (a vault folder covering three
+ *  projects, say) the active workspace would drop the work in the wrong
+ *  directory. */
 async function launchFromTask(t: Task) {
   const target = workspaces.all.find((w) => w.name === t.project);
   if (!target) {
     await alertModal(
-      `Не найдено пространство с именем «${t.project}» из поля project: карточки. ` +
-      `Переименовано пространство? Запуск отменён, чтобы не начать работу в чужом каталоге.`);
+      `No workspace named “${t.project}” — that is the card's project: field. ` +
+      `Was the workspace renamed? The launch was cancelled rather than start work in the wrong directory.`);
     return;
   }
   await deck.launchFromTask(target, t, taskPrompt(t));
-  // И "launched", и "focused" оставляют сессию, на которую нужно смотреть —
-  // остаться на доске выглядело бы так, будто кнопка ничего не сделала.
+  // Both "launched" and "focused" leave a session worth looking at — staying on
+  // the board would look like the button did nothing.
   setView(false);
 }
 
-/** Перерисовать доску активного пространства. Каждый вызов IPC изолирован:
- *  одна упавшая ручка не должна ронять весь тик. */
+/** Redraw the active workspace's board. Every IPC call is isolated: one failing
+ *  handle must not take the whole tick down. */
 async function refreshBoard() {
   const ws = workspaces.active;
   if (!ws) {
@@ -184,13 +185,13 @@ async function refreshBoard() {
     try { tasks = await listTasks(wsId); }
     catch (e) { error = String(e); }
   }
-  // Пространство могли переключить, пока мы ждали IPC: поздний ответ не должен
-  // перерисовать доску данными чужого пространства поверх актуальных.
+  // The workspace may have been switched while we waited on IPC: a late reply
+  // must not repaint the board with another workspace's data over the current one.
   if (workspaces.active?.id !== wsId) return;
   board.render({ project: ws.name, caps, error, tasks, links: deck.taskLinks() });
 }
 
-/** Счётчики в сайдбаре — одна ручка на все пространства. */
+/** The sidebar counts — one handle covering every workspace. */
 async function refreshCounts() {
   try { workspaces.setCounts(await taskOpenCounts()); }
   catch (e) { console.debug("taskOpenCounts failed", e); }
@@ -200,7 +201,7 @@ async function closeTask(t: Task) {
   const ws = workspaces.active;
   if (!ws) return;
   try { await resolveTask(ws.id, t.id); }
-  catch (e) { await alertModal(`Не удалось закрыть задачу: ${String(e)}`); }
+  catch (e) { await alertModal(`Could not close the task: ${String(e)}`); }
   await refreshBoard();
   await refreshCounts();
 }

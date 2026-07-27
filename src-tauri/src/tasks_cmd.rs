@@ -61,7 +61,7 @@ fn workspace(state: &State<AppState>, id: &str) -> Result<Workspace, String> {
         .workspaces()
         .into_iter()
         .find(|w| w.id == id)
-        .ok_or_else(|| format!("пространство не найдено: {id}"))
+        .ok_or_else(|| format!("workspace not found: {id}"))
 }
 
 fn provider_for(ws: &Workspace) -> Result<FsTaskProvider, String> {

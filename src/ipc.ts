@@ -104,9 +104,9 @@ export interface Task {
   id: string; title: string; kind: TaskKind; status: TaskStatus; project: string;
   created: string; resolved: string | null; origin: TaskOrigin; session: string | null;
   body: string; path: string;
-  /** Причина, если карточку не удалось разобрать до конца. Показывается, не скрывается. */
+  /** Why the card could not be parsed in full. Shown, not hidden. */
   damaged: string | null;
-  /** Больше одного файла с этим id. */
+  /** More than one file carries this id. */
   conflict: boolean;
 }
 // project/origin are set by the backend (workspace name / "human") and are

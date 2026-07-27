@@ -137,7 +137,7 @@ impl TaskProvider for FsTaskProvider {
                 // fields through it would silently drop them.
                 let text = std::fs::read_to_string(&path).map_err(|e| TaskError::Io(e.to_string()))?;
                 let updated = set_status_done(&text, &resolved).ok_or_else(|| {
-                    TaskError::Io("карточка без блока frontmatter".to_string())
+                    TaskError::Io("the card has no frontmatter block".to_string())
                 })?;
                 self.write_atomic(&path, &updated)?;
 
@@ -161,7 +161,7 @@ mod tests {
         TaskDraft {
             title: title.to_string(),
             kind: TaskKind::Bug,
-            body: "тело".to_string(),
+            body: "body".to_string(),
             project: project.to_string(),
             origin: TaskOrigin::Human,
             session: None,
@@ -176,20 +176,23 @@ mod tests {
     fn create_then_list_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let p = provider(dir.path());
-        let made = p.create(draft("Пилюля мигает", "deck")).unwrap();
+        let made = p.create(draft("The pill blinks", "deck")).unwrap();
         assert_eq!(made.status, TaskStatus::Open);
         assert!(!made.created.is_empty());
 
         let all = p.list("deck").unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, made.id);
-        assert_eq!(all[0].title, "Пилюля мигает");
-        assert_eq!(all[0].body.trim(), "тело");
+        assert_eq!(all[0].title, "The pill blinks");
+        assert_eq!(all[0].body.trim(), "body");
     }
 
     #[test]
     fn filename_carries_id_and_slug() {
         let dir = tempfile::tempdir().unwrap();
+        // Cyrillic on purpose, same reason as frontmatter.rs's slugify test: a card
+        // title is written in whatever language its author thinks in, and the file
+        // name it produces has to stay readable. ASCII here would drop the coverage.
         let made = provider(dir.path()).create(draft("Баг: пилюля мигает", "deck")).unwrap();
         let name = std::path::Path::new(&made.path).file_name().unwrap().to_string_lossy();
         assert!(name.starts_with(&made.id), "got {name}");
@@ -200,10 +203,10 @@ mod tests {
     fn resolve_finds_the_card_after_the_file_was_renamed() {
         let dir = tempfile::tempdir().unwrap();
         let p = provider(dir.path());
-        let made = p.create(draft("Переименуй меня", "deck")).unwrap();
+        let made = p.create(draft("Rename me", "deck")).unwrap();
 
-        // Что и делает человек в Obsidian в первый же день.
-        let renamed = dir.path().join("Человеческое имя.md");
+        // Which is what a human does in Obsidian on day one.
+        let renamed = dir.path().join("A human name.md");
         std::fs::rename(&made.path, &renamed).unwrap();
 
         let done = p.resolve(&made.id).unwrap();
@@ -211,7 +214,7 @@ mod tests {
         assert!(done.resolved.is_some(), "resolved timestamp is needed to sort the done column");
         assert_eq!(
             std::path::Path::new(&done.path).file_name().unwrap(),
-            std::ffi::OsStr::new("Человеческое имя.md"),
+            std::ffi::OsStr::new("A human name.md"),
             "resolve must write back to the renamed file, not recreate the old one"
         );
         assert_eq!(p.list("deck").unwrap().len(), 1, "no duplicate was left behind");
@@ -220,47 +223,47 @@ mod tests {
     #[test]
     fn ordinary_notes_and_subdirectories_are_ignored() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Заметка.md"), "# просто заметка\n").unwrap();
-        std::fs::write(dir.path().join("readme.txt"), "не markdown\n").unwrap();
-        std::fs::create_dir(dir.path().join("Архив")).unwrap();
+        std::fs::write(dir.path().join("Note.md"), "# just a note\n").unwrap();
+        std::fs::write(dir.path().join("readme.txt"), "not markdown\n").unwrap();
+        std::fs::create_dir(dir.path().join("Archive")).unwrap();
         std::fs::write(
-            dir.path().join("Архив/скрытая.md"),
+            dir.path().join("Archive/hidden.md"),
             "---\nid: 01DEEP\ntitle: t\nstatus: open\nproject: deck\ncreated: c\n---\n",
         )
         .unwrap();
 
         let p = provider(dir.path());
-        p.create(draft("Настоящая", "deck")).unwrap();
+        p.create(draft("A real one", "deck")).unwrap();
 
         let all = p.list("deck").unwrap();
         assert_eq!(all.len(), 1, "only the real card; scan is non-recursive");
-        assert_eq!(all[0].title, "Настоящая");
+        assert_eq!(all[0].title, "A real one");
     }
 
     #[test]
     fn cards_of_other_projects_are_filtered_out_but_damaged_ones_are_kept() {
         let dir = tempfile::tempdir().unwrap();
         let p = provider(dir.path());
-        p.create(draft("Наша", "deck")).unwrap();
-        p.create(draft("Чужая", "other-project")).unwrap();
-        // id есть, project нет → повреждена, и должна остаться видимой.
+        p.create(draft("Ours", "deck")).unwrap();
+        p.create(draft("Theirs", "other-project")).unwrap();
+        // id present, project missing → damaged, and it must stay visible.
         std::fs::write(
             dir.path().join("01BROKEN-x.md"),
-            "---\nid: 01BROKEN\ntitle: Битая\n---\nтело\n",
+            "---\nid: 01BROKEN\ntitle: Broken\n---\nbody\n",
         )
         .unwrap();
 
         let ours = p.list("deck").unwrap();
         let titles: Vec<&str> = ours.iter().map(|t| t.title.as_str()).collect();
-        assert!(titles.contains(&"Наша"));
-        assert!(titles.contains(&"Битая"), "a damaged card must never be filtered away");
-        assert!(!titles.contains(&"Чужая"));
+        assert!(titles.contains(&"Ours"));
+        assert!(titles.contains(&"Broken"), "a damaged card must never be filtered away");
+        assert!(!titles.contains(&"Theirs"));
     }
 
     #[test]
     fn duplicate_ids_are_flagged_and_resolve_refuses() {
         let dir = tempfile::tempdir().unwrap();
-        let card = "---\nid: 01DUP\ntitle: Копия\nkind: task\nstatus: open\nproject: deck\ncreated: c\norigin: human\n---\n";
+        let card = "---\nid: 01DUP\ntitle: Duplicate\nkind: task\nstatus: open\nproject: deck\ncreated: c\norigin: human\n---\n";
         std::fs::write(dir.path().join("01DUP-a.md"), card).unwrap();
         std::fs::write(dir.path().join("01DUP-b.md"), card).unwrap();
 
@@ -276,17 +279,17 @@ mod tests {
     }
 
     #[test]
-    // Не проверяет саму атомарность записи: наблюдать промежуточное состояние
-    // (файл-темп существует, целевой ещё не создан) можно только вставкой
-    // сбоя, а её здесь нет. Что реально проверено — temp+rename не оставляет
-    // мусора после успешной записи, и что даже уцелевший `.tmp`-файл никогда
-    // не читается как карточка. Это второе — структурное свойство: скан
-    // требует расширение `.md`, так что наблюдатель (watcher) не может
-    // увидеть недописанную карточку в принципе, не благодаря этому тесту.
+    // Does not test atomicity itself: observing the intermediate state (the temp
+    // file exists, the target does not yet) needs injected failure, and there is
+    // none here. What is actually covered is that temp+rename leaves no litter
+    // behind a successful write, and that even a surviving `.tmp` file is never
+    // read as a card. The second one is structural: the scan requires a `.md`
+    // extension, so the watcher cannot see a half-written card in principle —
+    // not thanks to this test.
     fn write_leaves_no_temp_litter_and_temp_files_are_not_cards() {
         let dir = tempfile::tempdir().unwrap();
         let p = provider(dir.path());
-        p.create(draft("Атомарная", "deck")).unwrap();
+        p.create(draft("Atomic", "deck")).unwrap();
 
         let names: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -296,7 +299,7 @@ mod tests {
         assert_eq!(names.len(), 1, "temp file must be gone after rename: {names:?}");
         assert!(names[0].ends_with(".md"));
 
-        // Даже если временный файл переживёт краш, карточкой он не станет.
+        // Even if a temp file survives a crash, it never becomes a card.
         std::fs::write(dir.path().join(".01TMP.tmp"), "---\nid: 01TMP\n---\n").unwrap();
         assert_eq!(p.list("deck").unwrap().len(), 1);
     }
@@ -304,10 +307,10 @@ mod tests {
     #[test]
     fn missing_root_reports_the_path_instead_of_creating_it() {
         let dir = tempfile::tempdir().unwrap();
-        let absent = dir.path().join("нет-такого");
+        let absent = dir.path().join("no-such-thing");
         let p = FsTaskProvider::new(absent.clone(), false);
         match p.list("deck") {
-            Err(TaskError::RootMissing(path)) => assert!(path.contains("нет-такого")),
+            Err(TaskError::RootMissing(path)) => assert!(path.contains("no-such-thing")),
             other => panic!("expected RootMissing, got {other:?}"),
         }
         assert!(!absent.exists(), "an arbitrary user path must never be created silently");
@@ -318,15 +321,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join(".cowork").join("tasks");
         let p = FsTaskProvider::new(root.clone(), true);
-        p.create(draft("Первая", "deck")).unwrap();
+        p.create(draft("The first", "deck")).unwrap();
         assert!(root.is_dir(), ".cowork/tasks is ours to create");
     }
 
     #[test]
     fn resolve_refuses_a_damaged_card_and_leaves_the_file_untouched() {
         let dir = tempfile::tempdir().unwrap();
-        // Отсутствует project и created — карточка "повреждена", а не отброшена.
-        let text = "---\nid: 01BROKEN\ntitle: Чья-то заметка\n---\nчужой текст\n";
+        // project and created are missing — the card is "damaged", not discarded.
+        let text = "---\nid: 01BROKEN\ntitle: Somebody's note\n---\nsomebody else's text\n";
         let path = dir.path().join("01BROKEN-note.md");
         std::fs::write(&path, text).unwrap();
         let before = std::fs::read(&path).unwrap();
@@ -348,7 +351,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let text = "---\n\
 id: 01K1\n\
-title: Настоящая карточка\n\
+title: A real card\n\
 kind: task\n\
 status: open\n\
 project: deck\n\
@@ -357,7 +360,7 @@ origin: human\n\
 tags: [inbox]\n\
 aliases: [alt]\n\
 ---\n\
-Тело без изменений.\n";
+The body, unchanged.\n";
         let path = dir.path().join("01K1-real.md");
         std::fs::write(&path, text).unwrap();
 
@@ -370,7 +373,7 @@ aliases: [alt]\n\
         assert!(after.contains("tags: [inbox]"), "unknown key must survive resolve: {after}");
         assert!(after.contains("aliases: [alt]"), "unknown key must survive resolve: {after}");
         assert!(after.contains("status: done"));
-        assert!(after.ends_with("Тело без изменений.\n"), "body must be untouched: {after:?}");
+        assert!(after.ends_with("The body, unchanged.\n"), "body must be untouched: {after:?}");
     }
 
     #[test]
