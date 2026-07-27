@@ -75,7 +75,10 @@ export function scheduleRowText(s: Schedule, run: ScheduleRun | null, now: Date)
   const rule = describeSchedule(s);
   if (!s.enabled) return `расписание выключено · ${rule}`;
 
-  const parts = [rule, `следующий запуск ${nextRunLabel(s.preset, now)}`];
+  // Prefer what the backend says: it owns the firing, and a second copy of
+  // the arithmetic here would drift from it with nothing to catch the drift.
+  const next = run?.nextRunMs != null ? stamp(run.nextRunMs, now) : nextRunLabel(s.preset, now);
+  const parts = [rule, `следующий запуск ${next}`];
   const failed = run?.lastOutcome && run.lastOutcome !== "launched";
   if (failed) {
     const why = OUTCOME_TEXT[run!.lastOutcome!] ?? run!.lastOutcome!;
@@ -88,14 +91,18 @@ export function scheduleRowText(s: Schedule, run: ScheduleRun | null, now: Date)
   return parts.join(" · ");
 }
 
-/** Past instant as "сегодня 09:00" / "вчера 09:00" / "пн 09:00". */
+/** An instant as "сегодня 09:00" / "вчера 09:00" / "завтра 09:00" / "пн 09:00". */
 function stamp(ms: number, now: Date): string {
   const d = new Date(ms);
   const t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   if (d.toDateString() === now.toDateString()) return `сегодня ${t}`;
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return `вчера ${t}`;
+  const shifted = (days: number) => {
+    const x = new Date(now);
+    x.setDate(now.getDate() + days);
+    return x.toDateString();
+  };
+  if (d.toDateString() === shifted(-1)) return `вчера ${t}`;
+  if (d.toDateString() === shifted(1)) return `завтра ${t}`;
   return `${WEEKDAYS[d.getDay()]} ${t}`;
 }
 

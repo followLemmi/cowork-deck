@@ -1,4 +1,4 @@
-use crate::model::{ScheduleRun, SchedulePreset};
+use crate::model::{ScheduleRun, SchedulePreset, SCHEDULE_STATE_VERSION};
 use crate::store::Store;
 use chrono::{Datelike, Duration, NaiveDateTime, Timelike};
 use std::path::PathBuf;
@@ -92,6 +92,30 @@ pub fn fingerprint(preset: &SchedulePreset) -> String {
     }
 }
 
+/// Local wall clock -> true epoch millis. Version 1 used
+/// `naive.and_utc().timestamp_millis()`, which labelled a local time as UTC:
+/// self-consistent in one timezone, wrong by the offset after travel or a DST
+/// change, and meaningless to anything else that reads the file.
+pub fn to_epoch_ms(t: NaiveDateTime) -> i64 {
+    t.and_local_timezone(chrono::Local)
+        .earliest()
+        // A wall clock inside a DST spring-forward gap does not exist; the
+        // occurrence it stands for is the following instant.
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or_else(|| t.and_utc().timestamp_millis())
+}
+
+/// Inverse of `to_epoch_ms`, plus the version-1 reading for records written
+/// before the format was fixed.
+pub fn from_epoch_ms(ms: i64, version: u8) -> Option<NaiveDateTime> {
+    let dt = chrono::DateTime::from_timestamp_millis(ms)?;
+    Some(if version >= 2 {
+        dt.with_timezone(&chrono::Local).naive_local()
+    } else {
+        dt.naive_utc()
+    })
+}
+
 /// Whether a fire is making up for a missed occurrence rather than running on
 /// time. The loop ticks every 30 s, so an on-time fire is always close to its
 /// occurrence; anything further behind was owed from a period when the app was
@@ -118,8 +142,8 @@ pub fn decide(
     if run.preset.as_deref() != Some(fingerprint(preset).as_str()) {
         return TickAction::Arm(occ);
     }
-    match chrono::DateTime::from_timestamp_millis(run.last_attempt) {
-        Some(dt) if dt.naive_utc() >= occ => TickAction::Idle,
+    match from_epoch_ms(run.last_attempt, run.version) {
+        Some(dt) if dt >= occ => TickAction::Idle,
         _ => TickAction::Fire(occ),
     }
 }
@@ -141,6 +165,7 @@ pub fn apply_ack(
         last_run: if outcome == "launched" { Some(occurrence_ms) } else { cur.last_run },
         last_outcome: Some(outcome.to_string()),
         preset: cur.preset.clone(),
+        version: cur.version,
     })
 }
 
@@ -188,15 +213,14 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
                     // rule is a new rule, not a new scenario.
                     let prev = state.get(&sk.id);
                     state.insert(sk.id.clone(), ScheduleRun {
-                        last_attempt: occ.and_utc().timestamp_millis(),
+                        last_attempt: to_epoch_ms(occ),
                         last_run: prev.and_then(|r| r.last_run),
                         last_outcome: prev.and_then(|r| r.last_outcome.clone()),
-                        preset: Some(fingerprint(&sched.preset)),
-                    });
+                        preset: Some(fingerprint(&sched.preset)), version: SCHEDULE_STATE_VERSION });
                     changed = true;
                 }
                 TickAction::Fire(occ) => {
-                    let occurrence_ms = occ.and_utc().timestamp_millis();
+                    let occurrence_ms = to_epoch_ms(occ);
                     let _ = app.emit("schedule://fire", FirePayload {
                         skill_id: sk.id.clone(),
                         occurrence_ms,
@@ -209,8 +233,7 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
                         last_attempt: occurrence_ms,
                         last_run: prev_run,
                         last_outcome: None,
-                        preset: Some(fingerprint(&sched.preset)),
-                    });
+                        preset: Some(fingerprint(&sched.preset)), version: SCHEDULE_STATE_VERSION });
                     changed = true;
                 }
                 TickAction::Idle => {}
@@ -229,7 +252,14 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
 
         if changed {
             if let Err(e) = store.save_schedule_state(&state) {
-                eprintln!("warning: failed to save schedule_state.json ({e})");
+                // Not a warning: the map is re-read from disk every tick, so a
+                // failing write means every schedule is re-armed forever and
+                // nothing ever fires. That is the feature being down, and it
+                // has to reach the user rather than stderr nobody reads.
+                eprintln!("error: failed to save schedule_state.json ({e})");
+                let _ = app.emit("schedule://broken", format!(
+                    "Не удалось сохранить состояние расписаний ({e}). \
+                     Пока это так, запланированные сценарии не сработают."));
             }
         }
 
@@ -295,11 +325,26 @@ mod tests {
     /// A record left by a successful run of `preset` at `attempt`.
     fn run_at(preset: &SchedulePreset, attempt: NaiveDateTime) -> ScheduleRun {
         ScheduleRun {
-            last_attempt: attempt.and_utc().timestamp_millis(),
-            last_run: Some(attempt.and_utc().timestamp_millis()),
+            last_attempt: to_epoch_ms(attempt),
+            last_run: Some(to_epoch_ms(attempt)),
             last_outcome: Some("launched".into()),
-            preset: Some(fingerprint(preset)),
-        }
+            preset: Some(fingerprint(preset)), version: SCHEDULE_STATE_VERSION }
+    }
+
+    /// Version-1 files hold a local wall clock labelled as UTC. Reading one
+    /// back with the version-1 rule has to yield the wall clock it meant, or
+    /// every schedule shifts by the machine's UTC offset on upgrade.
+    #[test]
+    fn a_version_1_timestamp_reads_back_as_the_wall_clock_it_meant() {
+        let wall = dt(2026, 7, 24, 9, 0);
+        let v1_ms = wall.and_utc().timestamp_millis();
+        assert_eq!(from_epoch_ms(v1_ms, 1), Some(wall));
+    }
+
+    #[test]
+    fn a_version_2_timestamp_round_trips_through_a_real_epoch() {
+        let wall = dt(2026, 7, 24, 9, 0);
+        assert_eq!(from_epoch_ms(to_epoch_ms(wall), 2), Some(wall));
     }
 
     /// A tile that appears at 14:20 for a 09:00 schedule looks like a fault
@@ -318,8 +363,8 @@ mod tests {
     /// what "when did this scenario last actually run" is read from.
     #[test]
     fn a_launched_ack_records_the_run() {
-        let occ = dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis();
-        let attempted = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None, preset: None };
+        let occ = to_epoch_ms(dt(2026, 7, 24, 9, 0));
+        let attempted = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None, preset: None, version: SCHEDULE_STATE_VERSION };
 
         let updated = apply_ack(Some(&attempted), occ, "launched").expect("ack applies");
         assert_eq!(updated.last_run, Some(occ));
@@ -331,12 +376,12 @@ mod tests {
     /// for today's silence is right there next to it.
     #[test]
     fn a_failed_ack_records_the_reason_without_claiming_a_run() {
-        let yesterday = dt(2026, 7, 23, 9, 0).and_utc().timestamp_millis();
-        let occ = dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis();
+        let yesterday = to_epoch_ms(dt(2026, 7, 23, 9, 0));
+        let occ = to_epoch_ms(dt(2026, 7, 24, 9, 0));
         let attempted = ScheduleRun {
             last_attempt: occ,
             last_run: Some(yesterday),
-            last_outcome: Some("launched".into()), preset: None };
+            last_outcome: Some("launched".into()), preset: None, version: SCHEDULE_STATE_VERSION };
 
         let updated = apply_ack(Some(&attempted), occ, "no-workspace").expect("ack applies");
         assert_eq!(updated.last_run, Some(yesterday));
@@ -347,9 +392,9 @@ mod tests {
     /// late or replayed message cannot stamp a run that never happened.
     #[test]
     fn a_stale_ack_is_ignored() {
-        let occ = dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis();
-        let older = dt(2026, 7, 23, 9, 0).and_utc().timestamp_millis();
-        let current = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None, preset: None };
+        let occ = to_epoch_ms(dt(2026, 7, 24, 9, 0));
+        let older = to_epoch_ms(dt(2026, 7, 23, 9, 0));
+        let current = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None, preset: None, version: SCHEDULE_STATE_VERSION };
 
         assert_eq!(apply_ack(Some(&current), older, "launched"), None);
         assert_eq!(apply_ack(None, occ, "launched"), None);
@@ -364,11 +409,10 @@ mod tests {
         let new = SchedulePreset::Daily { hour: 9, minute: 0 };
         let now = dt(2026, 7, 24, 10, 0);
         let entry = ScheduleRun {
-            last_attempt: dt(2026, 7, 23, 18, 0).and_utc().timestamp_millis(),
-            last_run: Some(dt(2026, 7, 23, 18, 0).and_utc().timestamp_millis()),
+            last_attempt: to_epoch_ms(dt(2026, 7, 23, 18, 0)),
+            last_run: Some(to_epoch_ms(dt(2026, 7, 23, 18, 0))),
             last_outcome: Some("launched".into()),
-            preset: Some(fingerprint(&old)),
-        };
+            preset: Some(fingerprint(&old)), version: SCHEDULE_STATE_VERSION };
 
         assert_eq!(decide(&new, Some(&entry), now), TickAction::Arm(dt(2026, 7, 24, 9, 0)));
     }
@@ -381,11 +425,10 @@ mod tests {
         let p = SchedulePreset::Daily { hour: 9, minute: 0 };
         let now = dt(2026, 7, 24, 10, 0);
         let paused = ScheduleRun {
-            last_attempt: dt(2026, 7, 17, 9, 0).and_utc().timestamp_millis(),
-            last_run: Some(dt(2026, 7, 17, 9, 0).and_utc().timestamp_millis()),
+            last_attempt: to_epoch_ms(dt(2026, 7, 17, 9, 0)),
+            last_run: Some(to_epoch_ms(dt(2026, 7, 17, 9, 0))),
             last_outcome: Some("launched".into()),
-            preset: None,
-        };
+            preset: None, version: SCHEDULE_STATE_VERSION };
 
         assert_eq!(decide(&p, Some(&paused), now), TickAction::Arm(dt(2026, 7, 24, 9, 0)));
     }
@@ -407,11 +450,10 @@ mod tests {
         let p = SchedulePreset::Daily { hour: 9, minute: 0 };
         let now = dt(2026, 7, 24, 10, 0);
         let failed = ScheduleRun {
-            last_attempt: dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis(),
-            last_run: Some(dt(2026, 7, 23, 9, 0).and_utc().timestamp_millis()),
+            last_attempt: to_epoch_ms(dt(2026, 7, 24, 9, 0)),
+            last_run: Some(to_epoch_ms(dt(2026, 7, 23, 9, 0))),
             last_outcome: Some("no-workspace".into()),
-            preset: Some(fingerprint(&p)),
-        };
+            preset: Some(fingerprint(&p)), version: SCHEDULE_STATE_VERSION };
         assert_eq!(decide(&p, Some(&failed), now), TickAction::Idle);
     }
 

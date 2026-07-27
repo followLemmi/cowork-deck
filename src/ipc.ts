@@ -24,7 +24,12 @@ export interface UiState { activeWorkspaceId: string | null; }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
  *  a session actually started. Epoch millis. */
-export interface ScheduleRun { lastAttempt: number; lastRun: number | null; lastOutcome: string | null; }
+export interface ScheduleRun {
+  lastAttempt: number; lastRun: number | null; lastOutcome: string | null;
+  /** Next firing time, computed by the backend — the side that actually
+   *  fires. Absent when the schedule is off. */
+  nextRunMs?: number | null;
+}
 
 export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");
 export const saveWorkspace = (ws: Workspace) => invoke<Workspace[]>("save_workspace", { ws });
@@ -78,6 +83,10 @@ export const scheduleAck = (skillId: string, occurrenceMs: number, outcome: stri
 /** Runtime schedule state, keyed by scenario id. The backend owns it — the
  *  frontend must not compute "did this run" from anything else. */
 export const loadScheduleState = () => invoke<Record<string, ScheduleRun>>("load_schedule_state");
+/** The scheduler could not persist its state, which means nothing will fire
+ *  until it can. */
+export const onSchedulerBroken = (cb: (message: string) => void): Promise<UnlistenFn> =>
+  listen<string>("schedule://broken", (e) => cb(e.payload));
 
 export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }

@@ -1,7 +1,7 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
-import { claudeAvailable, loadLayout, onScheduledFire, scheduleAck, schedulerReady } from "./ipc";
+import { claudeAvailable, loadLayout, onScheduledFire, onSchedulerBroken, scheduleAck, schedulerReady } from "./ipc";
 import type { Skill, Workspace } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
@@ -45,6 +45,7 @@ const boot = () => runBoot({
         await skills.refreshRuns();
       });
     }).then(() => {}),
+    () => onSchedulerBroken((message) => { void alertModal(message); }).then(() => {}),
     () => workspaces.load(),
     () => skills.load(),
     async () => {

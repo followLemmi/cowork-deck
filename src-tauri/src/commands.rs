@@ -77,11 +77,38 @@ pub fn remove_skill(state: State<AppState>, id: String) -> Result<Vec<Skill>, St
 /// Runtime schedule state for the UI. The backend owns this file; without a
 /// way to read it the frontend could only guess whether a schedule had ever
 /// run, and "last run" had nowhere to come from.
+#[derive(Serialize)]
+pub struct ScheduleView {
+    #[serde(flatten)]
+    run: crate::model::ScheduleRun,
+    /// Next firing time, computed by the side that actually fires. The
+    /// frontend had its own copy of this arithmetic; two implementations of
+    /// the same rule drift apart silently, with nothing to compare them by.
+    #[serde(rename = "nextRunMs")]
+    next_run_ms: Option<i64>,
+}
+
 #[tauri::command]
 pub fn load_schedule_state(
     state: State<AppState>,
-) -> std::collections::HashMap<String, crate::model::ScheduleRun> {
-    state.store.lock().unwrap().schedule_state()
+) -> std::collections::HashMap<String, ScheduleView> {
+    let store = state.store.lock().unwrap();
+    let runs = store.schedule_state();
+    let skills = store.skills();
+    let now = chrono::Local::now().naive_local();
+    runs.into_iter()
+        .map(|(id, run)| {
+            let next = skills
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.schedule.as_ref())
+                .filter(|sch| sch.enabled)
+                .map(|sch| crate::scheduler::to_epoch_ms(
+                    crate::scheduler::next_occurrence(&sch.preset, now),
+                ));
+            (id, ScheduleView { run, next_run_ms: next })
+        })
+        .collect()
 }
 
 /// Report what a `schedule://fire` actually produced. The loop records only

@@ -1,4 +1,4 @@
-use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, Workspace};
+use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, Workspace, SCHEDULE_STATE_VERSION};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -286,7 +286,7 @@ mod tests {
         st.insert("skill-1".into(), ScheduleRun {
             last_attempt: 1_700_000_000_000,
             last_run: Some(1_700_000_000_000),
-            last_outcome: Some("launched".into()), preset: None });
+            last_outcome: Some("launched".into()), preset: None, version: SCHEDULE_STATE_VERSION });
         s.save_schedule_state(&st).unwrap();
         assert_eq!(Store::new(s.dir.clone()).schedule_state(), st);
     }

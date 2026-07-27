@@ -43,3 +43,19 @@ describe("scheduleRowText", () => {
       .toContain("ещё не запускался");
   });
 });
+
+describe("scheduleRowText — backend as the source of truth", () => {
+  // Two implementations of the same rule drift apart silently. The row shows
+  // what the side that actually fires says, when it says anything.
+  it("prefers the backend's next run over the local calculation", () => {
+    const run: ScheduleRun = {
+      lastAttempt: at(9, 0), lastRun: at(9, 0), lastOutcome: "launched",
+      nextRunMs: new Date(2026, 6, 25, 9, 0).getTime(),
+    };
+    expect(scheduleRowText(daily, run, now)).toContain("следующий запуск завтра 09:00");
+  });
+
+  it("falls back to the local calculation when the backend says nothing", () => {
+    expect(scheduleRowText(daily, null, now)).toContain("следующий запуск завтра 09:00");
+  });
+});
