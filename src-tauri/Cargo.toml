@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "cowork_report"
 path = "src/bin/cowork_report.rs"
 
+[lib]
+name = "cowork_deck"
+path = "src/lib.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
