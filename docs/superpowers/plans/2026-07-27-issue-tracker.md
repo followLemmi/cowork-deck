@@ -3228,11 +3228,15 @@ export interface SessionEntry { sessionId: string; cwd: string; name: string; wo
 `src-tauri/src/model.rs` — в `SessionEntry` добавить поле (сохранив совместимость со старым файлом слоя):
 
 ```rust
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // ВАЖНО: `SessionEntry` переименовывает поля ПОИМЁННО (`rename = "sessionId"`),
+    // а не через `rename_all = "camelCase"`. Без явного `rename` serde запишет
+    // `task_id`, тогда как TS читает `taskId` — связка карточки с сессией молча
+    // не восстановится после перезапуска приложения.
+    #[serde(rename = "taskId", default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
 ```
 
-Посмотри фактическое имя полей и serde-атрибуты структуры — Run: `grep -n "struct SessionEntry" -A 10 src-tauri/src/model.rs` — и добавь поле в том же стиле (если структура использует `rename_all = "camelCase"`, ничего дополнительно не нужно).
+Сверено с кодом: структура использует поимённый `rename` на каждом поле (`sessionId`, `workspaceId`), поэтому `rename = "taskId"` обязателен.
 
 `src/sessions.ts` — в `serializeTiles` добавить `taskId` в возвращаемый объект, и в `restore(entries)` передать `taskId: e.taskId` в `spawnTile`. Run: `grep -n "serializeTiles\|async restore" -A 12 src/sessions.ts`.
 
