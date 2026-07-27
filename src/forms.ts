@@ -6,7 +6,7 @@
 import { pickFolder } from "./dialog";
 import type { Schedule, SchedulePreset } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
-import { validateSchedule } from "./schedule";
+import { validateSchedule, schedulePreview } from "./schedule";
 
 const COLORS = ["#61afef", "#98c379", "#e5c07b", "#c678dd", "#e06c75", "#56b6c2"];
 
@@ -116,6 +116,9 @@ export function workspaceForm(
 export function skillForm(
   activeWorkspaceId: string | null,
   initial?: { name: string; icon: string; prompt: string; workspaceId: string | null; schedule?: Schedule | null },
+  /** Name of the active workspace, shown in the schedule preview so "where
+   *  will this run" is answered before saving rather than after. */
+  activeWorkspaceName: string | null = null,
 ): Promise<{ name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null> {
   return new Promise((resolve) => {
     const { overlay: ov, box } = overlay();
@@ -156,11 +159,22 @@ export function skillForm(
     });
     const hour = document.createElement("input");
     hour.type = "number"; hour.min = "0"; hour.max = "23"; hour.className = "form-sched-hour"; hour.value = "9";
-    hour.title = "часы";
+    hour.setAttribute("aria-label", "часы");
     const minute = document.createElement("input");
     minute.type = "number"; minute.min = "0"; minute.max = "59"; minute.className = "form-sched-minute"; minute.value = "0";
-    minute.title = "минуты";
+    minute.setAttribute("aria-label", "минуты");
+    // Visible, not just a tooltip: two bare number boxes gave no clue which
+    // was which, and for the hourly preset the single remaining box did not
+    // say whether "30" meant "at :30" or "every 30 minutes".
+    const hourLabel = document.createElement("span");
+    hourLabel.className = "form-sched-unit"; hourLabel.textContent = "ч";
+    const minuteLabel = document.createElement("span");
+    minuteLabel.className = "form-sched-unit"; minuteLabel.textContent = "мин";
 
+    // Daily, not the first <option>. Hourly as a silent default means someone
+    // who ticks the box, types a time into the one visible number field and
+    // saves gets 24 claude runs a day.
+    kind.value = "daily";
     const ip = initial?.schedule?.preset;
     if (ip) {
       kind.value = ip.kind;
@@ -172,22 +186,33 @@ export function skillForm(
     const timeRow = document.createElement("div");
     timeRow.className = "form-sched-time";
     const syncTimeRow = () => {
-      weekday.style.display = kind.value === "weekly" ? "" : "none";
-      hour.style.display = kind.value === "hourly" ? "none" : "";
+      const weekly = kind.value === "weekly";
+      const hourly = kind.value === "hourly";
+      weekday.style.display = weekly ? "" : "none";
+      hour.style.display = hourly ? "none" : "";
+      hourLabel.style.display = hourly ? "none" : "";
+      minuteLabel.textContent = hourly ? "минута часа" : "мин";
     };
     kind.addEventListener("change", syncTimeRow);
-    timeRow.append(kind, weekday, hour, minute);
+    timeRow.append(kind, weekday, hour, hourLabel, minute, minuteLabel);
 
     // One default per `{{placeholder}}`, rebuilt as the prompt is edited —
     // a scheduled run is unattended, so it can't prompt for values.
     const defWrap = document.createElement("div");
     defWrap.className = "form-sched-defaults";
+    const defHead = document.createElement("div");
+    defHead.className = "form-sched-defhead";
+    defHead.textContent = "Значения параметров по умолчанию";
+    const defHint = document.createElement("div");
+    defHint.className = "form-sched-hint";
+    defHint.textContent = "запуск по расписанию некому спросить, поэтому значения нужны заранее";
     const defInputs = new Map<string, HTMLInputElement>();
     const renderDefaults = () => {
       const names = parsePlaceholders(promptField.value);
       defWrap.innerHTML = "";
       const kept = new Map(defInputs);
       defInputs.clear();
+      if (names.length) defWrap.append(defHead, defHint);
       for (const n of names) {
         const inp = document.createElement("input");
         inp.className = "modal-input form-sched-def"; inp.type = "text"; inp.placeholder = `значение {{${n}}}`;
@@ -199,22 +224,41 @@ export function skillForm(
     promptField.addEventListener("input", renderDefaults);
     renderDefaults();
 
-    const schedBody = document.createElement("div");
-    schedBody.className = "form-sched-body";
-    schedBody.append(timeRow, defWrap);
-    const syncSchedBody = () => { schedBody.style.display = schedEnabled.checked ? "" : "none"; };
-    schedEnabled.addEventListener("change", syncSchedBody);
-    syncSchedBody(); syncTimeRow();
-
-    const schedError = document.createElement("div");
-    schedError.className = "form-sched-error"; schedError.style.display = "none";
-
     const readPreset = (): SchedulePreset => {
       const h = Number(hour.value), m = Number(minute.value);
       if (kind.value === "hourly") return { kind: "hourly", minute: m };
       if (kind.value === "daily") return { kind: "daily", hour: h, minute: m };
       return { kind: "weekly", weekday: Number(weekday.value), hour: h, minute: m };
     };
+    // What the four controls above actually add up to, restated in words and
+    // kept in step with them. describeSchedule/nextRunLabel already existed —
+    // they were just never shown where the decision is made.
+    const preview = document.createElement("div");
+    preview.className = "form-sched-preview";
+    const syncPreview = () => {
+      const wsName = scope.checked ? (activeWorkspaceName ?? null) : null;
+      preview.textContent = schedulePreview(readPreset(), new Date(), wsName);
+    };
+    for (const el of [kind, weekday, hour, minute, scope]) {
+      el.addEventListener("change", syncPreview);
+      el.addEventListener("input", syncPreview);
+    }
+
+    const caveat = document.createElement("div");
+    caveat.className = "form-sched-hint";
+    caveat.textContent =
+      "Срабатывает, только пока cowork-deck открыт. Пропущенные запуски выполняются один раз при следующем старте.";
+
+    const schedBody = document.createElement("div");
+    schedBody.className = "form-sched-body";
+    schedBody.append(timeRow, preview, caveat, defWrap);
+    const syncSchedBody = () => { schedBody.style.display = schedEnabled.checked ? "" : "none"; };
+    schedEnabled.addEventListener("change", syncSchedBody);
+    syncSchedBody(); syncTimeRow(); syncPreview();
+
+    const schedError = document.createElement("div");
+    schedError.className = "form-sched-error"; schedError.style.display = "none";
+
     const readDefaults = (): Record<string, string> => {
       const defaults: Record<string, string> = {};
       for (const [n, inp] of defInputs) defaults[n] = inp.value.trim();

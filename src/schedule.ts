@@ -42,6 +42,25 @@ export function nextRunLabel(p: SchedulePreset, now: Date): string {
   return `${WEEKDAYS[d.getDay()]} ${t}`;
 }
 
+/** One sentence saying what the controls in the schedule editor add up to:
+ *  the rule, when it next fires, and which folder it will fire in.
+ *
+ *  The last part is not decoration. An unpinned scenario runs in whatever
+ *  workspace happens to be active at the time (`resolveScheduledWorkspace`),
+ *  so a nightly job can land in a different project than the one it was set
+ *  up in, and nothing in the form used to hint at that. */
+export function schedulePreview(
+  p: SchedulePreset,
+  now: Date,
+  workspaceName: string | null,
+): string {
+  const rule = describeSchedule({ preset: p, defaults: {}, enabled: true });
+  const where = workspaceName
+    ? `в пространстве «${workspaceName}»`
+    : "в активном пространстве на момент запуска";
+  return `Будет запускаться ${rule} · следующий запуск ${nextRunLabel(p, now)} · ${where}.`;
+}
+
 const inRange = (n: number, lo: number, hi: number): boolean =>
   Number.isInteger(n) && n >= lo && n <= hi;
 

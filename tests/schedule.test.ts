@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  describeSchedule, nextRun, nextRunLabel, validateSchedule, shouldSkipOverlap,
+  describeSchedule, nextRun, nextRunLabel, validateSchedule, shouldSkipOverlap, schedulePreview,
   resolveScheduledWorkspace,
 } from "../src/schedule";
 import type { Skill, Workspace } from "../src/ipc";
@@ -78,6 +78,36 @@ describe("validateSchedule", () => {
   });
   it("fails on an out-of-range weekday", () => {
     expect(validateSchedule(true, { kind: "weekly", weekday: 7, hour: 8, minute: 0 }, "hi", {}).ok).toBe(false);
+  });
+});
+
+describe("schedulePreview", () => {
+  const now = new Date(2026, 6, 24, 10, 0); // Fri 2026-07-24 10:00
+
+  // The whole point: the form said nothing about what the four controls added
+  // up to, so people saved a rule and only found out what it meant later.
+  it("spells out the rule and when it will next run", () => {
+    const text = schedulePreview({ kind: "daily", hour: 9, minute: 0 }, now, null);
+    expect(text).toContain("ежедневно 09:00");
+    expect(text).toContain("следующий запуск завтра 09:00");
+  });
+
+  // Where a run lands is not obvious: an unpinned scenario uses whichever
+  // workspace happens to be active when it fires.
+  it("names the workspace a pinned scenario will run in", () => {
+    const text = schedulePreview({ kind: "daily", hour: 9, minute: 0 }, now, "frontend");
+    expect(text).toContain("в пространстве «frontend»");
+  });
+
+  it("warns that an unpinned scenario follows the active workspace", () => {
+    const text = schedulePreview({ kind: "daily", hour: 9, minute: 0 }, now, null);
+    expect(text).toContain("в активном пространстве на момент запуска");
+  });
+
+  it("reads naturally for the hourly preset, where only minutes matter", () => {
+    const text = schedulePreview({ kind: "hourly", minute: 30 }, now, null);
+    expect(text).toContain("каждый час в :30");
+    expect(text).toContain("следующий запуск сегодня 10:30");
   });
 });
 

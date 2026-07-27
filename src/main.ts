@@ -108,7 +108,8 @@ const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, asy
   const prompt = await resolvePrompt(skill.prompt, placeholderForm);
   if (prompt === null) return;
   deck.launch(ws, { ...skill, prompt });
-}, (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id));
+}, (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
+   () => workspaces.active?.name ?? null);
 // Deleting a workspace strands the scenarios pinned to it — the confirmation
 // says how many before it happens.
 workspaces.setSkillsSource(() => skills.all);

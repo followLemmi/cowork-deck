@@ -37,6 +37,7 @@ export class SkillsPanel {
     /** Ids of the workspaces that currently exist — used to spot scenarios
      *  pinned to a deleted one. Defaults to "unknown", which marks nothing. */
     private getWorkspaceIds: () => string[] = () => [],
+    private getActiveWorkspaceName: () => string | null = () => null,
   ) {}
 
   async load() { this.items = await listSkills(); this.render(); }
@@ -49,7 +50,7 @@ export class SkillsPanel {
   }
 
   private async add() {
-    const res = await skillForm(this.getActiveWorkspaceId());
+    const res = await skillForm(this.getActiveWorkspaceId(), undefined, this.getActiveWorkspaceName());
     if (!res) return;
     const sk: Skill = { id: crypto.randomUUID(), ...res };
     this.items = await saveSkill(sk);
@@ -62,7 +63,7 @@ export class SkillsPanel {
     const res = await skillForm(this.getActiveWorkspaceId(), {
       name: cur.name, icon: cur.icon, prompt: cur.prompt, workspaceId: cur.workspaceId ?? null,
       schedule: cur.schedule ?? null,
-    });
+    }, this.getActiveWorkspaceName());
     if (!res) return;
     this.items = await saveSkill({ ...cur, ...res });
     this.render();
