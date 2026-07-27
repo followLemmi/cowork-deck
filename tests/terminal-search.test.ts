@@ -11,7 +11,7 @@ const findPrevious = vi.fn();
 vi.mock("@xterm/addon-search", () => ({
   SearchAddon: class { findNext = findNext; findPrevious = findPrevious; },
 }));
-// xterm сам по себе тяжёл для jsdom — мокаем минимально:
+// xterm itself is heavy for jsdom — mock the bare minimum:
 const clear = vi.fn();
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
