@@ -92,6 +92,27 @@ fn search_scoped_to_a_workspace_also_returns_diaries() {
 }
 
 #[test]
+fn an_update_over_an_empty_corpus_reports_empty_not_absent() {
+    let root = std::env::temp_dir().join(format!("cwm-cli-void-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("ws-1")).unwrap();
+
+    let (stdout, _, _) = run(&root, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["state"], "absent", "no update has run yet: {stdout}");
+
+    let (_, stderr, ok) = run(&root, &["update"]);
+    assert!(ok, "update failed: {stderr}");
+
+    let (stdout, _, _) = run(&root, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["state"], "empty", "an update ran and found nothing: {stdout}");
+    assert_eq!(v["chunks"], 0);
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn status_tells_an_absent_index_from_a_built_one() {
     let root = fixture_root("state");
 

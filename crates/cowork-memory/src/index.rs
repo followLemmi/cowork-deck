@@ -157,6 +157,22 @@ pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, U
         .count();
 
     if changed.is_empty() && deleted == 0 && !dim_changed {
+        // A first run over a corpus with nothing to index still has to leave a
+        // trace, or `status` cannot tell "an update ran and found nothing"
+        // from "no update has ever run" — both would report an absent cache.
+        if !cache.join("meta.json").exists() {
+            let ix = Index {
+                meta: Meta { files: current, chunks: Vec::new(), dim },
+                emb: Vec::new(),
+            };
+            save(cache, &ix)?;
+            let report = UpdateReport {
+                files: ix.meta.files.len(),
+                chunks: 0,
+                changed: 0,
+            };
+            return Ok((ix, report));
+        }
         let report = UpdateReport {
             files: old.meta.files.len(),
             chunks: old.meta.chunks.len(),
