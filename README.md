@@ -67,6 +67,25 @@ npm test                                            # frontend (vitest)
 cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
 ```
 
+### Memory sidecar
+
+`cowork_memory` is a separate crate under `crates/cowork-memory`. It builds and
+tests independently of the app:
+
+```bash
+cargo test --manifest-path crates/cowork-memory/Cargo.toml
+npm run stage:memory     # build + stage the sidecar binary
+```
+
+Its tests use a deterministic fake embedder and need no model; the tests that
+need the real one are `#[ignore]`d. To exercise those, download it first
+(479 MB) and point them at it:
+
+```bash
+cargo run --manifest-path crates/cowork-memory/Cargo.toml -- --root <dir> model --download
+COWORK_MEMORY_MODEL_DIR=<dir>/.model cargo test --manifest-path crates/cowork-memory/Cargo.toml onnx -- --ignored
+```
+
 ## Sessions and the app window
 
 Sessions are not daemonized: every running `claude` process is a child of the app and is killed when the

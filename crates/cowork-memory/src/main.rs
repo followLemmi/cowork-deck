@@ -46,13 +46,26 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Download or inspect the embedding model.
+    Model {
+        #[arg(long)]
+        download: bool,
+        #[arg(long)]
+        status: bool,
+    },
 }
 
-fn embedder() -> Result<Box<dyn Embedder>> {
+fn model_dir(root: &std::path::Path) -> PathBuf {
+    std::env::var("COWORK_MEMORY_MODEL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| root.join(".model"))
+}
+
+fn embedder(root: &std::path::Path) -> Result<Box<dyn Embedder>> {
     if std::env::var("COWORK_MEMORY_FAKE_EMBED").is_ok() {
         return Ok(Box::new(FakeEmbedder::new()));
     }
-    anyhow::bail!("no embedding model available yet — see `cowork_memory model --download`")
+    Ok(Box::new(cowork_memory::onnx::OnnxEmbedder::load(&model_dir(root))?))
 }
 
 fn main() -> Result<()> {
@@ -61,7 +74,7 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Update { verbose } => {
-            let e = embedder()?;
+            let e = embedder(&cli.root)?;
             let (_ix, rep) = update(&cli.root, &cache, e.as_ref())?;
             if verbose {
                 eprintln!("root: {}", cli.root.display());
@@ -105,7 +118,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Search { query, scope, top, min_score, json } => {
-            let e = embedder()?;
+            let e = embedder(&cli.root)?;
             let (ix, _) = update(&cli.root, &cache, e.as_ref())?;
             let scope = match scope.as_str() {
                 "all" => SearchScope::All,
@@ -127,6 +140,40 @@ fn main() -> Result<()> {
             // answer, and stdout stays machine-readable either way.
             if hits.is_empty() {
                 eprintln!("cowork_memory: no results above threshold");
+            }
+        }
+        Cmd::Model { download, status } => {
+            let dir = model_dir(&cli.root);
+            if download {
+                for f in cowork_memory::model::files() {
+                    let mut last = 0u64;
+                    cowork_memory::model::download_one(
+                        &dir,
+                        &f,
+                        &cowork_memory::model::HttpFetcher,
+                        &mut |got, total| {
+                            // One line per megabyte, so callers can parse progress.
+                            if got == total || got - last >= 1_000_000 {
+                                last = got;
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "file": f.name, "got": got, "total": total
+                                    })
+                                );
+                            }
+                        },
+                    )?;
+                }
+            }
+            if status || !download {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "dir": dir.display().to_string(),
+                        "present": cowork_memory::model::is_present(&dir),
+                    })
+                );
             }
         }
     }
