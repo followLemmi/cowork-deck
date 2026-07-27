@@ -14,8 +14,12 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: without it, serde_json's fast float parser can be off by
+# 1 ULP for some values. FileStat.mtime round-trips through meta.json on
+# every `update`, and a 1-ULP drift there makes an untouched file look
+# "changed" and forces a spurious re-embed.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }

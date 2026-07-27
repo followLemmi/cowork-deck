@@ -113,6 +113,98 @@ pub fn save(cache: &Path, ix: &Index) -> Result<()> {
     Ok(())
 }
 
+use crate::corpus::chunk_note;
+use crate::embed::Embedder;
+use crate::scan::{detect_scope, scan};
+
+pub struct UpdateReport {
+    pub files: usize,
+    pub chunks: usize,
+    pub changed: usize,
+}
+
+/// Incremental reindex: unchanged files keep their rows, changed files are
+/// re-chunked and re-embedded, deleted files lose theirs.
+pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, UpdateReport)> {
+    let old = load(cache);
+    let current = scan(root);
+
+    let changed: Vec<String> = current
+        .iter()
+        .filter(|(f, s)| old.meta.files.get(*f) != Some(s))
+        .map(|(f, _)| f.clone())
+        .collect();
+    let deleted: usize = old
+        .meta
+        .files
+        .keys()
+        .filter(|f| !current.contains_key(*f))
+        .count();
+
+    if changed.is_empty() && deleted == 0 {
+        let report = UpdateReport {
+            files: old.meta.files.len(),
+            chunks: old.meta.chunks.len(),
+            changed: 0,
+        };
+        return Ok((old, report));
+    }
+
+    let dim = emb.dim();
+    let mut chunks: Vec<ChunkRecord> = Vec::new();
+    let mut rows: Vec<f32> = Vec::new();
+
+    // Keep rows whose file is still present and unmodified.
+    if old.meta.dim == dim {
+        for (i, c) in old.meta.chunks.iter().enumerate() {
+            let unchanged = current
+                .get(&c.file)
+                .is_some_and(|s| old.meta.files.get(&c.file) == Some(s));
+            if unchanged {
+                chunks.push(c.clone());
+                rows.extend_from_slice(&old.emb[i * dim..(i + 1) * dim]);
+            }
+        }
+    }
+
+    let mut fresh: Vec<ChunkRecord> = Vec::new();
+    for f in &changed {
+        let Ok(text) = std::fs::read_to_string(root.join(f)) else {
+            continue;
+        };
+        let Some(loc) = detect_scope(f) else { continue };
+        for t in chunk_note(f, &text) {
+            fresh.push(ChunkRecord {
+                file: f.clone(),
+                scope: loc.scope.clone(),
+                room: loc.room.clone(),
+                text: t,
+            });
+        }
+    }
+
+    for batch in fresh.chunks(16) {
+        let texts: Vec<String> = batch.iter().map(|c| c.text.clone()).collect();
+        for v in emb.embed(&texts)? {
+            rows.extend_from_slice(&v);
+        }
+    }
+    chunks.extend(fresh);
+
+    let ix = Index {
+        meta: Meta { files: current, chunks, dim },
+        emb: rows,
+    };
+    save(cache, &ix)?;
+
+    let report = UpdateReport {
+        files: ix.meta.files.len(),
+        chunks: ix.meta.chunks.len(),
+        changed: changed.len() + deleted,
+    };
+    Ok((ix, report))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +302,63 @@ mod tests {
         zero.meta.dim = 0;
         zero.emb.clear();
         assert!(save(&dir, &zero).is_err(), "dim 0 with chunks makes the check vacuous");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_indexes_then_reuses_then_notices_change() {
+        use crate::embed::{Embedder, FakeEmbedder};
+        let dir = tmp("update");
+        let root = dir.join("memory");
+        let cache = dir.join("cache");
+        fs::create_dir_all(root.join("ws-1")).unwrap();
+
+        let long = "Достаточно длинный текст для прохождения фильтра шума. ".repeat(5);
+        fs::write(root.join("ws-1/Facts.md"), format!("# Факты\n\n{long}")).unwrap();
+
+        let e = FakeEmbedder::new();
+
+        let (ix, rep) = update(&root, &cache, &e).unwrap();
+        assert_eq!(rep.files, 1);
+        assert_eq!(rep.changed, 1);
+        assert!(rep.chunks >= 1, "expected at least one chunk");
+        assert_eq!(ix.emb.len(), ix.meta.chunks.len() * e.dim());
+        assert_eq!(ix.meta.chunks[0].scope, "ws-1");
+
+        let (_ix, rep) = update(&root, &cache, &e).unwrap();
+        assert_eq!(rep.changed, 0, "unchanged corpus must not re-embed");
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(root.join("ws-1/Facts.md"), format!("# Факты\n\n{long} и ещё немного.")).unwrap();
+        let (_ix, rep) = update(&root, &cache, &e).unwrap();
+        assert_eq!(rep.changed, 1, "edited file must be re-indexed");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn update_drops_chunks_of_deleted_files() {
+        use crate::embed::{Embedder, FakeEmbedder};
+        let dir = tmp("delete");
+        let root = dir.join("memory");
+        let cache = dir.join("cache");
+        fs::create_dir_all(root.join("ws-1")).unwrap();
+
+        let long = "Достаточно длинный текст для прохождения фильтра шума. ".repeat(5);
+        fs::write(root.join("ws-1/Facts.md"), format!("# Факты\n\n{long}")).unwrap();
+        fs::write(root.join("ws-1/Other.md"), format!("# Другое\n\n{long}")).unwrap();
+
+        let e = FakeEmbedder::new();
+        let (ix, _) = update(&root, &cache, &e).unwrap();
+        let before = ix.meta.chunks.len();
+
+        fs::remove_file(root.join("ws-1/Other.md")).unwrap();
+        let (ix, rep) = update(&root, &cache, &e).unwrap();
+        assert_eq!(rep.changed, 1);
+        assert!(ix.meta.chunks.len() < before, "deleted file's chunks must go");
+        assert!(ix.meta.chunks.iter().all(|c| c.file != "ws-1/Other.md"));
+        assert_eq!(ix.emb.len(), ix.meta.chunks.len() * e.dim());
 
         fs::remove_dir_all(&dir).unwrap();
     }
