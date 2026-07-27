@@ -2312,6 +2312,19 @@ mod tests {
         assert!(err.to_string().contains("stalled"), "got: {err}");
         assert!(!dir.join("model.onnx").exists(), "must not publish a short file");
 
+        // The other half of the asymmetry, and the reason resume exists at
+        // all: a failed short transfer keeps what it already fetched. Without
+        // this assertion, a change that discards partial downloads
+        // unconditionally would pass the whole suite, and a 470 MB file would
+        // quietly restart from zero on every attempt.
+        let part = dir.join("model.onnx.part");
+        assert!(part.exists(), "a short .part must survive for the next attempt");
+        assert_eq!(
+            fs::metadata(&part).unwrap().len(),
+            500,
+            "the bytes already fetched must still be there"
+        );
+
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2500,8 +2513,16 @@ pub fn download_one(
             // target, and from then on every run breaks out at
             // `have >= expected` and fails here identically — with no route
             // back to a good download short of deleting the file by hand.
-            // Discard it so the next attempt starts clean. A short .part is
-            // kept: that is the ordinary resume case and it is worth bytes.
+            // Discard it so the next attempt starts clean.
+            //
+            // The guard looks redundant today: the loop only leaves via
+            // `have >= expected`, and a stalled transfer bails earlier without
+            // touching the file, so `got < expected` cannot occur here. Keep it
+            // anyway. Give the loop a retry cap or any other early exit and
+            // that state becomes reachable at once, and an unconditional
+            // remove would then silently throw away every partial download —
+            // turning resume into a restart that nobody notices except on the
+            // bandwidth bill.
             let _ = std::fs::remove_file(&part);
         }
         bail!("{} is {got} bytes, expected {}", f.name, f.expected);
