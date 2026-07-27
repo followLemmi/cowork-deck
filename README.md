@@ -34,6 +34,7 @@ memory footprint kept under ~100 MB.
 - **Multi-session deck** — run many `claude` sessions as tiles in one window, each a full interactive terminal.
 - **Live state tracking** — per-tile `idle` / `working` / `waiting for input` / `ended` / `error`, driven by Claude Code hooks, with optional desktop notifications. Click a notification to focus that session.
 - **Floating status pill** — an always-on-top pill showing "N waiting for input" so you can step away from the app and still know when a session needs you.
+- **GitHub-аккаунт на воркспейс** — привяжите воркспейс к аккаунту `gh`, и его сессии стартуют уже с нужным доступом: `gh pr list`, `git push` и авторство коммитов идут от правильного лица. Разные воркспейсы работают на разных аккаунтах **одновременно** — приложение не переключает активный аккаунт `gh` и не трогает `~/.config/gh`.
 - **Workspaces** — group sessions by workspace in a color-coded sidebar, and switch the deck to show only one workspace's terminals.
 - **Zoom / juggle** — double-click a tile header to expand one terminal near-full while the rest shrink to a filmstrip; click a shrunken tile to juggle focus (animated).
 - **Scenarios & skills** — launch sessions with canned skill prompts, parameterized with `{{name}}` placeholders filled in at start.
@@ -67,6 +68,10 @@ npm test                                            # frontend (vitest)
 cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
 ```
 
+> В свежем клоне (или git worktree) перед `cargo test` выполните один раз
+> `npm install && npm run build && npm run stage:reporter` — `dist/` и `src-tauri/binaries/`
+> не в git, а без них падает build-скрипт Tauri.
+
 ## Sessions and the app window
 
 Sessions are not daemonized: every running `claude` process is a child of the app and is killed when the
@@ -94,6 +99,34 @@ COWORK_CLAUDE_PATH=/usr/local/bin/claude npm run tauri dev
 
 If neither `COWORK_CLAUDE_PATH` nor a `claude` on `PATH` can be found, the app shows an alert on startup
 telling you to set `COWORK_CLAUDE_PATH` and restart.
+
+## GitHub-аккаунты воркспейсов
+
+Требуется [GitHub CLI](https://cli.github.com/) (`gh`), залогиненный в нужные аккаунты
+(`gh auth login`). Экран «GitHub» в палитре команд показывает статус, список аккаунтов и
+помогает установить `gh`, если его нет: команда установки подставляется под вашу платформу
+в **редактируемое** поле и выполняется в обычном тайле-терминале, так что вывод виден
+целиком, а `sudo`-пароль вводите вы сами.
+
+Аккаунт и идентичность коммитов задаются в свойствах пространства. Токены приложение
+**не хранит**: в настройках лежит только имя аккаунта, а токен читается из keyring `gh`
+в момент старта сессии и передаётся дочернему процессу через переменные окружения
+(`GH_TOKEN`, `GIT_AUTHOR_*` и, при необходимости, `GIT_SSH_COMMAND`).
+
+Переключений (`gh auth switch`) приложение не делает никогда — именно поэтому сессии на
+разных аккаунтах не мешают друг другу, а ваш собственный терминал вне приложения остаётся
+на прежнем активном аккаунте. Больше того, с выставленным `GH_TOKEN` сам `gh` отказывается
+менять аккаунт, так что сессия не может испортить окружение соседей, даже если попытается.
+
+Если `gh` лежит не на `PATH`, укажите путь через `COWORK_GH_PATH`.
+
+Смена аккаунта у пространства действует на новые и перезапущенные сессии: окружение
+процесса фиксируется при запуске и на лету не меняется. Живые сессии в этом случае
+помечаются на тайле значком `GitHub ⟳`.
+
+Если аккаунт не удалось подключить (нет `gh`, аккаунт разлогинен, залочен keyring), сессия
+всё равно стартует — но с пустым `GH_CONFIG_DIR`, чтобы `gh` честно сообщил «не залогинен»
+вместо тихой работы под чужим аккаунтом. На тайле появляется значок `GitHub ✕` с причиной.
 
 ## Graceful degradation
 
