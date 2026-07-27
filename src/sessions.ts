@@ -198,7 +198,7 @@ export class Deck {
       restart.style.display = "none";
       tile.panel.write("\r\n[перезапуск сессии...]\r\n");
       try {
-        await tile.panel.start(tile.workspacePath, null, true);
+        await tile.panel.start(tile.workspacePath, tile.workspaceId ?? null, null, true);
         this.setState(session, "idle");
         void this.persistLayout();
       } catch (e) {
@@ -247,7 +247,7 @@ export class Deck {
     this.startPolling();
     this.renderList();
     try {
-      await panel.start(cwd, prompt, resume);
+      await panel.start(cwd, workspaceId ?? null, prompt, resume);
       void this.persistLayout();
     } catch (e) {
       this.setState(session, "error");

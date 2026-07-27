@@ -12,6 +12,9 @@ pub struct AppState {
     pub pty: PtyManager,
     pub listener_port: u16,
     pub reporter_path: String,
+    /// Absolute path to the `cowork_task` sidecar, handed to sessions via
+    /// COWORK_TASK_BIN.
+    pub task_bin_path: String,
     /// Signalled once by the frontend (`scheduler_ready`) after it attaches its
     /// `schedule://fire` listener, so the scheduler's first (catch-up) tick is
     /// not emitted into the void.
@@ -43,6 +46,25 @@ pub fn build_claude_args(
         }
     }
     args
+}
+
+/// Environment a session needs to file its own tickets. When the workspace has
+/// no tracker, the tracker vars are omitted entirely rather than set to an
+/// empty string — the CLI then fails loudly instead of writing somewhere
+/// arbitrary, and the agent has no empty path to misread.
+pub fn session_env(
+    root: Option<&std::path::Path>,
+    project: &str,
+    task_bin: &str,
+    session: &str,
+) -> Vec<(String, String)> {
+    let mut env = vec![("COWORK_SESSION".to_string(), session.to_string())];
+    if let Some(root) = root {
+        env.push(("COWORK_TASKS_DIR".to_string(), root.to_string_lossy().to_string()));
+        env.push(("COWORK_PROJECT".to_string(), project.to_string()));
+        env.push(("COWORK_TASK_BIN".to_string(), task_bin.to_string()));
+    }
+    env
 }
 
 #[derive(Clone, Serialize)]
@@ -114,6 +136,7 @@ pub fn start_session(
     state: State<AppState>,
     session: String,
     cwd: String,
+    workspace_id: Option<String>,
     initial_prompt: Option<String>,
     cols: u16,
     rows: u16,
@@ -122,6 +145,26 @@ pub fn start_session(
     let program = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let settings = build_settings_json(&state.reporter_path, state.listener_port, &session);
     let args = build_claude_args(&settings, &initial_prompt, &session, resume);
+
+    // Tracker env, resolved from the workspace's config. A missing or
+    // unconfigured workspace simply yields no tracker vars.
+    let (root, project) = match workspace_id.as_deref() {
+        Some(id) => {
+            let ws = {
+                let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+                store.workspaces().into_iter().find(|w| w.id == id)
+            };
+            match ws {
+                Some(ws) => {
+                    let root = crate::tasks_cmd::resolve_root(&ws).map(|(r, _)| r);
+                    (root, ws.name)
+                }
+                None => (None, String::new()),
+            }
+        }
+        None => (None, String::new()),
+    };
+    let env = session_env(root.as_deref(), &project, &state.task_bin_path, &session);
 
     let app_out = app.clone();
     let sess_out = session.clone();
@@ -139,7 +182,7 @@ pub fn start_session(
     };
 
     state.pty
-        .spawn(&session, &program, &args, &cwd, cols, rows, on_output, on_exit)
+        .spawn(&session, &program, &args, &cwd, cols, rows, &env, on_output, on_exit)
         .map_err(|e| e.to_string())
 }
 
@@ -249,6 +292,25 @@ pub fn session_tokens(session_id: String) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_env_carries_tracker_paths_when_configured() {
+        let root = std::path::PathBuf::from("/home/u/vault/Tasks");
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9");
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("COWORK_TASKS_DIR"), Some("/home/u/vault/Tasks"));
+        assert_eq!(get("COWORK_PROJECT"), Some("cowork-deck"));
+        assert_eq!(get("COWORK_TASK_BIN"), Some("/opt/cowork_task"));
+        assert_eq!(get("COWORK_SESSION"), Some("sess-9"));
+    }
+
+    #[test]
+    fn session_env_omits_tracker_vars_when_not_configured() {
+        // Otherwise the agent would see an empty path and start guessing.
+        let env = session_env(None, "cowork-deck", "/opt/cowork_task", "sess-9");
+        assert!(env.iter().all(|(n, _)| n != "COWORK_TASKS_DIR"));
+        assert!(env.iter().all(|(n, _)| n != "COWORK_TASK_BIN"));
+    }
 
     #[test]
     fn sum_usage_lines_adds_assistant_usage_only() {

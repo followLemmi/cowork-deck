@@ -46,6 +46,18 @@ fn reporter_path() -> String {
         .to_string()
 }
 
+fn task_bin_name() -> &'static str {
+    if cfg!(windows) { "cowork_task.exe" } else { "cowork_task" }
+}
+
+fn task_bin_path() -> String {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    resolve_reporter_path(&dir, task_bin_name(), |p| p.exists())
+        .to_string_lossy()
+        .to_string()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -74,6 +86,7 @@ fn main() {
                 pty: pty::PtyManager::new(),
                 listener_port: port,
                 reporter_path: reporter_path(),
+                task_bin_path: task_bin_path(),
                 scheduler_ready: scheduler_ready.clone(),
                 watchers: std::sync::Arc::new(tasks::watch::TaskWatchers::new()),
             });
@@ -169,5 +182,12 @@ mod tests {
         let dir = Path::new("/app");
         let got = resolve_reporter_path(dir, "cowork_report", |_| false);
         assert_eq!(got, Path::new("/app/cowork_report"));
+    }
+
+    #[test]
+    fn task_bin_resolves_next_to_the_exe_like_the_reporter() {
+        let dir = Path::new("/app");
+        let got = resolve_reporter_path(dir, task_bin_name(), |p| p == Path::new("/app/cowork_task"));
+        assert_eq!(got, Path::new("/app/cowork_task"));
     }
 }
