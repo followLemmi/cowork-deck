@@ -21,6 +21,10 @@ export interface SessionEntry {
   scheduledSkillId?: string;
 }
 export interface UiState { activeWorkspaceId: string | null; }
+/** Runtime record of a scenario's scheduled runs, owned by the backend.
+ *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
+ *  a session actually started. Epoch millis. */
+export interface ScheduleRun { lastAttempt: number; lastRun: number | null; lastOutcome: string | null; }
 
 export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");
 export const saveWorkspace = (ws: Workspace) => invoke<Workspace[]>("save_workspace", { ws });
@@ -71,6 +75,9 @@ export const onScheduledFire = (
  *  run; `lastRun` advances only when this says a session actually started. */
 export const scheduleAck = (skillId: string, occurrenceMs: number, outcome: string) =>
   invoke<void>("schedule_ack", { skillId, occurrenceMs, outcome });
+/** Runtime schedule state, keyed by scenario id. The backend owns it — the
+ *  frontend must not compute "did this run" from anything else. */
+export const loadScheduleState = () => invoke<Record<string, ScheduleRun>>("load_schedule_state");
 
 export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }

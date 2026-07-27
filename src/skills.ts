@@ -1,7 +1,7 @@
-import { listSkills, saveSkill, removeSkill, type Skill } from "./ipc";
+import { listSkills, saveSkill, removeSkill, loadScheduleState, type ScheduleRun, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { skillForm } from "./forms";
-import { describeSchedule, nextRunLabel } from "./schedule";
+import { scheduleRowText } from "./schedule";
 
 /** A scenario pinned to a workspace that no longer exists. It cannot run —
  *  `resolveScheduledWorkspace` refuses rather than picking the wrong folder —
@@ -24,7 +24,10 @@ export function visibleSkills(
   knownWorkspaceIds: string[],
 ): Skill[] {
   return items.filter((s) =>
-    !s.workspaceId || s.workspaceId === activeWorkspaceId || isOrphan(s, knownWorkspaceIds));
+    !s.workspaceId
+    || s.workspaceId === activeWorkspaceId
+    || s.schedule?.enabled // fires regardless of what is on screen
+    || isOrphan(s, knownWorkspaceIds));
 }
 
 export class SkillsPanel {
@@ -40,7 +43,30 @@ export class SkillsPanel {
     private getActiveWorkspaceName: () => string | null = () => null,
   ) {}
 
-  async load() { this.items = await listSkills(); this.render(); }
+  private runs: Record<string, ScheduleRun> = {};
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+  async load() {
+    this.items = await listSkills();
+    await this.refreshRuns();
+    // "next run" is a moving target; without this the row would claim
+    // "today 09:00" long after 09:00 has passed, which is exactly how the
+    // old tooltip misled people.
+    if (this.refreshTimer === null) {
+      this.refreshTimer = setInterval(() => this.render(), 60_000);
+    }
+  }
+
+  /** Re-read what the backend knows about past runs, then repaint. Called on
+   *  load and after every fire, so an outcome shows up without a restart. */
+  async refreshRuns() {
+    try {
+      this.runs = await loadScheduleState();
+    } catch (e) {
+      console.debug("loadScheduleState failed", e);
+    }
+    this.render();
+  }
 
   find(id: string): Skill | undefined { return this.items.find((s) => s.id === id); }
   get all(): Skill[] { return this.items; }
@@ -90,14 +116,16 @@ export class SkillsPanel {
       run.disabled = orphan;
       run.onclick = () => this.onLaunch(s);
 
-      // Doubles as the schedule indicator: the rule and next run live in its
-      // tooltip, so a scheduled scenario carries exactly one ⏰.
+      // The indicator and the action are separate now. One ⏰ used to be
+      // both: it looked like a status badge and launched a real session on
+      // click, so reaching for information started a run.
       const sched = s.schedule;
       let now: HTMLButtonElement | null = null;
-      if (sched?.enabled) {
+      if (sched?.enabled && !orphan) {
         now = document.createElement("button");
         now.className = "sk-now"; now.textContent = "⏰";
-        now.title = `прогнать сейчас · ${describeSchedule(sched)} · след.: ${nextRunLabel(sched.preset, new Date())}`;
+        now.title = "прогнать сейчас, как это сделало бы расписание";
+        now.setAttribute("aria-label", `Прогнать сейчас: ${s.name}`);
         now.onclick = () => this.onRunScheduled(s);
       }
 
@@ -109,6 +137,14 @@ export class SkillsPanel {
       x.onclick = () => this.del(s.id);
       row.append(run, ...(now ? [now] : []), edit, x);
       this.mount.appendChild(row);
+      if (sched) {
+        // Visible text, not a title attribute: a tooltip is unreachable from
+        // the keyboard and does not survive a stale render.
+        const line = document.createElement("div");
+        line.className = sched.enabled ? "sk-sched" : "sk-sched sk-sched-off";
+        line.textContent = scheduleRowText(sched, this.runs[s.id] ?? null, new Date());
+        this.mount.appendChild(line);
+      }
       if (orphan) {
         // Says why the row is dead and what to do; without it the scenario
         // just looks broken.

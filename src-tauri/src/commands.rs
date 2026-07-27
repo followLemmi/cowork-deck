@@ -74,6 +74,16 @@ pub fn remove_skill(state: State<AppState>, id: String) -> Result<Vec<Skill>, St
     state.store.lock().unwrap().delete_skill(&id).map_err(|e| e.to_string())
 }
 
+/// Runtime schedule state for the UI. The backend owns this file; without a
+/// way to read it the frontend could only guess whether a schedule had ever
+/// run, and "last run" had nowhere to come from.
+#[tauri::command]
+pub fn load_schedule_state(
+    state: State<AppState>,
+) -> std::collections::HashMap<String, crate::model::ScheduleRun> {
+    state.store.lock().unwrap().schedule_state()
+}
+
 /// Report what a `schedule://fire` actually produced. The loop records only
 /// that it made an attempt; this is what lets `lastRun` mean "a session really
 /// started" instead of "an event was emitted into the void".

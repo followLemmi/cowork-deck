@@ -35,6 +35,9 @@ const boot = () => runBoot({
         // a run only once a session has actually started.
         await scheduleAck(skillId, occurrenceMs, outcome).catch((e) =>
           console.warn("schedule ack failed:", skillId, e));
+        // Show the outcome in the scenario row now, rather than at the next
+        // minute tick — a skip or a refusal is what the user needs to see.
+        await skills.refreshRuns();
       });
     }).then(() => {}),
     () => workspaces.load(),

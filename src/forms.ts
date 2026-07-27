@@ -283,7 +283,12 @@ export function skillForm(
       close({
         name: n, icon: icon.value.trim() || "▶", prompt: pr,
         workspaceId: scope.checked ? activeWorkspaceId : null,
-        schedule: schedEnabled.checked ? { preset, defaults, enabled: true } : null,
+        // Unticking pauses, it does not erase: keeping the rule and the
+        // defaults is what makes "off for a week" a checkbox instead of a
+        // full re-entry. Absent only when there never was a schedule.
+        schedule: schedEnabled.checked
+          ? { preset, defaults, enabled: true }
+          : (initial?.schedule ? { ...initial.schedule, preset, defaults, enabled: false } : null),
       });
     };
     cancel.onclick = () => close(null);

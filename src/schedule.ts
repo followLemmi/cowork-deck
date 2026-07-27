@@ -1,4 +1,4 @@
-import type { Schedule, SchedulePreset, SessionState, Skill, Workspace } from "./ipc";
+import type { Schedule, SchedulePreset, ScheduleRun, SessionState, Skill, Workspace } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
 
 const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
@@ -59,6 +59,44 @@ export function schedulePreview(
     ? `в пространстве «${workspaceName}»`
     : "в активном пространстве на момент запуска";
   return `Будет запускаться ${rule} · следующий запуск ${nextRunLabel(p, now)} · ${where}.`;
+}
+
+/** Why an attempt produced nothing, in words the user can act on. */
+const OUTCOME_TEXT: Record<string, string> = {
+  "no-workspace": "нет пространства",
+  "skipped-overlap": "предыдущий прогон ещё активен",
+  "not-scheduled": "расписание выключено",
+};
+
+/** The line under a scenario's name: rule, next run, and what came of the
+ *  last attempt. Replaces a native tooltip that no keyboard user could reach
+ *  and that went stale as soon as the panel stopped re-rendering. */
+export function scheduleRowText(s: Schedule, run: ScheduleRun | null, now: Date): string {
+  const rule = describeSchedule(s);
+  if (!s.enabled) return `расписание выключено · ${rule}`;
+
+  const parts = [rule, `следующий запуск ${nextRunLabel(s.preset, now)}`];
+  const failed = run?.lastOutcome && run.lastOutcome !== "launched";
+  if (failed) {
+    const why = OUTCOME_TEXT[run!.lastOutcome!] ?? run!.lastOutcome!;
+    parts.push(`${stamp(run!.lastAttempt, now)} не запустился: ${why}`);
+  } else if (run?.lastRun) {
+    parts.push(`последний запуск ${stamp(run.lastRun, now)}`);
+  } else if (run) {
+    parts.push("ещё не запускался");
+  }
+  return parts.join(" · ");
+}
+
+/** Past instant as "сегодня 09:00" / "вчера 09:00" / "пн 09:00". */
+function stamp(ms: number, now: Date): string {
+  const d = new Date(ms);
+  const t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.toDateString() === now.toDateString()) return `сегодня ${t}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `вчера ${t}`;
+  return `${WEEKDAYS[d.getDay()]} ${t}`;
 }
 
 const inRange = (n: number, lo: number, hi: number): boolean =>
