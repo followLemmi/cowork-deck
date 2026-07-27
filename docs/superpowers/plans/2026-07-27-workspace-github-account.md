@@ -9,6 +9,7 @@
 **Tech Stack:** Tauri v2, Rust (`portable-pty`, `serde_json`), ванильный TypeScript, vitest, xterm.js. Внешний процесс `gh` (GitHub CLI) как единственный источник кредов. **Новых зависимостей ни в Cargo.toml, ни в package.json не добавляется.**
 
 **Спека:** `docs/superpowers/specs/2026-07-27-workspace-github-account-design.md`
+**Эпик:** [#62](https://github.com/followLemmi/cowork-deck/issues/62) — подзадачи #49–#61.
 
 ## Global Constraints
 
