@@ -874,7 +874,8 @@ watcher can never observe a half-written card."
 fn workspace_without_tracker_still_deserializes() {
     // Настройки, записанные до этой фичи, должны читаться без потерь —
     // иначе первый же upsert усечёт файл пространств.
-    let old = r#"{"id":"w1","name":"deck","path":"/p","color":"#61afef"}"#;
+    // r##"…"## обязательно: внутри есть `"#` (из "#61afef"), и r#"…"# закрылся бы раньше времени.
+    let old = r##"{"id":"w1","name":"deck","path":"/p","color":"#61afef"}"##;
     let ws: Workspace = serde_json::from_str(old).expect("old workspace must still parse");
     assert_eq!(ws.name, "deck");
     assert!(ws.tracker.is_none());
@@ -1016,7 +1017,8 @@ Run: `grep -rn "Workspace {" src-tauri/src/`
 use crate::commands::AppState;
 use crate::model::{TrackerProvider, TrackerRoot, Workspace};
 use crate::tasks::fs::FsTaskProvider;
-use crate::tasks::model::{Task, TaskDraft};
+use crate::tasks::model::{Task, TaskDraft, TaskKind, TaskOrigin};
+use serde::Deserialize;
 use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
 use std::path::PathBuf;
 use tauri::State;
@@ -1069,18 +1071,38 @@ pub fn tasks_list(state: State<AppState>, workspace_id: String) -> Result<Vec<Ta
     p.list(&ws.name).map_err(|e| e.to_string())
 }
 
+/// What the frontend may send. Deliberately NOT `tasks::model::TaskDraft`:
+/// the internal model requires `project`/`origin`/`session`, which the caller
+/// has no business supplying. Making `origin` inexpressible over IPC means a
+/// draft cannot forge the "сессия" badge — the board's whole reason to trust it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskDraftInput {
+    pub title: String,
+    pub kind: TaskKind,
+    pub body: String,
+}
+
 #[tauri::command]
 pub fn tasks_create(
     state: State<AppState>,
     workspace_id: String,
-    draft: TaskDraft,
+    draft: TaskDraftInput,
 ) -> Result<Task, String> {
     let ws = workspace(&state, &workspace_id)?;
     let p = provider_for(&ws)?;
-    // The caller does not get to pick the project: it is always this
-    // workspace's name, so a shared root stays sortable by project.
-    let draft = TaskDraft { project: ws.name.clone(), ..draft };
-    p.create(draft).map_err(|e| e.to_string())
+    // The project is always this workspace's name, so a shared root stays
+    // sortable by project. Origin is always Human: the cowork_task CLI is the
+    // only producer of session-filed cards, and it writes files directly.
+    p.create(TaskDraft {
+        title: draft.title,
+        kind: draft.kind,
+        body: draft.body,
+        project: ws.name.clone(),
+        origin: TaskOrigin::Human,
+        session: None,
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1161,6 +1183,9 @@ export interface Task {
   /** Больше одного файла с этим id. */
   conflict: boolean;
 }
+/** Что фронтенд может отправить. `project` и `origin` задаёт бэкенд и они
+ *  сознательно не настраиваются отсюда — иначе карточку можно было бы
+ *  выдать за созданную сессией. */
 export interface TaskDraft { title: string; kind: TaskKind; body: string; }
 export interface ProviderCapabilities { canCreate: boolean; canResolve: boolean; statuses: string[] }
 export type TrackerRoot = { kind: "project" } | { kind: "path"; path: string };
