@@ -3,6 +3,11 @@ import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { claudeAvailable, loadLayout, onScheduledFire, schedulerReady } from "./ipc";
 import type { Skill } from "./ipc";
+import { BoardView } from "./board";
+import {
+  listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync,
+} from "./ipc";
+import type { Task } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -22,6 +27,49 @@ const newBtn = document.createElement("button");
 newBtn.textContent = "+ сессия"; newBtn.className = "ws-add";
 sidebar.append(wsMount, skMount, newBtn, listMount);
 
+const boardEl = document.querySelector<HTMLElement>("#board")!;
+
+// Переключатель «Терминалы | Доска»: доска берёт всю ширину, потому что позже
+// сюда приедут доски GitHub/Jira, которым нужно место, а не полоска.
+const views = document.createElement("div");
+views.className = "tk-views";
+const termBtn = document.createElement("button");
+termBtn.textContent = "Терминалы"; termBtn.className = "active";
+const boardBtn = document.createElement("button");
+boardBtn.textContent = "Доска";
+views.append(termBtn, boardBtn);
+sidebar.prepend(views);
+
+const board = new BoardView({
+  onLaunch: (t) => void launchFromTask(t),
+  onResolve: (t) => void closeTask(t),
+  onNew: () => void captureTask(),
+  onConfigure: () => void alertModal(
+    "Настройте трекер в свойствах пространства (✎): каталог в проекте или свой путь."),
+});
+boardEl.append(board.mount);
+
+let boardVisible = false;
+let boardTimer: ReturnType<typeof setInterval> | null = null;
+
+function setView(showBoard: boolean) {
+  boardVisible = showBoard;
+  deckEl.classList.toggle("tk-hidden", showBoard);
+  boardEl.classList.toggle("hidden", !showBoard);
+  termBtn.classList.toggle("active", !showBoard);
+  boardBtn.classList.toggle("active", showBoard);
+  if (showBoard) {
+    void refreshBoard();
+    // Опрос — основной путь обновления; watcher лишь ускоряет его, поэтому
+    // его отказ деградирует в задержку и не требует детекции.
+    if (boardTimer === null) boardTimer = setInterval(() => void refreshBoard(), 5000);
+  } else if (boardTimer !== null) {
+    clearInterval(boardTimer); boardTimer = null;
+  }
+}
+termBtn.onclick = () => setView(false);
+boardBtn.onclick = () => setView(true);
+
 const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
 async function boot() {
@@ -33,12 +81,56 @@ async function boot() {
   });
   await workspaces.load();
   await skills.load();
+  await onTasksChanged((workspaceId) => {
+    if (boardVisible && workspaces.active?.id === workspaceId) void refreshBoard();
+    void refreshCounts();
+  });
+  await taskWatchSync();
+  await refreshCounts();
   const entries = await loadLayout();
   if (entries.length) await deck.restore(entries);
   deck.setActiveWorkspace(workspaces.active?.id ?? null);
   // Release the backend scheduler only once skills/workspaces are loaded, so a
   // catch-up fire arriving immediately can be resolved to a scenario.
   await schedulerReady();
+}
+
+// Реализуются в следующих задачах плана.
+async function captureTask() { await alertModal("Захват задачи ещё не реализован."); }
+async function launchFromTask(t: Task) { await alertModal(`Запуск из задачи ещё не реализован: ${t.title}`); }
+
+/** Перерисовать доску активного пространства. Каждый вызов IPC изолирован:
+ *  одна упавшая ручка не должна ронять весь тик. */
+async function refreshBoard() {
+  const ws = workspaces.active;
+  if (!ws) {
+    board.render({ project: "", caps: null, error: null, tasks: [], links: [] });
+    return;
+  }
+  let caps = null;
+  try { caps = await taskCapabilities(ws.id); } catch (e) { console.debug("caps failed", e); }
+  let tasks: Task[] = [];
+  let error: string | null = null;
+  if (caps) {
+    try { tasks = await listTasks(ws.id); }
+    catch (e) { error = String(e); }
+  }
+  board.render({ project: ws.name, caps, error, tasks, links: deck.taskLinks() });
+}
+
+/** Счётчики в сайдбаре — одна ручка на все пространства. */
+async function refreshCounts() {
+  try { workspaces.setCounts(await taskOpenCounts()); }
+  catch (e) { console.debug("taskOpenCounts failed", e); }
+}
+
+async function closeTask(t: Task) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  try { await resolveTask(ws.id, t.id); }
+  catch (e) { await alertModal(`Не удалось закрыть задачу: ${String(e)}`); }
+  await refreshBoard();
+  await refreshCounts();
 }
 
 /** Why a scheduled fire did or did not produce a run. The backend-driven path
@@ -84,7 +176,10 @@ void listen("pill://focus-next", async () => {
 
 // Selecting a workspace (click, startup restore of the active one, or after a
 // deletion re-selects the next one) switches the deck to that workspace's tiles.
-const workspaces = new WorkspacesPanel(wsMount, (ws) => deck.setActiveWorkspace(ws.id));
+const workspaces = new WorkspacesPanel(wsMount, (ws) => {
+  deck.setActiveWorkspace(ws.id);
+  if (boardVisible) void refreshBoard();
+});
 const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
   const ws = workspaces.active;
   if (!ws) return;
@@ -105,6 +200,8 @@ function paletteCommands(): Command[] {
     { id: "search", title: "Поиск в терминале", run: () => deck.searchActive() },
     { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
     { id: "broadcast", title: "Режим broadcast (ввод в несколько сессий)", run: () => deck.toggleBroadcast() },
+    { id: "board", title: "Открыть доску задач", run: () => setView(true) },
+    { id: "new-task", title: "Новая задача", run: () => { void captureTask(); } },
   ];
 }
 
@@ -115,6 +212,8 @@ const COMMANDS: Record<string, () => void> = {
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),
   "broadcast": () => deck.toggleBroadcast(),
+  "board": () => setView(true),
+  "new-task": () => { void captureTask(); },
 };
 
 window.addEventListener("keydown", (e) => {

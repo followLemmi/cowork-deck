@@ -17,6 +17,8 @@ interface Tile {
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
+  /** Set when the tile was launched from a tracker card — keys the "в работе" state. */
+  taskId?: string;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -273,6 +275,11 @@ export class Deck {
       this.restoring = false;
     }
     void this.persistLayout();
+  }
+
+  /** Живые тайлы в виде, который нужен доске. */
+  taskLinks(): { session: string; taskId?: string; state: SessionState }[] {
+    return [...this.tiles.values()].map((t) => ({ session: t.session, taskId: t.taskId, state: t.state }));
   }
 
   get activeSession(): string | null {

@@ -237,3 +237,52 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    всегда, в отличие от .sk-edit/.sk-del, всплывающих по ховеру строки. */
 .sk-now { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; font-size: var(--fs-xs); transition: color var(--dur-1) var(--ease); }
 .sk-now:hover { color: var(--accent); }
+
+/* ——— Доска задач ——— */
+#board { overflow: auto; padding: var(--sp-3); background: var(--bg-app); }
+#board.hidden, .tk-hidden { display: none; }
+
+.tk-views { display: inline-flex; gap: 2px; background: var(--bg-raised); border-radius: var(--r-sm); padding: 2px; }
+.tk-views button {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);
+  background: transparent; border: 0; border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2); cursor: pointer;
+}
+.tk-views button.active { background: var(--accent-weak); color: var(--fg); }
+.tk-views button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.tk-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.tk-title { margin: 0; font-size: var(--fs-base); color: var(--fg); }
+.tk-cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); align-items: start; }
+.tk-col-head { font-size: var(--fs-xs); color: var(--fg-subtle); margin-bottom: var(--sp-2); }
+
+.tk-card {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: var(--sp-3); margin-bottom: var(--sp-2);
+}
+.tk-card.working { border-color: var(--st-working); }
+.tk-card.done { opacity: 0.6; }
+.tk-card.damaged { border-color: var(--st-error); }
+.tk-card-title { color: var(--fg); font-size: var(--fs-base); font-weight: var(--fw-medium); }
+.tk-meta { display: flex; gap: var(--sp-2); margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--fg-subtle); }
+.tk-bot { color: var(--st-ended); }
+/* Пульсация только через opacity: анимация box-shadow однажды вешала всю систему. */
+.tk-busy { color: var(--st-working); animation: tk-pulse 1.6s var(--ease) infinite; }
+@keyframes tk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.tk-warn { color: var(--st-error); font-size: var(--fs-xs); margin: var(--sp-1) 0 0; }
+.tk-foreign { color: var(--fg-subtle); font-size: var(--fs-xs); margin-top: var(--sp-3); }
+.tk-empty { color: var(--fg-muted); font-size: var(--fs-sm); }
+
+.tk-acts { display: flex; gap: var(--sp-1); margin-top: var(--sp-2); }
+.tk-acts button, .tk-new, .tk-configure {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--r-sm); min-width: 24px; min-height: 24px; cursor: pointer;
+  transition: color var(--dur-1) var(--ease);
+}
+.tk-acts button:hover, .tk-new:hover, .tk-configure:hover { color: var(--fg); }
+.tk-acts button:focus-visible, .tk-new:focus-visible, .tk-configure:focus-visible {
+  outline: none; box-shadow: var(--focus-ring);
+}
+
+.ws-count { margin-left: auto; font-size: var(--fs-xs); color: var(--fg-subtle); }

@@ -5,7 +5,14 @@ import { workspaceForm } from "./forms";
 export class WorkspacesPanel {
   private items: Workspace[] = [];
   private activeId: string | null = null;
+  /** Открытых задач на пространство; заполняет main.ts. */
+  private counts = new Map<string, number>();
   constructor(private mount: HTMLElement, private onSelect: (ws: Workspace) => void) {}
+
+  setCounts(counts: Record<string, number>) {
+    this.counts = new Map(Object.entries(counts));
+    this.render();
+  }
 
   get active(): Workspace | null {
     return this.items.find((w) => w.id === this.activeId) ?? null;
@@ -81,7 +88,16 @@ export class WorkspacesPanel {
       const x = document.createElement("button");
       x.className = "ws-del"; x.textContent = "✕";
       x.onclick = () => this.del(w.id);
-      row.append(dot, label, edit, x);
+      row.append(dot, label);
+      const n = this.counts.get(w.id) ?? 0;
+      if (n > 0) {
+        const count = document.createElement("span");
+        count.className = "ws-count";
+        count.textContent = String(n);
+        count.title = `${n} открытых задач`;
+        row.append(count);
+      }
+      row.append(edit, x);
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");
