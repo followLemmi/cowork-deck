@@ -5,7 +5,7 @@ import { claudeAvailable, loadLayout, onScheduledFire, schedulerReady } from "./
 import type { Skill } from "./ipc";
 import { BoardView } from "./board";
 import {
-  listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync,
+  listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
 } from "./ipc";
 import type { Task } from "./ipc";
 import { alertModal } from "./modal";
@@ -14,7 +14,7 @@ import type { Command } from "./commands";
 import { openPalette } from "./palette";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
-import { placeholderForm } from "./forms";
+import { placeholderForm, taskForm } from "./forms";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -95,8 +95,27 @@ async function boot() {
   await schedulerReady();
 }
 
-// Реализуются в следующих задачах плана.
-async function captureTask() { await alertModal("Захват задачи ещё не реализован."); }
+/** Быстрый захват: модалка, карточка в активное пространство, доска и
+ *  счётчики обновляются сразу, не дожидаясь watcher'а. */
+async function captureTask() {
+  const ws = workspaces.active;
+  if (!ws) { await alertModal("Выберите пространство."); return; }
+  const caps = await taskCapabilities(ws.id).catch(() => null);
+  if (!caps?.canCreate) {
+    await alertModal("Трекер не настроен для этого пространства. Настройте его в свойствах пространства (✎).");
+    return;
+  }
+  const draft = await taskForm();
+  if (!draft) return;
+  try {
+    await createTask(ws.id, draft);
+  } catch (e) {
+    await alertModal(`Не удалось создать задачу: ${String(e)}`);
+    return;
+  }
+  if (boardVisible) await refreshBoard();
+  await refreshCounts();
+}
 async function launchFromTask(t: Task) { await alertModal(`Запуск из задачи ещё не реализован: ${t.title}`); }
 
 /** Перерисовать доску активного пространства. Каждый вызов IPC изолирован:

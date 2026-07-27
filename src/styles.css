@@ -286,3 +286,13 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 }
 
 .ws-count { margin-left: auto; font-size: var(--fs-xs); color: var(--fg-subtle); }
+
+.tk-f-kinds { display: inline-flex; gap: var(--sp-1); }
+.tk-f-kind {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: var(--sp-1) var(--sp-2);
+  min-height: 24px; cursor: pointer;
+}
+.tk-f-kind.selected { border-color: var(--accent); color: var(--fg); }
+.tk-f-kind:focus-visible { outline: none; box-shadow: var(--focus-ring); }

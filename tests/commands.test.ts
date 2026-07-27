@@ -25,6 +25,14 @@ describe("matchHotkey", () => {
   it("returns null without modifier", () => {
     expect(matchHotkey({ ...base, key: "k" }, true)).toBeNull();
   });
+  it("maps the capture hotkey without shadowing readline", () => {
+    const ev = { key: "T", metaKey: true, ctrlKey: false, shiftKey: true };
+    expect(matchHotkey(ev, true)).toBe("new-task");
+    // Без shift это не наш хоткей.
+    expect(matchHotkey({ ...ev, shiftKey: false }, true)).toBeNull();
+    // На Linux/Windows — только ctrl+shift, чтобы не глотать readline.
+    expect(matchHotkey({ key: "T", metaKey: false, ctrlKey: true, shiftKey: true }, false)).toBe("new-task");
+  });
 });
 
 describe("nextWaitingIndex", () => {

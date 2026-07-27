@@ -16,6 +16,7 @@ export function matchHotkey(e: { key: string; metaKey: boolean; ctrlKey: boolean
   if (k === "f" && !e.shiftKey) return "search";
   if (k === "b" && !e.shiftKey) return "broadcast";
   if (k === "]" && e.shiftKey) return "next-waiting";
+  if (k === "t" && e.shiftKey) return "new-task";
   if (/^[1-9]$/.test(k) && !e.shiftKey) return `focus-${k}`;
   return null;
 }

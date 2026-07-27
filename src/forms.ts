@@ -4,7 +4,7 @@
 // their own DOM here rather than extending modal.ts's single-field helpers.
 
 import { pickFolder } from "./dialog";
-import type { Schedule, SchedulePreset } from "./ipc";
+import type { Schedule, SchedulePreset, TaskDraft, TaskKind } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule } from "./schedule";
 
@@ -279,5 +279,67 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
     cancel.onclick = () => close(null);
     ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(null); });
     inputs.get(names[0])?.focus();
+  });
+}
+
+/** Быстрый захват карточки. Заголовок обязателен: карточка без имени
+ *  бесполезна в бэклоге, поэтому пустой ввод не закрывает модалку. */
+export function taskForm(): Promise<TaskDraft | null> {
+  return new Promise((resolve) => {
+    const { overlay: ov, box } = overlay();
+    const title = document.createElement("div");
+    title.className = "modal-title";
+    title.textContent = "Новая задача";
+
+    const titleInput = document.createElement("input");
+    titleInput.className = "modal-input tk-f-title";
+    titleInput.type = "text";
+    titleInput.placeholder = "что случилось или что сделать";
+
+    // Строка типа устроена как colorRow в workspaceForm: span-подпись + контролы
+    // в <div>, а НЕ labeled() — клик по тексту <label> форвардится на первую
+    // кнопку и молча менял бы выбор.
+    let kind: TaskKind = "task";
+    const kindRow = document.createElement("div");
+    kindRow.className = "form-row";
+    const kindLabelEl = document.createElement("span");
+    kindLabelEl.className = "form-label";
+    kindLabelEl.textContent = "Тип";
+    const kindBox = document.createElement("div");
+    kindBox.className = "tk-f-kinds";
+    const kinds: [TaskKind, string][] = [["bug", "баг"], ["task", "задача"], ["idea", "идея"]];
+    for (const [value, label] of kinds) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset.kind = value;
+      b.textContent = label;
+      b.className = "tk-f-kind";
+      b.classList.toggle("selected", value === kind);
+      b.onclick = () => {
+        kind = value;
+        kindBox.querySelectorAll(".tk-f-kind").forEach((o) => o.classList.remove("selected"));
+        b.classList.add("selected");
+      };
+      kindBox.append(b);
+    }
+    kindRow.append(kindLabelEl, kindBox);
+
+    const bodyInput = document.createElement("textarea");
+    bodyInput.className = "modal-input tk-f-body";
+    bodyInput.rows = 5;
+    bodyInput.placeholder = "репро, ссылки на файлы — что угодно";
+
+    const { row, ok, cancel } = actions();
+    box.append(title, labeled("Заголовок", titleInput), kindRow, labeled("Описание", bodyInput), row);
+
+    const close = (v: TaskDraft | null) => { ov.remove(); resolve(v); };
+    ok.onclick = () => {
+      const t = titleInput.value.trim();
+      if (!t) { titleInput.focus(); return; } // безымянную карточку не создаём
+      close({ title: t, kind, body: bodyInput.value });
+    };
+    cancel.onclick = () => close(null);
+    ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(null); });
+    titleInput.focus();
   });
 }
