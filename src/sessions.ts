@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, saveLayout, type SessionState, type Skill, type Workspace, type SessionEntry } from "./ipc";
+import { onOutput, onState, onExit, closeSession, saveLayout, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth } from "./ipc";
 import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -17,6 +17,11 @@ interface Tile {
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
+  /** Исход привязки GitHub-аккаунта на момент СТАРТА процесса. Живой сессии
+   *  окружение не поменять, поэтому значение не обновляется до перезапуска. */
+  auth?: SessionAuth;
+  /** Привязка воркспейса изменилась после старта — окружение устарело. */
+  authStale?: boolean;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -198,7 +203,8 @@ export class Deck {
       restart.style.display = "none";
       tile.panel.write("\r\n[перезапуск сессии...]\r\n");
       try {
-        await tile.panel.start(tile.workspacePath, null, true);
+        tile.auth = await tile.panel.start(tile.workspacePath, null, true, tile.workspaceId ?? null);
+        tile.authStale = false;
         this.setState(session, "idle");
         void this.persistLayout();
       } catch (e) {
@@ -247,7 +253,7 @@ export class Deck {
     this.startPolling();
     this.renderList();
     try {
-      await panel.start(cwd, prompt, resume);
+      tile.auth = await panel.start(cwd, prompt, resume, workspaceId ?? null);
       void this.persistLayout();
     } catch (e) {
       this.setState(session, "error");

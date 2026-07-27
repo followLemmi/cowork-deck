@@ -1,5 +1,6 @@
+use crate::gh;
 use crate::hooks::build_settings_json;
-use crate::model::{GitStatus, SessionEntry, Skill, TokenUsage, UiState, Workspace};
+use crate::model::{GitStatus, SessionEntry, Skill, TokenUsage, UiState, Workspace, WorkspaceGithub};
 use crate::pty::PtyManager;
 use crate::store::Store;
 use base64::Engine;
@@ -105,6 +106,59 @@ fn which_claude() -> Option<String> {
     }
 }
 
+/// Что фронт узнаёт про аккаунт стартовавшей сессии. Токена здесь нет и быть
+/// не может — только имя аккаунта и, если что-то пошло не так, причина.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionAuth {
+    pub account: Option<String>,
+    pub degraded: Option<String>,
+}
+
+pub struct AuthOutcome {
+    pub env: Vec<(String, String)>,
+    pub auth: SessionAuth,
+}
+
+/// Резолвит привязку воркспейса в окружение сессии. Сбой резолва НЕ блокирует
+/// старт: сессия поднимается в деградированном режиме (см. `gh::session_env`),
+/// а причина уезжает во фронт для бейджа на тайле.
+///
+/// Принимает уже извлечённый конфиг, а не `State`, специально: `gh::token`
+/// блокирует до `timeout`, и держать в это время мьютекс стора нельзя.
+pub fn resolve_session_auth(
+    cfg: Option<&WorkspaceGithub>,
+    noauth_dir: &str,
+    timeout: std::time::Duration,
+) -> AuthOutcome {
+    let cfg = match cfg {
+        Some(c) => c,
+        None => {
+            return AuthOutcome {
+                env: Vec::new(),
+                auth: SessionAuth { account: None, degraded: None },
+            }
+        }
+    };
+    match gh::token(&cfg.host, &cfg.login, timeout) {
+        Ok(t) => AuthOutcome {
+            env: gh::session_env(cfg, Some(&t), noauth_dir),
+            auth: SessionAuth { account: Some(cfg.login.clone()), degraded: None },
+        },
+        Err(reason) => AuthOutcome {
+            env: gh::session_env(cfg, None, noauth_dir),
+            auth: SessionAuth { account: Some(cfg.login.clone()), degraded: Some(reason) },
+        },
+    }
+}
+
+/// Каталог-пустышка для деградированных сессий: `gh` с таким `GH_CONFIG_DIR`
+/// честно сообщает «не залогинен» вместо работы под чужим активным аккаунтом.
+fn noauth_dir(state: &State<AppState>) -> std::path::PathBuf {
+    let dir = state.store.lock().unwrap().dir.join("gh-noauth");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
@@ -114,11 +168,23 @@ pub fn start_session(
     initial_prompt: Option<String>,
     cols: u16,
     rows: u16,
+    workspace_id: Option<String>,
     resume: bool,
-) -> Result<(), String> {
+) -> Result<SessionAuth, String> {
     let program = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let settings = build_settings_json(&state.reporter_path, state.listener_port, &session);
     let args = build_claude_args(&settings, &initial_prompt, &session, resume);
+
+    // Замок стора берётся и отпускается ДО резолва токена: gh::token блокирует
+    // до пяти секунд, и удерживать общий мьютекс всё это время означало бы
+    // подвесить любую другую операцию со стором.
+    let cfg = workspace_id.as_ref().and_then(|id| {
+        let store = state.store.lock().unwrap();
+        store.workspaces().into_iter().find(|w| &w.id == id).and_then(|w| w.github)
+    });
+    let dir = noauth_dir(&state);
+    let outcome =
+        resolve_session_auth(cfg.as_ref(), &dir.to_string_lossy(), std::time::Duration::from_secs(5));
 
     let app_out = app.clone();
     let sess_out = session.clone();
@@ -136,8 +202,9 @@ pub fn start_session(
     };
 
     state.pty
-        .spawn(&session, &program, &args, &cwd, &[], cols, rows, on_output, on_exit)
-        .map_err(|e| e.to_string())
+        .spawn(&session, &program, &args, &cwd, &outcome.env, cols, rows, on_output, on_exit)
+        .map_err(|e| e.to_string())?;
+    Ok(outcome.auth)
 }
 
 #[tauri::command]
@@ -320,5 +387,32 @@ mod tests {
         let non_repo = git_status(std::env::temp_dir().to_str().unwrap().to_string());
         // temp_dir itself is not a repo (usually); branch None. Tolerate either but dirty must be false when branch is None.
         if non_repo.branch.is_none() { assert!(!non_repo.dirty); }
+    }
+
+    #[test]
+    fn no_binding_means_no_env_and_no_badge() {
+        let outcome = resolve_session_auth(None, "/tmp/noauth", std::time::Duration::from_secs(5));
+        assert!(outcome.env.is_empty());
+        assert_eq!(outcome.auth.account, None);
+        assert_eq!(outcome.auth.degraded, None);
+    }
+
+    #[test]
+    fn binding_to_an_unknown_account_degrades_but_keeps_identity() {
+        let cfg = WorkspaceGithub {
+            host: "github.com".into(),
+            login: "definitely-not-a-real-account-xyz".into(),
+            git_name: Some("Evgeny".into()),
+            git_email: None,
+            ssh_key: None,
+        };
+        let outcome =
+            resolve_session_auth(Some(&cfg), "/tmp/noauth", std::time::Duration::from_secs(5));
+        assert_eq!(outcome.auth.account.as_deref(), Some("definitely-not-a-real-account-xyz"));
+        assert!(outcome.auth.degraded.is_some(), "должна быть причина деградации");
+        let keys: Vec<&str> = outcome.env.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"GH_CONFIG_DIR"), "деградация обязана увести gh в пустой конфиг");
+        assert!(keys.contains(&"GIT_AUTHOR_NAME"), "идентичность известна и без токена");
+        assert!(!keys.contains(&"GH_TOKEN"), "без токена GH_TOKEN выставлять нельзя");
     }
 }

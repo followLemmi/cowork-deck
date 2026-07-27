@@ -23,7 +23,18 @@ describe("ipc", () => {
     await startSession("s1", "/proj", "do the thing", 80, 24, false);
     expect(invoke).toHaveBeenCalledWith("start_session", {
       session: "s1", cwd: "/proj", initialPrompt: "do the thing", cols: 80, rows: 24, resume: false,
+      workspaceId: null,
     });
+  });
+
+  it("startSession forwards the workspace id so the backend can resolve its account", async () => {
+    vi.mocked(invoke).mockResolvedValue({ account: "followLemmi", degraded: null });
+    const auth = await startSession("s1", "/proj", null, 80, 24, false, "w1");
+    expect(invoke).toHaveBeenCalledWith("start_session", {
+      session: "s1", cwd: "/proj", initialPrompt: null, cols: 80, rows: 24, resume: false,
+      workspaceId: "w1",
+    });
+    expect(auth).toEqual({ account: "followLemmi", degraded: null });
   });
 
   it("decodeB64 round-trips utf8", () => {

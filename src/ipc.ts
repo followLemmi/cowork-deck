@@ -37,9 +37,16 @@ export const saveSkill = (sk: Skill) => invoke<Skill[]>("save_skill", { sk });
 export const removeSkill = (id: string) => invoke<Skill[]>("remove_skill", { id });
 export const claudeAvailable = () => invoke<boolean>("claude_available");
 
+/** Исход привязки аккаунта для стартовавшей сессии. Токена тут нет: только имя
+ *  аккаунта и, если резолв не удался, причина — её показывает бейдж на тайле. */
+export interface SessionAuth { account: string | null; degraded: string | null; }
+
 export const startSession = (
-  session: string, cwd: string, initialPrompt: string | null, cols: number, rows: number, resume: boolean,
-) => invoke<void>("start_session", { session, cwd, initialPrompt, cols, rows, resume });
+  session: string, cwd: string, initialPrompt: string | null, cols: number, rows: number,
+  resume: boolean, workspaceId?: string | null,
+) => invoke<SessionAuth>("start_session", {
+  session, cwd, initialPrompt, cols, rows, resume, workspaceId: workspaceId ?? null,
+});
 export const writeSession = (session: string, data: string) => invoke<void>("write_session", { session, data });
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });

@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
-import { startSession, writeSession, resizeSession } from "./ipc";
+import { startSession, writeSession, resizeSession, type SessionAuth } from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
 
 export class TerminalPanel {
@@ -64,9 +64,13 @@ export class TerminalPanel {
     this.term.onData((d) => { void writeSession(this.session, d); });
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
   }
-  async start(cwd: string, initialPrompt: string | null, resume = false) {
+  /** Возвращает исход привязки GitHub-аккаунта: вызывающий решает, вешать ли
+   *  бейдж на тайл. Окружение фиксируется здесь, при рождении процесса. */
+  async start(
+    cwd: string, initialPrompt: string | null, resume = false, workspaceId?: string | null,
+  ): Promise<SessionAuth> {
     const { cols, rows } = this.term;
-    await startSession(this.session, cwd, initialPrompt, cols, rows, resume);
+    return await startSession(this.session, cwd, initialPrompt, cols, rows, resume, workspaceId);
   }
   write(text: string) { this.term.write(text); }
   focus() { this.term.focus(); }
