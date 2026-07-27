@@ -98,6 +98,67 @@ pub fn status() -> GhStatus {
     GhStatus { path: Some(path), version, accounts }
 }
 
+const TOKEN_PREFIXES: [&str; 6] = ["gho_", "ghp_", "ghu_", "ghs_", "ghr_", "github_pat_"];
+
+/// Вырезает всё, что похоже на токен GitHub, из текста перед логированием или
+/// отдачей во фронт.
+///
+/// Работаем по префиксам, а не по known-значению: токен мог прийти из stderr
+/// самого gh, и тогда мы его не знаем. Совпадение засчитывается только на
+/// границе слова, чтобы «github.com» и подобное не пострадало.
+pub fn redact(msg: &str) -> String {
+    let bytes = msg.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut out = String::with_capacity(msg.len());
+    let mut i = 0;
+    while i < msg.len() {
+        let at_boundary = i == 0 || !is_word(bytes[i - 1]);
+        if at_boundary && TOKEN_PREFIXES.iter().any(|p| msg[i..].starts_with(p)) {
+            let mut j = i;
+            while j < msg.len() && is_word(bytes[j]) {
+                j += 1;
+            }
+            out.push_str("<redacted>");
+            i = j;
+        } else {
+            let ch = msg[i..].chars().next().expect("i всегда на границе символа");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+/// Читает токен указанного аккаунта из keyring gh, НЕ переключая активный
+/// аккаунт. Таймаут обязателен: залоченный keyring на Linux умеет подвесить
+/// процесс диалогом, а старт сессии блокировать нельзя.
+pub fn token(host: &str, login: &str, timeout: std::time::Duration) -> Result<String, String> {
+    let path = which_gh().ok_or_else(|| "gh не найден".to_string())?;
+    let (host, login) = (host.to_string(), login.to_string());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(&path)
+            .args(["auth", "token", "--hostname", &host, "--user", &login])
+            .output();
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(o)) if o.status.success() => {
+            let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if t.is_empty() {
+                Err("gh вернул пустой токен".into())
+            } else {
+                Ok(t)
+            }
+        }
+        Ok(Ok(o)) => Err(redact(String::from_utf8_lossy(&o.stderr).trim())),
+        Ok(Err(e)) => Err(redact(&e.to_string())),
+        // Поток остаётся висеть на заблокированном keyring — он отвалится сам,
+        // когда диалог закроют. Мы его не ждём.
+        Err(_) => Err("gh не ответил вовремя (возможно, залочен keyring)".into()),
+    }
+}
+
 /// Собирает окружение дочерней сессии из привязки воркспейса.
 ///
 /// `token = Some(_)` — обычный путь. `token = None` — деградация: сессия всё
@@ -186,6 +247,37 @@ mod tests {
         let mut logins: Vec<String> = parse_auth_status(json).into_iter().map(|a| a.login).collect();
         logins.sort();
         assert_eq!(logins, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn redact_hides_every_known_token_shape() {
+        assert_eq!(redact("failed with gho_abc123DEF here"), "failed with <redacted> here");
+        assert_eq!(redact("ghp_xxx"), "<redacted>");
+        assert_eq!(redact("token=github_pat_11ABC_longtail"), "token=<redacted>");
+        for prefix in ["ghu_", "ghs_", "ghr_"] {
+            let msg = format!("oops {prefix}secretvalue");
+            assert_eq!(redact(&msg), "oops <redacted>", "не отредактирован префикс {prefix}");
+        }
+    }
+
+    #[test]
+    fn redact_leaves_ordinary_text_untouched() {
+        let msg = "gh: could not find any credentials for github.com";
+        assert_eq!(redact(msg), msg);
+    }
+
+    #[test]
+    fn redact_handles_tokens_glued_to_punctuation() {
+        assert_eq!(redact("(gho_abc)"), "(<redacted>)");
+        assert_eq!(redact("\"gho_abc\","), "\"<redacted>\",");
+    }
+
+    #[test]
+    fn redact_does_not_fire_mid_word_or_break_utf8() {
+        // «не-токен» внутри слова не трогаем: граница слова обязательна.
+        assert_eq!(redact("xgho_abc"), "xgho_abc");
+        let cyrillic = "ошибка: gho_abc не подошёл";
+        assert_eq!(redact(cyrillic), "ошибка: <redacted> не подошёл");
     }
 
     fn cfg_full() -> WorkspaceGithub {
