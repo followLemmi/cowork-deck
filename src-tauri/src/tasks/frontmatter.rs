@@ -244,4 +244,43 @@ session: a3f1c2\n\
         assert_eq!(slugify(""), "task");
         assert_eq!(slugify(&"я".repeat(80)).chars().count(), 40);
     }
+
+    #[test]
+    fn crlf_line_endings_parse_the_same_as_lf() {
+        let crlf = VALID.replace('\n', "\r\n");
+        let card = parse_card(&crlf, "/r/01K1-pill.md").expect("card");
+        assert_eq!(card.id, "01K1B7QW9XZ3M4N5P6R7S8T9V0");
+        assert_eq!(card.title, "Пилюля мигает при переключении");
+        assert_eq!(card.status, TaskStatus::Open);
+        assert_eq!(card.project, "cowork-deck");
+        assert!(card.damaged.is_none(), "a stray \\r must not leak into a field value");
+    }
+
+    #[test]
+    fn multiline_title_flattens_through_render_and_reparse() {
+        let card = Task {
+            id: "01K1".to_string(),
+            title: "Баг:\nпилюля\nмигает".to_string(),
+            kind: TaskKind::Bug,
+            status: TaskStatus::Open,
+            project: "cowork-deck".to_string(),
+            created: "2026-07-27T13:20:11Z".to_string(),
+            resolved: None,
+            origin: TaskOrigin::Human,
+            session: None,
+            body: String::new(),
+            path: "/r/x.md".to_string(),
+            damaged: None,
+            conflict: false,
+        };
+        let text = render_card(&card);
+        assert_eq!(
+            text.matches("---").count(),
+            2,
+            "exactly one opening and one closing delimiter"
+        );
+        let again = parse_card(&text, "/r/x.md").expect("card");
+        assert_eq!(again.title, "Баг: пилюля мигает");
+        assert!(again.damaged.is_none());
+    }
 }
