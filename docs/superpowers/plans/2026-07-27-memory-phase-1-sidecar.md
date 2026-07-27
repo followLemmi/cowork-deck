@@ -19,6 +19,7 @@
 - **Ported constants, exact values:** `BIG_FILE = 30_000` bytes, `CHUNK_MAX = 2000` chars, `SNIPPET = 300` chars, `INFO_MIN = 120` letters, TL;DR minimum `40` letters, big-file head `1500` chars, embedding batch `16`, tokenizer truncation `256`, search defaults `top = 10`, `min_score = 0.25`.
 - **Model:** `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`, files `onnx/model.onnx` (470 301 610 bytes) and `tokenizer.json` (9 081 518 bytes). Embedding dim 384.
 - **Never commit vault content.** Golden fixtures are synthetic notes written for this repo, not copies of the author's notes.
+- **`serde_json` needs the `float_roundtrip` feature.** `FileStat.mtime` is an `f64` that round-trips through `meta.json` on every update, and the default fast float parser is off by 1 ULP on roughly a tenth of realistic mtime values. Without the feature, untouched files compare unequal to themselves after one save/load cycle and get re-embedded every run — incremental indexing silently stops being incremental.
 
 ---
 
@@ -121,7 +122,11 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: without it serde_json's fast float parser can be off by 1 ULP,
+# and FileStat.mtime round-trips through meta.json on every update. Measured:
+# ~10% of realistic mtime values fail to round-trip exactly, which makes
+# untouched files look changed and silently defeats incremental indexing.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 clap = { version = "4", features = ["derive"] }
 ```
 
@@ -614,7 +619,7 @@ Add `serde_json` to dev-dependencies in `crates/cowork-memory/Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 ```
 
 - [ ] **Step 5: Run test to verify it fails**
