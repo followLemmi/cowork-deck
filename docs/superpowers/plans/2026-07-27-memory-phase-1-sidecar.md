@@ -1416,6 +1416,111 @@ fn update_drops_chunks_of_deleted_files() {
 
     fs::remove_dir_all(&dir).unwrap();
 }
+
+/// An embedder with a different dimension, to prove a dim change reindexes
+/// everything instead of silently dropping untouched files.
+struct NarrowEmbedder;
+
+impl Embedder for NarrowEmbedder {
+    fn dim(&self) -> usize {
+        32
+    }
+    fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let wide = FakeEmbedder::new().embed(texts)?;
+        Ok(wide
+            .into_iter()
+            .map(|v| {
+                let mut t: Vec<f32> = v.into_iter().take(32).collect();
+                let n = t.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
+                for x in t.iter_mut() {
+                    *x /= n;
+                }
+                t
+            })
+            .collect())
+    }
+}
+
+#[test]
+fn changing_the_embedder_dimension_reindexes_every_file() {
+    let dir = tmp("dimchange");
+    let root = dir.join("memory");
+    let cache = dir.join("cache");
+    fs::create_dir_all(root.join("ws-1")).unwrap();
+
+    let long = "Достаточно длинный текст для прохождения фильтра шума. ".repeat(5);
+    fs::write(root.join("ws-1/Facts.md"), format!("# Факты\n\n{long}")).unwrap();
+    fs::write(root.join("ws-1/Other.md"), format!("# Другое\n\n{long}")).unwrap();
+
+    let wide = FakeEmbedder::new();
+    let (first, _) = update(&root, &cache, &wide).unwrap();
+    let before: Vec<String> = first.meta.chunks.iter().map(|c| c.file.clone()).collect();
+    assert_eq!(before.len(), 2, "fixture should give one chunk per file");
+
+    // Nothing on disk changes — only the embedder.
+    let narrow = NarrowEmbedder;
+    let (second, rep) = update(&root, &cache, &narrow).unwrap();
+
+    assert_eq!(second.meta.dim, narrow.dim(), "index must adopt the new dimension");
+    assert_eq!(rep.changed, 2, "a dim change must re-embed every file");
+    let after: Vec<String> = second.meta.chunks.iter().map(|c| c.file.clone()).collect();
+    assert_eq!(after, before, "no file may silently lose its chunks");
+    assert_eq!(second.emb.len(), second.meta.chunks.len() * narrow.dim());
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Counts and lengths cannot catch a row that drifted onto the wrong chunk —
+/// only comparing the bytes can.
+#[test]
+fn a_reused_row_still_belongs_to_its_own_chunk() {
+    let dir = tmp("align");
+    let root = dir.join("memory");
+    let cache = dir.join("cache");
+    fs::create_dir_all(root.join("ws-1")).unwrap();
+
+    let long = "Достаточно длинный текст для прохождения фильтра шума. ".repeat(5);
+    fs::write(root.join("ws-1/Keep.md"), format!("# Остаётся\n\n{long}")).unwrap();
+    fs::write(root.join("ws-1/Edit.md"), format!("# Правится\n\n{long}")).unwrap();
+
+    let e = FakeEmbedder::new();
+    let dim = e.dim();
+    let (first, _) = update(&root, &cache, &e).unwrap();
+
+    let i = first
+        .meta
+        .chunks
+        .iter()
+        .position(|c| c.file == "ws-1/Keep.md")
+        .expect("Keep.md indexed");
+    let keep_row: Vec<f32> = first.emb[i * dim..(i + 1) * dim].to_vec();
+    let keep_text = first.meta.chunks[i].text.clone();
+
+    // Touch the other file so the kept row travels through the reuse path
+    // while the chunk list is rebuilt around it.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        root.join("ws-1/Edit.md"),
+        format!("# Правится\n\n{long} и ещё одно предложение."),
+    )
+    .unwrap();
+    let (second, _) = update(&root, &cache, &e).unwrap();
+
+    let j = second
+        .meta
+        .chunks
+        .iter()
+        .position(|c| c.file == "ws-1/Keep.md")
+        .expect("Keep.md still indexed");
+    assert_eq!(second.meta.chunks[j].text, keep_text, "kept chunk text changed");
+    assert_eq!(
+        &second.emb[j * dim..(j + 1) * dim],
+        keep_row.as_slice(),
+        "the row at the kept chunk's index belongs to a different chunk"
+    );
+
+    fs::remove_dir_all(&dir).unwrap();
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1443,12 +1548,27 @@ pub struct UpdateReport {
 pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, UpdateReport)> {
     let old = load(cache);
     let current = scan(root);
+    let dim = emb.dim();
 
-    let changed: Vec<String> = current
-        .iter()
-        .filter(|(f, s)| old.meta.files.get(*f) != Some(s))
-        .map(|(f, _)| f.clone())
-        .collect();
+    // A different embedding dimension invalidates every stored row, so every
+    // file must be re-embedded — not just the mtime-changed ones. Treating
+    // this as an ordinary incremental pass would leave untouched files
+    // recorded in `meta.files` with no chunks at all, and the next run, seeing
+    // them unchanged, would never re-embed them: their content would be gone
+    // from the index for good, with the length invariant still satisfied and
+    // nothing reported. Reachable in practice by running once with
+    // COWORK_MEMORY_FAKE_EMBED=1 and once without, against the same cache.
+    let dim_changed = !old.meta.chunks.is_empty() && old.meta.dim != dim;
+
+    let changed: Vec<String> = if dim_changed {
+        current.keys().cloned().collect()
+    } else {
+        current
+            .iter()
+            .filter(|(f, s)| old.meta.files.get(*f) != Some(s))
+            .map(|(f, _)| f.clone())
+            .collect()
+    };
     let deleted: usize = old
         .meta
         .files
@@ -1456,7 +1576,7 @@ pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, U
         .filter(|f| !current.contains_key(*f))
         .count();
 
-    if changed.is_empty() && deleted == 0 {
+    if changed.is_empty() && deleted == 0 && !dim_changed {
         let report = UpdateReport {
             files: old.meta.files.len(),
             chunks: old.meta.chunks.len(),
@@ -1465,12 +1585,11 @@ pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, U
         return Ok((old, report));
     }
 
-    let dim = emb.dim();
     let mut chunks: Vec<ChunkRecord> = Vec::new();
     let mut rows: Vec<f32> = Vec::new();
 
     // Keep rows whose file is still present and unmodified.
-    if old.meta.dim == dim {
+    if !dim_changed && old.meta.dim == dim {
         for (i, c) in old.meta.chunks.iter().enumerate() {
             let unchanged = current
                 .get(&c.file)
