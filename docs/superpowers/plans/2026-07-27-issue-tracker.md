@@ -1790,7 +1790,9 @@ usage instead of guessing a path."
 - Modify: `package.json` (`stage:task`)
 - Modify: `src-tauri/tauri.conf.json` (`externalBin`, `beforeDevCommand`, `beforeBuildCommand`)
 - Modify: `src/ipc.ts` (`startSession` получает `workspaceId`)
-- Modify: `src/sessions.ts` (передача `workspaceId` в `startSession`)
+- Modify: `src/terminal.ts` (`TerminalPanel.start` получает `workspaceId` и передаёт его в `startSession`)
+- Modify: `src/sessions.ts` (оба вызова `panel.start` — перезапуск тайла и `spawnTile`)
+- Modify: `tests/ipc.test.ts` (существующий тест `startSession` ждёт новый аргумент)
 
 **Interfaces:**
 - Consumes: `tasks_cmd::resolve_root`, `main::resolve_reporter_path`.
@@ -2038,7 +2040,25 @@ export const startSession = (
 ) => invoke<void>("start_session", { session, cwd, workspaceId, initialPrompt, cols, rows, resume });
 ```
 
-`src/sessions.ts` — найти единственный вызов `startSession(` внутри `spawnTile` и добавить `workspaceId ?? null` третьим аргументом:
+Вызов `startSession` живёт **не** в `sessions.ts`, а в `src/terminal.ts` — `sessions.ts` работает через `panel.start(...)`. Поэтому правок две.
+
+`src/terminal.ts` — `TerminalPanel.start` принимает `workspaceId` и пробрасывает его:
+
+```ts
+  async start(cwd: string, workspaceId: string | null, initialPrompt: string | null, resume = false) {
+    const { cols, rows } = this.term;
+    await startSession(this.session, cwd, workspaceId, initialPrompt, cols, rows, resume);
+  }
+```
+
+`src/sessions.ts` — обновить **оба** вызова `panel.start`: путь перезапуска тайла (⟳) и `spawnTile`. Пропустить первый легко, и тогда перезапущенная сессия молча теряет доступ к трекеру:
+
+```ts
+        await tile.panel.start(tile.workspacePath, tile.workspaceId ?? null, null, true);   // перезапуск
+        await panel.start(cwd, workspaceId ?? null, prompt, resume);                        // spawnTile
+```
+
+И существующий тест в `tests/ipc.test.ts` ждёт новый аргумент — обновить его, иначе гейт покраснеет:
 
 Run: `grep -n "startSession(" src/sessions.ts`
 
