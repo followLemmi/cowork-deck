@@ -136,7 +136,7 @@ pub fn start_session(
     };
 
     state.pty
-        .spawn(&session, &program, &args, &cwd, cols, rows, on_output, on_exit)
+        .spawn(&session, &program, &args, &cwd, &[], cols, rows, on_output, on_exit)
         .map_err(|e| e.to_string())
 }
 

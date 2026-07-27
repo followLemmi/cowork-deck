@@ -25,6 +25,7 @@ impl PtyManager {
         program: &str,
         args: &[String],
         cwd: &str,
+        env: &[(String, String)],
         cols: u16,
         rows: u16,
         on_output: F,
@@ -44,6 +45,12 @@ impl PtyManager {
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         cmd.cwd(cwd);
+        // Переменные задаются ТОЛЬКО дочернему процессу. Окружение самого
+        // приложения и других сессий не затрагивается — именно на этом стоит
+        // изоляция GitHub-аккаунтов между воркспейсами.
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
 
         let mut child = pair.slave.spawn_command(cmd).map_err(to_io)?;
         let killer = child.clone_killer();
@@ -152,7 +159,7 @@ mod tests {
         let (prog, args) = ("/bin/sh", vec!["-c".to_string(), "printf COWORK_OK".to_string()]);
 
         mgr.spawn(
-            "s1", prog, &args, ".", 80, 24,
+            "s1", prog, &args, ".", &[], 80, 24,
             move |bytes| { let _ = tx.send(bytes); },
             move |ok| { let _ = etx.send(ok); },
         ).unwrap();
@@ -166,6 +173,47 @@ mod tests {
             }
         }
         assert!(String::from_utf8_lossy(&got).contains("COWORK_OK"), "got: {:?}", String::from_utf8_lossy(&got));
+        assert!(erx.recv_timeout(Duration::from_secs(5)).is_ok(), "exit not reported");
+    }
+
+    #[test]
+    fn injected_env_reaches_the_child_process() {
+        let mgr = PtyManager::new();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (etx, erx) = mpsc::channel::<bool>();
+
+        #[cfg(windows)]
+        let (prog, args) = ("cmd", vec!["/C".to_string(), "echo %COWORK_TEST_VAR%".to_string()]);
+        #[cfg(not(windows))]
+        let (prog, args) =
+            ("/bin/sh", vec!["-c".to_string(), "printf %s \"$COWORK_TEST_VAR\"".to_string()]);
+
+        mgr.spawn(
+            "envtest",
+            prog,
+            &args,
+            ".",
+            &[("COWORK_TEST_VAR".to_string(), "injected-value".to_string())],
+            80,
+            24,
+            move |bytes| { let _ = tx.send(bytes); },
+            move |ok| { let _ = etx.send(ok); },
+        )
+        .unwrap();
+
+        let mut got = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if let Ok(b) = rx.recv_timeout(Duration::from_millis(200)) {
+                got.extend_from_slice(&b);
+                if String::from_utf8_lossy(&got).contains("injected-value") { break; }
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&got).contains("injected-value"),
+            "дочерний процесс не увидел инжектированную переменную: {:?}",
+            String::from_utf8_lossy(&got)
+        );
         assert!(erx.recv_timeout(Duration::from_secs(5)).is_ok(), "exit not reported");
     }
 }
