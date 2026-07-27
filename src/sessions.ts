@@ -114,7 +114,7 @@ export class Deck {
   }
 
   async launch(workspace: Workspace, skill: Skill | null) {
-    const titleText = skill ? `${skill.icon} ${skill.name}` : `терминал · ${workspace.name}`;
+    const titleText = skill ? `${skill.icon} ${skill.name}` : `сессия · ${workspace.name}`;
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
