@@ -384,7 +384,14 @@ This is the highest-risk task in the phase. Everything downstream depends on chu
 **Two faithfulness notes, both deliberate:**
 
 1. Python's `re.split(r"(?=^## )", body)` yields a leading empty string when the body starts with `## `. The Rust version does not. This is harmless — an empty section contributes nothing to the accumulator — and the golden test proves it.
-2. Python computes `is_tldr = bool(tldr) and idx == 0`, where `tldr` is the *match object*. If a `## TL;DR` heading exists but its content is blank, no TL;DR chunk is emitted, yet index 0 — a different chunk — still receives the lenient 40-letter threshold. Reproduce this. It is an edge case of the tool being ported, and diverging would fail the golden test.
+2. The reference implementation had a bug here: `is_tldr = bool(tldr) and idx == 0` tested the *match object*, so a `## TL;DR` heading with blank content emitted no chunk yet still handed the lenient 40-letter threshold to an unrelated chunk at index 0. **This was fixed in `~/.claude/bin/vault_index.py` on 2026-07-27 before the golden file was generated** (backup at `vault_index.py.bak-2026-07-27`). Both sides now gate on whether a TL;DR chunk was actually emitted. Fixture `04-empty-tldr.md` exists to pin the corrected behaviour, and it is sized so the two behaviours give different answers — do not "simplify" it.
+
+> **Before generating the golden file, confirm the reference is the fixed version:**
+> ```bash
+> grep -n "has_tldr_chunk" ~/.claude/bin/vault_index.py
+> ```
+> Two hits expected. No hits means an unfixed copy (another machine, a Dropbox
+> conflict) — do not generate the golden file from it.
 
 - [ ] **Step 1: Write the fixture notes**
 
@@ -437,17 +444,18 @@ Claude Code. Это ограничение определило всю конс�
 - [ ]
 ```
 
-`04-empty-tldr.md`:
+`04-empty-tldr.md` — the body is deliberately sized between the two thresholds
+(about 63 letters: over the TL;DR allowance of 40, under `INFO_MIN` of 120), so
+the corrected behaviour drops it and the old buggy behaviour would have kept it.
+Lengthening this note destroys the only test of that fix:
 
 ```markdown
 # Пустой TL;DR
 
 ## TL;DR
 
-## Содержание
-Секция TL;DR присутствует, но пуста. По правилам питоновской реализации чанк
-для неё не создаётся, однако порог в сорок букв всё равно применяется к первому
-чанку. Этот файл существует ровно для того, чтобы зафиксировать это поведение.
+## Тело
+Букв тут больше сорока, но заметно меньше ста двадцати.
 ```
 
 `05-starts-with-section.md`:
@@ -558,7 +566,7 @@ Expected, and each line is checking something specific:
 | File | Chunks | Why |
 |---|---|---|
 | `03-noise-only.md` | 0 | Skeleton filtered by the letter minimum |
-| `04-empty-tldr.md` | 1 | Empty TL;DR emits no chunk but still relaxes the threshold |
+| `04-empty-tldr.md` | 0 | Empty TL;DR must **not** relax the threshold; 63 letters < `INFO_MIN`. A 1 here means the reference is the unfixed version — recheck the `has_tldr_chunk` grep above |
 | `07-long-many-sections.md` | 3 or more | The section-splitting branch actually ran |
 | `08-big-file.md` | 1 | Over `BIG_FILE`, only the TL;DR is indexed |
 | everything else | 1 or 2 | |
@@ -703,8 +711,8 @@ pub fn chunk_note(rel_path: &str, text: &str) -> Vec<String> {
     let title = find_title(body, rel_path);
 
     let tldr = find_tldr(body);
-    let tldr_matched = tldr.is_some();
     let tldr_content = tldr.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    let has_tldr_chunk = tldr_content.is_some();
 
     let mut chunks: Vec<String> = Vec::new();
     if let Some(t) = tldr_content {
@@ -740,9 +748,9 @@ pub fn chunk_note(rel_path: &str, text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (idx, c) in chunks.iter().enumerate() {
         let c = take_chars(c, CHUNK_MAX).trim().to_string();
-        // Faithful to Python: the match object being truthy is what counts,
-        // even when the TL;DR body was empty and produced no chunk.
-        let is_tldr = tldr_matched && idx == 0;
+        // Gate on a TL;DR chunk having actually been emitted, not on the
+        // heading merely being present — see the reference fix of 2026-07-27.
+        let is_tldr = has_tldr_chunk && idx == 0;
         let min = if is_tldr { TLDR_MIN } else { INFO_MIN };
         if letters(&c) < min {
             continue;
@@ -2145,14 +2153,16 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Only runs where the model has actually been downloaded. Guarded so the
-    /// suite stays fast and offline by default.
+    /// Needs the real 479 MB model, so it is `#[ignore]`d rather than skipped
+    /// at runtime: a test that returns early still reports as passing, and a
+    /// green suite would wrongly imply the embedder was exercised. Run it with
+    /// `cargo test -- --ignored` once `COWORK_MEMORY_MODEL_DIR` points at the
+    /// downloaded model.
     #[test]
+    #[ignore = "requires the downloaded model; set COWORK_MEMORY_MODEL_DIR and run with --ignored"]
     fn embeds_real_text_when_the_model_is_present() {
-        let Ok(dir) = std::env::var("COWORK_MEMORY_MODEL_DIR") else {
-            eprintln!("skipping: COWORK_MEMORY_MODEL_DIR not set");
-            return;
-        };
+        let dir = std::env::var("COWORK_MEMORY_MODEL_DIR")
+            .expect("COWORK_MEMORY_MODEL_DIR must point at the directory holding model.onnx and tokenizer.json");
         let e = OnnxEmbedder::load(std::path::Path::new(&dir)).unwrap();
         assert_eq!(e.dim(), 384);
 
@@ -2427,7 +2437,7 @@ Update the three `embedder()` call sites to `embedder(&cli.root)?`, and add the 
 - [ ] **Step 5: Run tests**
 
 Run: `cargo test --manifest-path crates/cowork-memory/Cargo.toml`
-Expected: PASS. The real-model test prints a skip line unless `COWORK_MEMORY_MODEL_DIR` is set.
+Expected: PASS, with `embeds_real_text_when_the_model_is_present` reported as **ignored** — the suite must never claim to have exercised the real embedder.
 
 - [ ] **Step 6: Verify against the real model, once**
 
@@ -2438,7 +2448,7 @@ cargo run --manifest-path crates/cowork-memory/Cargo.toml --release -- \
   --root /tmp/mem-smoke model --download
 
 COWORK_MEMORY_MODEL_DIR=/tmp/mem-smoke/.model \
-  cargo test --manifest-path crates/cowork-memory/Cargo.toml --release onnx -- --nocapture
+  cargo test --manifest-path crates/cowork-memory/Cargo.toml --release onnx -- --ignored --nocapture
 ```
 
 Expected: the download reports progress and completes; `embeds_real_text_when_the_model_is_present` passes, including the cross-language assertion.
@@ -2517,12 +2527,13 @@ cargo test --manifest-path crates/cowork-memory/Cargo.toml
 npm run stage:memory     # build + stage the sidecar binary
 ```
 
-Its tests use a deterministic fake embedder and need no model. To exercise the
-real one, download it first (479 MB) and point the tests at it:
+Its tests use a deterministic fake embedder and need no model; the tests that
+need the real one are `#[ignore]`d. To exercise those, download it first
+(479 MB) and point them at it:
 
 ```bash
 cargo run --manifest-path crates/cowork-memory/Cargo.toml -- --root <dir> model --download
-COWORK_MEMORY_MODEL_DIR=<dir>/.model cargo test --manifest-path crates/cowork-memory/Cargo.toml onnx
+COWORK_MEMORY_MODEL_DIR=<dir>/.model cargo test --manifest-path crates/cowork-memory/Cargo.toml onnx -- --ignored
 ```
 ```
 
@@ -2549,7 +2560,7 @@ git commit -m "feat(memory): ONNX embedder, model download command, sidecar stag
 
 ## Done when
 
-- `cargo test --manifest-path crates/cowork-memory/Cargo.toml` passes with no model and no network.
+- `cargo test --manifest-path crates/cowork-memory/Cargo.toml` passes with no model and no network, reporting the real-model test as ignored.
 - The golden test proves chunking matches the Python reference on every fixture.
 - With the real model downloaded, a query sharing no vocabulary with a note still retrieves it, and a Russian query retrieves an English note.
 - `npm test` and `cargo test --manifest-path src-tauri/Cargo.toml` are unchanged — phase 1 touches no app code.
