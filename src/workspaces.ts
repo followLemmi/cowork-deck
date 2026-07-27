@@ -2,6 +2,19 @@ import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiStat
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
 
+/** Russian plural agreement for the open-task badge tooltip: 1 / 2-4 / 5+ each
+ *  take a different noun+adjective form ("1 открытая задача", "2 открытые
+ *  задачи", "5 открытых задач") — "N открытых задач" is wrong for 1 and for
+ *  2-4. The 11-14 exception is genitive plural like 5+, same as in English
+ *  "11th" not "11st". */
+export function openTaskCountLabel(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n} открытая задача`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${n} открытые задачи`;
+  return `${n} открытых задач`;
+}
+
 export class WorkspacesPanel {
   private items: Workspace[] = [];
   private activeId: string | null = null;
@@ -100,7 +113,7 @@ export class WorkspacesPanel {
         const count = document.createElement("span");
         count.className = "ws-count";
         count.textContent = String(n);
-        count.title = `${n} открытых задач`;
+        count.title = openTaskCountLabel(n);
         row.append(count);
       }
       row.append(edit, x);

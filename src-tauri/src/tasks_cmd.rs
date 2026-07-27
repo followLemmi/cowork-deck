@@ -41,6 +41,20 @@ pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, bool)> {
     }
 }
 
+/// Create `root` only when `create` is true — the flag `resolve_root` returns
+/// for the in-project `.cowork/tasks` path. A user-supplied path (`create:
+/// false`) is never created here: an arbitrary typo'd path must surface as an
+/// error the first time something tries to read or write a card, not scatter
+/// an empty folder into place.
+///
+/// Called from `tasks_watch_sync` (so a watcher can attach to a fresh
+/// project) and from `start_session` (so `cowork_task` has somewhere to write
+/// on a workspace's very first ticket) — both call sites that hand out a
+/// project-kind root before anything has necessarily created it yet.
+pub fn ensure_root_if_ours(root: &std::path::Path, create: bool) -> std::io::Result<()> {
+    if create { std::fs::create_dir_all(root) } else { Ok(()) }
+}
+
 fn workspace(state: &State<AppState>, id: &str) -> Result<Workspace, String> {
     let store = state.store.lock().map_err(|_| "store lock".to_string())?;
     store
@@ -143,7 +157,14 @@ pub fn tasks_watch_sync(app: tauri::AppHandle, state: State<AppState>) -> Result
     };
     let wanted: Vec<(String, PathBuf)> = all
         .iter()
-        .filter_map(|ws| resolve_root(ws).map(|(root, _)| (ws.id.clone(), root)))
+        .filter_map(|ws| {
+            let (root, create) = resolve_root(ws)?;
+            // Best-effort: a create failure here does not stop the sync for
+            // other workspaces. `FsTaskProvider::ensure_root` surfaces the
+            // same failure loudly the moment a card is actually read/written.
+            let _ = ensure_root_if_ours(&root, create);
+            Some((ws.id.clone(), root))
+        })
         .collect();
 
     let handle = app.clone();
@@ -201,6 +222,19 @@ mod tests {
     fn no_tracker_is_a_legal_state_not_an_error() {
         assert!(resolve_root(&ws(None)).is_none());
         assert!(resolve_root(&ws(Some(TrackerConfig { providers: vec![] }))).is_none());
+    }
+
+    #[test]
+    fn ensure_root_if_ours_creates_a_project_root_but_never_a_path_root() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let project_root = dir.path().join("proj").join(".cowork").join("tasks");
+        ensure_root_if_ours(&project_root, true).unwrap();
+        assert!(project_root.is_dir(), "the in-project root is ours to create");
+
+        let path_root = dir.path().join("vault").join("Tasks");
+        ensure_root_if_ours(&path_root, false).unwrap();
+        assert!(!path_root.exists(), "a user-supplied path must never be created silently");
     }
 
     #[test]

@@ -62,8 +62,15 @@ function setView(showBoard: boolean) {
   if (showBoard) {
     void refreshBoard();
     // Опрос — основной путь обновления; watcher лишь ускоряет его, поэтому
-    // его отказ деградирует в задержку и не требует детекции.
-    if (boardTimer === null) boardTimer = setInterval(() => void refreshBoard(), 5000);
+    // его отказ деградирует в задержку и не требует детекции. Счётчики в
+    // сайдбаре идут по тому же пути деградации (см. спеку), поэтому тик
+    // опроса освежает и их — иначе на воркспейсе без watcher'а (например,
+    // SMB-том) бейдж застревает на числе с загрузки. Каждый вызов в своём
+    // try/catch внутри refreshBoard/refreshCounts — упавшая ручка не должна
+    // ронять другую.
+    if (boardTimer === null) {
+      boardTimer = setInterval(() => { void refreshBoard(); void refreshCounts(); }, 5000);
+    }
   } else if (boardTimer !== null) {
     clearInterval(boardTimer); boardTimer = null;
   }

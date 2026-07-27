@@ -140,6 +140,48 @@ pub fn render_card(t: &Task) -> String {
     out
 }
 
+/// Edit an existing frontmatter block in place: set `status:` to `done` and
+/// `resolved:` to `resolved_ts` — replacing the line if present, inserting it
+/// if absent. Every other line, and the body, is left untouched byte-for-byte.
+///
+/// This exists so `resolve` never goes through `render_card` (which only
+/// knows nine keys) on a real vault file: a card that also carries `tags:`,
+/// `aliases:`, or Dataview fields would otherwise lose them the moment it is
+/// closed. Returns `None` when `text` has no frontmatter block at all.
+pub fn set_status_done(text: &str, resolved_ts: &str) -> Option<String> {
+    // The whole document uses one line-ending style throughout; reuse it for
+    // both edited and freshly inserted lines so CRLF input stays CRLF.
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let (head, body) = split_frontmatter(text)?;
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut saw_status = false;
+    let mut saw_resolved = false;
+    for line in head.lines() {
+        match line.split_once(':').map(|(k, _)| k.trim()) {
+            Some("status") => { lines.push("status: done".to_string()); saw_status = true; }
+            Some("resolved") => {
+                lines.push(format!("resolved: {resolved_ts}"));
+                saw_resolved = true;
+            }
+            _ => lines.push(line.to_string()),
+        }
+    }
+    if !saw_status { lines.push("status: done".to_string()); }
+    if !saw_resolved { lines.push(format!("resolved: {resolved_ts}")); }
+
+    let mut out = String::from("---");
+    out.push_str(nl);
+    for line in &lines {
+        out.push_str(line);
+        out.push_str(nl);
+    }
+    out.push_str("---");
+    out.push_str(nl);
+    out.push_str(body);
+    Some(out)
+}
+
 /// Filename slug. Unicode-aware, so Russian titles stay readable instead of
 /// collapsing to dashes; only alphanumerics survive, which also rules out every
 /// character Windows forbids in a filename.
@@ -243,6 +285,53 @@ session: a3f1c2\n\
         assert_eq!(slugify("  a//b  "), "a-b");
         assert_eq!(slugify(""), "task");
         assert_eq!(slugify(&"я".repeat(80)).chars().count(), 40);
+    }
+
+    #[test]
+    fn set_status_done_preserves_an_unknown_key() {
+        let text = "---\nid: 01K1\ntitle: t\nstatus: open\nproject: p\ntags: [inbox]\n---\nтело\n";
+        let out = set_status_done(text, "2026-07-27T14:00:00Z").expect("has frontmatter");
+        assert!(out.contains("tags: [inbox]"), "unknown key must survive: {out}");
+        assert!(out.contains("status: done"));
+        assert!(out.contains("resolved: 2026-07-27T14:00:00Z"));
+    }
+
+    #[test]
+    fn set_status_done_inserts_resolved_when_missing() {
+        let text = "---\nid: 01K1\nstatus: open\n---\nтело\n";
+        let out = set_status_done(text, "2026-07-27T14:00:00Z").unwrap();
+        assert_eq!(out.matches("resolved:").count(), 1);
+        assert!(out.contains("resolved: 2026-07-27T14:00:00Z"));
+    }
+
+    #[test]
+    fn set_status_done_replaces_resolved_when_already_present() {
+        let text = "---\nid: 01K1\nstatus: open\nresolved: 2020-01-01T00:00:00Z\n---\nтело\n";
+        let out = set_status_done(text, "2026-07-27T14:00:00Z").unwrap();
+        assert_eq!(out.matches("resolved:").count(), 1, "must not duplicate the line");
+        assert!(out.contains("resolved: 2026-07-27T14:00:00Z"));
+        assert!(!out.contains("2020-01-01"));
+    }
+
+    #[test]
+    fn set_status_done_leaves_the_body_untouched() {
+        let text = "---\nid: 01K1\nstatus: open\n---\nПервая строка.\nВторая строка.\n";
+        let out = set_status_done(text, "ts").unwrap();
+        assert!(out.ends_with("Первая строка.\nВторая строка.\n"));
+    }
+
+    #[test]
+    fn set_status_done_keeps_crlf_input_crlf() {
+        let text = "---\r\nid: 01K1\r\nstatus: open\r\n---\r\nтело\r\n";
+        let out = set_status_done(text, "ts").unwrap();
+        assert!(!out.contains("open"));
+        assert!(out.contains("\r\n"), "line endings must stay CRLF: {out:?}");
+        assert!(!out.replace("\r\n", "").contains('\n'), "no stray bare LF: {out:?}");
+    }
+
+    #[test]
+    fn set_status_done_returns_none_without_frontmatter() {
+        assert!(set_status_done("просто текст\n", "ts").is_none());
     }
 
     #[test]

@@ -53,6 +53,12 @@ pub enum TaskError {
     Io(String),
     NotFound(String),
     Conflict(String),
+    /// The card has an `id` but is otherwise incomplete (see
+    /// `frontmatter::parse_card`'s `damaged` field) — refused rather than
+    /// resolved, because that state also covers an ordinary Obsidian note that
+    /// happens to carry an `id:` for unrelated reasons. The string is the
+    /// file's path, so the user knows which file to fix by hand.
+    Damaged(String),
 }
 
 impl std::fmt::Display for TaskError {
@@ -65,6 +71,10 @@ impl std::fmt::Display for TaskError {
             TaskError::Conflict(id) => {
                 write!(f, "несколько файлов с одним id ({id}) — исправьте вручную")
             }
+            TaskError::Damaged(path) => write!(
+                f,
+                "карточка повреждена и не будет закрыта автоматически — почините вручную: {path}"
+            ),
         }
     }
 }

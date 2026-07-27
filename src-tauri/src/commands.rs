@@ -156,7 +156,16 @@ pub fn start_session(
             };
             match ws {
                 Some(ws) => {
-                    let root = crate::tasks_cmd::resolve_root(&ws).map(|(r, _)| r);
+                    let resolved = crate::tasks_cmd::resolve_root(&ws);
+                    if let Some((root, create)) = &resolved {
+                        // A project-kind root may not exist yet on a freshly
+                        // configured workspace — create it now so the CLI the
+                        // session is about to get has somewhere to write.
+                        // Best-effort: an I/O failure surfaces the usual way
+                        // the first time `cowork_task` touches the directory.
+                        let _ = crate::tasks_cmd::ensure_root_if_ours(root, *create);
+                    }
+                    let root = resolved.map(|(r, _)| r);
                     (root, ws.name)
                 }
                 None => (None, String::new()),

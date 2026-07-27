@@ -239,7 +239,11 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .sk-now:hover { color: var(--accent); }
 
 /* ——— Доска задач ——— */
-#board { overflow: auto; padding: var(--sp-3); background: var(--bg-app); }
+/* #app — flex row; without flex:1 here #board is content-sized and hugs the
+   left edge instead of taking the full width like #deck does. min-width: 0
+   lets it shrink below its content's intrinsic width so overflow:auto (and
+   the 1fr 1fr columns below) can actually do their job inside the flex row. */
+#board { flex: 1; min-width: 0; overflow: auto; padding: var(--sp-3); background: var(--bg-app); }
 #board.hidden, .tk-hidden { display: none; }
 
 .tk-views { display: inline-flex; gap: 2px; background: var(--bg-raised); border-radius: var(--r-sm); padding: 2px; }

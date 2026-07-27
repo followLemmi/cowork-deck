@@ -20,7 +20,26 @@ vi.mock("../src/ipc", () => ({
 vi.mock("../src/forms", () => ({ workspaceForm }));
 vi.mock("../src/modal", () => ({ confirmModal: confirmModalMock }));
 
-import { WorkspacesPanel } from "../src/workspaces";
+import { WorkspacesPanel, openTaskCountLabel } from "../src/workspaces";
+
+describe("openTaskCountLabel", () => {
+  it("uses singular agreement for 1", () => {
+    expect(openTaskCountLabel(1)).toBe("1 открытая задача");
+    expect(openTaskCountLabel(21)).toBe("21 открытая задача");
+  });
+  it("uses the 2-4 form", () => {
+    expect(openTaskCountLabel(2)).toBe("2 открытые задачи");
+    expect(openTaskCountLabel(4)).toBe("4 открытые задачи");
+    expect(openTaskCountLabel(23)).toBe("23 открытые задачи");
+  });
+  it("uses the genitive-plural form for 5+, 0, and the 11-14 exception", () => {
+    expect(openTaskCountLabel(5)).toBe("5 открытых задач");
+    expect(openTaskCountLabel(0)).toBe("0 открытых задач");
+    expect(openTaskCountLabel(11)).toBe("11 открытых задач");
+    expect(openTaskCountLabel(12)).toBe("12 открытых задач");
+    expect(openTaskCountLabel(14)).toBe("14 открытых задач");
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

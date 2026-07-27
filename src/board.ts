@@ -124,7 +124,10 @@ export class BoardView {
     // session). An idle session still linked to the card slips through here —
     // that's fine: the launch guard in Deck.launchFromTask catches it and
     // focuses the existing session instead of starting a second one.
-    if (status === "open") {
+    // A damaged card's `project:` may be missing or wrong (that can be *why*
+    // it's damaged), so launching from it either fails or lands in the wrong
+    // workspace — hide ▶ the same way ✓ is hidden below.
+    if (status === "open" && !t.damaged) {
       const run = el("button", "tk-run", "▶");
       run.title = "Запустить сессию из задачи";
       run.setAttribute("aria-label", "Запустить сессию из задачи");
@@ -132,8 +135,10 @@ export class BoardView {
       acts.append(run);
     }
     // A conflicting card is never closed automatically: we will not guess which
-    // of two files to write into.
-    if (caps.canResolve && t.status === "open" && !t.conflict) {
+    // of two files to write into. A damaged card is never closed either: it may
+    // be an ordinary Obsidian note that merely has an `id:` field, and
+    // resolving it would rewrite a file we do not own (see fs.rs::resolve).
+    if (caps.canResolve && t.status === "open" && !t.conflict && !t.damaged) {
       const done = el("button", "tk-done", "✓");
       done.title = "Закрыть задачу";
       done.setAttribute("aria-label", "Закрыть задачу");

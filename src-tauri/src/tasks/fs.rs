@@ -1,4 +1,4 @@
-use crate::tasks::frontmatter::{parse_card, render_card, slugify};
+use crate::tasks::frontmatter::{parse_card, render_card, set_status_done, slugify};
 use crate::tasks::model::{Task, TaskDraft, TaskError, TaskStatus};
 use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
 use std::path::{Path, PathBuf};
@@ -121,12 +121,30 @@ impl TaskProvider for FsTaskProvider {
             // Refuse rather than guess which of two copies to write into.
             n if n > 1 => Err(TaskError::Conflict(id.to_string())),
             _ => {
-                let mut card = matches[0].clone();
-                card.status = TaskStatus::Done;
-                card.resolved = Some(Self::now_iso());
-                card.conflict = false;
+                let card = matches[0];
+                // A damaged card may well be an unrelated Obsidian note that
+                // merely has an `id:` field. Writing into it — from the UI or
+                // from `cowork_task done` — would rewrite a file we do not
+                // own. Refuse before touching the filesystem at all.
+                if card.damaged.is_some() {
+                    return Err(TaskError::Damaged(card.path.clone()));
+                }
                 let path = PathBuf::from(&card.path);
-                self.write_atomic(&path, &render_card(&card))?;
+                let resolved = Self::now_iso();
+                // Edit the frontmatter in place rather than re-rendering the
+                // whole card: `render_card` only knows nine keys, so closing a
+                // card that also carries `tags:`, `aliases:`, or Dataview
+                // fields through it would silently drop them.
+                let text = std::fs::read_to_string(&path).map_err(|e| TaskError::Io(e.to_string()))?;
+                let updated = set_status_done(&text, &resolved).ok_or_else(|| {
+                    TaskError::Io("карточка без блока frontmatter".to_string())
+                })?;
+                self.write_atomic(&path, &updated)?;
+
+                let mut card = card.clone();
+                card.status = TaskStatus::Done;
+                card.resolved = Some(resolved);
+                card.conflict = false;
                 Ok(card)
             }
         }
@@ -302,6 +320,57 @@ mod tests {
         let p = FsTaskProvider::new(root.clone(), true);
         p.create(draft("Первая", "deck")).unwrap();
         assert!(root.is_dir(), ".cowork/tasks is ours to create");
+    }
+
+    #[test]
+    fn resolve_refuses_a_damaged_card_and_leaves_the_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        // Отсутствует project и created — карточка "повреждена", а не отброшена.
+        let text = "---\nid: 01BROKEN\ntitle: Чья-то заметка\n---\nчужой текст\n";
+        let path = dir.path().join("01BROKEN-note.md");
+        std::fs::write(&path, text).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let p = provider(dir.path());
+        match p.resolve("01BROKEN") {
+            Err(TaskError::Damaged(reported_path)) => {
+                assert!(reported_path.contains("01BROKEN-note.md"), "got {reported_path}");
+            }
+            other => panic!("expected Damaged, got {other:?}"),
+        }
+
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(before, after, "a damaged card must never be rewritten");
+    }
+
+    #[test]
+    fn resolve_edits_frontmatter_in_place_and_keeps_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "---\n\
+id: 01K1\n\
+title: Настоящая карточка\n\
+kind: task\n\
+status: open\n\
+project: deck\n\
+created: 2026-07-27T10:00:00Z\n\
+origin: human\n\
+tags: [inbox]\n\
+aliases: [alt]\n\
+---\n\
+Тело без изменений.\n";
+        let path = dir.path().join("01K1-real.md");
+        std::fs::write(&path, text).unwrap();
+
+        let p = provider(dir.path());
+        let done = p.resolve("01K1").unwrap();
+        assert_eq!(done.status, TaskStatus::Done);
+        assert!(done.resolved.is_some());
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("tags: [inbox]"), "unknown key must survive resolve: {after}");
+        assert!(after.contains("aliases: [alt]"), "unknown key must survive resolve: {after}");
+        assert!(after.contains("status: done"));
+        assert!(after.ends_with("Тело без изменений.\n"), "body must be untouched: {after:?}");
     }
 
     #[test]

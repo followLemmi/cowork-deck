@@ -69,6 +69,20 @@ describe("BoardView", () => {
     expect(el.querySelector(".tk-done")).toBeNull(); // закрывать конфликтную нельзя
   });
 
+  // C1: an ordinary Obsidian note can carry an `id:` for unrelated reasons and
+  // parse as "damaged" (title from the filename, status defaulted to open).
+  // Clicking ✓ on it would rewrite the user's own file — see fs.rs::resolve.
+  it("never renders ✓ (or ▶) for a damaged card, even without a conflict", () => {
+    const v = new BoardView({ onLaunch: () => {}, onResolve: () => {}, onNew: () => {}, onConfigure: () => {} });
+    v.render({
+      project: "deck", caps, error: null, links: [],
+      tasks: [card({ damaged: "нет поля project", conflict: false })],
+    });
+    const el = v.mount.querySelector(".tk-card")!;
+    expect(el.querySelector(".tk-done")).toBeNull();
+    expect(el.querySelector(".tk-run")).toBeNull();
+  });
+
   it("hides create and close when the provider says it cannot", () => {
     const v = new BoardView({ onLaunch: () => {}, onResolve: () => {}, onNew: () => {}, onConfigure: () => {} });
     v.render({
