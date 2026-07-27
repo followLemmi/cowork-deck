@@ -1,6 +1,21 @@
-import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiState, type Workspace, type UiState } from "./ipc";
+import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiState, type Workspace, type UiState, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
+import { iconButton } from "./icons";
+
+/** Confirmation text for deleting a workspace. Deleting one strands every
+ *  scenario pinned to it — they stop being runnable, and any schedule on them
+ *  quietly stops producing anything — so the count belongs in the question,
+ *  not in a surprise afterwards. */
+export function describeDeleteImpact(workspaceId: string, skills: Skill[]): string {
+  const pinned = skills.filter((s) => s.workspaceId === workspaceId);
+  if (pinned.length === 0) return "Delete workspace?";
+  const scheduled = pinned.filter((s) => s.schedule?.enabled).length;
+  const noun = pinned.length === 1 ? "scenario is" : "scenarios are";
+  const tail = scheduled > 0 ? `, ${scheduled} of them scheduled` : "";
+  return `Delete workspace? ${pinned.length} ${noun} pinned to it${tail}`
+    + " — they will stop running.";
+}
 
 /** Russian plural agreement for the open-task badge tooltip: 1 / 2-4 / 5+ each
  *  take a different noun+adjective form ("1 открытая задача", "2 открытые
@@ -16,6 +31,10 @@ export function openTaskCountLabel(n: number): string {
 }
 
 export class WorkspacesPanel {
+  /** Scenarios, so deletion can report what it will strand. Injected because
+   *  the skills panel owns them and loads independently. */
+  private getSkills: () => Skill[] = () => [];
+  setSkillsSource(get: () => Skill[]) { this.getSkills = get; }
   private items: Workspace[] = [];
   private activeId: string | null = null;
   /** Открытых задач на пространство; заполняет main.ts. */
@@ -75,7 +94,7 @@ export class WorkspacesPanel {
   }
 
   private async del(id: string) {
-    if (!(await confirmModal("Удалить пространство?"))) return;
+    if (!(await confirmModal(describeDeleteImpact(id, this.getSkills())))) return;
     this.items = await removeWorkspace(id);
     if (this.activeId === id) {
       const next = this.items[0]?.id ?? null;
@@ -92,7 +111,7 @@ export class WorkspacesPanel {
   }
 
   private render() {
-    this.mount.innerHTML = "<h3>Пространства</h3>";
+    this.mount.innerHTML = "<h3>Workspaces</h3>";
     for (const w of this.items) {
       const row = document.createElement("div");
       row.className = "ws-row" + (w.id === this.activeId ? " active" : "");
@@ -101,11 +120,9 @@ export class WorkspacesPanel {
       const label = document.createElement("button");
       label.className = "ws-label"; label.textContent = w.name;
       label.onclick = () => this.select(w.id);
-      const edit = document.createElement("button");
-      edit.className = "ws-edit"; edit.textContent = "✎"; edit.title = "изменить";
+      const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
       edit.onclick = () => this.edit(w.id);
-      const x = document.createElement("button");
-      x.className = "ws-del"; x.textContent = "✕";
+      const x = iconButton("trash", `Delete workspace: ${w.name}`, "ws-del btn--icon--danger");
       x.onclick = () => this.del(w.id);
       row.append(dot, label);
       const n = this.counts.get(w.id) ?? 0;
@@ -120,7 +137,7 @@ export class WorkspacesPanel {
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");
-    addBtn.className = "ws-add"; addBtn.textContent = "+ пространство";
+    addBtn.className = "ws-add"; addBtn.textContent = "+ workspace";
     addBtn.onclick = () => this.add();
     this.mount.appendChild(addBtn);
   }

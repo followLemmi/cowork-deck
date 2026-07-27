@@ -7,7 +7,7 @@ pub fn build_settings_json(reporter_path: &str, port: u16, session: &str) -> Str
         ("SessionStart", "start"),
         ("UserPromptSubmit", "working"),
         ("PreToolUse", "working"),
-        ("Stop", "waiting"),
+        ("Stop", "done"),
         ("PermissionRequest", "waiting"),
         ("Notification", "notify"),
         ("SessionEnd", "ended"),
@@ -42,6 +42,25 @@ mod tests {
         let cmd = hooks["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
         assert!(cmd.contains("51234"), "cmd: {cmd}");
         assert!(cmd.contains("sess-9"), "cmd: {cmd}");
-        assert!(cmd.contains("waiting"), "cmd: {cmd}");
+    }
+
+    /// `Stop` fires when the agent finishes its turn, which is not the same as
+    /// being blocked on a permission prompt. Reporting both as `waiting` is
+    /// what made a scheduled scenario fire only once per window lifetime.
+    #[test]
+    fn stop_reports_done_while_permission_reports_waiting() {
+        let s = build_settings_json("/opt/cowork_report", 1, "sess-1");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("valid json");
+        let kind_of = |event: &str| -> String {
+            v["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(kind_of("Stop"), "done");
+        assert_eq!(kind_of("PermissionRequest"), "waiting");
     }
 }

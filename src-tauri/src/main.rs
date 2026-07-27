@@ -144,6 +144,8 @@ fn main() {
             commands::git_status,
             commands::session_tokens,
             commands::scheduler_ready,
+            commands::schedule_ack,
+            commands::load_schedule_state,
             tasks_cmd::tasks_list,
             tasks_cmd::tasks_create,
             tasks_cmd::tasks_resolve,

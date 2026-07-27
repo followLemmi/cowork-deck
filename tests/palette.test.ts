@@ -6,13 +6,13 @@ import type { Command } from "../src/commands";
 beforeEach(() => { document.body.innerHTML = ""; });
 
 const cmds = (): Command[] => [
-  { id: "a", title: "Новая сессия", run: vi.fn() },
-  { id: "b", title: "Закрыть активную", run: vi.fn() },
+  { id: "a", title: "New session", run: vi.fn() },
+  { id: "b", title: "Close active", run: vi.fn() },
 ];
 
 describe("filterCommands", () => {
   it("filters by case-insensitive substring of title", () => {
-    const r = filterCommands(cmds(), "закр");
+    const r = filterCommands(cmds(), "clos");
     expect(r).toHaveLength(1);
     expect(r[0].id).toBe("b");
   });

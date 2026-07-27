@@ -46,8 +46,8 @@ export class TerminalPanel {
     // the mocked terminal in unit tests, which lacks it, doesn't throw.
     if (this.term.unicode) this.term.unicode.activeVersion = "11";
     this.term.open(mount);
-    // Перехватываем ТОЛЬКО распознанные хоткеи приложения; всё остальное
-    // (в т.ч. Ctrl+C/D/L, обычный ввод) отдаём терминалу.
+    // Intercept ONLY recognised app hotkeys; everything else (Ctrl+C/D/L and
+    // ordinary typing included) goes to the terminal.
     this.term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && matchHotkey(e, isMacPlatform())) return false;
       return true;

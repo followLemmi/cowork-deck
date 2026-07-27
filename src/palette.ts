@@ -16,9 +16,13 @@ export function openPalette(commands: Command[]): void {
 
   const input = document.createElement("input");
   input.className = "modal-input palette-input"; input.type = "text";
-  input.placeholder = "Команда…";
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-expanded", "true");
+  input.setAttribute("aria-controls", "palette-list");
+  input.placeholder = "Command…";
   const list = document.createElement("div");
   list.className = "palette-list";
+  list.setAttribute("role", "listbox");
   box.append(input, list);
 
   let items: Command[] = commands;
@@ -33,10 +37,25 @@ export function openPalette(commands: Command[]): void {
     items.forEach((c, i) => {
       const el = document.createElement("div");
       el.className = "palette-item" + (i === sel ? " selected" : "");
-      el.textContent = c.title;
+      // role/aria-selected + aria-activedescendant on the input: selection used
+      // to be conveyed by colour alone, so arrowing through the list announced
+      // nothing at all.
+      el.id = `palette-item-${i}`;
+      el.setAttribute("role", "option");
+      el.setAttribute("aria-selected", String(i === sel));
+      const label = document.createElement("span");
+      label.textContent = c.title;
+      el.append(label);
+      if (c.hotkey) {
+        const key = document.createElement("span");
+        key.className = "palette-key";
+        key.textContent = c.hotkey;
+        el.append(key);
+      }
       el.onclick = () => run(c);
       list.append(el);
     });
+    input.setAttribute("aria-activedescendant", items.length ? `palette-item-${sel}` : "");
   };
 
   input.addEventListener("input", () => { sel = 0; render(); });

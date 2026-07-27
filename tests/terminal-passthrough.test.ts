@@ -29,14 +29,14 @@ describe("xterm passthrough guard", () => {
   it("passes Ctrl+C through to the terminal (not intercepted)", () => {
     new TerminalPanel("s", document.createElement("div"));
     expect(captured).toBeTypeOf("function");
-    expect(captured!({ type: "keydown", key: "c", ctrlKey: true, metaKey: false, shiftKey: false })).toBe(true);
+    expect(captured!({ type: "keydown", code: "KeyC", key: "c", ctrlKey: true, metaKey: false, shiftKey: false })).toBe(true);
   });
   it("passes Ctrl+K through on macOS (readline kill-line survives)", () => {
     new TerminalPanel("s", document.createElement("div"));
-    expect(captured!({ type: "keydown", key: "k", ctrlKey: true, metaKey: false, shiftKey: false })).toBe(true);
+    expect(captured!({ type: "keydown", code: "KeyK", key: "k", ctrlKey: true, metaKey: false, shiftKey: false })).toBe(true);
   });
   it("intercepts app hotkeys like Cmd+K (xterm should not handle)", () => {
     new TerminalPanel("s", document.createElement("div"));
-    expect(captured!({ type: "keydown", key: "k", metaKey: true, ctrlKey: false, shiftKey: false })).toBe(false);
+    expect(captured!({ type: "keydown", code: "KeyK", key: "k", metaKey: true, ctrlKey: false, shiftKey: false })).toBe(false);
   });
 });

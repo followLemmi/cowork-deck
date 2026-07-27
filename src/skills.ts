@@ -1,7 +1,43 @@
-import { listSkills, saveSkill, removeSkill, type Skill } from "./ipc";
+import { listSkills, saveSkill, removeSkill, loadScheduleState, type ScheduleRun, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { skillForm } from "./forms";
-import { describeSchedule, nextRunLabel } from "./schedule";
+import { scheduleRowText } from "./schedule";
+import { icon, iconButton, SCENARIO_ICONS, type IconName } from "./icons";
+
+/** A scenario pinned to a workspace that no longer exists. It cannot run —
+ *  `resolveScheduledWorkspace` refuses rather than picking the wrong folder —
+ *  so it has to stay reachable for the user to repin or delete it.
+ *
+ *  Nothing is an orphan until at least one workspace is known: workspaces load
+ *  asynchronously, and an empty list means "not loaded yet" far more often
+ *  than it means "the user has none". */
+export function isOrphan(skill: Skill, knownWorkspaceIds: string[]): boolean {
+  if (!skill.workspaceId || knownWorkspaceIds.length === 0) return false;
+  return !knownWorkspaceIds.includes(skill.workspaceId);
+}
+
+/** Which scenarios the sidebar shows: unpinned ones, those pinned to the
+ *  active workspace, and orphans — which belong nowhere and would otherwise
+ *  be invisible everywhere. */
+export function visibleSkills(
+  items: Skill[],
+  activeWorkspaceId: string | null,
+  knownWorkspaceIds: string[],
+): Skill[] {
+  return items.filter((s) =>
+    !s.workspaceId
+    || s.workspaceId === activeWorkspaceId
+    || s.schedule?.enabled // fires regardless of what is on screen
+    || isOrphan(s, knownWorkspaceIds));
+}
+
+/** A scenario's mark: an icon name renders from the sprite, anything else is
+ *  an emoji saved before the picker existed and is shown untouched. */
+function scenarioMark(name: string): Node {
+  return (SCENARIO_ICONS as readonly string[]).includes(name)
+    ? icon(name as IconName, 14)
+    : document.createTextNode(name);
+}
 
 export class SkillsPanel {
   private items: Skill[] = [];
@@ -10,19 +46,46 @@ export class SkillsPanel {
     private getActiveWorkspaceId: () => string | null,
     private onLaunch: (skill: Skill) => void,
     private onRunScheduled: (skill: Skill) => void,
+    /** Ids of the workspaces that currently exist — used to spot scenarios
+     *  pinned to a deleted one. Defaults to "unknown", which marks nothing. */
+    private getWorkspaceIds: () => string[] = () => [],
+    private getActiveWorkspaceName: () => string | null = () => null,
   ) {}
 
-  async load() { this.items = await listSkills(); this.render(); }
+  private runs: Record<string, ScheduleRun> = {};
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+  async load() {
+    this.items = await listSkills();
+    await this.refreshRuns();
+    // "next run" is a moving target; without this the row would claim
+    // "today 09:00" long after 09:00 has passed, which is exactly how the
+    // old tooltip misled people.
+    if (this.refreshTimer === null) {
+      this.refreshTimer = setInterval(() => this.render(), 60_000);
+    }
+  }
+
+  /** Re-read what the backend knows about past runs, then repaint. Called on
+   *  load and after every fire, so an outcome shows up without a restart. */
+  async refreshRuns() {
+    try {
+      this.runs = await loadScheduleState();
+    } catch (e) {
+      console.debug("loadScheduleState failed", e);
+    }
+    this.render();
+  }
 
   find(id: string): Skill | undefined { return this.items.find((s) => s.id === id); }
+  get all(): Skill[] { return this.items; }
 
   private visible(): Skill[] {
-    const wid = this.getActiveWorkspaceId();
-    return this.items.filter((s) => !s.workspaceId || s.workspaceId === wid);
+    return visibleSkills(this.items, this.getActiveWorkspaceId(), this.getWorkspaceIds());
   }
 
   private async add() {
-    const res = await skillForm(this.getActiveWorkspaceId());
+    const res = await skillForm(this.getActiveWorkspaceId(), undefined, this.getActiveWorkspaceName());
     if (!res) return;
     const sk: Skill = { id: crypto.randomUUID(), ...res };
     this.items = await saveSkill(sk);
@@ -35,50 +98,69 @@ export class SkillsPanel {
     const res = await skillForm(this.getActiveWorkspaceId(), {
       name: cur.name, icon: cur.icon, prompt: cur.prompt, workspaceId: cur.workspaceId ?? null,
       schedule: cur.schedule ?? null,
-    });
+    }, this.getActiveWorkspaceName());
     if (!res) return;
     this.items = await saveSkill({ ...cur, ...res });
     this.render();
   }
 
   private async del(id: string) {
-    if (!(await confirmModal("Удалить сценарий?"))) return;
+    if (!(await confirmModal("Delete scenario?"))) return;
     this.items = await removeSkill(id);
     this.render();
   }
 
   private render() {
-    this.mount.innerHTML = "<h3>Сценарии</h3>";
+    this.mount.innerHTML = "<h3>Scenarios</h3>";
     for (const s of this.visible()) {
       const row = document.createElement("div");
       row.className = "sk-row";
+      const orphan = isOrphan(s, this.getWorkspaceIds());
+      if (orphan) row.classList.add("sk-orphan");
       const run = document.createElement("button");
-      run.className = "sk-run"; run.textContent = `${s.icon} ${s.name}`;
-      run.title = s.prompt;
+      run.className = "sk-run";
+      run.append(scenarioMark(s.icon), document.createTextNode(` ${s.name}`));
+      run.title = orphan
+        ? "This scenario\u2019s workspace was deleted — it cannot run. Open it for editing and pick a workspace."
+        : s.prompt;
+      run.disabled = orphan;
       run.onclick = () => this.onLaunch(s);
 
-      // Doubles as the schedule indicator: the rule and next run live in its
-      // tooltip, so a scheduled scenario carries exactly one ⏰.
+      // The indicator and the action are separate now. One ⏰ used to be
+      // both: it looked like a status badge and launched a real session on
+      // click, so reaching for information started a run.
       const sched = s.schedule;
       let now: HTMLButtonElement | null = null;
-      if (sched?.enabled) {
-        now = document.createElement("button");
-        now.className = "sk-now"; now.textContent = "⏰";
-        now.title = `прогнать сейчас · ${describeSchedule(sched)} · след.: ${nextRunLabel(sched.preset, new Date())}`;
+      if (sched?.enabled && !orphan) {
+        now = iconButton("clock-play", `Run now: ${s.name}`, "sk-now");
         now.onclick = () => this.onRunScheduled(s);
       }
 
-      const edit = document.createElement("button");
-      edit.className = "sk-edit"; edit.textContent = "✎"; edit.title = "изменить";
+      const edit = iconButton("pencil", `Edit scenario: ${s.name}`, "sk-edit");
       edit.onclick = () => this.edit(s.id);
-      const x = document.createElement("button");
-      x.className = "sk-del"; x.textContent = "✕";
+      const x = iconButton("trash", `Delete scenario: ${s.name}`, "sk-del btn--icon--danger");
       x.onclick = () => this.del(s.id);
       row.append(run, ...(now ? [now] : []), edit, x);
       this.mount.appendChild(row);
+      if (sched) {
+        // Visible text, not a title attribute: a tooltip is unreachable from
+        // the keyboard and does not survive a stale render.
+        const line = document.createElement("div");
+        line.className = sched.enabled ? "sk-sched" : "sk-sched sk-sched-off";
+        line.textContent = scheduleRowText(sched, this.runs[s.id] ?? null, new Date());
+        this.mount.appendChild(line);
+      }
+      if (orphan) {
+        // Says why the row is dead and what to do; without it the scenario
+        // just looks broken.
+        const note = document.createElement("div");
+        note.className = "sk-orphan-note";
+        note.textContent = "workspace deleted — repoint it or delete it";
+        this.mount.appendChild(note);
+      }
     }
     const addBtn = document.createElement("button");
-    addBtn.className = "sk-add"; addBtn.textContent = "+ сценарий";
+    addBtn.className = "sk-add"; addBtn.textContent = "+ scenario";
     addBtn.onclick = () => this.add();
     this.mount.appendChild(addBtn);
   }

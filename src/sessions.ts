@@ -10,6 +10,7 @@ import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
+import { icon, iconButton } from "./icons";
 import { liveSessionForTask } from "./tasks";
 
 interface Tile {
@@ -23,9 +24,13 @@ interface Tile {
 }
 
 const LABEL: Record<SessionState, string> = {
-  idle: "готов", working: "работает", waitingInput: "ждёт ввода", ended: "завершён", error: "ошибка",
+  idle: "idle", working: "working", waitingInput: "needs input", done: "done",
+  ended: "exited", error: "error",
 };
-const NOTIFY_ON: SessionState[] = ["waitingInput", "ended", "error"];
+// `done` is here because "the agent finished the job" is exactly what an
+// unsupervised session is started for. It stays out of the pill, though: the
+// pill answers "how many sessions are blocked on me".
+const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
 
 export class Deck {
   private tiles = new Map<string, Tile>();
@@ -57,7 +62,7 @@ export class Deck {
     try {
       const tiles = [...this.tiles.values()];
       if (tiles.length === 0) { this.stopPolling(); return; }
-      // git: один вызов на уникальный cwd; изоляция ошибок — одна упавшая IPC не должна ронять весь тик
+      // git: one call per unique cwd; errors are isolated — a single failed IPC must not bring down the whole tick
       const cwds = uniqueCwds(tiles.map((t) => ({ cwd: t.workspacePath })));
       const gitByCwd = new Map<string, { branch: string | null; dirty: boolean }>();
       await Promise.all(cwds.map(async (cwd) => {
@@ -71,20 +76,23 @@ export class Deck {
         if (!this.tiles.has(t.session)) continue;
         const g = gitByCwd.get(t.workspacePath);
         if (g && g.branch) {
-          t.gitBadge.textContent = `⎇ ${g.branch}${g.dirty ? " •" : ""}`;
+          t.gitBadge.replaceChildren(
+            icon("git-branch", 12),
+            document.createTextNode(` ${g.branch}${g.dirty ? " •" : ""}`),
+          );
           t.gitBadge.classList.remove("hidden");
         } else {
           t.gitBadge.classList.add("hidden");
         }
       }
-      // tokens: по сессии; изоляция ошибок + защита от гонки с удалением тайла
+      // tokens: per session; errors isolated, plus a guard against racing with tile removal
       await Promise.all(tiles.map(async (t) => {
         try {
           const u = await sessionTokens(t.session);
           if (!this.tiles.has(t.session)) return;
           this.usage.set(t.session, u);
           t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
-          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} прочитано`;
+          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} read`;
           t.tokenBadge.classList.remove("hidden");
         } catch (e) {
           console.debug("sessionTokens failed", t.session, e);
@@ -109,7 +117,7 @@ export class Deck {
   }
 
   async launch(workspace: Workspace, skill: Skill | null) {
-    const titleText = skill ? `${skill.icon} ${skill.name}` : `терминал · ${workspace.name}`;
+    const titleText = skill ? `${skill.icon} ${skill.name}` : `session · ${workspace.name}`;
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
@@ -121,24 +129,41 @@ export class Deck {
   }
 
   /** Fire a scheduled scenario as a fresh tile. Returns false (and does not
-   *  launch) if this scenario's previous scheduled session is still active. */
-  async launchScheduled(workspace: Workspace, skill: Skill, filledPrompt: string): Promise<boolean> {
+   *  launch) if this scenario's previous scheduled session is still active.
+   *
+   *  A scheduled scenario keeps at most one tile: once the guard lets a new
+   *  run through, the previous one is finished by definition, and leaving it
+   *  behind would add a tile per run — 24 a day for an hourly schedule. */
+  async launchScheduled(
+    workspace: Workspace,
+    skill: Skill,
+    filledPrompt: string,
+    /** Occurrence this run is making up for, when it is not running on time.
+     *  Without it a tile appearing at 14:20 for a 09:00 schedule reads as a
+     *  fault rather than as catch-up. */
+    catchUpFor?: string,
+  ): Promise<boolean> {
     const prevSession = this.scheduledSessions.get(skill.id);
     const prevState = prevSession ? (this.tiles.get(prevSession)?.state ?? null) : null;
     if (shouldSkipOverlap(prevState)) {
       console.info("scheduled run skipped: previous still active", skill.id);
       return false;
     }
+    if (prevSession && this.tiles.has(prevSession)) this.remove(prevSession);
     const session = crypto.randomUUID();
     this.scheduledSessions.set(skill.id, session);
     await this.spawnTile({
       session,
       cwd: workspace.path,
       workspaceId: workspace.id,
-      titleText: `⏰ ${skill.icon} ${skill.name}`,
+      titleText: catchUpFor
+        ? `${skill.icon} ${skill.name} · catching up ${catchUpFor}`
+        : `${skill.icon} ${skill.name}`,
+      scheduled: true,
       prompt: filledPrompt,
       resume: false,
       scheduledSkillId: skill.id,
+      grabAttention: false,
     });
     return true;
   }
@@ -188,38 +213,55 @@ export class Deck {
 
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
-    scheduledSkillId?: string; taskId?: string;
+    scheduledSkillId?: string;
+    /** Tracker card this tile is working on. */
+    taskId?: string;
+    /** Marks the tile as started by a schedule. Shown as its own icon rather
+     *  than glued to the title, which gets clipped by text-overflow. */
+    scheduled?: boolean;
+    /** Whether the new tile should take over the keyboard and the layout.
+     *  False for unattended work: a scheduled run announces itself through a
+     *  notification, not by yanking the caret out of whatever is being typed. */
+    grabAttention?: boolean;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
+    const grabAttention = opts.grabAttention ?? true;
     const el = document.createElement("div");
     el.className = "tile";
     const head = document.createElement("div");
     head.className = "tile-head";
     const title = document.createElement("span");
     title.textContent = titleText;
+    const schedMark = opts.scheduled ? icon("clock", 12) : null;
+    if (schedMark) {
+      schedMark.classList.add("tile-sched-mark");
+      schedMark.setAttribute("aria-hidden", "false");
+      schedMark.setAttribute("role", "img");
+      schedMark.setAttribute("aria-label", "started on a schedule");
+    }
     const gitBadge = document.createElement("span");
     gitBadge.className = "tile-git hidden";
     const tokenBadge = document.createElement("span");
     tokenBadge.className = "tile-tokens hidden";
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
-    const clearBtn = document.createElement("button");
-    clearBtn.textContent = "⌫"; clearBtn.className = "tile-close"; clearBtn.title = "очистить";
+    const clearBtn = iconButton("eraser", "Clear terminal", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
-    const close = document.createElement("button");
-    close.textContent = "✕"; close.className = "tile-close";
-    close.onclick = () => this.remove(session);
-    head.append(title, gitBadge, tokenBadge, label, clearBtn, close);
+    const close = iconButton("x", "Close session", "tile-close btn--icon--danger");
+    // Same question Cmd+W asks. Without it the mouse was the more dangerous
+    // of the two ways to do the same thing: one stray click killed a live
+    // session outright, while the keyboard asked first.
+    close.onclick = () => { void this.requestClose(session); };
+    head.append(...(schedMark ? [schedMark] : []), title, gitBadge, tokenBadge, label, clearBtn, close);
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
     head.insertBefore(bcastCheck, title);
-    const restart = document.createElement("button");
-    restart.textContent = "⟳"; restart.className = "tile-close"; restart.style.display = "none";
-    restart.title = "перезапустить";
+    const restart = iconButton("rotate", "Restart session", "tile-close");
+    restart.style.display = "none";
     restart.onclick = async () => {
       restart.style.display = "none";
-      tile.panel.write("\r\n[перезапуск сессии...]\r\n");
+      tile.panel.write("\r\n[restarting session...]\r\n");
       try {
         await tile.panel.start(tile.workspacePath, tile.workspaceId ?? null, null, true);
         this.setState(session, "idle");
@@ -228,9 +270,9 @@ export class Deck {
         this.setState(session, "error");
         const raw = String((e as { message?: string })?.message ?? e);
         const readable = raw.includes("claude-not-found")
-          ? "claude не найден — укажите путь и перезапустите"
+          ? "claude not found — set its path and restart"
           : raw;
-        tile.panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+        tile.panel.write(`\r\n[launch failed: ${readable}]\r\n`);
         restart.style.display = "inline";
       }
     };
@@ -243,10 +285,10 @@ export class Deck {
     mount.className = "tile-body";
     const searchBar = document.createElement("div");
     searchBar.className = "tile-search hidden";
-    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "поиск…";
-    const sNext = document.createElement("button"); sNext.textContent = "▼"; sNext.className = "tile-search-btn";
-    const sPrev = document.createElement("button"); sPrev.textContent = "▲"; sPrev.className = "tile-search-btn";
-    const sClose = document.createElement("button"); sClose.textContent = "✕"; sClose.className = "tile-search-btn";
+    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "search…";
+    const sNext = iconButton("chevron", "Next match", "tile-search-btn icon--down");
+    const sPrev = iconButton("chevron", "Previous match", "tile-search-btn icon--up");
+    const sClose = iconButton("x", "Close search", "tile-search-btn");
     searchBar.append(sInput, sPrev, sNext, sClose);
     sInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); tile.panel.search(sInput.value); }
@@ -266,7 +308,7 @@ export class Deck {
       gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId, taskId: opts.taskId,
     };
     this.tiles.set(session, tile);
-    if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
+    if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
     try {
@@ -276,20 +318,42 @@ export class Deck {
       this.setState(session, "error");
       const raw = String((e as { message?: string })?.message ?? e);
       const readable = raw.includes("claude-not-found")
-        ? "claude не найден — укажите путь и перезапустите"
+        ? "claude not found — set its path and restart"
         : raw;
-      panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+      panel.write(`\r\n[launch failed: ${readable}]\r\n`);
     }
-    this.focusTile(session);
+    if (grabAttention) this.focusTile(session);
+    else {
+      // Still needs to obey the workspace filter, which focusTile would have
+      // triggered via renderList/applyLayout.
+      this.applyWorkspaceVisibility(session);
+      this.renderList();
+    }
+  }
+
+  /** Apply the active-workspace filter to one tile. Tiles used to be created
+   *  without it, so a scheduled run for another workspace appeared in whatever
+   *  deck was on screen and disappeared at the next switch. */
+  private applyWorkspaceVisibility(session: string) {
+    const t = this.tiles.get(session);
+    if (!t) return;
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
+    // Orphans stay visible everywhere, as in setActiveWorkspace.
+    const visible = rid === null || rid === this.activeWorkspaceId;
+    t.el.classList.toggle("ws-hidden", !visible);
+    this.applyLayout();
   }
 
   async restore(entries: SessionEntry[]) {
     this.restoring = true;
     try {
       for (const e of entries) {
+        if (e.scheduledSkillId) this.scheduledSessions.set(e.scheduledSkillId, e.sessionId);
         await this.spawnTile({
           session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
-          titleText: e.name, prompt: null, resume: true, taskId: e.taskId,
+          titleText: e.name, prompt: null, resume: true,
+          scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
         });
       }
     } finally {
@@ -324,12 +388,16 @@ export class Deck {
   }
   async closeActive() {
     const id = this.activeSession;
-    if (!id) return;
-    const t = this.tiles.get(id);
-    if (t && (t.state === "working" || t.state === "waitingInput")) {
-      if (!(await confirmModal("Закрыть активную сессию?"))) return;
-    }
-    this.remove(id);
+    if (id) await this.requestClose(id);
+  }
+
+  /** Close a session, asking first when it is still alive. `ended`/`error`
+   *  tiles hold nothing but scrollback, so those go without a question. */
+  private async requestClose(session: string) {
+    const t = this.tiles.get(session);
+    const alive = t && (t.state === "working" || t.state === "waitingInput" || t.state === "done");
+    if (alive && !(await confirmModal(`Close session “${t.name}”? It is still alive.`))) return;
+    this.remove(session);
   }
   searchActive() {
     const id = this.activeSession;
@@ -356,7 +424,7 @@ export class Deck {
       panel.className = "bcast-panel";
       const input = document.createElement("input");
       input.className = "bcast-input"; input.type = "text";
-      input.placeholder = "broadcast: ввод во все отмеченные сессии, Enter — отправить";
+      input.placeholder = "broadcast: type into every ticked session, Enter to send";
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -514,6 +582,22 @@ export class Deck {
     this.animateLayoutChange(() => { this.zoomedSession = session; this.applyLayout(); });
   }
 
+  /** Zoom the active tile. Until now the only way in was a double-click on the
+   *  header — a headline feature with no keyboard path at all. */
+  toggleZoomActive() {
+    const id = this.activeSession;
+    if (id) this.toggleZoom(id);
+  }
+
+  /** Move keyboard focus into the active terminal. Half of region cycling: the
+   *  terminal swallows Tab, so getting back in needs an explicit route too. */
+  focusActiveTerminal(): boolean {
+    const id = this.activeSession;
+    if (!id) return false;
+    this.tiles.get(id)?.panel.focus();
+    return true;
+  }
+
   toggleZoom(session: string) {
     this.zoomTo(this.zoomedSession === session ? null : session);
   }
@@ -546,23 +630,32 @@ export class Deck {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
       session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
+      scheduledSkillId: t.scheduledSkillId,
       taskId: t.taskId,
     })));
     return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
 
   private renderList() {
+    // The whole list is rebuilt via innerHTML, and the poll rebuilds it every
+    // five seconds. That was harmless only while nothing in it could hold
+    // focus; now that rows are buttons, the focused key has to be remembered
+    // and restored, or keyboard focus would jump to the top of the page twice
+    // a minute.
+    const focusKey = this.listEl.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement).dataset.focusKey ?? null
+      : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
     void emit("pill://count", { n: waiting });
-    const header = waiting > 0 ? `Сессии · ${waiting} ${waitingVerb(waiting)} ввода` : "Сессии";
+    const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
     const total = sumUsage([...this.usage.values()]);
     if (this.usage.size > 0) {
       const sum = document.createElement("div");
       sum.className = "sess-tokens-sum";
-      sum.textContent = `Σ токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      sum.textContent = `Total tokens · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
@@ -576,16 +669,21 @@ export class Deck {
     for (const g of groups) {
       const wsId = g.workspace?.id ?? ORPHAN_KEY;
       const color = g.workspace?.color ?? "var(--fg-subtle)";
-      const name = g.workspace?.name ?? "Другие";
+      const name = g.workspace?.name ?? "Other";
       const collapsed = this.collapsed.has(wsId);
       const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
 
-      const head = document.createElement("div");
+      const head = document.createElement("button");
+      head.dataset.focusKey = `group:${wsId}`;
+      head.setAttribute("aria-expanded", String(!collapsed));
       head.className = "sess-group-head"
         + (g.workspace && g.workspace.id === this.activeWorkspaceId ? " active" : "");
       const toggle = document.createElement("span");
       toggle.className = "sess-group-toggle";
-      toggle.textContent = collapsed ? "▸" : "▾";
+      // One chevron, rotated: every arrow in the app now opens at the same
+      // angle and carries the same stroke weight.
+      toggle.append(icon("chevron", 12));
+      toggle.classList.toggle("icon--down", !collapsed);
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = color;
       const nm = document.createElement("span");
@@ -594,7 +692,7 @@ export class Deck {
       if (groupWaiting > 0) {
         const badge = document.createElement("span");
         badge.className = "sess-group-badge";
-        badge.textContent = `${groupWaiting} ${waitingVerb(groupWaiting)}`;
+        badge.textContent = `${groupWaiting} waiting`;
         head.append(badge);
       }
       head.onclick = () => {
@@ -606,7 +704,9 @@ export class Deck {
 
       for (const t of g.tiles) {
         const live = this.tiles.get(t.session);
-        const row = document.createElement("div");
+        const row = document.createElement("button");
+        row.dataset.focusKey = `session:${t.session}`;
+        row.setAttribute("aria-label", `${t.name} — ${LABEL[t.state]}`);
         row.className = "sess-row" + (live?.el.classList.contains("is-active") ? " active" : "");
         row.style.borderLeftColor = color;
         row.onclick = () => this.focusSessionAnywhere(t.session);
@@ -619,15 +719,14 @@ export class Deck {
         this.listEl.appendChild(row);
       }
     }
+    if (focusKey) {
+      this.listEl.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
+    }
   }
 }
 
 export function waitingCount(states: SessionState[]): number {
   return states.filter((s) => s === "waitingInput").length;
-}
-
-export function waitingVerb(n: number): string {
-  return n % 10 === 1 && n % 100 !== 11 ? "ждёт" : "ждут";
 }
 
 export function nextWaitingAcross(
@@ -647,11 +746,15 @@ export function nextWaitingAcross(
 }
 
 export function serializeTiles(
-  tiles: { session: string; workspacePath: string; name: string; workspaceId?: string; taskId?: string }[],
+  tiles: {
+    session: string; workspacePath: string; name: string; workspaceId?: string;
+    scheduledSkillId?: string; taskId?: string;
+  }[],
 ): SessionEntry[] {
   return tiles.map((t) => ({
     sessionId: t.session, cwd: t.workspacePath, name: t.name,
     ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+    ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
     ...(t.taskId ? { taskId: t.taskId } : {}),
   }));
 }

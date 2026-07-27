@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type SessionState = "idle" | "working" | "waitingInput" | "ended" | "error";
+/** `waitingInput` — blocked until a human decides (a permission request).
+ *  `done` — the agent finished its turn and the prompt is free: nothing is
+ *  blocked, but work got done, which is worth a notification. */
+export type SessionState = "idle" | "working" | "waitingInput" | "done" | "ended" | "error";
 export interface Workspace { id: string; name: string; path: string; color: string; tracker?: TrackerConfig | null; }
 export type SchedulePreset =
   | { kind: "hourly"; minute: number }
@@ -11,8 +14,24 @@ export type SchedulePreset =
  *  `{{placeholder}}` — a scheduled run is unattended and cannot ask. */
 export interface Schedule { preset: SchedulePreset; defaults: Record<string, string>; enabled: boolean; }
 export interface Skill { id: string; name: string; icon: string; prompt: string; workspaceId?: string | null; schedule?: Schedule | null; }
-export interface SessionEntry { sessionId: string; cwd: string; name: string; workspaceId?: string; taskId?: string; }
+export interface SessionEntry {
+  sessionId: string; cwd: string; name: string; workspaceId?: string;
+  /** Set when the session was launched from a tracker card. */
+  taskId?: string;
+  /** Set when the session came from a schedule — re-arms the overlap guard
+   *  on restore, so catch-up cannot duplicate a run that is already back. */
+  scheduledSkillId?: string;
+}
 export interface UiState { activeWorkspaceId: string | null; }
+/** Runtime record of a scenario's scheduled runs, owned by the backend.
+ *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
+ *  a session actually started. Epoch millis. */
+export interface ScheduleRun {
+  lastAttempt: number; lastRun: number | null; lastOutcome: string | null;
+  /** Next firing time, computed by the backend — the side that actually
+   *  fires. Absent when the schedule is off. */
+  nextRunMs?: number | null;
+}
 
 export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");
 export const saveWorkspace = (ws: Workspace) => invoke<Workspace[]>("save_workspace", { ws });
@@ -54,8 +73,23 @@ export const onExit = (cb: (session: string, ok: boolean) => void): Promise<Unli
 /** Released once, after the fire listener below is attached, so the backend
  *  scheduler's first (catch-up) tick has somewhere to land. */
 export const schedulerReady = () => invoke<void>("scheduler_ready");
-export const onScheduledFire = (cb: (skillId: string) => void): Promise<UnlistenFn> =>
-  listen<{ skillId: string }>("schedule://fire", (e) => cb(e.payload.skillId));
+export const onScheduledFire = (
+  cb: (skillId: string, occurrenceMs: number, catchUp: boolean) => void,
+): Promise<UnlistenFn> =>
+  listen<{ skillId: string; occurrenceMs: number; catchUp: boolean }>("schedule://fire", (e) =>
+    cb(e.payload.skillId, e.payload.occurrenceMs, e.payload.catchUp ?? false));
+
+/** Report what a fire produced. The backend records only that it attempted a
+ *  run; `lastRun` advances only when this says a session actually started. */
+export const scheduleAck = (skillId: string, occurrenceMs: number, outcome: string) =>
+  invoke<void>("schedule_ack", { skillId, occurrenceMs, outcome });
+/** Runtime schedule state, keyed by scenario id. The backend owns it — the
+ *  frontend must not compute "did this run" from anything else. */
+export const loadScheduleState = () => invoke<Record<string, ScheduleRun>>("load_schedule_state");
+/** The scheduler could not persist its state, which means nothing will fire
+ *  until it can. */
+export const onSchedulerBroken = (cb: (message: string) => void): Promise<UnlistenFn> =>
+  listen<string>("schedule://broken", (e) => cb(e.payload));
 
 export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }

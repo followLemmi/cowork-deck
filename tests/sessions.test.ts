@@ -60,7 +60,7 @@ describe("Deck.launch error handling", () => {
 
     const label = deckEl.querySelector(".tile-state")!;
     expect(label.className).toContain("state-error");
-    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("claude не найден"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("claude not found"));
   });
 });
 
@@ -113,7 +113,8 @@ describe("Deck zoom edge cases", () => {
     expect(deckEl.classList.contains("is-zoomed")).toBe(true);
 
     const zoomedTile = deckEl.querySelector(".tile.zoomed") as HTMLElement;
-    const closeBtn = [...zoomedTile.querySelectorAll("button")].find((b) => b.textContent === "✕")!;
+    // data-action, not glyph text: an SVG icon has no textContent.
+    const closeBtn = zoomedTile.querySelector<HTMLButtonElement>('[data-action="x"]')!;
     closeBtn.click();
 
     expect(deckEl.classList.contains("is-zoomed")).toBe(false);
@@ -142,7 +143,8 @@ describe("Deck zoom edge cases", () => {
 
     const allTiles = deckEl.querySelectorAll(".tile");
     const nonZoomedTile = [...allTiles].find((t) => !t.classList.contains("zoomed")) as HTMLElement;
-    const closeBtn = [...nonZoomedTile.querySelectorAll("button")].find((b) => b.textContent === "✕")!;
+    // data-action, not glyph text: an SVG icon has no textContent.
+    const closeBtn = nonZoomedTile.querySelector<HTMLButtonElement>('[data-action="x"]')!;
     closeBtn.click();
 
     expect(deckEl.classList.contains("is-zoomed")).toBe(false);
@@ -253,6 +255,25 @@ describe("Deck zoom edge cases", () => {
     expect(zoomedTile).not.toBeNull();
     expect(zoomedTile).not.toBe(firstZoomed);
   });
+});
+
+// The list is rebuilt via innerHTML on every poll — five seconds apart. Rows
+// only became focusable once they were buttons, which made that rebuild a
+// focus-stealing bug waiting to happen.
+it("keeps keyboard focus on the same row when the list is rebuilt", async () => {
+  const deckEl = document.createElement("div");
+  const listEl = document.createElement("div");
+  document.body.append(deckEl, listEl);
+  const deck = new Deck(deckEl, listEl, () => []);
+
+  await deck.launch(WS as any, null);
+  const row = listEl.querySelector<HTMLElement>(".sess-row")!;
+  row.focus();
+  const key = row.dataset.focusKey;
+
+  await deck.launch(WS as any, null); // any state change re-renders the list
+
+  expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(key);
 });
 
 describe("serializeTiles + taskId", () => {

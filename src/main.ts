@@ -1,8 +1,8 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
-import { claudeAvailable, loadLayout, onScheduledFire, schedulerReady } from "./ipc";
-import type { Skill } from "./ipc";
+import { claudeAvailable, loadLayout, onScheduledFire, onSchedulerBroken, scheduleAck, schedulerReady } from "./ipc";
+import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
 import {
   listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
@@ -12,6 +12,8 @@ import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
+import { runBoot } from "./boot";
+import { installSprite } from "./icons";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { taskPrompt } from "./tasks";
 import { resolveScheduledWorkspace } from "./schedule";
@@ -19,13 +21,14 @@ import { placeholderForm, taskForm } from "./forms";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+installSprite();
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
 const wsMount = document.createElement("div");
 const skMount = document.createElement("div");
 const listMount = document.createElement("div");
 const newBtn = document.createElement("button");
-newBtn.textContent = "+ сессия"; newBtn.className = "ws-add";
+newBtn.textContent = "+ session"; newBtn.className = "btn-primary";
 sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const boardEl = document.querySelector<HTMLElement>("#board")!;
@@ -80,28 +83,51 @@ boardBtn.onclick = () => setView(true);
 
 const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
-async function boot() {
-  await deck.wireEvents();
-  await onScheduledFire((skillId) => {
-    void handleScheduledFire(skillId).then((outcome) => {
-      if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
-    });
-  });
-  await workspaces.load();
-  await skills.load();
-  await onTasksChanged((workspaceId) => {
-    if (boardVisible && workspaces.active?.id === workspaceId) void refreshBoard();
-    void refreshCounts();
-  });
-  await taskWatchSync();
-  await refreshCounts();
-  const entries = await loadLayout();
-  if (entries.length) await deck.restore(entries);
-  deck.setActiveWorkspace(workspaces.active?.id ?? null);
-  // Release the backend scheduler only once skills/workspaces are loaded, so a
-  // catch-up fire arriving immediately can be resolved to a scenario.
-  await schedulerReady();
-}
+const boot = () => runBoot({
+  steps: [
+    () => deck.wireEvents(),
+    () => onScheduledFire((skillId, occurrenceMs, catchUp) => {
+      const missedAt = catchUp
+        ? new Date(occurrenceMs).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
+        : undefined;
+      void handleScheduledFire(skillId, missedAt).then(async (outcome) => {
+        if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
+        // Tell the backend what came of it: an occurrence it emitted counts as
+        // a run only once a session has actually started.
+        await scheduleAck(skillId, occurrenceMs, outcome).catch((e) =>
+          console.warn("schedule ack failed:", skillId, e));
+        // Show the outcome in the scenario row now, rather than at the next
+        // minute tick — a skip or a refusal is what the user needs to see.
+        await skills.refreshRuns();
+      });
+    }).then(() => {}),
+    () => onSchedulerBroken((message) => { void alertModal(message); }).then(() => {}),
+    () => workspaces.load(),
+    () => skills.load(),
+    () => onTasksChanged((workspaceId) => {
+      if (boardVisible && workspaces.active?.id === workspaceId) void refreshBoard();
+      void refreshCounts();
+    }).then(() => {}),
+    () => taskWatchSync(),
+    () => refreshCounts(),
+    async () => {
+      const entries = await loadLayout();
+      if (entries.length) await deck.restore(entries);
+    },
+    () => { deck.setActiveWorkspace(workspaces.active?.id ?? null); },
+  ],
+  // Sent last so a catch-up fire arriving immediately can be resolved to a
+  // scenario — but sent even if a step above failed, or the scheduler stays
+  // parked forever.
+  releaseScheduler: schedulerReady,
+  onError: (e) => {
+    console.error("boot failed:", e);
+    void alertModal(
+      "The app did not start completely — some sessions or settings may not have loaded. " +
+      "Restart it; if this repeats, check the developer console.",
+    );
+  },
+});
 
 /** Быстрый захват: модалка, карточка в активное пространство, доска и
  *  счётчики обновляются сразу, не дожидаясь watcher'а. */
@@ -186,13 +212,13 @@ type FireOutcome = "launched" | "skipped-overlap" | "no-workspace" | "not-schedu
 /** A scheduled scenario came due (from the backend scheduler or from the ⏰
  *  button): resolve it to a scenario + workspace, fill placeholder defaults (a
  *  scheduled run cannot ask) and launch it as a fresh tile. */
-async function handleScheduledFire(skillId: string): Promise<FireOutcome> {
+async function handleScheduledFire(skillId: string, catchUpFor?: string): Promise<FireOutcome> {
   const skill = skills.find(skillId);
   if (!skill?.schedule?.enabled) return "not-scheduled";
   const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
   if (!res.ok) return res.reason;
   const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
-  const launched = await deck.launchScheduled(res.workspace, skill, filled);
+  const launched = await deck.launchScheduled(res.workspace, skill, filled, catchUpFor);
   return launched ? "launched" : "skipped-overlap";
 }
 
@@ -203,9 +229,9 @@ async function handleScheduledFire(skillId: string): Promise<FireOutcome> {
 async function runScheduledNow(skill: Skill) {
   const outcome = await handleScheduledFire(skill.id);
   if (outcome === "skipped-overlap") {
-    await alertModal("Прогон пропущен: предыдущий ещё активен.");
+    await alertModal("Run skipped: the previous one is still active.");
   } else if (outcome === "no-workspace") {
-    await alertModal("У сценария нет доступного пространства: привяжите его или выберите пространство.");
+    await alertModal("This scenario has no workspace available: pin it to one or pick a workspace.");
   }
 }
 
@@ -226,47 +252,111 @@ const workspaces = new WorkspacesPanel(wsMount, (ws) => {
   deck.setActiveWorkspace(ws.id);
   if (boardVisible) void refreshBoard();
 }, () => {
+  // A workspace was added, edited or deleted: its tracker root may have moved,
+  // so re-point the watcher and re-read the sidebar counts.
   void taskWatchSync();
   void refreshCounts();
 });
-const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
+/** Every launch path needs an active workspace. Saying so beats a button that
+ *  looks broken — the old behaviour was a bare `return`. */
+async function requireWorkspace(): Promise<Workspace | null> {
   const ws = workspaces.active;
+  if (ws) return ws;
+  await alertModal(
+    "Pick a workspace first — it is the project folder that sessions run in. "
+    + "If there are none yet, create one with the “+ workspace” button.",
+  );
+  return null;
+}
+
+const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
+  const ws = await requireWorkspace();
   if (!ws) return;
   const prompt = await resolvePrompt(skill.prompt, placeholderForm);
   if (prompt === null) return;
   deck.launch(ws, { ...skill, prompt });
-}, (skill) => { void runScheduledNow(skill); });
-newBtn.onclick = () => {
-  const ws = workspaces.active;
-  if (ws) deck.launch(ws, null);
+}, (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
+   () => workspaces.active?.name ?? null);
+// Deleting a workspace strands the scenarios pinned to it — the confirmation
+// says how many before it happens.
+workspaces.setSkillsSource(() => skills.all);
+const newSession = async () => {
+  const ws = await requireWorkspace();
+  if (ws) await deck.launch(ws, null);
 };
+newBtn.onclick = () => { void newSession(); };
+
+/** Human-readable binding for the palette. Filled in because the `hotkey`
+ *  field existed on Command from the start and was never populated, so the
+ *  palette — and with it every binding, including Cmd+K itself — was
+ *  undiscoverable. */
+function hotkeyLabel(letter: string): string {
+  return isMacPlatform() ? `Cmd+${letter}` : `Ctrl+Shift+${letter}`;
+}
 
 function paletteCommands(): Command[] {
   return [
-    { id: "new-session", title: "Новая сессия", run: () => { const ws = workspaces.active; if (ws) deck.launch(ws, null); } },
-    { id: "close-active", title: "Закрыть активную сессию", run: () => deck.closeActive() },
-    { id: "next-waiting", title: "К следующей ждущей вводу", run: () => deck.focusNextWaiting() },
-    { id: "search", title: "Поиск в терминале", run: () => deck.searchActive() },
-    { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
-    { id: "broadcast", title: "Режим broadcast (ввод в несколько сессий)", run: () => deck.toggleBroadcast() },
-    { id: "board", title: "Открыть доску задач", run: () => setView(true) },
-    { id: "new-task", title: "Новая задача", run: () => { void captureTask(); } },
+    { id: "new-session", title: "New session", hotkey: hotkeyLabel("N"), run: () => { void newSession(); } },
+    { id: "close-active", title: "Close active session", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
+    { id: "next-waiting", title: "Go to next session waiting for input", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
+    { id: "zoom", title: "Zoom active session", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
+    { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
+    { id: "clear", title: "Clear terminal", run: () => deck.clearActive() },
+    { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
+    { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
+    { id: "scenarios", title: "Scenarios: focus the sidebar list", run: () => focusRegion("sidebar") },
+    { id: "board", title: "Open the task board", run: () => setView(true) },
+    { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
   ];
+}
+
+/** Focus cycling between the sidebar and the active terminal.
+ *
+ *  Without it the terminal is a one-way door: xterm consumes Tab and Shift+Tab
+ *  (they go to the PTY), so once focus landed in a tile — which happens
+ *  automatically on launch — the sidebar, the scenario buttons and the
+ *  run-now button were unreachable by keyboard entirely. */
+type Region = "sidebar" | "terminal";
+const REGIONS: Region[] = ["sidebar", "terminal"];
+
+function currentRegion(): Region {
+  return sidebar.contains(document.activeElement) ? "sidebar" : "terminal";
+}
+
+function focusRegion(r: Region): void {
+  if (r === "terminal") {
+    if (deck.focusActiveTerminal()) return;
+    // No session to go to — stay where something is focusable.
+    focusRegion("sidebar");
+    return;
+  }
+  const first = sidebar.querySelector<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  );
+  first?.focus();
+}
+
+function cycleRegion(step: number): void {
+  const i = REGIONS.indexOf(currentRegion());
+  focusRegion(REGIONS[(i + step + REGIONS.length) % REGIONS.length]);
 }
 
 const COMMANDS: Record<string, () => void> = {
   "palette": () => openPalette(paletteCommands()),
-  "new-session": () => { const ws = workspaces.active; if (ws) deck.launch(ws, null); },
+  "new-session": () => { void newSession(); },
   "close-active": () => deck.closeActive(),
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),
   "broadcast": () => deck.toggleBroadcast(),
+  "zoom": () => deck.toggleZoomActive(),
+  "next-region": () => cycleRegion(1),
+  "prev-region": () => cycleRegion(-1),
   "board": () => setView(true),
   "new-task": () => { void captureTask(); },
 };
 
 window.addEventListener("keydown", (e) => {
-  if (document.querySelector(".modal-overlay")) return; // не перехватываем, пока открыта модалка/палитра/форма
+  if (document.querySelector(".modal-overlay")) return; // do not intercept while a modal, the palette or a form is open
   if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
   const id = matchHotkey(e, isMacPlatform());
   if (!id) return;
@@ -280,7 +370,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 claudeAvailable().then((ok) => {
-  if (!ok) alertModal("Не найден исполняемый файл claude. Укажите путь через переменную окружения COWORK_CLAUDE_PATH и перезапустите приложение.");
+  if (!ok) alertModal("The claude executable was not found. Set its path via the COWORK_CLAUDE_PATH environment variable and restart the app.");
 });
 
 void boot();
