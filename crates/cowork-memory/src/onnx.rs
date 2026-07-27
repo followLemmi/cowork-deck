@@ -7,6 +7,40 @@ use std::path::Path;
 use std::sync::Mutex;
 use tokenizers::Tokenizer;
 
+/// The dimension `paraphrase-multilingual-MiniLM-L12-v2` produces. The probe
+/// checks against it, so a differently sized model fails loudly at load rather
+/// than quietly poisoning the index.
+const EXPECTED_DIM: usize = 384;
+const MODEL_REPO: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
+
+/// What this actually guarantees, stated plainly: the graph loads and produces
+/// finite numbers of the expected width. It does NOT authenticate the model —
+/// `forward` L2-normalises its own output, so the unit-norm test passes for any
+/// non-degenerate hidden state. The width check is what carries the weight
+/// here: it rejects a different model variant, which is the realistic way a
+/// wrong file gets staged. A different 384-dimensional sentence transformer
+/// would still pass, and that is accepted: it degrades retrieval quality rather
+/// than breaking correctness, and the corpus is re-indexed with it wholesale.
+///
+/// Each property reports separately, so a failure says which one broke.
+fn verify_probe(v: &[f32]) -> Result<()> {
+    if !v.iter().all(|x| x.is_finite()) {
+        bail!("model loaded but produced a non-finite probe vector — the file is likely corrupt");
+    }
+    if v.len() != EXPECTED_DIM {
+        bail!(
+            "model produced {}-dimensional vectors, expected {EXPECTED_DIM} — \
+             this is not {MODEL_REPO}",
+            v.len()
+        );
+    }
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if (norm - 1.0).abs() > 1e-2 {
+        bail!("probe vector is not unit length ({norm}) — the file is likely corrupt");
+    }
+    Ok(())
+}
+
 pub struct OnnxEmbedder {
     /// `Session::run` needs `&mut self`, but `Embedder::embed` takes `&self`.
     /// A mutex is the cheap way to bridge that without making every caller
@@ -55,13 +89,8 @@ impl OnnxEmbedder {
             dim: 0,
         };
         let probe = e.forward(&["проверка".to_string()])?;
-        let v = &probe[0];
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if v.is_empty() || !v.iter().all(|x| x.is_finite()) || (norm - 1.0).abs() > 1e-2 {
-            bail!("model loaded but produced an invalid probe vector — the file is likely corrupt");
-        }
-        let dim = v.len();
-        Ok(OnnxEmbedder { dim, ..e })
+        verify_probe(&probe[0])?;
+        Ok(OnnxEmbedder { dim: EXPECTED_DIM, ..e })
     }
 
     fn forward(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
@@ -174,6 +203,51 @@ mod tests {
         assert!(err.contains("model"), "unhelpful error: {err}");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A unit-length vector of `n` dimensions, so each probe test isolates the
+    /// one property it is about.
+    fn unit(n: usize) -> Vec<f32> {
+        let mut v = vec![0f32; n];
+        v[0] = 1.0;
+        v
+    }
+
+    #[test]
+    fn probe_accepts_a_finite_unit_vector_of_the_expected_width() {
+        verify_probe(&unit(EXPECTED_DIM)).unwrap();
+    }
+
+    /// The check that carries the weight. `forward` normalises its own output,
+    /// so width is the only one of the three that a wrong-but-well-formed model
+    /// can fail.
+    #[test]
+    fn probe_rejects_a_model_of_a_different_width() {
+        let err = verify_probe(&unit(768)).unwrap_err().to_string();
+        assert!(err.contains("768"), "must name the actual width: {err}");
+        assert!(err.contains("384"), "must name the expected width: {err}");
+        assert!(err.contains(MODEL_REPO), "must name the expected model: {err}");
+
+        // Degenerate but reachable: an empty vector is a width mismatch too,
+        // and must not slip through the vacuously-true finiteness test.
+        let err = verify_probe(&[]).unwrap_err().to_string();
+        assert!(err.contains("0-dimensional"), "empty must be rejected: {err}");
+    }
+
+    #[test]
+    fn probe_rejects_a_non_finite_vector() {
+        let mut v = unit(EXPECTED_DIM);
+        v[1] = f32::NAN;
+        let err = verify_probe(&v).unwrap_err().to_string();
+        assert!(err.contains("non-finite"), "must say which property broke: {err}");
+    }
+
+    #[test]
+    fn probe_rejects_a_vector_that_is_not_unit_length() {
+        let mut v = unit(EXPECTED_DIM);
+        v[0] = 0.3;
+        let err = verify_probe(&v).unwrap_err().to_string();
+        assert!(err.contains("unit length"), "must say which property broke: {err}");
     }
 
     /// Needs the real 479 MB model, so it is `#[ignore]`d rather than skipped
