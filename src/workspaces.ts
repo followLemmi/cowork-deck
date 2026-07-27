@@ -1,8 +1,26 @@
-import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiState, type Workspace, type UiState } from "./ipc";
+import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiState, type Workspace, type UiState, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
 
+/** Confirmation text for deleting a workspace. Deleting one strands every
+ *  scenario pinned to it — they stop being runnable, and any schedule on them
+ *  quietly stops producing anything — so the count belongs in the question,
+ *  not in a surprise afterwards. */
+export function describeDeleteImpact(workspaceId: string, skills: Skill[]): string {
+  const pinned = skills.filter((s) => s.workspaceId === workspaceId);
+  if (pinned.length === 0) return "Удалить пространство?";
+  const scheduled = pinned.filter((s) => s.schedule?.enabled).length;
+  const noun = pinned.length === 1 ? "сценарий" : pinned.length < 5 ? "сценария" : "сценариев";
+  const tail = scheduled > 0 ? `, ${scheduled} из них по расписанию` : "";
+  return `Удалить пространство? К нему привязан${pinned.length === 1 ? "" : "ы"} `
+    + `${pinned.length} ${noun}${tail} — они перестанут запускаться.`;
+}
+
 export class WorkspacesPanel {
+  /** Scenarios, so deletion can report what it will strand. Injected because
+   *  the skills panel owns them and loads independently. */
+  private getSkills: () => Skill[] = () => [];
+  setSkillsSource(get: () => Skill[]) { this.getSkills = get; }
   private items: Workspace[] = [];
   private activeId: string | null = null;
   constructor(private mount: HTMLElement, private onSelect: (ws: Workspace) => void) {}
@@ -49,7 +67,7 @@ export class WorkspacesPanel {
   }
 
   private async del(id: string) {
-    if (!(await confirmModal("Удалить пространство?"))) return;
+    if (!(await confirmModal(describeDeleteImpact(id, this.getSkills())))) return;
     this.items = await removeWorkspace(id);
     if (this.activeId === id) {
       const next = this.items[0]?.id ?? null;

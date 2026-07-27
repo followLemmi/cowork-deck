@@ -147,6 +147,8 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 /* Тот же зелёный, что у working, но без дыхания: работа сделана, ничего не
    происходит. Различение состояний формой, а не только цветом — волна 4. */
 .state-done         { color: var(--st-working); background: rgba(152, 195, 121, 0.10); }
+.sk-orphan .sk-run { opacity: 0.55; cursor: not-allowed; text-decoration: line-through; }
+.sk-orphan-note { font-size: var(--fs-xs); color: var(--st-error); margin: -2px 0 6px 2px; }
 .state-ended        { color: var(--st-ended);   background: rgba(86, 182, 194, 0.14); }
 .state-error        { color: var(--st-error);   background: rgba(224, 108, 117, 0.16); border-color: rgba(224, 108, 117, 0.4); }
 
