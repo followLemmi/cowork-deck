@@ -254,3 +254,22 @@ describe("Deck zoom edge cases", () => {
     expect(zoomedTile).not.toBe(firstZoomed);
   });
 });
+
+// The list is rebuilt via innerHTML on every poll — five seconds apart. Rows
+// only became focusable once they were buttons, which made that rebuild a
+// focus-stealing bug waiting to happen.
+it("keeps keyboard focus on the same row when the list is rebuilt", async () => {
+  const deckEl = document.createElement("div");
+  const listEl = document.createElement("div");
+  document.body.append(deckEl, listEl);
+  const deck = new Deck(deckEl, listEl, () => []);
+
+  await deck.launch(WS as any, null);
+  const row = listEl.querySelector<HTMLElement>(".sess-row")!;
+  row.focus();
+  const key = row.dataset.focusKey;
+
+  await deck.launch(WS as any, null); // any state change re-renders the list
+
+  expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(key);
+});

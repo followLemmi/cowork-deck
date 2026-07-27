@@ -315,3 +315,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .modal-input, .tile-search-input, .bcast-input {
   background: var(--bg-app); border-color: var(--border-strong);
 }
+
+/* Строки списка и заголовки групп стали кнопками — сбрасываем нативный вид,
+   сохраняя раскладку. До этого они были div с onclick: не фокусируемые,
+   недостижимые с клавиатуры, и сессия №10 не выбиралась вообще. */
+.sess-row, .sess-group-head {
+  width: 100%; text-align: left; font: inherit; color: inherit;
+  background: none; border: none; border-left: 2px solid transparent;
+}
+.sess-row { font-size: var(--fs-sm); }

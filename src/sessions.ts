@@ -595,6 +595,14 @@ export class Deck {
   }
 
   private renderList() {
+    // The whole list is rebuilt via innerHTML, and the poll rebuilds it every
+    // five seconds. That was harmless only while nothing in it could hold
+    // focus; now that rows are buttons, the focused key has to be remembered
+    // and restored, or keyboard focus would jump to the top of the page twice
+    // a minute.
+    const focusKey = this.listEl.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement).dataset.focusKey ?? null
+      : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
     void emit("pill://count", { n: waiting });
@@ -623,7 +631,9 @@ export class Deck {
       const collapsed = this.collapsed.has(wsId);
       const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
 
-      const head = document.createElement("div");
+      const head = document.createElement("button");
+      head.dataset.focusKey = `group:${wsId}`;
+      head.setAttribute("aria-expanded", String(!collapsed));
       head.className = "sess-group-head"
         + (g.workspace && g.workspace.id === this.activeWorkspaceId ? " active" : "");
       const toggle = document.createElement("span");
@@ -649,7 +659,9 @@ export class Deck {
 
       for (const t of g.tiles) {
         const live = this.tiles.get(t.session);
-        const row = document.createElement("div");
+        const row = document.createElement("button");
+        row.dataset.focusKey = `session:${t.session}`;
+        row.setAttribute("aria-label", `${t.name} — ${LABEL[t.state]}`);
         row.className = "sess-row" + (live?.el.classList.contains("is-active") ? " active" : "");
         row.style.borderLeftColor = color;
         row.onclick = () => this.focusSessionAnywhere(t.session);
@@ -661,6 +673,9 @@ export class Deck {
         row.append(stateSpan, " ", nameSpan);
         this.listEl.appendChild(row);
       }
+    }
+    if (focusKey) {
+      this.listEl.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
     }
   }
 }
