@@ -56,8 +56,16 @@ export const onExit = (cb: (session: string, ok: boolean) => void): Promise<Unli
 /** Released once, after the fire listener below is attached, so the backend
  *  scheduler's first (catch-up) tick has somewhere to land. */
 export const schedulerReady = () => invoke<void>("scheduler_ready");
-export const onScheduledFire = (cb: (skillId: string) => void): Promise<UnlistenFn> =>
-  listen<{ skillId: string }>("schedule://fire", (e) => cb(e.payload.skillId));
+export const onScheduledFire = (
+  cb: (skillId: string, occurrenceMs: number) => void,
+): Promise<UnlistenFn> =>
+  listen<{ skillId: string; occurrenceMs: number }>("schedule://fire", (e) =>
+    cb(e.payload.skillId, e.payload.occurrenceMs));
+
+/** Report what a fire produced. The backend records only that it attempted a
+ *  run; `lastRun` advances only when this says a session actually started. */
+export const scheduleAck = (skillId: string, occurrenceMs: number, outcome: string) =>
+  invoke<void>("schedule_ack", { skillId, occurrenceMs, outcome });
 
 export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }

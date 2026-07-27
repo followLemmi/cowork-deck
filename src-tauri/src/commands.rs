@@ -74,6 +74,29 @@ pub fn remove_skill(state: State<AppState>, id: String) -> Result<Vec<Skill>, St
     state.store.lock().unwrap().delete_skill(&id).map_err(|e| e.to_string())
 }
 
+/// Report what a `schedule://fire` actually produced. The loop records only
+/// that it made an attempt; this is what lets `lastRun` mean "a session really
+/// started" instead of "an event was emitted into the void".
+///
+/// An ack that no longer matches the pending attempt is dropped silently —
+/// see `scheduler::apply_ack`.
+#[tauri::command]
+pub fn schedule_ack(
+    state: State<AppState>,
+    skill_id: String,
+    occurrence_ms: i64,
+    outcome: String,
+) -> Result<(), String> {
+    let store = state.store.lock().unwrap();
+    let mut st = store.schedule_state();
+    let Some(updated) = crate::scheduler::apply_ack(st.get(&skill_id), occurrence_ms, &outcome)
+    else {
+        return Ok(());
+    };
+    st.insert(skill_id, updated);
+    store.save_schedule_state(&st).map_err(|e| e.to_string())
+}
+
 /// The frontend calls this once, after its `schedule://fire` listener is
 /// attached, to release the scheduler loop's first tick.
 #[tauri::command]

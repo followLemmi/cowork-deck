@@ -16,6 +16,56 @@ pub enum SessionState {
     Error,
 }
 
+/// Runtime record of one scenario's scheduled runs, written only by the
+/// scheduler loop and the ack command.
+///
+/// `last_attempt` is the gate: an occurrence is emitted at most once, so a
+/// scenario that keeps failing cannot be retried every tick. `last_run` and
+/// `last_outcome` are the record of what actually happened — the scheduler no
+/// longer pretends a run succeeded just because it emitted the event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleRun {
+    /// Occurrence we last emitted a fire for, launched or not (epoch millis).
+    #[serde(rename = "lastAttempt")]
+    pub last_attempt: i64,
+    /// Occurrence of the last run that actually launched a session.
+    #[serde(rename = "lastRun", default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<i64>,
+    /// How the last attempt ended, as reported by the frontend.
+    #[serde(rename = "lastOutcome", default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<String>,
+}
+
+/// Accepts both the current record and the bare epoch-millis number written
+/// before the record existed, so upgrading does not re-arm every schedule.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ScheduleRunOnDisk {
+    Record(ScheduleRun),
+    Legacy(i64),
+}
+
+impl From<ScheduleRunOnDisk> for ScheduleRun {
+    fn from(v: ScheduleRunOnDisk) -> Self {
+        match v {
+            ScheduleRunOnDisk::Record(r) => r,
+            ScheduleRunOnDisk::Legacy(ms) => ScheduleRun {
+                last_attempt: ms,
+                last_run: Some(ms),
+                last_outcome: None,
+            },
+        }
+    }
+}
+
+/// Parse a whole `schedule_state.json` body, tolerating the legacy shape.
+pub fn parse_schedule_state(
+    s: &str,
+) -> serde_json::Result<std::collections::HashMap<String, ScheduleRun>> {
+    let raw: std::collections::HashMap<String, ScheduleRunOnDisk> = serde_json::from_str(s)?;
+    Ok(raw.into_iter().map(|(k, v)| (k, v.into())).collect())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: String,

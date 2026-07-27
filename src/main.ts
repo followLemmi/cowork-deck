@@ -1,7 +1,7 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
-import { claudeAvailable, loadLayout, onScheduledFire, schedulerReady } from "./ipc";
+import { claudeAvailable, loadLayout, onScheduledFire, scheduleAck, schedulerReady } from "./ipc";
 import type { Skill } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
@@ -26,9 +26,13 @@ const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
 async function boot() {
   await deck.wireEvents();
-  await onScheduledFire((skillId) => {
-    void handleScheduledFire(skillId).then((outcome) => {
+  await onScheduledFire((skillId, occurrenceMs) => {
+    void handleScheduledFire(skillId).then(async (outcome) => {
       if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
+      // Tell the backend what came of it: an occurrence it emitted counts as
+      // a run only once a session has actually started.
+      await scheduleAck(skillId, occurrenceMs, outcome).catch((e) =>
+        console.warn("schedule ack failed:", skillId, e));
     });
   });
   await workspaces.load();

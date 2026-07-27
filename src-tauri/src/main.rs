@@ -128,6 +128,7 @@ fn main() {
             commands::git_status,
             commands::session_tokens,
             commands::scheduler_ready,
+            commands::schedule_ack,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");

@@ -1,4 +1,4 @@
-use crate::model::SchedulePreset;
+use crate::model::{ScheduleRun, SchedulePreset};
 use crate::store::Store;
 use chrono::{Datelike, Duration, NaiveDateTime, Timelike};
 use std::path::PathBuf;
@@ -57,26 +57,65 @@ pub fn prev_occurrence(preset: &SchedulePreset, now: NaiveDateTime) -> NaiveDate
     }
 }
 
-/// Due when never run, or the last fire predates the most recent occurrence
-/// (a missed/owed run). Fires at most once per scenario per evaluation —
-/// this is the "always catch up once" behavior. A schedule the scheduler has
-/// never seen is armed (given a `lastRun`) by the loop without firing, so the
-/// `None` branch here only means "state was lost" in practice.
-pub fn is_due(preset: &SchedulePreset, last_run_ms: Option<i64>, now: NaiveDateTime) -> bool {
-    let prev = prev_occurrence(preset, now);
-    match last_run_ms {
-        None => true,
-        Some(ms) => match chrono::DateTime::from_timestamp_millis(ms) {
-            Some(dt) => dt.naive_utc() < prev,
-            None => true,
-        },
-    }
-}
-
 #[derive(Clone, serde::Serialize)]
 struct FirePayload {
     #[serde(rename = "skillId")]
     skill_id: String,
+    /// The occurrence being fired for. The frontend echoes it back through
+    /// `schedule_ack` so a late or duplicated ack cannot stamp the wrong run.
+    #[serde(rename = "occurrenceMs")]
+    occurrence_ms: i64,
+}
+
+/// What one tick owes a single scenario.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TickAction {
+    /// First sighting: record the occurrence without running anything.
+    Arm(NaiveDateTime),
+    /// Emit a fire for this occurrence.
+    Fire(NaiveDateTime),
+    /// Nothing owed.
+    Idle,
+}
+
+/// Decide what to do with one scenario this tick.
+///
+/// The gate is `last_attempt`, not `last_run`: an occurrence is attempted at
+/// most once. Keying off success instead would retry a permanently broken
+/// scenario on every tick, which is a worse failure than skipping it — the
+/// failure is surfaced through `last_outcome` instead.
+pub fn decide(
+    preset: &SchedulePreset,
+    entry: Option<&ScheduleRun>,
+    now: NaiveDateTime,
+) -> TickAction {
+    let occ = prev_occurrence(preset, now);
+    match entry {
+        None => TickAction::Arm(occ),
+        Some(run) => match chrono::DateTime::from_timestamp_millis(run.last_attempt) {
+            Some(dt) if dt.naive_utc() >= occ => TickAction::Idle,
+            _ => TickAction::Fire(occ),
+        },
+    }
+}
+
+/// Fold the frontend's report of one fire into that scenario's record.
+///
+/// Returns `None` when the ack does not match the attempt we are waiting on —
+/// an unknown scenario, or an occurrence already superseded. Dropping those
+/// keeps a replayed or late message from stamping a run that never happened.
+pub fn apply_ack(
+    entry: Option<&ScheduleRun>,
+    occurrence_ms: i64,
+    outcome: &str,
+) -> Option<ScheduleRun> {
+    let cur = entry?;
+    if cur.last_attempt != occurrence_ms { return None }
+    Some(ScheduleRun {
+        last_attempt: cur.last_attempt,
+        last_run: if outcome == "launched" { Some(occurrence_ms) } else { cur.last_run },
+        last_outcome: Some(outcome.to_string()),
+    })
 }
 
 /// Ceiling on one tick's sleep. Even when the next occurrence is far away we
@@ -100,26 +139,35 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
         for sk in &skills {
             let Some(sched) = &sk.schedule else { continue };
             if !sched.enabled { continue }
-            let occ = prev_occurrence(&sched.preset, now);
-            match state.get(&sk.id).copied() {
-                // First time we see this schedule: arm it at the most recent
-                // occurrence without firing. A schedule that has never run owes
-                // no catch-up — the user just created it; firing here would
-                // launch a session the moment they hit save.
-                None => {
-                    state.insert(sk.id.clone(), occ.and_utc().timestamp_millis());
+            // Stamp the occurrence, not `now` — otherwise repeated fires drift
+            // later and later. For a catch-up this is the missed time; for an
+            // on-time run it is ≈ `now`.
+            match decide(&sched.preset, state.get(&sk.id), now) {
+                TickAction::Arm(occ) => {
+                    state.insert(sk.id.clone(), ScheduleRun {
+                        last_attempt: occ.and_utc().timestamp_millis(),
+                        last_run: None,
+                        last_outcome: None,
+                    });
                     changed = true;
                 }
-                last => {
-                    if is_due(&sched.preset, last, now) {
-                        let _ = app.emit("schedule://fire", FirePayload { skill_id: sk.id.clone() });
-                        // Stamp the occurrence, not `now` — otherwise repeated
-                        // fires drift later and later. For a catch-up this is
-                        // the missed time; for an on-time run it is ≈ `now`.
-                        state.insert(sk.id.clone(), occ.and_utc().timestamp_millis());
-                        changed = true;
-                    }
+                TickAction::Fire(occ) => {
+                    let occurrence_ms = occ.and_utc().timestamp_millis();
+                    let _ = app.emit("schedule://fire", FirePayload {
+                        skill_id: sk.id.clone(),
+                        occurrence_ms,
+                    });
+                    // Record the attempt only. Whether a session actually
+                    // started is the frontend's to report, via `schedule_ack`.
+                    let prev_run = state.get(&sk.id).and_then(|r| r.last_run);
+                    state.insert(sk.id.clone(), ScheduleRun {
+                        last_attempt: occurrence_ms,
+                        last_run: prev_run,
+                        last_outcome: None,
+                    });
+                    changed = true;
                 }
+                TickAction::Idle => {}
             }
             let nxt = next_occurrence(&sched.preset, now);
             soonest = Some(soonest.map_or(nxt, |s| s.min(nxt)));
@@ -198,18 +246,99 @@ mod tests {
         assert_eq!(prev_occurrence(&p, now), dt(2026, 7, 20, 8, 0)); // last Monday
     }
 
+    fn run_at(attempt: NaiveDateTime) -> ScheduleRun {
+        ScheduleRun {
+            last_attempt: attempt.and_utc().timestamp_millis(),
+            last_run: Some(attempt.and_utc().timestamp_millis()),
+            last_outcome: Some("launched".into()),
+        }
+    }
+
+    /// A launch is the only thing that advances `last_run` — that field is
+    /// what "when did this scenario last actually run" is read from.
     #[test]
-    fn is_due_when_never_run_or_missed() {
+    fn a_launched_ack_records_the_run() {
+        let occ = dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis();
+        let attempted = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None };
+
+        let updated = apply_ack(Some(&attempted), occ, "launched").expect("ack applies");
+        assert_eq!(updated.last_run, Some(occ));
+        assert_eq!(updated.last_outcome.as_deref(), Some("launched"));
+    }
+
+    /// A refusal is recorded, not hidden: `last_run` stays where it was, so the
+    /// scenario can honestly report "last ran three days ago" while the reason
+    /// for today's silence is right there next to it.
+    #[test]
+    fn a_failed_ack_records_the_reason_without_claiming_a_run() {
+        let yesterday = dt(2026, 7, 23, 9, 0).and_utc().timestamp_millis();
+        let occ = dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis();
+        let attempted = ScheduleRun {
+            last_attempt: occ,
+            last_run: Some(yesterday),
+            last_outcome: Some("launched".into()),
+        };
+
+        let updated = apply_ack(Some(&attempted), occ, "no-workspace").expect("ack applies");
+        assert_eq!(updated.last_run, Some(yesterday));
+        assert_eq!(updated.last_outcome.as_deref(), Some("no-workspace"));
+    }
+
+    /// An ack for an occurrence we are no longer waiting on is dropped, so a
+    /// late or replayed message cannot stamp a run that never happened.
+    #[test]
+    fn a_stale_ack_is_ignored() {
+        let occ = dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis();
+        let older = dt(2026, 7, 23, 9, 0).and_utc().timestamp_millis();
+        let current = ScheduleRun { last_attempt: occ, last_run: None, last_outcome: None };
+
+        assert_eq!(apply_ack(Some(&current), older, "launched"), None);
+        assert_eq!(apply_ack(None, occ, "launched"), None);
+    }
+
+    /// A schedule the loop has never seen is armed, not fired: the user just
+    /// saved it and owes no catch-up.
+    #[test]
+    fn unseen_schedule_is_armed_without_firing() {
         let p = SchedulePreset::Daily { hour: 9, minute: 0 };
         let now = dt(2026, 7, 24, 10, 0);
-        // never run
-        assert!(is_due(&p, None, now));
-        // last run was before the most recent occurrence (today 09:00) -> missed
-        let prev = prev_occurrence(&p, now); // today 09:00
-        let missed = (prev - Duration::hours(2)).and_utc().timestamp_millis();
-        assert!(is_due(&p, Some(missed), now));
-        // last run == most recent occurrence -> not due
-        let ontime = prev.and_utc().timestamp_millis();
-        assert!(!is_due(&p, Some(ontime), now));
+        assert_eq!(decide(&p, None, now), TickAction::Arm(dt(2026, 7, 24, 9, 0)));
     }
+
+    /// The gate is the attempt, not the success. Without this a scenario that
+    /// fails every time — no workspace, `claude` missing — would be retried on
+    /// every 30-second tick forever.
+    #[test]
+    fn an_occurrence_is_attempted_at_most_once() {
+        let p = SchedulePreset::Daily { hour: 9, minute: 0 };
+        let now = dt(2026, 7, 24, 10, 0);
+        let failed = ScheduleRun {
+            last_attempt: dt(2026, 7, 24, 9, 0).and_utc().timestamp_millis(),
+            last_run: Some(dt(2026, 7, 23, 9, 0).and_utc().timestamp_millis()),
+            last_outcome: Some("no-workspace".into()),
+        };
+        assert_eq!(decide(&p, Some(&failed), now), TickAction::Idle);
+    }
+
+    /// Missed while the app was closed: one catch-up fire, for the occurrence
+    /// that was missed rather than for `now`.
+    #[test]
+    fn a_missed_occurrence_fires_once() {
+        let p = SchedulePreset::Daily { hour: 9, minute: 0 };
+        let now = dt(2026, 7, 24, 10, 0);
+        let stale = run_at(dt(2026, 7, 21, 9, 0));
+        assert_eq!(
+            decide(&p, Some(&stale), now),
+            TickAction::Fire(dt(2026, 7, 24, 9, 0))
+        );
+    }
+
+    /// Already handled this occurrence, next one is in the future.
+    #[test]
+    fn an_up_to_date_schedule_stays_idle() {
+        let p = SchedulePreset::Daily { hour: 9, minute: 0 };
+        let now = dt(2026, 7, 24, 10, 0);
+        assert_eq!(decide(&p, Some(&run_at(dt(2026, 7, 24, 9, 0))), now), TickAction::Idle);
+    }
+
 }
