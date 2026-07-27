@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
-import { startSession, writeSession, resizeSession, type SessionAuth } from "./ipc";
+import { startSession, startCommandSession, writeSession, resizeSession, type SessionAuth } from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
 
 export class TerminalPanel {
@@ -71,6 +71,12 @@ export class TerminalPanel {
   ): Promise<SessionAuth> {
     const { cols, rows } = this.term;
     return await startSession(this.session, cwd, initialPrompt, cols, rows, resume, workspaceId);
+  }
+  /** Разовый запуск пользовательской команды. Не сессия агента: ни хуков
+   *  состояния, ни привязки к аккаунту — окружение наследуется как есть. */
+  async startCommand(cwd: string, command: string): Promise<void> {
+    const { cols, rows } = this.term;
+    await startCommandSession(this.session, cwd, command, cols, rows);
   }
   write(text: string) { this.term.write(text); }
   focus() { this.term.focus(); }

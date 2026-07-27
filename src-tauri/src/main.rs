@@ -129,6 +129,7 @@ fn main() {
             commands::git_status,
             commands::session_tokens,
             commands::scheduler_ready,
+            commands::start_command_session,
             commands::gh_status,
             commands::host_platform,
         ])

@@ -54,6 +54,11 @@ export const startSession = (
 ) => invoke<SessionAuth>("start_session", {
   session, cwd, initialPrompt, cols, rows, resume, workspaceId: workspaceId ?? null,
 });
+/** Разовый запуск пользовательской команды в тайле-терминале (установка gh,
+ *  `gh auth login`). Не сессия агента: хуков состояния нет. */
+export const startCommandSession = (
+  session: string, cwd: string, command: string, cols: number, rows: number,
+) => invoke<void>("start_command_session", { session, cwd, command, cols, rows });
 export const writeSession = (session: string, data: string) => invoke<void>("write_session", { session, data });
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });

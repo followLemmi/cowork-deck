@@ -11,6 +11,11 @@ import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
 
+/** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
+ *  команды (установка gh, `gh auth login`): без хуков состояния, без
+ *  перезапуска и, главное, без автовосстановления. */
+export type TileKind = "claude" | "command";
+
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
@@ -22,6 +27,7 @@ interface Tile {
   auth?: SessionAuth;
   /** Привязка воркспейса изменилась после старта — окружение устарело. */
   authStale?: boolean;
+  kind?: TileKind;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -122,6 +128,21 @@ export class Deck {
     });
   }
 
+  /** Открывает тайл с разовой пользовательской командой (установка gh,
+   *  `gh auth login`). Такой тайл не сохраняется в layout: восстановление
+   *  молча перезапустило бы sudo-команду на следующем старте приложения. */
+  async openCommandTile(titleText: string, command: string, cwd: string) {
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd,
+      titleText,
+      prompt: null,
+      resume: false,
+      kind: "command",
+      command,
+    });
+  }
+
   /** Fire a scheduled scenario as a fresh tile. Returns false (and does not
    *  launch) if this scenario's previous scheduled session is still active. */
   async launchScheduled(workspace: Workspace, skill: Skill, filledPrompt: string): Promise<boolean> {
@@ -171,8 +192,12 @@ export class Deck {
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
     scheduledSkillId?: string;
+    /** "command" — разовый запуск `command` вместо сессии claude. */
+    kind?: TileKind;
+    command?: string;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
+    const isCommand = opts.kind === "command";
     const el = document.createElement("div");
     el.className = "tile";
     const head = document.createElement("div");
@@ -246,15 +271,20 @@ export class Deck {
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
+      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId, kind: opts.kind,
     };
     this.tiles.set(session, tile);
     if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
     try {
-      tile.auth = await panel.start(cwd, prompt, resume, workspaceId ?? null);
-      void this.persistLayout();
+      if (isCommand) {
+        await panel.startCommand(cwd, opts.command ?? "");
+        // Командный тайл в layout не попадает — persistLayout не зовём.
+      } else {
+        tile.auth = await panel.start(cwd, prompt, resume, workspaceId ?? null);
+        void this.persistLayout();
+      }
     } catch (e) {
       this.setState(session, "error");
       const raw = String((e as { message?: string })?.message ?? e);
@@ -396,7 +426,10 @@ export class Deck {
     tile.state = state;
     tile.label.className = `tile-state state-${state}`;
     tile.label.textContent = LABEL[state];
-    tile.restartBtn.style.display = (state === "ended" || state === "error") ? "inline" : "none";
+    // У командного тайла перезапуск не предлагаем: он поднял бы claude, а не
+    // повторил команду. Разовое действие повторяется из своего экрана.
+    const restartable = tile.kind !== "command" && (state === "ended" || state === "error");
+    tile.restartBtn.style.display = restartable ? "inline" : "none";
     this.renderList();
     if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       const id = this.notify.register(session);
@@ -524,6 +557,7 @@ export class Deck {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
       session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
+      kind: t.kind,
     })));
     return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
@@ -624,12 +658,20 @@ export function nextWaitingAcross(
 }
 
 export function serializeTiles(
-  tiles: { session: string; workspacePath: string; name: string; workspaceId?: string }[],
+  tiles: {
+    session: string; workspacePath: string; name: string; workspaceId?: string;
+    kind?: TileKind;
+  }[],
 ): SessionEntry[] {
-  return tiles.map((t) => ({
-    sessionId: t.session, cwd: t.workspacePath, name: t.name,
-    ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
-  }));
+  return tiles
+    // Командный тайл — разовое действие пользователя (установка пакета, вход в
+    // аккаунт). Восстанавливать его на следующем запуске нельзя: это молча
+    // выполнило бы sudo-команду без спроса.
+    .filter((t) => t.kind !== "command")
+    .map((t) => ({
+      sessionId: t.session, cwd: t.workspacePath, name: t.name,
+      ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+    }));
 }
 
 export function selectedFromChecks(checks: { session: string; checked: boolean }[]): string[] {

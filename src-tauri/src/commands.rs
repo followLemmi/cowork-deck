@@ -249,6 +249,49 @@ pub fn start_session(
     Ok(outcome.auth)
 }
 
+/// Запускает произвольную команду в PTY-тайле.
+///
+/// Команду пишет пользователь и видит её целиком до запуска (форма установки
+/// gh), поэтому приложение не выполняет ничего привилегированного вслепую.
+/// Хуки Claude Code сюда не подставляются: это обычный терминал, а не сессия
+/// агента, и её состояние ведётся только по факту выхода процесса.
+#[tauri::command]
+pub fn start_command_session(
+    app: AppHandle,
+    state: State<AppState>,
+    session: String,
+    cwd: String,
+    command: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let (program, args) = if cfg!(windows) {
+        ("cmd".to_string(), vec!["/C".to_string(), command])
+    } else {
+        ("sh".to_string(), vec!["-lc".to_string(), command])
+    };
+
+    let app_out = app.clone();
+    let sess_out = session.clone();
+    let on_output = move |bytes: Vec<u8>| {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let _ = app_out.emit("session://output", OutputPayload { session: sess_out.clone(), data_b64: b64 });
+    };
+
+    let app_exit = app.clone();
+    let sess_exit = session.clone();
+    let on_exit = move |ok: bool| {
+        let st = if ok { crate::model::SessionState::Ended } else { crate::model::SessionState::Error };
+        let _ = app_exit.emit("session://state", StatePayload { session: sess_exit.clone(), state: st });
+        let _ = app_exit.emit("session://exit", ExitPayload { session: sess_exit.clone(), ok });
+    };
+
+    state
+        .pty
+        .spawn(&session, &program, &args, &cwd, &[], cols, rows, on_output, on_exit)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn write_session(state: State<AppState>, session: String, data: String) -> Result<(), String> {
     state.pty.write(&session, data.as_bytes()).map_err(|e| e.to_string())
