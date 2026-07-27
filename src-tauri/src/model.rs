@@ -5,9 +5,86 @@ use serde::{Deserialize, Serialize};
 pub enum SessionState {
     Idle,
     Working,
+    /// Blocked until a human decides — a tool or MCP server is asking for
+    /// permission. The session cannot progress on its own.
     WaitingInput,
+    /// The agent finished its turn and the prompt is free again. Looks idle,
+    /// but unlike `Idle` it means work was actually done, so it is worth a
+    /// notification. Distinct from `WaitingInput`: nothing is blocked.
+    Done,
     Ended,
     Error,
+}
+
+/// Runtime record of one scenario's scheduled runs, written only by the
+/// scheduler loop and the ack command.
+///
+/// `last_attempt` is the gate: an occurrence is emitted at most once, so a
+/// scenario that keeps failing cannot be retried every tick. `last_run` and
+/// `last_outcome` are the record of what actually happened — the scheduler no
+/// longer pretends a run succeeded just because it emitted the event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleRun {
+    /// Occurrence we last emitted a fire for, launched or not (epoch millis).
+    #[serde(rename = "lastAttempt")]
+    pub last_attempt: i64,
+    /// Occurrence of the last run that actually launched a session.
+    #[serde(rename = "lastRun", default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<i64>,
+    /// How the last attempt ended, as reported by the frontend.
+    #[serde(rename = "lastOutcome", default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome: Option<String>,
+    /// Storage format of the timestamps above.
+    ///
+    /// Version 1 wrote `naive_local().and_utc().timestamp_millis()` — a local
+    /// wall clock labelled as if it were UTC. Self-consistent while the
+    /// machine stayed in one timezone, and off by the offset the moment it
+    /// did not, which could produce a spurious catch-up or a skipped run
+    /// after travel or a DST change. Version 2 stores a true epoch. Records
+    /// without the field are version 1 and are converted on read.
+    #[serde(rename = "v", default = "v1")]
+    pub version: u8,
+    /// The rule `last_attempt` belongs to. Cleared while the schedule is off,
+    /// so switching it back on — or moving the time earlier in the day — is
+    /// treated as a fresh arming rather than a run that is owed right now.
+    #[serde(rename = "preset", default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+}
+
+fn v1() -> u8 { 1 }
+
+pub const SCHEDULE_STATE_VERSION: u8 = 2;
+
+/// Accepts both the current record and the bare epoch-millis number written
+/// before the record existed, so upgrading does not re-arm every schedule.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ScheduleRunOnDisk {
+    Record(ScheduleRun),
+    Legacy(i64),
+}
+
+impl From<ScheduleRunOnDisk> for ScheduleRun {
+    fn from(v: ScheduleRunOnDisk) -> Self {
+        match v {
+            ScheduleRunOnDisk::Record(r) => r,
+            ScheduleRunOnDisk::Legacy(ms) => ScheduleRun {
+                last_attempt: ms,
+                last_run: Some(ms),
+                last_outcome: None,
+                version: 1,
+                preset: None,
+            },
+        }
+    }
+}
+
+/// Parse a whole `schedule_state.json` body, tolerating the legacy shape.
+pub fn parse_schedule_state(
+    s: &str,
+) -> serde_json::Result<std::collections::HashMap<String, ScheduleRun>> {
+    let raw: std::collections::HashMap<String, ScheduleRunOnDisk> = serde_json::from_str(s)?;
+    Ok(raw.into_iter().map(|(k, v)| (k, v.into())).collect())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +146,12 @@ pub struct SessionEntry {
     /// layout files written before this field existed still load (→ None).
     #[serde(rename = "workspaceId", default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Scenario this session was started by, when it came from a schedule.
+    /// Restoring it is what keeps the overlap guard from raising a duplicate
+    /// run right after auto-restore. Optional + defaulted like the field
+    /// above, so older layout files still load.
+    #[serde(rename = "scheduledSkillId", default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_skill_id: Option<String>,
 }
 
 /// Небольшое UI-состояние, переживающее перезапуск (пока — активное пространство).
@@ -109,11 +192,13 @@ pub fn event_kind_to_state(kind: &str, notification_type: Option<&str>) -> Optio
         "start" => Some(SessionState::Idle),
         "working" => Some(SessionState::Working),
         "waiting" => Some(SessionState::WaitingInput),
+        "done" => Some(SessionState::Done),
         "ended" => Some(SessionState::Ended),
+        // Only a permission prompt blocks. An idle nudge says nothing new:
+        // after `Stop` the state is already `Done`, and while a permission
+        // prompt is open, downgrading would let the overlap guard through.
         "notify" => match notification_type {
-            Some(t) if t.contains("permission") || t.contains("idle") => {
-                Some(SessionState::WaitingInput)
-            }
+            Some(t) if t.contains("permission") => Some(SessionState::WaitingInput),
             _ => None,
         },
         _ => None,
@@ -134,12 +219,33 @@ mod tests {
             event_kind_to_state("notify", Some("permission_prompt")),
             Some(SessionState::WaitingInput)
         );
-        assert_eq!(
-            event_kind_to_state("notify", Some("idle_prompt")),
-            Some(SessionState::WaitingInput)
-        );
         assert_eq!(event_kind_to_state("notify", Some("other")), None);
         assert_eq!(event_kind_to_state("garbage", None), None);
+    }
+
+    /// `Stop` means the agent finished its turn and the prompt is free again;
+    /// a permission request means it is blocked until a human decides. The
+    /// overlap guard, the pill and notifications treat these differently, so
+    /// they must not share one state.
+    #[test]
+    fn finished_turn_is_distinct_from_waiting_for_a_decision() {
+        assert_eq!(event_kind_to_state("done", None), Some(SessionState::Done));
+        assert_eq!(
+            event_kind_to_state("waiting", None),
+            Some(SessionState::WaitingInput)
+        );
+        assert_eq!(
+            event_kind_to_state("notify", Some("permission_prompt")),
+            Some(SessionState::WaitingInput)
+        );
+    }
+
+    /// An idle nudge carries no new information: after `Stop` the state is
+    /// already `Done`, and while a permission prompt is open it must not be
+    /// downgraded to something the guard would let through.
+    #[test]
+    fn idle_notification_does_not_change_state() {
+        assert_eq!(event_kind_to_state("notify", Some("idle_prompt")), None);
     }
 
     #[test]
@@ -186,8 +292,15 @@ mod tests {
         // None is omitted from output (keeps files clean).
         let entry = SessionEntry {
             session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
+            scheduled_skill_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
+        assert!(!json.contains("scheduledSkillId"), "None scheduledSkillId must be omitted, got {json}");
+
+        // A layout written before the field existed still loads.
+        let old_entry = r#"{"sessionId":"s4","cwd":"/c","name":"K"}"#;
+        let e: SessionEntry = serde_json::from_str(old_entry).unwrap();
+        assert_eq!(e.scheduled_skill_id, None);
     }
 }

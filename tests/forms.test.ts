@@ -69,7 +69,8 @@ describe("skillForm", () => {
     document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
     const res = await p;
     expect(res).toMatchObject({ name: "Fix", prompt: "line1\nline2", workspaceId: "ws-1" });
-    expect(res!.icon).toBe("▶"); // default when empty
+    // An icon name now, not a glyph: the field is a picker over the sprite.
+  expect(res!.icon).toBe("play");
   });
 
   it("returns schedule: null when «по расписанию» is off", async () => {
