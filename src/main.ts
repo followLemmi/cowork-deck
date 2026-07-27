@@ -2,7 +2,7 @@ import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { claudeAvailable, loadLayout, onScheduledFire, scheduleAck, schedulerReady } from "./ipc";
-import type { Skill } from "./ipc";
+import type { Skill, Workspace } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -108,8 +108,20 @@ void listen("pill://focus-next", async () => {
 // Selecting a workspace (click, startup restore of the active one, or after a
 // deletion re-selects the next one) switches the deck to that workspace's tiles.
 const workspaces = new WorkspacesPanel(wsMount, (ws) => deck.setActiveWorkspace(ws.id));
-const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
+/** Every launch path needs an active workspace. Saying so beats a button that
+ *  looks broken — the old behaviour was a bare `return`. */
+async function requireWorkspace(): Promise<Workspace | null> {
   const ws = workspaces.active;
+  if (ws) return ws;
+  await alertModal(
+    "Сначала выберите пространство — это папка проекта, в которой запускаются сессии. "
+    + "Если пространств ещё нет, создайте его кнопкой «+ пространство».",
+  );
+  return null;
+}
+
+const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
+  const ws = await requireWorkspace();
   if (!ws) return;
   const prompt = await resolvePrompt(skill.prompt, placeholderForm);
   if (prompt === null) return;
@@ -119,14 +131,15 @@ const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, asy
 // Deleting a workspace strands the scenarios pinned to it — the confirmation
 // says how many before it happens.
 workspaces.setSkillsSource(() => skills.all);
-newBtn.onclick = () => {
-  const ws = workspaces.active;
-  if (ws) deck.launch(ws, null);
+const newSession = async () => {
+  const ws = await requireWorkspace();
+  if (ws) await deck.launch(ws, null);
 };
+newBtn.onclick = () => { void newSession(); };
 
 function paletteCommands(): Command[] {
   return [
-    { id: "new-session", title: "Новая сессия", run: () => { const ws = workspaces.active; if (ws) deck.launch(ws, null); } },
+    { id: "new-session", title: "Новая сессия", run: () => { void newSession(); } },
     { id: "close-active", title: "Закрыть активную сессию", run: () => deck.closeActive() },
     { id: "next-waiting", title: "К следующей ждущей вводу", run: () => deck.focusNextWaiting() },
     { id: "search", title: "Поиск в терминале", run: () => deck.searchActive() },
@@ -137,7 +150,7 @@ function paletteCommands(): Command[] {
 
 const COMMANDS: Record<string, () => void> = {
   "palette": () => openPalette(paletteCommands()),
-  "new-session": () => { const ws = workspaces.active; if (ws) deck.launch(ws, null); },
+  "new-session": () => { void newSession(); },
   "close-active": () => deck.closeActive(),
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),

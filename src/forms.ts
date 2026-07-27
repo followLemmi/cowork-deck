@@ -7,17 +7,15 @@ import { pickFolder } from "./dialog";
 import type { Schedule, SchedulePreset } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule, schedulePreview } from "./schedule";
+import { openDialog } from "./dialog-shell";
 
 const COLORS = ["#61afef", "#98c379", "#e5c07b", "#c678dd", "#e06c75", "#56b6c2"];
 
-function overlay(): { overlay: HTMLElement; box: HTMLElement } {
-  const overlay = document.createElement("div");
-  overlay.className = "modal-overlay";
-  const box = document.createElement("div");
-  box.className = "modal-box";
-  overlay.append(box);
-  document.body.append(overlay);
-  return { overlay, box };
+/** Shows a validation message where the user is looking, instead of the OK
+ *  button quietly doing nothing — the original behaviour for an empty name. */
+function showError(el: HTMLElement, message: string) {
+  el.textContent = message;
+  el.style.display = "";
 }
 
 function labeled(labelText: string, field: HTMLElement): HTMLElement {
@@ -48,7 +46,10 @@ export function workspaceForm(
   initial?: { name: string; path: string; color: string },
 ): Promise<{ name: string; path: string; color: string } | null> {
   return new Promise((resolve) => {
-    const { overlay: ov, box } = overlay();
+    const { box, close: closeDialog } = openDialog({
+      onCancel: () => close(null),
+      onAccept: () => submit(),
+    });
     const title = document.createElement("div");
     title.className = "modal-title";
     title.textContent = initial ? "Изменить пространство" : "Новое пространство";
@@ -95,17 +96,20 @@ export function workspaceForm(
     colorLabel.textContent = "Цвет";
     colorRow.append(colorLabel, swatches);
 
+    const error = document.createElement("div");
+    error.className = "form-error"; error.style.display = "none";
     const { row, ok, cancel } = actions();
-    box.append(title, labeled("Имя", name), labeled("Папка", pathRow), colorRow, row);
+    box.append(title, labeled("Имя", name), labeled("Папка", pathRow), colorRow, error, row);
 
-    const close = (v: { name: string; path: string; color: string } | null) => { ov.remove(); resolve(v); };
-    ok.onclick = () => {
+    const close = (v: { name: string; path: string; color: string } | null) => { closeDialog(); resolve(v); };
+    const submit = () => {
       const n = name.value.trim(); const p = path.value.trim();
-      if (!n || !p) return; // требуются оба
+      if (!n) return showError(error, "Укажите имя пространства.");
+      if (!p) return showError(error, "Выберите папку проекта.");
       close({ name: n, path: p, color });
     };
+    ok.onclick = submit;
     cancel.onclick = () => close(null);
-    ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(null); });
     name.focus();
   });
 }
@@ -121,7 +125,10 @@ export function skillForm(
   activeWorkspaceName: string | null = null,
 ): Promise<{ name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null> {
   return new Promise((resolve) => {
-    const { overlay: ov, box } = overlay();
+    const { box, close: closeDialog } = openDialog({
+      onCancel: () => close(null),
+      onAccept: () => submit(),
+    });
     const title = document.createElement("div");
     title.className = "modal-title";
     title.textContent = initial ? "Изменить сценарий" : "Новый сценарий";
@@ -272,14 +279,15 @@ export function skillForm(
       labeled("По расписанию", schedEnabled), schedBody, schedError, row,
     );
 
-    const close = (v: { name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null) => { ov.remove(); resolve(v); };
-    ok.onclick = () => {
+    const close = (v: { name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null) => { closeDialog(); resolve(v); };
+    const submit = () => {
       const n = name.value.trim(); const pr = promptField.value.trim();
-      if (!n || !pr) return;
+      if (!n) return showError(schedError, "Укажите имя сценария.");
+      if (!pr) return showError(schedError, "Опишите задание для Claude.");
       const defaults = readDefaults();
       const preset = readPreset();
       const v = validateSchedule(schedEnabled.checked, preset, pr, defaults);
-      if (!v.ok) { schedError.textContent = v.error; schedError.style.display = ""; return; }
+      if (!v.ok) return showError(schedError, v.error);
       close({
         name: n, icon: icon.value.trim() || "▶", prompt: pr,
         workspaceId: scope.checked ? activeWorkspaceId : null,
@@ -291,8 +299,8 @@ export function skillForm(
           : (initial?.schedule ? { ...initial.schedule, preset, defaults, enabled: false } : null),
       });
     };
+    ok.onclick = submit;
     cancel.onclick = () => close(null);
-    ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(null); });
     name.focus();
   });
 }
@@ -301,10 +309,13 @@ export function skillForm(
  *  name→value map on OK, or null on Cancel/backdrop click. */
 export function placeholderForm(names: string[]): Promise<Record<string, string> | null> {
   return new Promise((resolve) => {
-    const { overlay: ov, box } = overlay();
+    const { box, close: closeDialog } = openDialog({
+      onCancel: () => close(null),
+      onAccept: () => submit(),
+    });
     const title = document.createElement("div");
     title.className = "modal-title";
-    title.textContent = "Параметры сценария";
+    title.textContent = "Параметры запуска";
 
     const inputs = new Map<string, HTMLInputElement>();
     const rows: HTMLElement[] = [];
@@ -319,14 +330,14 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
     const { row, ok, cancel } = actions();
     box.append(title, ...rows, row);
 
-    const close = (v: Record<string, string> | null) => { ov.remove(); resolve(v); };
-    ok.onclick = () => {
+    const close = (v: Record<string, string> | null) => { closeDialog(); resolve(v); };
+    const submit = () => {
       const values: Record<string, string> = {};
       for (const [n, inp] of inputs) values[n] = inp.value.trim();
       close(values);
     };
+    ok.onclick = submit;
     cancel.onclick = () => close(null);
-    ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(null); });
     inputs.get(names[0])?.focus();
   });
 }

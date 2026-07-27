@@ -154,6 +154,9 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
   border-radius: var(--r-sm); padding: 6px 8px; }
 .form-sched-hint { font-size: var(--fs-xs); color: var(--fg-muted); line-height: 1.35; }
 .form-sched-defhead { font-size: var(--fs-sm); color: var(--fg); margin-top: 4px; }
+.sk-sched { font-size: var(--fs-xs); color: var(--fg-muted); margin: -2px 0 6px 2px; line-height: 1.35; }
+.sk-sched-off { opacity: 0.7; font-style: italic; }
+.form-error { font-size: var(--fs-sm); color: var(--st-error); }
 .state-ended        { color: var(--st-ended);   background: rgba(86, 182, 194, 0.14); }
 .state-error        { color: var(--st-error);   background: rgba(224, 108, 117, 0.16); border-color: rgba(224, 108, 117, 0.4); }
 

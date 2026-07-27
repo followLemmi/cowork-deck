@@ -209,8 +209,12 @@ export class Deck {
     clearBtn.textContent = "⌫"; clearBtn.className = "tile-close"; clearBtn.title = "очистить";
     clearBtn.onclick = () => tile.panel.clear();
     const close = document.createElement("button");
-    close.textContent = "✕"; close.className = "tile-close";
-    close.onclick = () => this.remove(session);
+    close.textContent = "✕"; close.className = "tile-close"; close.title = "закрыть сессию";
+    close.setAttribute("aria-label", "Закрыть сессию");
+    // Same question Cmd+W asks. Without it the mouse was the more dangerous
+    // of the two ways to do the same thing: one stray click killed a live
+    // session outright, while the keyboard asked first.
+    close.onclick = () => { void this.requestClose(session); };
     head.append(title, gitBadge, tokenBadge, label, clearBtn, close);
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
@@ -343,12 +347,16 @@ export class Deck {
   }
   async closeActive() {
     const id = this.activeSession;
-    if (!id) return;
-    const t = this.tiles.get(id);
-    if (t && (t.state === "working" || t.state === "waitingInput" || t.state === "done")) {
-      if (!(await confirmModal("Закрыть активную сессию?"))) return;
-    }
-    this.remove(id);
+    if (id) await this.requestClose(id);
+  }
+
+  /** Close a session, asking first when it is still alive. `ended`/`error`
+   *  tiles hold nothing but scrollback, so those go without a question. */
+  private async requestClose(session: string) {
+    const t = this.tiles.get(session);
+    const alive = t && (t.state === "working" || t.state === "waitingInput" || t.state === "done");
+    if (alive && !(await confirmModal(`Закрыть сессию «${t.name}»? Она ещё живёт.`))) return;
+    this.remove(session);
   }
   searchActive() {
     const id = this.activeSession;
