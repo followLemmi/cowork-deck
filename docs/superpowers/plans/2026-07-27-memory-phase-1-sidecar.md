@@ -2025,7 +2025,10 @@ enum Cmd {
         scope: String,
         #[arg(long, default_value_t = 10)]
         top: usize,
-        #[arg(long, default_value_t = 0.25)]
+        // allow_hyphen_values: clap otherwise reads "-1" as an unknown flag
+        // rather than a negative value, and a negative min-score is how the
+        // threshold is disabled.
+        #[arg(long, default_value_t = 0.25, allow_hyphen_values = true)]
         min_score: f32,
         #[arg(long)]
         json: bool,
