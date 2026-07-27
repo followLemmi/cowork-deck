@@ -1952,6 +1952,42 @@ fn search_scoped_to_a_workspace_also_returns_diaries() {
     assert!(files.iter().any(|f| f.starts_with("ws-1/")), "got: {files:?}");
     assert!(files.iter().any(|f| f.starts_with("Diaries/")), "got: {files:?}");
 
+    // Hit's field names are a published interface: the desktop app parses this
+    // JSON in later phases. Assert on every field, so a rename cannot pass.
+    let diary = hits
+        .iter()
+        .find(|h| h["file"].as_str().unwrap().starts_with("Diaries/"))
+        .expect("diary hit");
+    assert!(diary["score"].is_number(), "score must be numeric: {diary}");
+    assert_eq!(diary["scope"], "__diaries__");
+    assert_eq!(diary["room"], "reviewer");
+    assert!(diary["text"].as_str().is_some_and(|s| !s.is_empty()));
+
+    let ws = hits
+        .iter()
+        .find(|h| h["file"].as_str().unwrap().starts_with("ws-1/"))
+        .expect("workspace hit");
+    assert!(ws["room"].is_null(), "a workspace hit has no room");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn status_tells_an_absent_index_from_a_built_one() {
+    let root = fixture_root("state");
+
+    let (stdout, stderr, ok) = run(&root, &["status", "--json"]);
+    assert!(ok, "status failed: {stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["state"], "absent", "nothing has been indexed yet: {stdout}");
+
+    let (_, stderr, ok) = run(&root, &["update"]);
+    assert!(ok, "update failed: {stderr}");
+
+    let (stdout, _, _) = run(&root, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["state"], "ready", "got: {stdout}");
+
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -2066,12 +2102,23 @@ fn main() -> Result<()> {
         }
         Cmd::Status { json } => {
             let ix = cowork_memory::index::load(&cache);
+            // Counts alone cannot tell "never indexed" from "indexed an empty
+            // corpus" — both are zero — and the app's memory panel has to
+            // show those as different states.
+            let state = if !cache.join("meta.json").exists() {
+                "absent"
+            } else if ix.meta.chunks.is_empty() {
+                "empty"
+            } else {
+                "ready"
+            };
             if json {
                 println!(
                     "{}",
                     serde_json::json!({
                         "root": cli.root.display().to_string(),
                         "cache": cache.display().to_string(),
+                        "state": state,
                         "files": ix.meta.files.len(),
                         "chunks": ix.meta.chunks.len(),
                         "dim": ix.meta.dim,
@@ -2080,6 +2127,7 @@ fn main() -> Result<()> {
             } else {
                 println!("root:   {}", cli.root.display());
                 println!("cache:  {}", cache.display());
+                println!("state:  {state}");
                 println!("files:  {}", ix.meta.files.len());
                 println!("chunks: {} (dim {})", ix.meta.chunks.len(), ix.meta.dim);
             }
