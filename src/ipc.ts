@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-/** `waitingInput` — заблокирована до решения человека (запрос разрешения).
- *  `done` — агент доделал ход, приглашение свободно: ничего не блокирует,
- *  но работа была сделана, поэтому об этом стоит уведомить. */
+/** `waitingInput` — blocked until a human decides (a permission request).
+ *  `done` — the agent finished its turn and the prompt is free: nothing is
+ *  blocked, but work got done, which is worth a notification. */
 export type SessionState = "idle" | "working" | "waitingInput" | "done" | "ended" | "error";
 export interface Workspace { id: string; name: string; path: string; color: string; }
 export type SchedulePreset =
