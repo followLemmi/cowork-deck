@@ -62,7 +62,7 @@ function actions(): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButto
   const row = document.createElement("div");
   row.className = "modal-actions";
   const cancel = document.createElement("button");
-  cancel.className = "modal-cancel"; cancel.textContent = "Отмена";
+  cancel.className = "modal-cancel"; cancel.textContent = "Cancel";
   const ok = document.createElement("button");
   ok.className = "modal-ok"; ok.textContent = "OK";
   row.append(cancel, ok);
@@ -83,7 +83,7 @@ export function workspaceForm(
     box.classList.add("modal-box--form");
     const title = document.createElement("div");
     title.className = "modal-title";
-    title.textContent = initial ? "Изменить пространство" : "Новое пространство";
+    title.textContent = initial ? "Edit workspace" : "New workspace";
 
     const name = document.createElement("input");
     name.className = "modal-input form-name"; name.type = "text";
@@ -91,9 +91,9 @@ export function workspaceForm(
 
     const path = document.createElement("input");
     path.className = "modal-input form-path"; path.type = "text";
-    path.value = initial?.path ?? ""; path.placeholder = "путь к папке проекта";
+    path.value = initial?.path ?? ""; path.placeholder = "path to the project folder";
     const pick = document.createElement("button");
-    pick.className = "form-pick"; pick.type = "button"; pick.textContent = "Выбрать папку…";
+    pick.className = "form-pick"; pick.type = "button"; pick.textContent = "Choose folder…";
     pick.onclick = async () => {
       const p = await pickFolder();
       if (p) {
@@ -124,19 +124,19 @@ export function workspaceForm(
     colorRow.className = "form-row";
     const colorLabel = document.createElement("span");
     colorLabel.className = "form-label";
-    colorLabel.textContent = "Цвет";
+    colorLabel.textContent = "Colour";
     colorRow.append(colorLabel, swatches);
 
     const error = document.createElement("div");
     error.className = "form-error"; error.style.display = "none";
     const { row, ok, cancel } = actions();
-    box.append(title, labeled("Имя", name), labeled("Папка", pathRow), colorRow, error, row);
+    box.append(title, labeled("Name", name), labeled("Folder", pathRow), colorRow, error, row);
 
     const close = (v: { name: string; path: string; color: string } | null) => { closeDialog(); resolve(v); };
     const submit = () => {
       const n = name.value.trim(); const p = path.value.trim();
-      if (!n) return showError(error, "Укажите имя пространства.");
-      if (!p) return showError(error, "Выберите папку проекта.");
+      if (!n) return showError(error, "Enter a workspace name.");
+      if (!p) return showError(error, "Choose a project folder.");
       close({ name: n, path: p, color });
     };
     ok.onclick = submit;
@@ -163,7 +163,7 @@ export function skillForm(
     box.classList.add("modal-box--form");
     const title = document.createElement("div");
     title.className = "modal-title";
-    title.textContent = initial ? "Изменить сценарий" : "Новый сценарий";
+    title.textContent = initial ? "Edit scenario" : "New scenario";
 
     const name = document.createElement("input");
     name.className = "modal-input form-name"; name.type = "text";
@@ -177,7 +177,7 @@ export function skillForm(
     const iconPicker = document.createElement("div");
     iconPicker.className = "form-swatches";
     iconPicker.setAttribute("role", "radiogroup");
-    iconPicker.setAttribute("aria-label", "Значок сценария");
+    iconPicker.setAttribute("aria-label", "Scenario mark");
     for (const n of SCENARIO_ICONS) {
       const b = document.createElement("button");
       b.type = "button"; b.className = "form-swatch form-icon-swatch";
@@ -206,34 +206,34 @@ export function skillForm(
     scope.className = "form-scope"; scope.type = "checkbox";
     scope.checked = initial ? initial.workspaceId != null : false;
 
-    // --- schedule section: hidden until «По расписанию» is ticked ---
+    // --- schedule section: hidden until "On a schedule" is ticked ---
     const schedEnabled = document.createElement("input");
     schedEnabled.type = "checkbox"; schedEnabled.className = "form-sched-enabled";
     schedEnabled.checked = !!initial?.schedule?.enabled;
 
     const kind = document.createElement("select");
     kind.className = "form-sched-kind";
-    for (const [v, t] of [["hourly", "каждый час"], ["daily", "ежедневно"], ["weekly", "еженедельно"]] as const) {
+    for (const [v, t] of [["hourly", "hourly"], ["daily", "daily"], ["weekly", "weekly"]] as const) {
       const o = document.createElement("option"); o.value = v; o.textContent = t; kind.append(o);
     }
     const weekday = document.createElement("select");
     weekday.className = "form-sched-weekday";
-    ["вс", "пн", "вт", "ср", "чт", "пт", "сб"].forEach((w, i) => {
+    ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach((w, i) => {
       const o = document.createElement("option"); o.value = String(i); o.textContent = w; weekday.append(o);
     });
     const hour = document.createElement("input");
     hour.type = "number"; hour.min = "0"; hour.max = "23"; hour.className = "form-sched-hour"; hour.value = "9";
-    hour.setAttribute("aria-label", "часы");
+    hour.setAttribute("aria-label", "hours");
     const minute = document.createElement("input");
     minute.type = "number"; minute.min = "0"; minute.max = "59"; minute.className = "form-sched-minute"; minute.value = "0";
-    minute.setAttribute("aria-label", "минуты");
+    minute.setAttribute("aria-label", "minutes");
     // Visible, not just a tooltip: two bare number boxes gave no clue which
     // was which, and for the hourly preset the single remaining box did not
     // say whether "30" meant "at :30" or "every 30 minutes".
     const hourLabel = document.createElement("span");
-    hourLabel.className = "form-sched-unit"; hourLabel.textContent = "ч";
+    hourLabel.className = "form-sched-unit"; hourLabel.textContent = "h";
     const minuteLabel = document.createElement("span");
-    minuteLabel.className = "form-sched-unit"; minuteLabel.textContent = "мин";
+    minuteLabel.className = "form-sched-unit"; minuteLabel.textContent = "min";
 
     // Daily, not the first <option>. Hourly as a silent default means someone
     // who ticks the box, types a time into the one visible number field and
@@ -258,7 +258,7 @@ export function skillForm(
       weekdayWrap.style.display = weekly ? "" : "none";
       hour.style.display = hourly ? "none" : "";
       hourLabel.style.display = hourly ? "none" : "";
-      minuteLabel.textContent = hourly ? "минута часа" : "мин";
+      minuteLabel.textContent = hourly ? "minute of the hour" : "min";
     };
     kind.addEventListener("change", syncTimeRow);
     timeRow.append(selectWrap(kind), weekdayWrap, hour, hourLabel, minute, minuteLabel);
@@ -269,10 +269,10 @@ export function skillForm(
     defWrap.className = "form-sched-defaults";
     const defHead = document.createElement("div");
     defHead.className = "form-sched-defhead";
-    defHead.textContent = "Значения параметров по умолчанию";
+    defHead.textContent = "Default parameter values";
     const defHint = document.createElement("div");
     defHint.className = "form-sched-hint";
-    defHint.textContent = "запуск по расписанию некому спросить, поэтому значения нужны заранее";
+    defHint.textContent = "a scheduled run has nobody to ask, so the values are needed up front";
     const defInputs = new Map<string, HTMLInputElement>();
     const renderDefaults = () => {
       const names = parsePlaceholders(promptField.value);
@@ -282,7 +282,7 @@ export function skillForm(
       if (names.length) defWrap.append(defHead, defHint);
       for (const n of names) {
         const inp = document.createElement("input");
-        inp.className = "modal-input form-sched-def"; inp.type = "text"; inp.placeholder = `значение {{${n}}}`;
+        inp.className = "modal-input form-sched-def"; inp.type = "text"; inp.placeholder = `value for {{${n}}}`;
         inp.value = kept.get(n)?.value ?? initial?.schedule?.defaults?.[n] ?? "";
         defInputs.set(n, inp);
         defWrap.append(labeled(n, inp));
@@ -314,7 +314,7 @@ export function skillForm(
     const caveat = document.createElement("div");
     caveat.className = "form-sched-hint";
     caveat.textContent =
-      "Срабатывает, только пока cowork-deck открыт. Пропущенные запуски выполняются один раз при следующем старте.";
+      "Only fires while cowork-deck is open. Missed runs happen once, at the next start.";
 
     const schedBody = document.createElement("div");
     schedBody.className = "form-sched-body";
@@ -334,20 +334,20 @@ export function skillForm(
 
     const { row, ok, cancel } = actions();
     box.append(
-      title, labeled("Имя", name), labeled("Значок", iconPicker),
-      labeled("Задание", promptField),
-      labeledCheck("Только для текущего пространства", scope,
-        "иначе сценарий виден и запускается в любом"),
-      labeledCheck("По расписанию", schedEnabled,
-        "запускать без участия человека"),
+      title, labeled("Name", name), labeled("Mark", iconPicker),
+      labeled("Task", promptField),
+      labeledCheck("Only for the current workspace", scope,
+        "otherwise the scenario is visible and runs in any"),
+      labeledCheck("On a schedule", schedEnabled,
+        "run it without a human present"),
       schedBody, schedError, row,
     );
 
     const close = (v: { name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null) => { closeDialog(); resolve(v); };
     const submit = () => {
       const n = name.value.trim(); const pr = promptField.value.trim();
-      if (!n) return showError(schedError, "Укажите имя сценария.");
-      if (!pr) return showError(schedError, "Опишите задание для Claude.");
+      if (!n) return showError(schedError, "Enter a scenario name.");
+      if (!pr) return showError(schedError, "Describe the task for Claude.");
       const defaults = readDefaults();
       const preset = readPreset();
       const v = validateSchedule(schedEnabled.checked, preset, pr, defaults);
@@ -379,7 +379,7 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
     });
     const title = document.createElement("div");
     title.className = "modal-title";
-    title.textContent = "Параметры запуска";
+    title.textContent = "Launch parameters";
 
     const inputs = new Map<string, HTMLInputElement>();
     const rows: HTMLElement[] = [];

@@ -154,7 +154,7 @@ pub struct SessionEntry {
     pub scheduled_skill_id: Option<String>,
 }
 
-/// Небольшое UI-состояние, переживающее перезапуск (пока — активное пространство).
+/// A little UI state that survives a restart (for now: the active workspace).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct UiState {
     #[serde(rename = "activeWorkspaceId")]

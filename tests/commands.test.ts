@@ -39,7 +39,8 @@ describe("matchHotkey", () => {
   });
 
   // e.key is the produced character, so on a Cyrillic layout Cmd+K arrives as
-  // "л" and nothing matched at all — in an app whose UI is Russian.
+  // "л" and nothing matched at all. The UI's language says nothing about
+  // which layout the user types in.
   it("matches by physical key, not by the character produced", () => {
     expect(matchHotkey({ ...base, code: "KeyK", key: "л", metaKey: true }, true)).toBe("palette");
   });

@@ -19,7 +19,7 @@ export function openPalette(commands: Command[]): void {
   input.setAttribute("role", "combobox");
   input.setAttribute("aria-expanded", "true");
   input.setAttribute("aria-controls", "palette-list");
-  input.placeholder = "Команда…";
+  input.placeholder = "Command…";
   const list = document.createElement("div");
   list.className = "palette-list";
   list.setAttribute("role", "listbox");

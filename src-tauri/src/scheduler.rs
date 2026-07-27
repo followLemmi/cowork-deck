@@ -258,8 +258,8 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
                 // has to reach the user rather than stderr nobody reads.
                 eprintln!("error: failed to save schedule_state.json ({e})");
                 let _ = app.emit("schedule://broken", format!(
-                    "Не удалось сохранить состояние расписаний ({e}). \
-                     Пока это так, запланированные сценарии не сработают."));
+                    "Could not save schedule state ({e}). \
+                     Until this is fixed, scheduled scenarios will not fire."));
             }
         }
 

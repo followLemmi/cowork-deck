@@ -6,13 +6,13 @@ import {
 import type { Skill, Workspace } from "../src/ipc";
 
 describe("describeSchedule", () => {
-  it("formats each preset in Russian", () => {
+  it("formats each preset", () => {
     expect(describeSchedule({ preset: { kind: "hourly", minute: 5 }, defaults: {}, enabled: true }))
-      .toBe("каждый час в :05");
+      .toBe("hourly at :05");
     expect(describeSchedule({ preset: { kind: "daily", hour: 9, minute: 0 }, defaults: {}, enabled: true }))
-      .toBe("ежедневно 09:00");
+      .toBe("daily at 09:00");
     expect(describeSchedule({ preset: { kind: "weekly", weekday: 1, hour: 8, minute: 30 }, defaults: {}, enabled: true }))
-      .toBe("еженедельно пн 08:30");
+      .toBe("weekly on Mon at 08:30");
   });
 });
 
@@ -44,12 +44,12 @@ describe("nextRun", () => {
 describe("nextRunLabel", () => {
   it("labels today/tomorrow", () => {
     const now = new Date(2026, 6, 24, 8, 0, 0);
-    expect(nextRunLabel({ kind: "daily", hour: 9, minute: 0 }, now)).toBe("сегодня 09:00");
-    expect(nextRunLabel({ kind: "daily", hour: 7, minute: 0 }, now)).toBe("завтра 07:00");
+    expect(nextRunLabel({ kind: "daily", hour: 9, minute: 0 }, now)).toBe("today 09:00");
+    expect(nextRunLabel({ kind: "daily", hour: 7, minute: 0 }, now)).toBe("tomorrow 07:00");
   });
   it("falls back to the weekday name further out", () => {
     const now = new Date(2026, 6, 24, 12, 0, 0); // Friday
-    expect(nextRunLabel({ kind: "weekly", weekday: 1, hour: 8, minute: 0 }, now)).toBe("пн 08:00");
+    expect(nextRunLabel({ kind: "weekly", weekday: 1, hour: 8, minute: 0 }, now)).toBe("Mon 08:00");
   });
 });
 
@@ -88,26 +88,26 @@ describe("schedulePreview", () => {
   // up to, so people saved a rule and only found out what it meant later.
   it("spells out the rule and when it will next run", () => {
     const text = schedulePreview({ kind: "daily", hour: 9, minute: 0 }, now, null);
-    expect(text).toContain("ежедневно 09:00");
-    expect(text).toContain("следующий запуск завтра 09:00");
+    expect(text).toContain("daily at 09:00");
+    expect(text).toContain("next run tomorrow 09:00");
   });
 
   // Where a run lands is not obvious: an unpinned scenario uses whichever
   // workspace happens to be active when it fires.
   it("names the workspace a pinned scenario will run in", () => {
     const text = schedulePreview({ kind: "daily", hour: 9, minute: 0 }, now, "frontend");
-    expect(text).toContain("в пространстве «frontend»");
+    expect(text).toContain("in workspace “frontend”");
   });
 
   it("warns that an unpinned scenario follows the active workspace", () => {
     const text = schedulePreview({ kind: "daily", hour: 9, minute: 0 }, now, null);
-    expect(text).toContain("в активном пространстве на момент запуска");
+    expect(text).toContain("in whichever workspace is active at the time");
   });
 
   it("reads naturally for the hourly preset, where only minutes matter", () => {
     const text = schedulePreview({ kind: "hourly", minute: 30 }, now, null);
-    expect(text).toContain("каждый час в :30");
-    expect(text).toContain("следующий запуск сегодня 10:30");
+    expect(text).toContain("hourly at :30");
+    expect(text).toContain("next run today 10:30");
   });
 });
 
@@ -134,7 +134,7 @@ describe("resolveScheduledWorkspace", () => {
   const wsA: Workspace = { id: "a", name: "A", path: "/a", color: "#61afef" };
   const wsB: Workspace = { id: "b", name: "B", path: "/b", color: "#98c379" };
   const skill = (workspaceId: string | null): Skill =>
-    ({ id: "s1", name: "Отчёт", icon: "▶", prompt: "go", workspaceId });
+    ({ id: "s1", name: "Report", icon: "▶", prompt: "go", workspaceId });
 
   it("uses the workspace the scenario is pinned to", () => {
     const r = resolveScheduledWorkspace(skill("b"), [wsA, wsB], wsA);

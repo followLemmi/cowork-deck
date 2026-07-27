@@ -71,17 +71,17 @@ cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
 
 Sessions are not daemonized: every running `claude` process is a child of the app and is killed when the
 app window closes. There is no background/detached mode — closing the window ends all sessions. If you
-need a session to survive a restart, use the restart (⟳) affordance on a tile once it reaches `завершён`
-(ended) or `ошибка` (error) state — it starts a fresh session in the same workspace with the same initial
-prompt (resuming Claude Code's context where possible), but it does not resume the app's own tracked state
-from before the restart.
+need a session to survive a restart, use the restart (⟳) affordance on a tile once it reaches `exited` or
+`error` state — it starts a fresh session in the same workspace with the same initial prompt (resuming
+Claude Code's context where possible), but it does not resume the app's own tracked state from before the
+restart.
 
 The same applies to schedules: the scheduler lives inside the app, so a scheduled scenario only fires
 while the window is open. Runs missed while the app was closed are not lost — each scheduled scenario
 catches up once on the next launch, however long it has been. A scenario whose previous scheduled run is
-still `работает` (working) or `ждёт ввода` (waiting for a decision) skips the new run rather than
-stacking a second one. A run that simply finished does not block the next one, and its tile is closed
-when the next run starts, so a scenario keeps at most one tile.
+still `working` or `needs input` skips the new run rather than stacking a second one. A run that simply
+finished does not block the next one, and its tile is closed when the next run starts, so a scenario keeps
+at most one tile.
 
 A run that produced nothing — no workspace, a skipped overlap, `claude` missing — is recorded rather
 than silently swallowed: the scenario's row says what happened and when it was last successful.
@@ -101,23 +101,18 @@ telling you to set `COWORK_CLAUDE_PATH` and restart.
 
 ## Graceful degradation
 
-State tracking (the `работает`/`доделал`/`ждёт ввода`/`завершён`/`ошибка` labels and notifications) depends on Claude
+State tracking (the `working`/`done`/`needs input`/`exited`/`error` labels and notifications) depends on Claude
 Code hooks reporting session state back to the app. If you're running an older `claude` version that
 doesn't support these hooks, or a hook fails to fire for any other reason, the terminal itself is
 unaffected — you can still type, scroll, and interact with the session normally. The only symptom is that
-the tile's state label stays on `готов` (idle) instead of reflecting the actual state.
-
-> **Note:** the app's UI strings are currently in Russian (e.g. `готов`, `работает`, `доделал`, `ждёт ввода`,
-> `завершён`, `ошибка` — idle / working / finished a turn / waiting for a decision / ended / error).
-> English strings are on the
-> [roadmap](#roadmap).
+the tile's state label stays on `idle` instead of reflecting the actual state.
 
 ## Roadmap
 
 **Next**
 
 - **Scheduling v2** — cron expressions, more than one schedule per scenario, and last-run info in the ⏰ tooltip (all deliberately left out of the first cut).
-- **UI localization** — English strings and a language switch; the interface is Russian-only today.
+- **UI localization** — a language switch and translated strings; the interface is English-only today.
 
 **Later**
 

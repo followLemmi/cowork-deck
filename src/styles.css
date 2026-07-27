@@ -129,7 +129,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .deck-strip .tile.minimized .tile-body { padding: 4px; }
 
 #deck:empty::before {
-  content: "Выберите пространство и запустите сессию или сценарий";
+  content: "Pick a workspace, then start a session or a scenario";
   margin: auto; max-width: 320px; text-align: center;
   color: var(--fg-subtle); font-family: var(--font-ui); font-size: var(--fs-base); line-height: 1.6;
 }
@@ -149,8 +149,8 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .state-idle         { color: var(--fg-muted);   background: rgba(107, 114, 125, 0.14); }
 .state-working      { color: var(--st-working); background: rgba(152, 195, 121, 0.14); }
 .state-waitingInput { color: var(--st-waiting); background: rgba(229, 192, 123, 0.16); border-color: rgba(229, 192, 123, 0.4); }
-/* Тот же зелёный, что у working, но без дыхания: работа сделана, ничего не
-   происходит. Различение состояний формой, а не только цветом — волна 4. */
+/* The same green as working, but without the breathing: the work is done and
+   nothing is happening. States differ by shape, not by colour alone — wave 4. */
 .state-done         { color: var(--st-working); background: rgba(152, 195, 121, 0.10); }
 .sk-orphan .sk-run { opacity: 0.55; cursor: not-allowed; text-decoration: line-through; }
 .sk-orphan-note { font-size: var(--fs-xs); color: var(--st-error); margin: -2px 0 6px 2px; }
@@ -246,22 +246,22 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .palette-item { padding: 8px 10px; border-radius: var(--r-sm); color: var(--fg); font-size: var(--fs-base); cursor: pointer; }
 .palette-item:hover, .palette-item.selected { background: var(--accent-weak); color: var(--accent); }
 
-/* Расписание в форме сценария */
+/* Schedule section of the scenario form */
 .form-sched-body { display: flex; flex-direction: column; gap: var(--sp-2); margin: 6px 0; }
 .form-sched-time { display: flex; gap: var(--sp-2); align-items: center; }
 .form-sched-time select { background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 6px 8px; }
 .form-sched-time input[type="number"] { width: 4rem; background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 6px 8px; }
 .form-sched-defaults { display: flex; flex-direction: column; gap: 6px; }
 .form-sched-error { color: var(--st-error); font-size: var(--fs-sm); }
-/* Кнопка «прогнать сейчас»; она же индикатор расписания, поэтому видна
-   всегда, в отличие от .sk-edit/.sk-del, всплывающих по ховеру строки. */
+/* The "run now" button; it doubles as the schedule indicator, so it is always
+   visible, unlike .sk-edit/.sk-del which appear on row hover. */
 .sk-now { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; font-size: var(--fs-xs); transition: color var(--dur-1) var(--ease); }
 .sk-now:hover { color: var(--accent); }
 
-/* --- Кнопки: одна главная, остальные тише ------------------------------- */
+/* --- Buttons: one primary, the rest quieter ----------------------------- */
 
-/* "+ сессия" — основное действие приложения, а выглядело так же, как две
-   настроечные кнопки рядом: один и тот же пунктирный ghost-стиль на все три. */
+/* "+ session" is the app's main action, yet it looked exactly like the two
+   setup buttons beside it: one dashed ghost style across all three. */
 .btn-primary {
   width: 100%; padding: var(--sp-2); margin-top: var(--sp-1);
   background: var(--accent); color: var(--bg-app);
@@ -272,10 +272,10 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .btn-primary:hover { filter: brightness(1.08); }
 .btn-primary:active { filter: brightness(0.92); }
 
-/* Одна трактовка «кнопка-значок» вместо четырёх. Ключевое — opacity .45 вместо
-   0: кнопки правки и удаления перестают быть невидимыми до наведения, оставаясь
-   приглушёнными, и перестают быть ловушкой при обходе с клавиатуры. Габарит
-   24×24 — минимальная цель по WCAG 2.2; было около 12×14. */
+/* One reading of "icon button" instead of four. The key part is opacity .45
+   rather than 0: edit and delete stop being invisible until hover while staying
+   muted, and stop being a trap for keyboard traversal. The 24×24 box is the
+   WCAG 2.2 minimum target; it used to be about 12×14. */
 .btn--icon {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 24px; min-height: 24px; padding: 0;
@@ -292,41 +292,42 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .btn--icon:active { background: var(--bg-app); }
 .btn--icon--danger:hover { color: var(--st-error); }
 
-/* Скрытые до наведения кнопки принимали фокус, а outline гасился opacity: 0 —
-   Tab приземлялся на невидимую кнопку удаления. */
+/* Buttons hidden until hover still took focus, and opacity: 0 swallowed the
+   outline — Tab landed on an invisible delete button. */
 .sk-row:focus-within .sk-del, .sk-row:focus-within .sk-edit,
 .ws-row:focus-within .ws-del, .ws-row:focus-within .ws-edit { opacity: 1; }
 
-/* Нажатие и недоступность были без отклика вообще: одно правило :active на всё
-   приложение и ни одного :disabled. */
+/* Pressing and being disabled had no feedback at all: one :active rule for the
+   whole app and not a single :disabled. */
 button:active:not(:disabled) { transform: translateY(1px); }
 button:disabled, .sk-run:disabled {
   opacity: 0.5; cursor: not-allowed; filter: grayscale(0.4);
 }
 
-/* Фокус был виден только на button. Поля редактора расписания — select и два
-   number-инпута — не подсвечивались вовсе. */
+/* Focus was visible on button only. The schedule editor's fields — a select and
+   two number inputs — were not highlighted at all. */
 input:focus-visible, select:focus-visible, textarea:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
-/* Поля ввода опознаются заливкой, а не рамкой: --border даёт 1.28:1 к панели,
-   а поднять его до 3:1 на тёмной теме — это почти белая рамка. */
+/* Inputs are recognised by their fill, not their border: --border gives 1.28:1
+   against the panel, and raising it to 3:1 on a dark theme means a near-white
+   border. */
 .modal-input, .tile-search-input, .bcast-input {
   background: var(--bg-app); border-color: var(--border-strong);
 }
 
-/* Строки списка и заголовки групп стали кнопками — сбрасываем нативный вид,
-   сохраняя раскладку. До этого они были div с onclick: не фокусируемые,
-   недостижимые с клавиатуры, и сессия №10 не выбиралась вообще. */
+/* List rows and group headings became buttons — reset the native look while
+   keeping the layout. They used to be divs with onclick: not focusable, out of
+   reach from the keyboard, and session #10 could not be selected at all. */
 .sess-row, .sess-group-head {
   width: 100%; text-align: left; font: inherit; color: inherit;
   background: none; border: none; border-left: 2px solid transparent;
 }
 .sess-row { font-size: var(--fs-sm); }
 
-/* Единственное правило на весь набор: наследуемые свойства обводки проходят
-   внутрь клона <use>, поэтому иконка везде берёт цвет своей кнопки. */
+/* A single rule for the whole set: inherited stroke properties cross into the
+   <use> clone, so every icon takes the colour of its own button. */
 .icon {
   width: 16px; height: 16px; flex: none; display: block;
   fill: none; stroke: currentColor; stroke-width: 1.5;
@@ -344,15 +345,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .form-icon-swatch.selected { color: var(--accent); border-color: var(--accent); }
 .sk-run .icon { display: inline-block; vertical-align: -3px; }
 
-/* --- Формы: ширина, чекбоксы, селекты ----------------------------------- */
+/* --- Forms: width, checkboxes, selects ---------------------------------- */
 
-/* Форма сценария несёт длинное задание, ряд иконок и целую секцию расписания.
-   На 340px всё это сдавливается в колонку из узких полей. */
+/* The scenario form carries a long task, a row of icons and a whole schedule
+   section. At 340px all of it is squeezed into a column of narrow fields. */
 .modal-box--form { min-width: 480px; width: min(560px, 92vw); }
 .modal-box--form .form-prompt { min-height: 110px; }
 
-/* Чекбокс рядом с подписью, а не под ней, и не 13px системного размера.
-   accent-color красит нативный контрол в тему — своя отрисовка тут не нужна. */
+/* Checkbox beside its label rather than under it, and not the 13px system size.
+   accent-color themes the native control — no custom rendering needed here. */
 .form-check {
   display: grid; grid-template-columns: auto 1fr; gap: 2px var(--sp-2);
   align-items: center; cursor: pointer; padding: 2px 0;
@@ -365,8 +366,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   grid-column: 2; font-size: var(--fs-xs); color: var(--fg-muted); line-height: 1.3;
 }
 
-/* Нативный select выше и толще наших полей, и стрелка у него платформенная.
-   Рисуем свою — уголком на псевдоэлементе, без внешних ассетов. */
+/* A native select is taller and heavier than our fields, and its arrow is the
+   platform's. Draw our own — a chevron on a pseudo-element, no external assets. */
 .select-wrap { position: relative; display: inline-flex; }
 .select-wrap::after {
   content: ""; position: absolute; right: 9px; top: 50%; width: 6px; height: 6px;
@@ -382,10 +383,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .select-wrap select:hover { border-color: var(--border-strong); }
 
-/* Числовые поля времени: под две цифры, не во всю строку. */
+/* Numeric time fields: sized for two digits, not the full row. */
 .form-sched-hour, .form-sched-minute { width: 4.5rem; }
 
-/* Секция расписания читается как секция, а не как продолжение плоской формы. */
+/* The schedule section reads as a section, not as more of a flat form. */
 .form-sched-body {
   border-left: 2px solid var(--border-strong);
   padding-left: var(--sp-3); margin-left: 2px;

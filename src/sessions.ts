@@ -21,12 +21,12 @@ interface Tile {
 }
 
 const LABEL: Record<SessionState, string> = {
-  idle: "готов", working: "работает", waitingInput: "ждёт ввода", done: "доделал",
-  ended: "завершён", error: "ошибка",
+  idle: "idle", working: "working", waitingInput: "needs input", done: "done",
+  ended: "exited", error: "error",
 };
-// `done` здесь, потому что «агент доделал задание» — это ровно то, ради чего
-// запускают сессию без надзора. В пилюлю оно при этом не идёт: пилюля
-// отвечает на вопрос «сколько сессий заблокировано на мне».
+// `done` is here because "the agent finished the job" is exactly what an
+// unsupervised session is started for. It stays out of the pill, though: the
+// pill answers "how many sessions are blocked on me".
 const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
 
 export class Deck {
@@ -59,7 +59,7 @@ export class Deck {
     try {
       const tiles = [...this.tiles.values()];
       if (tiles.length === 0) { this.stopPolling(); return; }
-      // git: один вызов на уникальный cwd; изоляция ошибок — одна упавшая IPC не должна ронять весь тик
+      // git: one call per unique cwd; errors are isolated — a single failed IPC must not bring down the whole tick
       const cwds = uniqueCwds(tiles.map((t) => ({ cwd: t.workspacePath })));
       const gitByCwd = new Map<string, { branch: string | null; dirty: boolean }>();
       await Promise.all(cwds.map(async (cwd) => {
@@ -82,14 +82,14 @@ export class Deck {
           t.gitBadge.classList.add("hidden");
         }
       }
-      // tokens: по сессии; изоляция ошибок + защита от гонки с удалением тайла
+      // tokens: per session; errors isolated, plus a guard against racing with tile removal
       await Promise.all(tiles.map(async (t) => {
         try {
           const u = await sessionTokens(t.session);
           if (!this.tiles.has(t.session)) return;
           this.usage.set(t.session, u);
           t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
-          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} прочитано`;
+          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} read`;
           t.tokenBadge.classList.remove("hidden");
         } catch (e) {
           console.debug("sessionTokens failed", t.session, e);
@@ -114,7 +114,7 @@ export class Deck {
   }
 
   async launch(workspace: Workspace, skill: Skill | null) {
-    const titleText = skill ? `${skill.icon} ${skill.name}` : `сессия · ${workspace.name}`;
+    const titleText = skill ? `${skill.icon} ${skill.name}` : `session · ${workspace.name}`;
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
@@ -154,7 +154,7 @@ export class Deck {
       cwd: workspace.path,
       workspaceId: workspace.id,
       titleText: catchUpFor
-        ? `${skill.icon} ${skill.name} · догоняет ${catchUpFor}`
+        ? `${skill.icon} ${skill.name} · catching up ${catchUpFor}`
         : `${skill.icon} ${skill.name}`,
       scheduled: true,
       prompt: filledPrompt,
@@ -212,7 +212,7 @@ export class Deck {
       schedMark.classList.add("tile-sched-mark");
       schedMark.setAttribute("aria-hidden", "false");
       schedMark.setAttribute("role", "img");
-      schedMark.setAttribute("aria-label", "запущено по расписанию");
+      schedMark.setAttribute("aria-label", "started on a schedule");
     }
     const gitBadge = document.createElement("span");
     gitBadge.className = "tile-git hidden";
@@ -220,9 +220,9 @@ export class Deck {
     tokenBadge.className = "tile-tokens hidden";
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
-    const clearBtn = iconButton("eraser", "Очистить терминал", "tile-close");
+    const clearBtn = iconButton("eraser", "Clear terminal", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
-    const close = iconButton("x", "Закрыть сессию", "tile-close btn--icon--danger");
+    const close = iconButton("x", "Close session", "tile-close btn--icon--danger");
     // Same question Cmd+W asks. Without it the mouse was the more dangerous
     // of the two ways to do the same thing: one stray click killed a live
     // session outright, while the keyboard asked first.
@@ -232,11 +232,11 @@ export class Deck {
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
     head.insertBefore(bcastCheck, title);
-    const restart = iconButton("rotate", "Перезапустить сессию", "tile-close");
+    const restart = iconButton("rotate", "Restart session", "tile-close");
     restart.style.display = "none";
     restart.onclick = async () => {
       restart.style.display = "none";
-      tile.panel.write("\r\n[перезапуск сессии...]\r\n");
+      tile.panel.write("\r\n[restarting session...]\r\n");
       try {
         await tile.panel.start(tile.workspacePath, null, true);
         this.setState(session, "idle");
@@ -245,9 +245,9 @@ export class Deck {
         this.setState(session, "error");
         const raw = String((e as { message?: string })?.message ?? e);
         const readable = raw.includes("claude-not-found")
-          ? "claude не найден — укажите путь и перезапустите"
+          ? "claude not found — set its path and restart"
           : raw;
-        tile.panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+        tile.panel.write(`\r\n[launch failed: ${readable}]\r\n`);
         restart.style.display = "inline";
       }
     };
@@ -260,10 +260,10 @@ export class Deck {
     mount.className = "tile-body";
     const searchBar = document.createElement("div");
     searchBar.className = "tile-search hidden";
-    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "поиск…";
-    const sNext = iconButton("chevron", "Следующее совпадение", "tile-search-btn icon--down");
-    const sPrev = iconButton("chevron", "Предыдущее совпадение", "tile-search-btn icon--up");
-    const sClose = iconButton("x", "Закрыть поиск", "tile-search-btn");
+    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "search…";
+    const sNext = iconButton("chevron", "Next match", "tile-search-btn icon--down");
+    const sPrev = iconButton("chevron", "Previous match", "tile-search-btn icon--up");
+    const sClose = iconButton("x", "Close search", "tile-search-btn");
     searchBar.append(sInput, sPrev, sNext, sClose);
     sInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); tile.panel.search(sInput.value); }
@@ -293,9 +293,9 @@ export class Deck {
       this.setState(session, "error");
       const raw = String((e as { message?: string })?.message ?? e);
       const readable = raw.includes("claude-not-found")
-        ? "claude не найден — укажите путь и перезапустите"
+        ? "claude not found — set its path and restart"
         : raw;
-      panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+      panel.write(`\r\n[launch failed: ${readable}]\r\n`);
     }
     if (grabAttention) this.focusTile(session);
     else {
@@ -366,7 +366,7 @@ export class Deck {
   private async requestClose(session: string) {
     const t = this.tiles.get(session);
     const alive = t && (t.state === "working" || t.state === "waitingInput" || t.state === "done");
-    if (alive && !(await confirmModal(`Закрыть сессию «${t.name}»? Она ещё живёт.`))) return;
+    if (alive && !(await confirmModal(`Close session “${t.name}”? It is still alive.`))) return;
     this.remove(session);
   }
   searchActive() {
@@ -394,7 +394,7 @@ export class Deck {
       panel.className = "bcast-panel";
       const input = document.createElement("input");
       input.className = "bcast-input"; input.type = "text";
-      input.placeholder = "broadcast: ввод во все отмеченные сессии, Enter — отправить";
+      input.placeholder = "broadcast: type into every ticked session, Enter to send";
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -617,14 +617,14 @@ export class Deck {
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
     void emit("pill://count", { n: waiting });
-    const header = waiting > 0 ? `Сессии · ${waiting} ${waitingVerb(waiting)} ввода` : "Сессии";
+    const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
     const total = sumUsage([...this.usage.values()]);
     if (this.usage.size > 0) {
       const sum = document.createElement("div");
       sum.className = "sess-tokens-sum";
-      sum.textContent = `Всего токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      sum.textContent = `Total tokens · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
@@ -638,7 +638,7 @@ export class Deck {
     for (const g of groups) {
       const wsId = g.workspace?.id ?? ORPHAN_KEY;
       const color = g.workspace?.color ?? "var(--fg-subtle)";
-      const name = g.workspace?.name ?? "Другие";
+      const name = g.workspace?.name ?? "Other";
       const collapsed = this.collapsed.has(wsId);
       const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
 
@@ -661,7 +661,7 @@ export class Deck {
       if (groupWaiting > 0) {
         const badge = document.createElement("span");
         badge.className = "sess-group-badge";
-        badge.textContent = `${groupWaiting} ${waitingVerb(groupWaiting)}`;
+        badge.textContent = `${groupWaiting} waiting`;
         head.append(badge);
       }
       head.onclick = () => {
@@ -696,10 +696,6 @@ export class Deck {
 
 export function waitingCount(states: SessionState[]): number {
   return states.filter((s) => s === "waitingInput").length;
-}
-
-export function waitingVerb(n: number): string {
-  return n % 10 === 1 && n % 100 !== 11 ? "ждёт" : "ждут";
 }
 
 export function nextWaitingAcross(

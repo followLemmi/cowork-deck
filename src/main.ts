@@ -22,7 +22,7 @@ const wsMount = document.createElement("div");
 const skMount = document.createElement("div");
 const listMount = document.createElement("div");
 const newBtn = document.createElement("button");
-newBtn.textContent = "+ сессия"; newBtn.className = "btn-primary";
+newBtn.textContent = "+ session"; newBtn.className = "btn-primary";
 sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const deck = new Deck(deckEl, listMount, () => workspaces.all);
@@ -61,8 +61,8 @@ const boot = () => runBoot({
   onError: (e) => {
     console.error("boot failed:", e);
     void alertModal(
-      "Приложение запустилось не полностью — часть сессий или настроек могла не загрузиться. " +
-      "Перезапустите приложение; если повторится, посмотрите консоль разработчика.",
+      "The app did not start completely — some sessions or settings may not have loaded. " +
+      "Restart it; if this repeats, check the developer console.",
     );
   },
 });
@@ -91,9 +91,9 @@ async function handleScheduledFire(skillId: string, catchUpFor?: string): Promis
 async function runScheduledNow(skill: Skill) {
   const outcome = await handleScheduledFire(skill.id);
   if (outcome === "skipped-overlap") {
-    await alertModal("Прогон пропущен: предыдущий ещё активен.");
+    await alertModal("Run skipped: the previous one is still active.");
   } else if (outcome === "no-workspace") {
-    await alertModal("У сценария нет доступного пространства: привяжите его или выберите пространство.");
+    await alertModal("This scenario has no workspace available: pin it to one or pick a workspace.");
   }
 }
 
@@ -117,8 +117,8 @@ async function requireWorkspace(): Promise<Workspace | null> {
   const ws = workspaces.active;
   if (ws) return ws;
   await alertModal(
-    "Сначала выберите пространство — это папка проекта, в которой запускаются сессии. "
-    + "Если пространств ещё нет, создайте его кнопкой «+ пространство».",
+    "Pick a workspace first — it is the project folder that sessions run in. "
+    + "If there are none yet, create one with the “+ workspace” button.",
   );
   return null;
 }
@@ -150,15 +150,15 @@ function hotkeyLabel(letter: string): string {
 
 function paletteCommands(): Command[] {
   return [
-    { id: "new-session", title: "Новая сессия", hotkey: hotkeyLabel("N"), run: () => { void newSession(); } },
-    { id: "close-active", title: "Закрыть активную сессию", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
-    { id: "next-waiting", title: "К следующей ждущей вводу", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
-    { id: "zoom", title: "Развернуть активную сессию", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
-    { id: "search", title: "Поиск в терминале", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
-    { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
-    { id: "broadcast", title: "Режим broadcast (ввод в несколько сессий)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
-    { id: "next-region", title: "Перейти к следующей области (F6)", hotkey: "F6", run: () => cycleRegion(1) },
-    { id: "scenarios", title: "Сценарии: к списку в боковой панели", run: () => focusRegion("sidebar") },
+    { id: "new-session", title: "New session", hotkey: hotkeyLabel("N"), run: () => { void newSession(); } },
+    { id: "close-active", title: "Close active session", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
+    { id: "next-waiting", title: "Go to next session waiting for input", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
+    { id: "zoom", title: "Zoom active session", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
+    { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
+    { id: "clear", title: "Clear terminal", run: () => deck.clearActive() },
+    { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
+    { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
+    { id: "scenarios", title: "Scenarios: focus the sidebar list", run: () => focusRegion("sidebar") },
   ];
 }
 
@@ -206,7 +206,7 @@ const COMMANDS: Record<string, () => void> = {
 };
 
 window.addEventListener("keydown", (e) => {
-  if (document.querySelector(".modal-overlay")) return; // не перехватываем, пока открыта модалка/палитра/форма
+  if (document.querySelector(".modal-overlay")) return; // do not intercept while a modal, the palette or a form is open
   if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
   const id = matchHotkey(e, isMacPlatform());
   if (!id) return;
@@ -220,7 +220,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 claudeAvailable().then((ok) => {
-  if (!ok) alertModal("Не найден исполняемый файл claude. Укажите путь через переменную окружения COWORK_CLAUDE_PATH и перезапустите приложение.");
+  if (!ok) alertModal("The claude executable was not found. Set its path via the COWORK_CLAUDE_PATH environment variable and restart the app.");
 });
 
 void boot();
