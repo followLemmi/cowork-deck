@@ -888,6 +888,36 @@ mod tests {
 
         fs::remove_dir_all(&root).unwrap();
     }
+
+    /// A symlink loop would recurse forever and a symlink out of the corpus
+    /// would index foreign content under a path that looks legitimate. Neither
+    /// may happen. Unix-only because creating symlinks on Windows needs
+    /// elevation.
+    #[cfg(unix)]
+    #[test]
+    fn scan_does_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tag = std::process::id();
+        let root = std::env::temp_dir().join(format!("cwm-scan-link-{tag}"));
+        let outside = std::env::temp_dir().join(format!("cwm-scan-outside-{tag}"));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(root.join("ws-1")).unwrap();
+        fs::create_dir_all(outside.join("ws-9")).unwrap();
+        fs::write(root.join("ws-1/Facts.md"), "# inside\n").unwrap();
+        fs::write(outside.join("ws-9/Facts.md"), "# outside\n").unwrap();
+
+        symlink(&root, root.join("ws-1/loop")).unwrap();   // loop back to the root
+        symlink(&outside, root.join("ws-2")).unwrap();     // escape out of the corpus
+
+        // Terminating at all is half the assertion.
+        let files = scan(&root);
+        let keys: Vec<_> = files.keys().cloned().collect();
+        assert_eq!(keys, vec!["ws-1/Facts.md"], "symlinks must not be followed");
+
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
 }
 ```
 
@@ -948,8 +978,15 @@ pub fn scan(root: &Path) -> BTreeMap<String, FileStat> {
 }
 
 fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, FileStat>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            // Best-effort: a bad subtree must not fail the whole scan, but it
+            // must leave a trace. A silently incomplete index is the worst
+            // failure mode — indistinguishable from an empty corpus.
+            eprintln!("cowork_memory: skipping {}: {e}", dir.display());
+            return;
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -957,7 +994,21 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, FileStat>) {
         if name.starts_with('.') {
             continue;
         }
-        if path.is_dir() {
+        // DirEntry::file_type does not follow symlinks, unlike Path::is_dir.
+        // Skipping links keeps the walk inside the corpus (no escape) and
+        // makes a symlink loop impossible (no unbounded recursion).
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(e) => {
+                eprintln!("cowork_memory: skipping {}: {e}", path.display());
+                continue;
+            }
+        };
+        if ft.is_symlink() {
+            eprintln!("cowork_memory: skipping symlink {}", path.display());
+            continue;
+        }
+        if ft.is_dir() {
             walk(root, &path, out);
             continue;
         }
@@ -971,7 +1022,13 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, FileStat>) {
         if detect_scope(&rel).is_none() {
             continue;
         }
-        let Ok(md) = entry.metadata() else { continue };
+        let md = match entry.metadata() {
+            Ok(md) => md,
+            Err(e) => {
+                eprintln!("cowork_memory: skipping {}: {e}", path.display());
+                continue;
+            }
+        };
         let mtime = md
             .modified()
             .ok()
