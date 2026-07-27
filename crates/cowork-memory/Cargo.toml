@@ -20,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 # "changed" and forces a spurious re-embed.
 serde_json = { version = "1", features = ["float_roundtrip"] }
 clap = { version = "4", features = ["derive"] }
+ureq = "2"
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }
