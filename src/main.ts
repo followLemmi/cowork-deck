@@ -128,9 +128,10 @@ async function launchFromTask(t: Task) {
       `Переименовано пространство? Запуск отменён, чтобы не начать работу в чужом каталоге.`);
     return;
   }
-  const outcome = await deck.launchFromTask(target, t, taskPrompt(t));
-  if (outcome === "launched") setView(false); // показать поднятый терминал
-  if (boardVisible) await refreshBoard();
+  await deck.launchFromTask(target, t, taskPrompt(t));
+  // И "launched", и "focused" оставляют сессию, на которую нужно смотреть —
+  // остаться на доске выглядело бы так, будто кнопка ничего не сделала.
+  setView(false);
 }
 
 /** Перерисовать доску активного пространства. Каждый вызов IPC изолирован:

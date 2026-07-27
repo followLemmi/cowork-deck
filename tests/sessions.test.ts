@@ -266,3 +266,45 @@ describe("serializeTiles + taskId", () => {
     expect(out[1].taskId).toBeUndefined();
   });
 });
+
+describe("Deck.launchFromTask", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.innerHTML = "";
+    startMock.mockResolvedValue(undefined);
+  });
+
+  it("launches a fresh tile when no session is linked to the card", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    const outcome = await deck.launchFromTask(WS as any, { id: "01AAA", title: "Fix" }, "prompt");
+
+    expect(outcome).toBe("launched");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+    expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Deleting the `if (alive) { ...; return "focused"; }` guard in
+  // Deck.launchFromTask must fail this test: without it, a second click on the
+  // same card would start a second agent editing the same files.
+  it("focuses the existing session instead of launching a second one", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    const first = await deck.launchFromTask(WS as any, { id: "01AAA", title: "Fix" }, "prompt");
+    expect(first).toBe("launched");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+
+    const second = await deck.launchFromTask(WS as any, { id: "01AAA", title: "Fix" }, "prompt");
+
+    expect(second).toBe("focused");
+    // No second tile, and no second session-start IPC call: the card's
+    // existing (idle) session was focused, not duplicated.
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+    expect(startMock).toHaveBeenCalledTimes(1);
+  });
+});

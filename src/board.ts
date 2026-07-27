@@ -120,8 +120,10 @@ export class BoardView {
     }
 
     const acts = el("div", "tk-acts");
-    // No ▶ while a session for this card is alive: a second one would duplicate
-    // the work, exactly as a scheduled scenario skips an overlapping run.
+    // ▶ is hidden while the card reads as "в работе" (a working/waitingInput
+    // session). An idle session still linked to the card slips through here —
+    // that's fine: the launch guard in Deck.launchFromTask catches it and
+    // focuses the existing session instead of starting a second one.
     if (status === "open") {
       const run = el("button", "tk-run", "▶");
       run.title = "Запустить сессию из задачи";
