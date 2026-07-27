@@ -23,6 +23,7 @@
 - **`<label>` только для одиночного контрола.** Поле с несколькими кнопками (выбор `kind`) в `<label>` не оборачивать.
 - **Гейт задачи = `npm test` И `npm run build` И `cargo test`.** Vitest идёт через esbuild и не проверяет типы; красный `tsc` за зелёными юнит-тестами не видно.
 - **UI-строки русские**, в тон существующим (`готов`, `работает`, `ждёт ввода`).
+- **Стейджить файлы поимённо, без `tests/`-подстановок.** Задача, добавляющая стили, обязана включить `src/styles.css` в свой `git add` — иначе правка останется незакоммиченной, а UI сломается только у следующего, кто соберёт проект. Подстановки в общем рабочем дереве могут захватить чужие незакоммиченные правки.
 - **Коммиты** — conventional commits со скоупом-номером issue, как в истории репозитория (`feat(#36): …`). Номер задачи указан под её заголовком. Тело на английском.
 - **Epic:** #48 — зонтичная задача; issues задач #36–#47.
 
@@ -3153,7 +3154,8 @@ Expected: PASS; сборка проходит.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/commands.ts src/forms.ts src/main.ts tests/
+git add src/commands.ts src/forms.ts src/main.ts src/styles.css \
+  tests/commands.test.ts tests/task-form.test.ts
 git commit -m "feat(#44): capture a card from a hotkey, palette or the board
 
 Cmd/Ctrl+Shift+T, so the binding does not shadow readline inside the
