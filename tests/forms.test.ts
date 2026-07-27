@@ -60,6 +60,78 @@ describe("workspaceForm", () => {
   });
 });
 
+describe("workspaceForm — трекер", () => {
+  const ov = () => document.querySelector(".modal-overlay")!;
+  const fill = () => {
+    ov().querySelector<HTMLInputElement>(".form-name")!.value = "deck";
+    ov().querySelector<HTMLInputElement>(".form-path")!.value = "/p";
+  };
+
+  it("off by default for a new workspace", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.tracker ?? null).toBeNull();
+  });
+
+  it("in-project root produces a project provider", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=project]")!.click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.tracker).toEqual({ providers: [{ type: "fs", root: { kind: "project" } }] });
+  });
+
+  it("external root carries the path the user typed", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-path")!.value = "/home/u/vault/Tasks";
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.tracker).toEqual({
+      providers: [{ type: "fs", root: { kind: "path", path: "/home/u/vault/Tasks" } }],
+    });
+  });
+
+  it("an external root with an empty path keeps the modal open", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    // Пустой путь — опечатка, а не «выключено»: форма остаётся открытой.
+    expect(document.querySelector(".modal-overlay")).not.toBeNull();
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
+  });
+
+  it("pre-fills from an existing workspace so editing does not wipe the config", async () => {
+    const p = workspaceForm({
+      name: "deck", path: "/p", color: "#61afef",
+      tracker: { providers: [{ type: "fs", root: { kind: "path", path: "/v/T" } }] },
+    });
+    expect(ov().querySelector<HTMLInputElement>(".tk-f-on")!.checked).toBe(true);
+    expect(ov().querySelector<HTMLInputElement>(".tk-f-path")!.value).toBe("/v/T");
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await p;
+  });
+
+  it("still returns name/path/color unchanged", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.name).toBe("deck");
+    expect(res?.path).toBe("/p");
+    expect(typeof res?.color).toBe("string");
+  });
+});
+
 describe("skillForm", () => {
   it("collects fields incl. multiline prompt and scope", async () => {
     const p = skillForm("ws-1");

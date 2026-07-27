@@ -4,7 +4,7 @@
 // their own DOM here rather than extending modal.ts's single-field helpers.
 
 import { pickFolder } from "./dialog";
-import type { Schedule, SchedulePreset, TaskDraft, TaskKind } from "./ipc";
+import type { Schedule, SchedulePreset, TaskDraft, TaskKind, TrackerConfig } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule } from "./schedule";
 
@@ -44,9 +44,11 @@ function actions(): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButto
 /** Create/edit form for a workspace: name, native folder-pick path field, and
  *  a color swatch picker. Resolves the collected values on OK, or null on
  *  Cancel/backdrop click. */
+type WorkspaceFormResult = { name: string; path: string; color: string; tracker: TrackerConfig | null };
+
 export function workspaceForm(
-  initial?: { name: string; path: string; color: string },
-): Promise<{ name: string; path: string; color: string } | null> {
+  initial?: { name: string; path: string; color: string; tracker?: TrackerConfig | null },
+): Promise<WorkspaceFormResult | null> {
   return new Promise((resolve) => {
     const { overlay: ov, box } = overlay();
     const title = document.createElement("div");
@@ -95,14 +97,80 @@ export function workspaceForm(
     colorLabel.textContent = "Цвет";
     colorRow.append(colorLabel, swatches);
 
-    const { row, ok, cancel } = actions();
-    box.append(title, labeled("Имя", name), labeled("Папка", pathRow), colorRow, row);
+    // ——— Трекер задач ———
+    // Чекбокс — одиночный контрол, <label> здесь уместен. Радиокнопки живут
+    // каждая в своём <label>, тоже по одному контролу на label.
+    const onLabel = document.createElement("label");
+    onLabel.className = "form-row";
+    const onInput = document.createElement("input");
+    onInput.type = "checkbox";
+    onInput.className = "tk-f-on";
+    const onText = document.createElement("span");
+    onText.className = "form-label";
+    onText.textContent = "Трекер задач";
+    onLabel.append(onInput, onText);
 
-    const close = (v: { name: string; path: string; color: string } | null) => { ov.remove(); resolve(v); };
+    const rootRow = document.createElement("div");
+    rootRow.className = "form-row";
+    const mkRadio = (value: "project" | "path", text: string) => {
+      const l = document.createElement("label");
+      const i = document.createElement("input");
+      i.type = "radio";
+      i.className = "tk-f-root";
+      i.name = "trackerRoot";
+      i.value = value;
+      l.append(i, document.createTextNode(` ${text}`));
+      rootRow.append(l);
+      return i;
+    };
+    const projectRadio = mkRadio("project", "в проекте (.cowork/tasks)");
+    const pathRadio = mkRadio("path", "своя папка");
+
+    const trackerPath = document.createElement("input");
+    trackerPath.className = "modal-input tk-f-path";
+    trackerPath.type = "text";
+    trackerPath.placeholder = "/home/…/vault/Tasks";
+
+    const syncTracker = () => {
+      rootRow.classList.toggle("tk-hidden", !onInput.checked);
+      trackerPath.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
+    };
+    onInput.onchange = syncTracker;
+    projectRadio.onchange = syncTracker;
+    pathRadio.onchange = syncTracker;
+
+    // Предзаполнение: правка имени пространства не должна молча снести
+    // настройку трекера.
+    const initialRoot = initial?.tracker?.providers[0]?.root ?? null;
+    if (initialRoot) {
+      onInput.checked = true;
+      if (initialRoot.kind === "path") { pathRadio.checked = true; trackerPath.value = initialRoot.path; }
+      else projectRadio.checked = true;
+    } else {
+      projectRadio.checked = true;
+    }
+    syncTracker();
+
+    const { row, ok, cancel } = actions();
+    box.append(title, labeled("Имя", name), labeled("Папка", pathRow), colorRow,
+      onLabel, rootRow, trackerPath, row);
+
+    const close = (v: WorkspaceFormResult | null) => { ov.remove(); resolve(v); };
     ok.onclick = () => {
       const n = name.value.trim(); const p = path.value.trim();
       if (!n || !p) return; // требуются оба
-      close({ name: n, path: p, color });
+      let tracker: TrackerConfig | null = null;
+      if (onInput.checked) {
+        if (pathRadio.checked) {
+          const tp = trackerPath.value.trim();
+          // Пустой путь — это не «выключено», это опечатка: не закрываем форму.
+          if (!tp) { trackerPath.focus(); return; }
+          tracker = { providers: [{ type: "fs", root: { kind: "path", path: tp } }] };
+        } else {
+          tracker = { providers: [{ type: "fs", root: { kind: "project" } }] };
+        }
+      }
+      close({ name: n, path: p, color, tracker });
     };
     cancel.onclick = () => close(null);
     ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(null); });

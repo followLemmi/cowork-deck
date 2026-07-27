@@ -7,7 +7,11 @@ export class WorkspacesPanel {
   private activeId: string | null = null;
   /** Открытых задач на пространство; заполняет main.ts. */
   private counts = new Map<string, number>();
-  constructor(private mount: HTMLElement, private onSelect: (ws: Workspace) => void) {}
+  constructor(
+    private mount: HTMLElement,
+    private onSelect: (ws: Workspace) => void,
+    private onChanged?: () => void,
+  ) {}
 
   setCounts(counts: Record<string, number>) {
     this.counts = new Map(Object.entries(counts));
@@ -43,15 +47,17 @@ export class WorkspacesPanel {
     if (!res) return;
     const ws: Workspace = { id: crypto.randomUUID(), ...res };
     this.items = await saveWorkspace(ws);
+    this.onChanged?.();
     this.select(ws.id);
   }
 
   private async edit(id: string) {
     const cur = this.items.find((w) => w.id === id);
     if (!cur) return;
-    const res = await workspaceForm({ name: cur.name, path: cur.path, color: cur.color });
+    const res = await workspaceForm({ name: cur.name, path: cur.path, color: cur.color, tracker: cur.tracker ?? null });
     if (!res) return;
     this.items = await saveWorkspace({ ...cur, ...res });
+    this.onChanged?.();
     this.render();
   }
 

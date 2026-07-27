@@ -218,6 +218,9 @@ void listen("pill://focus-next", async () => {
 const workspaces = new WorkspacesPanel(wsMount, (ws) => {
   deck.setActiveWorkspace(ws.id);
   if (boardVisible) void refreshBoard();
+}, () => {
+  void taskWatchSync();
+  void refreshCounts();
 });
 const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
   const ws = workspaces.active;
