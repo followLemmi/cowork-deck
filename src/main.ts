@@ -7,6 +7,7 @@ import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
+import { openGithubScreen } from "./github-screen";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm } from "./forms";
@@ -105,6 +106,7 @@ function paletteCommands(): Command[] {
     { id: "search", title: "Поиск в терминале", run: () => deck.searchActive() },
     { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
     { id: "broadcast", title: "Режим broadcast (ввод в несколько сессий)", run: () => deck.toggleBroadcast() },
+    { id: "github", title: "GitHub: аккаунты и установка gh", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
   ];
 }
 
@@ -115,6 +117,7 @@ const COMMANDS: Record<string, () => void> = {
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),
   "broadcast": () => deck.toggleBroadcast(),
+  "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
 };
 
 window.addEventListener("keydown", (e) => {

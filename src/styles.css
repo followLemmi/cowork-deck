@@ -237,3 +237,19 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    всегда, в отличие от .sk-edit/.sk-del, всплывающих по ховеру строки. */
 .sk-now { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; font-size: var(--fs-xs); transition: color var(--dur-1) var(--ease); }
 .sk-now:hover { color: var(--accent); }
+
+/* --- Экран «GitHub» ------------------------------------------------------ */
+.gh-screen { min-width: 420px; max-width: 560px; }
+.gh-block { display: flex; flex-direction: column; gap: var(--sp-2); margin: var(--sp-2) 0; }
+.gh-note { margin: 0; color: var(--fg-muted); font-size: var(--fs-sm); line-height: 1.5; }
+.gh-hint { margin: 0; color: var(--fg-subtle); font-size: var(--fs-xs); line-height: 1.4; }
+.gh-link { color: var(--accent); font-size: var(--fs-sm); text-decoration: none; }
+.gh-link:hover { text-decoration: underline; }
+.gh-acc-row {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--sp-2); background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+}
+.gh-acc-login { color: var(--fg); font-size: var(--fs-base); font-weight: var(--fw-medium); }
+.gh-acc-meta { color: var(--fg-subtle); font-size: var(--fs-xs); }
+.gh-acc-warn { color: var(--st-waiting); font-size: var(--fs-xs); }
