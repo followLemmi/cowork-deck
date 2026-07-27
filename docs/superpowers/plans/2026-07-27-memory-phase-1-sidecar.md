@@ -2099,11 +2099,10 @@ fn main() -> Result<()> {
                     let flat: String = h.text.split_whitespace().collect::<Vec<_>>().join(" ");
                     println!("    {}", flat.chars().take(SNIPPET).collect::<String>());
                 }
-                if hits.is_empty() {
-                    eprintln!("cowork_memory: no results above threshold");
-                }
             }
-            if json && hits.is_empty() {
+            // Both output modes say so, once: an empty result is a legitimate
+            // answer, and stdout stays machine-readable either way.
+            if hits.is_empty() {
                 eprintln!("cowork_memory: no results above threshold");
             }
         }
