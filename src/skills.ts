@@ -123,17 +123,17 @@ export class SkillsPanel {
       let now: HTMLButtonElement | null = null;
       if (sched?.enabled && !orphan) {
         now = document.createElement("button");
-        now.className = "sk-now"; now.textContent = "⏰";
+        now.className = "sk-now btn--icon"; now.textContent = "⏰";
         now.title = "прогнать сейчас, как это сделало бы расписание";
         now.setAttribute("aria-label", `Прогнать сейчас: ${s.name}`);
         now.onclick = () => this.onRunScheduled(s);
       }
 
       const edit = document.createElement("button");
-      edit.className = "sk-edit"; edit.textContent = "✎"; edit.title = "изменить";
+      edit.className = "sk-edit btn--icon"; edit.textContent = "✎"; edit.title = "изменить";
       edit.onclick = () => this.edit(s.id);
       const x = document.createElement("button");
-      x.className = "sk-del"; x.textContent = "✕";
+      x.className = "sk-del btn--icon btn--icon--danger"; x.textContent = "✕";
       x.onclick = () => this.del(s.id);
       row.append(run, ...(now ? [now] : []), edit, x);
       this.mount.appendChild(row);

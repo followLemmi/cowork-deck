@@ -20,7 +20,7 @@ const wsMount = document.createElement("div");
 const skMount = document.createElement("div");
 const listMount = document.createElement("div");
 const newBtn = document.createElement("button");
-newBtn.textContent = "+ сессия"; newBtn.className = "ws-add";
+newBtn.textContent = "+ сессия"; newBtn.className = "btn-primary";
 sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const deck = new Deck(deckEl, listMount, () => workspaces.all);

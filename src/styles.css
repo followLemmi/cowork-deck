@@ -14,6 +14,7 @@
 }
 
 :root {
+  color-scheme: dark; /* native selects, checkboxes, spinners and scrollbars */
   --bg-app: #16181d;
   --bg-panel: #1b1e24;
   --bg-raised: #21252b;
@@ -24,7 +25,10 @@
 
   --fg: #e6e6e6;
   --fg-muted: #abb2bf;
-  --fg-subtle: #6b727d;
+  /* 5.0:1 on --bg-panel, 4.61:1 on --bg-raised. The old #6b727d was 3.44 and
+     carried nine different meanings, from section headings to the schedule
+     indicator, so one token was failing AA across most of the sidebar. */
+  --fg-subtle: #868d99;
 
   --accent: #61afef;
   --accent-weak: rgba(97, 175, 239, 0.14);
@@ -141,7 +145,8 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
   background: currentColor; flex: none;
 }
 
-.state-idle         { color: var(--st-idle);    background: rgba(107, 114, 125, 0.14); }
+/* The most common state label of all was the least readable at 2.98:1. */
+.state-idle         { color: var(--fg-muted);   background: rgba(107, 114, 125, 0.14); }
 .state-working      { color: var(--st-working); background: rgba(152, 195, 121, 0.14); }
 .state-waitingInput { color: var(--st-waiting); background: rgba(229, 192, 123, 0.16); border-color: rgba(229, 192, 123, 0.4); }
 /* Тот же зелёный, что у working, но без дыхания: работа сделана, ничего не
@@ -250,3 +255,61 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    всегда, в отличие от .sk-edit/.sk-del, всплывающих по ховеру строки. */
 .sk-now { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; font-size: var(--fs-xs); transition: color var(--dur-1) var(--ease); }
 .sk-now:hover { color: var(--accent); }
+
+/* --- Кнопки: одна главная, остальные тише ------------------------------- */
+
+/* "+ сессия" — основное действие приложения, а выглядело так же, как две
+   настроечные кнопки рядом: один и тот же пунктирный ghost-стиль на все три. */
+.btn-primary {
+  width: 100%; padding: var(--sp-2); margin-top: var(--sp-1);
+  background: var(--accent); color: var(--bg-app);
+  border: none; border-radius: var(--r-sm);
+  font: inherit; font-size: var(--fs-base); font-weight: var(--fw-medium);
+  cursor: pointer; transition: filter var(--dur-1) var(--ease);
+}
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-primary:active { filter: brightness(0.92); }
+
+/* Одна трактовка «кнопка-значок» вместо четырёх. Ключевое — opacity .45 вместо
+   0: кнопки правки и удаления перестают быть невидимыми до наведения, оставаясь
+   приглушёнными, и перестают быть ловушкой при обходе с клавиатуры. Габарит
+   24×24 — минимальная цель по WCAG 2.2; было около 12×14. */
+.btn--icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 24px; min-height: 24px; padding: 0;
+  background: none; border: none; border-radius: var(--r-sm);
+  color: var(--fg-muted); font-size: var(--fs-base);
+  cursor: pointer; opacity: 0.45;
+  transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+              background var(--dur-1) var(--ease);
+}
+.sk-row:hover .btn--icon, .ws-row:hover .btn--icon, .tile:hover .btn--icon,
+.sk-row:focus-within .btn--icon, .ws-row:focus-within .btn--icon,
+.tile:focus-within .btn--icon { opacity: 1; }
+.btn--icon:hover { background: var(--bg-raised); color: var(--fg); }
+.btn--icon:active { background: var(--bg-app); }
+.btn--icon--danger:hover { color: var(--st-error); }
+
+/* Скрытые до наведения кнопки принимали фокус, а outline гасился opacity: 0 —
+   Tab приземлялся на невидимую кнопку удаления. */
+.sk-row:focus-within .sk-del, .sk-row:focus-within .sk-edit,
+.ws-row:focus-within .ws-del, .ws-row:focus-within .ws-edit { opacity: 1; }
+
+/* Нажатие и недоступность были без отклика вообще: одно правило :active на всё
+   приложение и ни одного :disabled. */
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled, .sk-run:disabled {
+  opacity: 0.5; cursor: not-allowed; filter: grayscale(0.4);
+}
+
+/* Фокус был виден только на button. Поля редактора расписания — select и два
+   number-инпута — не подсвечивались вовсе. */
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+/* Поля ввода опознаются заливкой, а не рамкой: --border даёт 1.28:1 к панели,
+   а поднять его до 3:1 на тёмной теме — это почти белая рамка. */
+.modal-input, .tile-search-input, .bcast-input {
+  background: var(--bg-app); border-color: var(--border-strong);
+}

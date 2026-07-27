@@ -94,10 +94,10 @@ export class WorkspacesPanel {
       label.className = "ws-label"; label.textContent = w.name;
       label.onclick = () => this.select(w.id);
       const edit = document.createElement("button");
-      edit.className = "ws-edit"; edit.textContent = "✎"; edit.title = "изменить";
+      edit.className = "ws-edit btn--icon"; edit.textContent = "✎"; edit.title = "изменить";
       edit.onclick = () => this.edit(w.id);
       const x = document.createElement("button");
-      x.className = "ws-del"; x.textContent = "✕";
+      x.className = "ws-del btn--icon btn--icon--danger"; x.textContent = "✕";
       x.onclick = () => this.del(w.id);
       row.append(dot, label, edit, x);
       this.mount.appendChild(row);

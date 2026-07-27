@@ -206,10 +206,10 @@ export class Deck {
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
     const clearBtn = document.createElement("button");
-    clearBtn.textContent = "⌫"; clearBtn.className = "tile-close"; clearBtn.title = "очистить";
+    clearBtn.textContent = "⌫"; clearBtn.className = "tile-close btn--icon"; clearBtn.title = "очистить";
     clearBtn.onclick = () => tile.panel.clear();
     const close = document.createElement("button");
-    close.textContent = "✕"; close.className = "tile-close"; close.title = "закрыть сессию";
+    close.textContent = "✕"; close.className = "tile-close btn--icon btn--icon--danger"; close.title = "закрыть сессию";
     close.setAttribute("aria-label", "Закрыть сессию");
     // Same question Cmd+W asks. Without it the mouse was the more dangerous
     // of the two ways to do the same thing: one stray click killed a live
@@ -221,7 +221,7 @@ export class Deck {
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
     head.insertBefore(bcastCheck, title);
     const restart = document.createElement("button");
-    restart.textContent = "⟳"; restart.className = "tile-close"; restart.style.display = "none";
+    restart.textContent = "⟳"; restart.className = "tile-close btn--icon"; restart.style.display = "none";
     restart.title = "перезапустить";
     restart.onclick = async () => {
       restart.style.display = "none";
