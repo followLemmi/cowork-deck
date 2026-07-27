@@ -11,7 +11,7 @@ function title(text: string): HTMLElement {
   return h;
 }
 
-function actions(okLabel = "OK", cancelLabel: string | null = "Отмена") {
+function actions(okLabel = "OK", cancelLabel: string | null = "Cancel") {
   const row = document.createElement("div");
   row.className = "modal-actions";
   const ok = document.createElement("button");

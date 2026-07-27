@@ -73,7 +73,7 @@ describe("skillForm", () => {
   expect(res!.icon).toBe("play");
   });
 
-  it("returns schedule: null when «по расписанию» is off", async () => {
+  it("returns schedule: null when “on a schedule” is off", async () => {
     const p = skillForm("ws-1");
     (document.querySelector(".form-name") as HTMLInputElement).value = "Fix";
     (document.querySelector(".form-prompt") as HTMLTextAreaElement).value = "go";
@@ -83,9 +83,9 @@ describe("skillForm", () => {
 
   it("collects a weekly schedule with placeholder defaults", async () => {
     const p = skillForm("ws-1");
-    (document.querySelector(".form-name") as HTMLInputElement).value = "Отчёт";
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
     const prompt = document.querySelector(".form-prompt") as HTMLTextAreaElement;
-    prompt.value = "статус по {{branch}}";
+    prompt.value = "status for {{branch}}";
     prompt.dispatchEvent(new Event("input")); // rebuilds the defaults sub-form
     (document.querySelector(".form-sched-enabled") as HTMLInputElement).checked = true;
     (document.querySelector(".form-sched-kind") as HTMLSelectElement).value = "weekly";
@@ -104,9 +104,9 @@ describe("skillForm", () => {
 
   it("blocks OK when an enabled schedule has a placeholder without a default", async () => {
     const p = skillForm("ws-1");
-    (document.querySelector(".form-name") as HTMLInputElement).value = "Отчёт";
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
     const prompt = document.querySelector(".form-prompt") as HTMLTextAreaElement;
-    prompt.value = "статус по {{branch}}";
+    prompt.value = "status for {{branch}}";
     prompt.dispatchEvent(new Event("input"));
     (document.querySelector(".form-sched-enabled") as HTMLInputElement).checked = true;
     document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
@@ -121,7 +121,7 @@ describe("skillForm", () => {
 
   it("prefills the schedule section when editing", async () => {
     const p = skillForm("ws-1", {
-      name: "Отчёт", icon: "▶", prompt: "go", workspaceId: "ws-1",
+      name: "Report", icon: "▶", prompt: "go", workspaceId: "ws-1",
       schedule: { preset: { kind: "daily", hour: 7, minute: 15 }, defaults: {}, enabled: true },
     });
     expect((document.querySelector(".form-sched-enabled") as HTMLInputElement).checked).toBe(true);

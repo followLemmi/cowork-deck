@@ -119,8 +119,8 @@ export function icon(name: IconName, size = 16): SVGSVGElement {
  *  label is a required parameter. `data-action` gives tests a hook that does
  *  not depend on glyph text — the old ones matched on textContent === "✕".
  *
- *  The label should name the object too ("Удалить сценарий Ночной обзор"), or
- *  five rows produce five buttons all called "Удалить". */
+ *  The label should name the object too ("Delete scenario Nightly review"), or
+ *  five rows produce five buttons all called "Delete". */
 export function iconButton(
   name: IconName,
   label: string,
