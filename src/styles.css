@@ -255,3 +255,10 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .gh-acc-warn { color: var(--st-waiting); font-size: var(--fs-xs); }
 .form-hint { margin: 0 0 var(--sp-1); color: var(--fg-subtle); font-size: var(--fs-xs); line-height: 1.4; }
 .gh-missing { color: var(--st-error); }
+.ws-account {
+  max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg-subtle); font-size: var(--fs-xs);
+}
+.tile-auth { color: var(--st-error); font-size: var(--fs-xs); white-space: nowrap; }
+.tile-auth.stale { color: var(--st-waiting); }
+.tile-auth.hidden { display: none; }

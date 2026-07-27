@@ -5,7 +5,13 @@ import { workspaceForm } from "./forms";
 export class WorkspacesPanel {
   private items: Workspace[] = [];
   private activeId: string | null = null;
-  constructor(private mount: HTMLElement, private onSelect: (ws: Workspace) => void) {}
+  constructor(
+    private mount: HTMLElement,
+    private onSelect: (ws: Workspace) => void,
+    /** Привязка воркспейса к GitHub-аккаунту изменилась: живые сессии этого
+     *  воркспейса работают на устаревшем окружении до перезапуска. */
+    private onGithubChanged: (workspaceId: string) => void = () => {},
+  ) {}
 
   get active(): Workspace | null {
     return this.items.find((w) => w.id === this.activeId) ?? null;
@@ -46,7 +52,9 @@ export class WorkspacesPanel {
       name: cur.name, path: cur.path, color: cur.color, github: cur.github ?? null,
     });
     if (!res) return;
+    const before = JSON.stringify(cur.github ?? null);
     this.items = await saveWorkspace({ ...cur, ...res });
+    if (JSON.stringify(res.github ?? null) !== before) this.onGithubChanged(id);
     this.render();
   }
 
@@ -77,13 +85,21 @@ export class WorkspacesPanel {
       const label = document.createElement("button");
       label.className = "ws-label"; label.textContent = w.name;
       label.onclick = () => this.select(w.id);
+      row.append(dot, label);
+      if (w.github) {
+        const acc = document.createElement("span");
+        acc.className = "ws-account";
+        acc.textContent = w.github.login;
+        acc.title = `GitHub: ${w.github.login}`;
+        row.append(acc);
+      }
       const edit = document.createElement("button");
       edit.className = "ws-edit"; edit.textContent = "✎"; edit.title = "изменить";
       edit.onclick = () => this.edit(w.id);
       const x = document.createElement("button");
       x.className = "ws-del"; x.textContent = "✕";
       x.onclick = () => this.del(w.id);
-      row.append(dot, label, edit, x);
+      row.append(edit, x);
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");

@@ -85,7 +85,11 @@ void listen("pill://focus-next", async () => {
 
 // Selecting a workspace (click, startup restore of the active one, or after a
 // deletion re-selects the next one) switches the deck to that workspace's tiles.
-const workspaces = new WorkspacesPanel(wsMount, (ws) => deck.setActiveWorkspace(ws.id));
+const workspaces = new WorkspacesPanel(
+  wsMount,
+  (ws) => deck.setActiveWorkspace(ws.id),
+  (workspaceId) => deck.markAuthStale(workspaceId),
+);
 const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
   const ws = workspaces.active;
   if (!ws) return;

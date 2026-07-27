@@ -20,6 +20,7 @@ interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  authBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
   /** Исход привязки GitHub-аккаунта на момент СТАРТА процесса. Живой сессии
@@ -128,6 +129,36 @@ export class Deck {
     });
   }
 
+  /** Бейдж рисуется ТОЛЬКО когда что-то не так: аккаунт не подключился или
+   *  окружение устарело после смены привязки. В норме шапка тайла чистая. */
+  private renderAuthBadge(tile: Tile) {
+    const { authBadge: b } = tile;
+    if (tile.authStale) {
+      b.textContent = "GitHub ⟳";
+      b.title = "Привязка воркспейса изменилась — окружение подхватится после перезапуска сессии";
+      b.className = "tile-auth stale";
+      return;
+    }
+    if (tile.auth?.degraded) {
+      b.textContent = "GitHub ✕";
+      b.title = `Аккаунт ${tile.auth.account ?? "?"} не подключён: ${tile.auth.degraded}`;
+      b.className = "tile-auth";
+      return;
+    }
+    b.textContent = "";
+    b.className = "tile-auth hidden";
+  }
+
+  /** Привязка воркспейса изменилась: у живых сессий окружение уже зафиксировано
+   *  при fork, поменять его нельзя — честно помечаем как устаревшее. */
+  markAuthStale(workspaceId: string) {
+    for (const t of this.tiles.values()) {
+      if (t.workspaceId !== workspaceId || t.kind === "command") continue;
+      t.authStale = true;
+      this.renderAuthBadge(t);
+    }
+  }
+
   /** Открывает тайл с разовой пользовательской командой (установка gh,
    *  `gh auth login`). Такой тайл не сохраняется в layout: восстановление
    *  молча перезапустило бы sudo-команду на следующем старте приложения. */
@@ -216,7 +247,9 @@ export class Deck {
     const close = document.createElement("button");
     close.textContent = "✕"; close.className = "tile-close";
     close.onclick = () => this.remove(session);
-    head.append(title, gitBadge, tokenBadge, label, clearBtn, close);
+    const authBadge = document.createElement("span");
+    authBadge.className = "tile-auth hidden";
+    head.append(title, gitBadge, authBadge, tokenBadge, label, clearBtn, close);
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
@@ -230,6 +263,7 @@ export class Deck {
       try {
         tile.auth = await tile.panel.start(tile.workspacePath, null, true, tile.workspaceId ?? null);
         tile.authStale = false;
+        this.renderAuthBadge(tile);
         this.setState(session, "idle");
         void this.persistLayout();
       } catch (e) {
@@ -271,7 +305,7 @@ export class Deck {
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId, kind: opts.kind,
+      gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId, kind: opts.kind,
     };
     this.tiles.set(session, tile);
     if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
@@ -283,6 +317,7 @@ export class Deck {
         // Командный тайл в layout не попадает — persistLayout не зовём.
       } else {
         tile.auth = await panel.start(cwd, prompt, resume, workspaceId ?? null);
+        this.renderAuthBadge(tile);
         void this.persistLayout();
       }
     } catch (e) {
