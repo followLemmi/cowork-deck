@@ -13,6 +13,7 @@ import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
+import { taskPrompt } from "./tasks";
 import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm, taskForm } from "./forms";
 import { listen } from "@tauri-apps/api/event";
@@ -116,7 +117,21 @@ async function captureTask() {
   if (boardVisible) await refreshBoard();
   await refreshCounts();
 }
-async function launchFromTask(t: Task) { await alertModal(`Запуск из задачи ещё не реализован: ${t.title}`); }
+/** ▶ на карточке. Пространство берётся из `project:` карточки, а не активное:
+ *  на общем корне (например, папка волта на три проекта) активное пространство
+ *  уронило бы работу в чужой каталог. */
+async function launchFromTask(t: Task) {
+  const target = workspaces.all.find((w) => w.name === t.project);
+  if (!target) {
+    await alertModal(
+      `Не найдено пространство с именем «${t.project}» из поля project: карточки. ` +
+      `Переименовано пространство? Запуск отменён, чтобы не начать работу в чужом каталоге.`);
+    return;
+  }
+  const outcome = await deck.launchFromTask(target, t, taskPrompt(t));
+  if (outcome === "launched") setView(false); // показать поднятый терминал
+  if (boardVisible) await refreshBoard();
+}
 
 /** Перерисовать доску активного пространства. Каждый вызов IPC изолирован:
  *  одна упавшая ручка не должна ронять весь тик. */

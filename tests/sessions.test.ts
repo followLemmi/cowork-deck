@@ -40,7 +40,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { Deck } from "../src/sessions";
+import { Deck, serializeTiles } from "../src/sessions";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
 
@@ -252,5 +252,17 @@ describe("Deck zoom edge cases", () => {
     const zoomedTile = deckEl.querySelector(".tile.zoomed") as HTMLElement;
     expect(zoomedTile).not.toBeNull();
     expect(zoomedTile).not.toBe(firstZoomed);
+  });
+});
+
+describe("serializeTiles + taskId", () => {
+  it("persists the task link so a restored tile is still linked", () => {
+    const tiles = [
+      { session: "s1", workspacePath: "/p", name: "n", workspaceId: "w1", taskId: "01AAA" },
+      { session: "s2", workspacePath: "/p", name: "n2", workspaceId: "w1" },
+    ];
+    const out = serializeTiles(tiles as never);
+    expect(out[0].taskId).toBe("01AAA");
+    expect(out[1].taskId).toBeUndefined();
   });
 });

@@ -10,6 +10,7 @@ import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
+import { liveSessionForTask } from "./tasks";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -142,6 +143,26 @@ export class Deck {
     return true;
   }
 
+  /** Запуск сессии из карточки трекера. Если по карточке уже есть живая
+   *  сессия — фокусируем её, а не поднимаем вторую: так же, как плановый
+   *  сценарий пропускает наложившийся прогон. */
+  async launchFromTask(
+    workspace: Workspace, task: { id: string; title: string }, prompt: string,
+  ): Promise<"launched" | "focused"> {
+    const alive = liveSessionForTask(task.id, this.taskLinks());
+    if (alive) { this.focusTile(alive); return "focused"; }
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd: workspace.path,
+      workspaceId: workspace.id,
+      titleText: `☑ ${task.title}`,
+      prompt,
+      resume: false,
+      taskId: task.id,
+    });
+    return "launched";
+  }
+
   setActiveWorkspace(id: string | null) {
     this.zoomedSession = null;
     this.activeWorkspaceId = id;
@@ -167,7 +188,7 @@ export class Deck {
 
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
-    scheduledSkillId?: string;
+    scheduledSkillId?: string; taskId?: string;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const el = document.createElement("div");
@@ -242,7 +263,7 @@ export class Deck {
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
+      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId, taskId: opts.taskId,
     };
     this.tiles.set(session, tile);
     if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
@@ -268,7 +289,7 @@ export class Deck {
       for (const e of entries) {
         await this.spawnTile({
           session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
-          titleText: e.name, prompt: null, resume: true,
+          titleText: e.name, prompt: null, resume: true, taskId: e.taskId,
         });
       }
     } finally {
@@ -525,6 +546,7 @@ export class Deck {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
       session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
+      taskId: t.taskId,
     })));
     return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
@@ -625,11 +647,12 @@ export function nextWaitingAcross(
 }
 
 export function serializeTiles(
-  tiles: { session: string; workspacePath: string; name: string; workspaceId?: string }[],
+  tiles: { session: string; workspacePath: string; name: string; workspaceId?: string; taskId?: string }[],
 ): SessionEntry[] {
   return tiles.map((t) => ({
     sessionId: t.session, cwd: t.workspacePath, name: t.name,
     ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+    ...(t.taskId ? { taskId: t.taskId } : {}),
   }));
 }
 

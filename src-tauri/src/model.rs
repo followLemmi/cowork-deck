@@ -99,6 +99,12 @@ pub struct SessionEntry {
     /// layout files written before this field existed still load (→ None).
     #[serde(rename = "workspaceId", default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    // ВАЖНО: `SessionEntry` переименовывает поля ПОИМЁННО (`rename = "sessionId"`),
+    // а не через `rename_all = "camelCase"`. Без явного `rename` serde запишет
+    // `task_id`, тогда как TS читает `taskId` — связка карточки с сессией молча
+    // не восстановится после перезапуска приложения.
+    #[serde(rename = "taskId", default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 /// Небольшое UI-состояние, переживающее перезапуск (пока — активное пространство).
@@ -247,7 +253,7 @@ mod tests {
 
         // None is omitted from output (keeps files clean).
         let entry = SessionEntry {
-            session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
+            session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None, task_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");

@@ -259,8 +259,14 @@ mod tests {
         let s = Store::new(tmp());
         assert!(s.layout().is_empty()); // NotFound -> empty
         let entries = vec![
-            SessionEntry { session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into(), workspace_id: Some("w1".into()) },
-            SessionEntry { session_id: "s2".into(), cwd: "/tmp/b".into(), name: "терминал · P".into(), workspace_id: None },
+            SessionEntry {
+                session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into(),
+                workspace_id: Some("w1".into()), task_id: Some("01AAA".into()),
+            },
+            SessionEntry {
+                session_id: "s2".into(), cwd: "/tmp/b".into(), name: "терминал · P".into(),
+                workspace_id: None, task_id: None,
+            },
         ];
         s.save_layout(&entries).unwrap();
         let reloaded = Store::new(s.dir.clone()).layout();

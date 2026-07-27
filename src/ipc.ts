@@ -11,7 +11,7 @@ export type SchedulePreset =
  *  `{{placeholder}}` — a scheduled run is unattended and cannot ask. */
 export interface Schedule { preset: SchedulePreset; defaults: Record<string, string>; enabled: boolean; }
 export interface Skill { id: string; name: string; icon: string; prompt: string; workspaceId?: string | null; schedule?: Schedule | null; }
-export interface SessionEntry { sessionId: string; cwd: string; name: string; workspaceId?: string; }
+export interface SessionEntry { sessionId: string; cwd: string; name: string; workspaceId?: string; taskId?: string; }
 export interface UiState { activeWorkspaceId: string | null; }
 
 export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");

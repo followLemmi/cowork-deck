@@ -74,6 +74,13 @@ describe("liveSessionForTask", () => {
   });
 });
 
+describe("launch guard", () => {
+  it("an alive session for the card means focus, not a second launch", () => {
+    const links: TaskSessionLink[] = [{ session: "s1", taskId: "01AAA", state: "waitingInput" }];
+    expect(liveSessionForTask("01AAA", links)).toBe("s1");
+  });
+});
+
 describe("boardColumns", () => {
   it("splits open and done, newest first", () => {
     const cards = [
