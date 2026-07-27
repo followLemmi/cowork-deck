@@ -4,6 +4,7 @@
 //! глобальное состояние gh (`gh auth switch`, `~/.config/gh/hosts.yml`).
 //! Токен резолвится на старте сессии и живёт только в памяти процесса.
 
+use crate::model::WorkspaceGithub;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -97,6 +98,49 @@ pub fn status() -> GhStatus {
     GhStatus { path: Some(path), version, accounts }
 }
 
+/// Собирает окружение дочерней сессии из привязки воркспейса.
+///
+/// `token = Some(_)` — обычный путь. `token = None` — деградация: сессия всё
+/// равно стартует, но `GH_CONFIG_DIR` уводится в заведомо пустой каталог,
+/// чтобы gh сказал "ты не залогинен" вместо тихой работы под чужим активным
+/// аккаунтом. git-идентичность инжектится в обоих случаях — она известна и
+/// без токена.
+pub fn session_env(
+    cfg: &WorkspaceGithub,
+    token: Option<&str>,
+    noauth_dir: &str,
+) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = Vec::new();
+    let mut put = |k: &str, v: &str| env.push((k.to_string(), v.to_string()));
+
+    match token {
+        Some(t) => {
+            put("GH_TOKEN", t);
+            // github MCP-сервер, если сессия его поднимает, читает эту переменную.
+            put("GITHUB_PERSONAL_ACCESS_TOKEN", t);
+            // GH_TOKEN действует на github.com; для прочих хостов gh смотрит
+            // GH_ENTERPRISE_TOKEN, поэтому хост нужно назвать явно.
+            if cfg.host != "github.com" {
+                put("GH_HOST", &cfg.host);
+            }
+        }
+        None => put("GH_CONFIG_DIR", noauth_dir),
+    }
+
+    if let Some(n) = cfg.git_name.as_deref().filter(|s| !s.trim().is_empty()) {
+        put("GIT_AUTHOR_NAME", n);
+        put("GIT_COMMITTER_NAME", n);
+    }
+    if let Some(e) = cfg.git_email.as_deref().filter(|s| !s.trim().is_empty()) {
+        put("GIT_AUTHOR_EMAIL", e);
+        put("GIT_COMMITTER_EMAIL", e);
+    }
+    if let Some(k) = cfg.ssh_key.as_deref().filter(|s| !s.trim().is_empty()) {
+        put("GIT_SSH_COMMAND", &format!("ssh -i {k} -o IdentitiesOnly=yes"));
+    }
+    env
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,5 +186,101 @@ mod tests {
         let mut logins: Vec<String> = parse_auth_status(json).into_iter().map(|a| a.login).collect();
         logins.sort();
         assert_eq!(logins, vec!["a", "b"]);
+    }
+
+    fn cfg_full() -> WorkspaceGithub {
+        WorkspaceGithub {
+            host: "github.com".into(),
+            login: "followLemmi".into(),
+            git_name: Some("Evgeny".into()),
+            git_email: Some("e@example.com".into()),
+            ssh_key: Some("/home/u/.ssh/id_work".into()),
+        }
+    }
+
+    fn cfg_bare() -> WorkspaceGithub {
+        WorkspaceGithub {
+            host: "github.com".into(),
+            login: "followLemmi".into(),
+            git_name: None,
+            git_email: None,
+            ssh_key: None,
+        }
+    }
+
+    fn get<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn full_config_with_token_sets_gh_git_and_ssh() {
+        let env = session_env(&cfg_full(), Some("gho_secret"), "/tmp/noauth");
+        assert_eq!(get(&env, "GH_TOKEN"), Some("gho_secret"));
+        assert_eq!(get(&env, "GITHUB_PERSONAL_ACCESS_TOKEN"), Some("gho_secret"));
+        assert_eq!(get(&env, "GIT_AUTHOR_NAME"), Some("Evgeny"));
+        assert_eq!(get(&env, "GIT_COMMITTER_NAME"), Some("Evgeny"));
+        assert_eq!(get(&env, "GIT_AUTHOR_EMAIL"), Some("e@example.com"));
+        assert_eq!(get(&env, "GIT_COMMITTER_EMAIL"), Some("e@example.com"));
+        assert_eq!(
+            get(&env, "GIT_SSH_COMMAND"),
+            Some("ssh -i /home/u/.ssh/id_work -o IdentitiesOnly=yes")
+        );
+        assert_eq!(get(&env, "GH_CONFIG_DIR"), None, "успешный резолв не трогает GH_CONFIG_DIR");
+        assert_eq!(get(&env, "GH_HOST"), None, "для github.com GH_HOST не нужен");
+    }
+
+    #[test]
+    fn empty_optional_fields_produce_no_variables_at_all() {
+        let env = session_env(&cfg_bare(), Some("gho_secret"), "/tmp/noauth");
+        assert_eq!(get(&env, "GH_TOKEN"), Some("gho_secret"));
+        for k in [
+            "GIT_AUTHOR_NAME",
+            "GIT_COMMITTER_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_EMAIL",
+            "GIT_SSH_COMMAND",
+        ] {
+            assert_eq!(get(&env, k), None, "{k} не должна появляться — наследование из ~/.gitconfig");
+        }
+    }
+
+    #[test]
+    fn blank_optional_fields_are_treated_as_absent() {
+        let cfg = WorkspaceGithub {
+            git_name: Some("   ".into()),
+            git_email: Some("".into()),
+            ssh_key: Some(" ".into()),
+            ..cfg_bare()
+        };
+        let env = session_env(&cfg, Some("t"), "/tmp/noauth");
+        assert_eq!(get(&env, "GIT_AUTHOR_NAME"), None);
+        assert_eq!(get(&env, "GIT_AUTHOR_EMAIL"), None);
+        assert_eq!(get(&env, "GIT_SSH_COMMAND"), None);
+    }
+
+    #[test]
+    fn degraded_pins_an_empty_config_dir_and_never_sets_a_token() {
+        let env = session_env(&cfg_full(), None, "/tmp/noauth");
+        assert_eq!(get(&env, "GH_CONFIG_DIR"), Some("/tmp/noauth"));
+        assert_eq!(get(&env, "GH_TOKEN"), None, "молчаливый уход на чужой активный аккаунт недопустим");
+        assert_eq!(get(&env, "GITHUB_PERSONAL_ACCESS_TOKEN"), None);
+        assert_eq!(get(&env, "GIT_AUTHOR_NAME"), Some("Evgeny"), "идентичность известна и без токена");
+    }
+
+    #[test]
+    fn non_default_host_sets_gh_host() {
+        let cfg = WorkspaceGithub { host: "ghe.example.com".into(), ..cfg_bare() };
+        let env = session_env(&cfg, Some("t"), "/tmp/noauth");
+        assert_eq!(get(&env, "GH_HOST"), Some("ghe.example.com"));
+    }
+
+    #[test]
+    fn produces_no_duplicate_keys() {
+        let env = session_env(&cfg_full(), Some("t"), "/tmp/noauth");
+        let mut keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+        keys.sort();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(before, keys.len(), "дубликаты ключей env: {keys:?}");
     }
 }
