@@ -22,11 +22,14 @@
 - **`<label>` только для одиночного контрола.** Поле с несколькими кнопками (выбор `kind`) в `<label>` не оборачивать.
 - **Гейт задачи = `npm test` И `npm run build` И `cargo test`.** Vitest идёт через esbuild и не проверяет типы; красный `tsc` за зелёными юнит-тестами не видно.
 - **UI-строки русские**, в тон существующим (`готов`, `работает`, `ждёт ввода`).
-- **Коммиты** — conventional commits, тело на английском (как в истории репозитория).
+- **Коммиты** — conventional commits со скоупом-номером issue, как в истории репозитория (`feat(#36): …`). Номер задачи указан под её заголовком. Тело на английском.
+- **Epic:** #48 — зонтичная задача; issues задач #36–#47.
 
 ---
 
 ### Task 1: lib-таргет, модель задачи и парсер frontmatter
+
+**Issue:** #36
 
 Фундамент: чистые типы и формат карточки, без единого обращения к диску. Крейту нужен lib-таргет, потому что CLI из Task 5 обязан линковать **этот же** код формата, а не иметь свою реализацию.
 
@@ -428,7 +431,7 @@ Expected: PASS — все существующие тесты (`main`, `listener
 
 ```bash
 git add src-tauri/Cargo.toml src-tauri/src/lib.rs src-tauri/src/tasks/
-git commit -m "feat(tasks): card model and frontmatter parser behind a lib target
+git commit -m "feat(#36): card model and frontmatter parser behind a lib target
 
 A file without frontmatter or without an id is not a card at all, so a
 vault full of ordinary notes coexists with the backlog. A file that has
@@ -439,6 +442,8 @@ dropped — a silently vanished task is the worst tracker bug there is."
 ---
 
 ### Task 2: FsTaskProvider — трейт и файловая реализация
+
+**Issue:** #37
 
 **Files:**
 - Create: `src-tauri/src/tasks/provider.rs`
@@ -834,7 +839,7 @@ Expected: PASS, 17 тестов (7 из Task 1 + 10 новых).
 
 ```bash
 git add src-tauri/Cargo.toml src-tauri/src/tasks/
-git commit -m "feat(tasks): file-backed provider behind the TaskProvider port
+git commit -m "feat(#37): file-backed provider behind the TaskProvider port
 
 Cards resolve by id rather than by path, so renaming a note in a vault is
 a legal operation. The scan is non-recursive, skips unreadable entries
@@ -845,6 +850,8 @@ watcher can never observe a half-written card."
 ---
 
 ### Task 3: конфиг трекера на воркспейс и IPC-команды
+
+**Issue:** #38
 
 **Files:**
 - Modify: `src-tauri/src/model.rs` (`Workspace`, новые `TrackerConfig`/`TrackerRoot`)
@@ -1182,7 +1189,7 @@ Expected: сборка проходит, все существующие vitest-
 
 ```bash
 git add src-tauri/src/ src/ipc.ts
-git commit -m "feat(tasks): per-workspace tracker config and IPC commands
+git commit -m "feat(#38): per-workspace tracker config and IPC commands
 
 The storage root is the user's choice: the in-project .cowork/tasks (ours
 to create) or any folder they point at — a dedicated repo, an Obsidian
@@ -1194,6 +1201,8 @@ feature still deserialize instead of being truncated on the next upsert."
 ---
 
 ### Task 4: watcher каталога и событие `tasks://changed`
+
+**Issue:** #39
 
 **Files:**
 - Create: `src-tauri/src/tasks/watch.rs`
@@ -1432,7 +1441,7 @@ Expected: PASS везде.
 
 ```bash
 git add src-tauri/ src/ipc.ts
-git commit -m "feat(tasks): watch tracker roots and emit tasks://changed
+git commit -m "feat(#39): watch tracker roots and emit tasks://changed
 
 Bursts are coalesced over 200ms and .tmp writes are ignored, so the UI is
 never woken mid-write. A root that cannot be watched is skipped rather
@@ -1443,6 +1452,8 @@ costs latency, not correctness."
 ---
 
 ### Task 5: CLI `cowork_task` — карточка от сессии
+
+**Issue:** #40
 
 **Files:**
 - Create: `src-tauri/src/bin/cowork_task.rs`
@@ -1699,7 +1710,7 @@ Expected: файл `<ulid>-баг-пилюля-мигает.md` с `origin: sess
 
 ```bash
 git add src-tauri/Cargo.toml src-tauri/src/bin/cowork_task.rs
-git commit -m "feat(tasks): cowork_task CLI so a session can file its own ticket
+git commit -m "feat(#40): cowork_task CLI so a session can file its own ticket
 
 Links the app's tasks module rather than reimplementing the card format,
 and writes the file directly — no TCP, no listener — so filing a ticket
@@ -1710,6 +1721,8 @@ usage instead of guessing a path."
 ---
 
 ### Task 6: окружение сессии и упаковка сайдкара
+
+**Issue:** #41
 
 Без этого CLI из Task 5 недостижим для агента: он не знает ни каталога, ни своего пути. И, как уже случалось с `cowork_report`, бинарь не попадёт в установочный пакет, если его не объявить сайдкаром.
 
@@ -1991,7 +2004,7 @@ Expected: файл `cowork_task-<target-triple>` непустого размер
 
 ```bash
 git add src-tauri/ scripts/ package.json src/ipc.ts src/sessions.ts
-git commit -m "feat(tasks): hand tracker env to sessions and bundle the CLI
+git commit -m "feat(#41): hand tracker env to sessions and bundle the CLI
 
 Sessions get COWORK_TASKS_DIR/PROJECT/TASK_BIN/SESSION at PTY spawn, and
 the vars are omitted (not blanked) when a workspace has no tracker so the
@@ -2003,6 +2016,8 @@ the installer for exactly this reason."
 ---
 
 ### Task 7: чистые хелперы доски
+
+**Issue:** #42
 
 Вся логика доски — до всякого DOM, чтобы её можно было проверить тестами.
 
@@ -2257,7 +2272,7 @@ Expected: сборка проходит.
 
 ```bash
 git add src/tasks.ts tests/tasks.test.ts
-git commit -m "feat(tasks): pure board helpers
+git commit -m "feat(#42): pure board helpers
 
 derivedStatus reads 'in progress' off live sessions instead of storing
 it, so a card cannot get stuck. boardColumns keeps damaged cards visible
@@ -2268,6 +2283,8 @@ shared root rather than hiding them without a trace."
 ---
 
 ### Task 8: доска, переключатель вида и счётчики в сайдбаре
+
+**Issue:** #43
 
 **Files:**
 - Create: `src/board.ts`
@@ -2797,7 +2814,7 @@ Expected: PASS; сборка проходит.
 
 ```bash
 git add index.html src/board.ts src/main.ts src/sessions.ts src/styles.css src/workspaces.ts tests/board.test.ts
-git commit -m "feat(tasks): board view, view switch and sidebar counts
+git commit -m "feat(#43): board view, view switch and sidebar counts
 
 Every card field goes in via textContent — titles and bodies are written
 by the user or by an agent. Damaged and conflicting cards are rendered
@@ -2809,6 +2826,8 @@ is pure latency improvement rather than a correctness dependency."
 ---
 
 ### Task 9: захват карточки — модалка, хоткей, палитра
+
+**Issue:** #44
 
 **Files:**
 - Modify: `src/forms.ts` (`taskForm`)
@@ -3050,7 +3069,7 @@ Expected: PASS; сборка проходит.
 
 ```bash
 git add src/commands.ts src/forms.ts src/main.ts tests/
-git commit -m "feat(tasks): capture a card from a hotkey, palette or the board
+git commit -m "feat(#44): capture a card from a hotkey, palette or the board
 
 Cmd/Ctrl+Shift+T, so the binding does not shadow readline inside the
 terminal the way bare Ctrl+K/F/N do. An empty title keeps the modal open
@@ -3061,6 +3080,8 @@ in a label — a label click used to forward to the first control."
 ---
 
 ### Task 10: ▶ запуск сессии из карточки
+
+**Issue:** #45
 
 **Files:**
 - Modify: `src/sessions.ts` (`launchFromTask`, `taskId` в `spawnTile`, персист в layout)
@@ -3193,7 +3214,7 @@ Expected: PASS везде.
 
 ```bash
 git add src-tauri/src/model.rs src/ipc.ts src/main.ts src/sessions.ts tests/
-git commit -m "feat(tasks): launch a session from a card
+git commit -m "feat(#45): launch a session from a card
 
 The workspace comes from the card's project field, not the active one: a
 shared root would otherwise drop work into the wrong directory. An alive
@@ -3205,6 +3226,8 @@ duplicate launch."
 ---
 
 ### Task 11: настройка трекера в свойствах пространства
+
+**Issue:** #46
 
 Пока этого нет, фичу нельзя включить из UI вообще — только правкой JSON руками.
 
@@ -3451,7 +3474,7 @@ Expected: PASS везде.
 
 ```bash
 git add src/forms.ts src/main.ts src/workspaces.ts src/styles.css tests/forms.test.ts
-git commit -m "feat(tasks): configure the tracker per workspace
+git commit -m "feat(#46): configure the tracker per workspace
 
 Storage is the user's choice: the in-project .cowork/tasks or any folder
 they point at — a dedicated repo, an Obsidian vault. An external root
@@ -3463,6 +3486,8 @@ renaming cannot silently wipe it."
 ---
 
 ### Task 12: навык для агента, документация и ручная проверка волта
+
+**Issue:** #47
 
 Без навыка агент не знает конвенции, и «сессия оформляет тикет сама» остаётся теоретической возможностью.
 
@@ -3595,7 +3620,7 @@ Expected: `cowork_task` присутствует в бандле, не толь�
 
 ```bash
 git add .claude/skills/file-a-task/ README.md
-git commit -m "docs(tasks): agent skill for filing tickets, README coverage
+git commit -m "docs(#47): agent skill for filing tickets, README coverage
 
 The skill is what makes 'a session files its own ticket' real rather than
 theoretical: it tells the agent when a side finding becomes a card
