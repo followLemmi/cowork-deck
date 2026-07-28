@@ -1,3 +1,4 @@
+pub mod board;
 pub mod fs;
 pub mod frontmatter;
 pub mod migrate;
