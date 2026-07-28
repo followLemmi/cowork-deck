@@ -403,10 +403,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_empty_kind_id_and_duplicate_kind_ids() {
+    fn rejects_an_empty_kind_id() {
         let e = parse(r#"{"steps":[{"id":"a","label":"A","terminal":true}],
                           "kinds":[{"id":"","label":"K"}]}"#).unwrap_err();
         assert!(matches!(e, BoardConfigError::EmptyKindId), "{e}");
+    }
+
+    #[test]
+    fn rejects_duplicate_kind_ids() {
         let e = parse(r#"{"steps":[{"id":"a","label":"A","terminal":true}],
                           "kinds":[{"id":"k","label":"K"},{"id":"k","label":"K2"}]}"#).unwrap_err();
         assert!(matches!(e, BoardConfigError::DuplicateKindId(ref s) if s == "k"), "{e}");
@@ -640,7 +644,7 @@ pub fn parse(text: &str) -> Result<BoardConfig, BoardConfigError> {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd src-tauri && cargo test board::`
-Expected: PASS, 17 tests.
+Expected: PASS, 19 tests.
 
 Run: `cd src-tauri && cargo clippy --all-targets`
 Expected: 6 warnings.
@@ -842,7 +846,7 @@ pub fn copy_if_absent(from: &Path, to: &Path) {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd src-tauri && cargo test board::`
-Expected: PASS, 26 tests.
+Expected: PASS, 28 tests.
 
 - [ ] **Step 5: Call `copy_if_absent` from the migration**
 
@@ -885,7 +889,7 @@ Adapt `two_roots_with_one_card()` and `run_migration(&from, &to)` to the helper 
 - [ ] **Step 7: Verify**
 
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 156 tests.
+Expected: PASS, 175 tests.
 
 Run: `cd src-tauri && cargo clippy --all-targets`
 Expected: 6 warnings.
@@ -1498,14 +1502,24 @@ const CFG: BoardConfig = {
 
 - [ ] **Step 14: Verify**
 
+This task rewrites existing tests as well as adding them, so an absolute total is
+not the gate. The gate is: everything passes, the warning count has not moved, and
+the only tests that disappeared are the ones this task deliberately rewrote.
+
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 165 tests.
+Expected: all passing. Compared with the previous task, the suite gains the two
+`initial_step` tests, four `parse_card` tests, three `fs` tests, and one
+`cowork_task` kind test; it loses the two `frontmatter` value-damage assertions
+(rewritten, listed in the brief) and the `kind_from_str` tests (that function is
+deleted). Report the before and after numbers and account for the difference.
 
 Run: `cd src-tauri && cargo clippy --all-targets`
-Expected: 6 warnings.
+Expected: exactly 6 warnings.
 
 Run: `npx vitest run`
-Expected: 34 files, 250 tests passing.
+Expected: all passing, one new file (`tests/board-config.test.ts`, 7 tests).
+Existing tests are adapted to the new signatures, not deleted — if a count drops,
+say which test went and why.
 
 Run: `npx tsc --noEmit`
 Expected: no errors.
@@ -1888,7 +1902,8 @@ Add a test that `replace_body` leaves an unknown frontmatter key alone and that 
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `cd src-tauri && cargo test`
-Expected: PASS, 178 tests.
+Expected: all passing, with the ten `update` tests and the two `replace_body`
+tests added and nothing removed.
 
 - [ ] **Step 8: Add the command and its IPC wrapper**
 
@@ -1925,9 +1940,9 @@ Add a test to `tests/ipc.test.ts` in the style of its neighbours, asserting the 
 
 - [ ] **Step 9: Verify**
 
-Run: `cd src-tauri && cargo test` — 178 passing.
-Run: `cd src-tauri && cargo clippy --all-targets` — 6 warnings.
-Run: `npx vitest run` — 34 files, 251 tests.
+Run: `cd src-tauri && cargo test` — all passing, nothing removed.
+Run: `cd src-tauri && cargo clippy --all-targets` — exactly 6 warnings.
+Run: `npx vitest run` — all passing, with the new `updateTask` case in `tests/ipc.test.ts`.
 Run: `npx tsc --noEmit` — no errors.
 
 - [ ] **Step 10: Commit**
