@@ -159,24 +159,42 @@ pub fn with_previous_location(old: Option<&Workspace>, mut new: Workspace) -> Wo
     new
 }
 
-/// A `v: 1` config resolved an external root verbatim, so its cards sit
-/// directly in the picked folder rather than in the project subfolder this
-/// version resolves to. Seed that as the previous location, or updating the app
-/// would empty the board with no explanation.
+/// An older config resolved a picked path to a different folder than this
+/// version does, so its cards are not where the board is about to look. Seed
+/// that folder as the previous location, or updating the app would empty the
+/// board with no explanation.
 pub fn seed_previous_location(mut ws: Workspace) -> Workspace {
     let name = ws.name.clone();
+    // Computed before the mutable borrow below, and needed for the guard at the
+    // end: some picks resolve to the same folder under both layouts.
+    let current_root = effective_root(&ws);
     let Some(cfg) = ws.tracker.as_mut() else { return ws };
     if cfg.version >= TRACKER_CONFIG_VERSION || cfg.previous_location.is_some() {
         return ws;
     }
     let picked = match cfg.providers.first() {
-        Some(TrackerProvider::Fs { root: TrackerRoot::Path { path } }) => path.clone(),
-        // A project root did not move: `<ws.path>/.cowork/tasks` is what
-        // version 1 resolved to as well.
+        Some(TrackerProvider::Fs { root: TrackerRoot::Path { path } }) => PathBuf::from(path),
+        // A project root never moved: `<ws.path>/.cowork/tasks` is what every
+        // version resolved to.
         _ => return ws,
     };
+    // Where that version's resolution actually put the files.
+    let was = if cfg.version <= 1 {
+        // Version 1 used the picked folder verbatim.
+        picked
+    } else {
+        // Version 2 appended the project folder and nothing else.
+        picked.join(slugify(&name))
+    };
+    let was = was.to_string_lossy().to_string();
+    // Picking the container itself resolves to the same folder under both
+    // layouts. Seeding here would offer to move cards from a folder into
+    // itself, and the banner could never be satisfied.
+    if current_root.as_deref() == Some(was.as_str()) {
+        return ws;
+    }
     cfg.previous_location = Some(PreviousLocation {
-        root: picked,
+        root: was,
         project: name,
         was_project_root: false,
     });
@@ -632,12 +650,53 @@ mod tests {
         assert!(out.tracker.unwrap().previous_location.is_none());
     }
 
+    fn v2_external(path: &str) -> TrackerConfig {
+        TrackerConfig {
+            providers: vec![TrackerProvider::Fs { root: TrackerRoot::Path { path: path.into() } }],
+            previous_location: None,
+            version: 2,
+        }
+    }
+
     #[test]
-    fn a_current_config_is_left_alone_by_seeding() {
+    fn a_v2_config_is_seeded_with_the_project_folder_it_used_to_resolve_to() {
+        // Version 2 added the project folder but no container, so that is where
+        // the cards physically are.
+        let out = seed_previous_location(ws(Some(v2_external("/home/u/vault"))));
+        let prev = out.tracker.unwrap().previous_location.expect("seeded");
+        assert_eq!(prev.root, "/home/u/vault/cowork-deck");
+        assert_eq!(prev.project, "cowork-deck");
+        assert!(!prev.was_project_root);
+    }
+
+    #[test]
+    fn a_v2_config_pointing_at_the_container_is_not_seeded() {
+        // Its v2 root and its v3 root are the same folder: v2 appended the slug
+        // to the container, and v3 recognises the container and does the same.
+        // A pointer here would offer to move cards from a folder into itself.
+        let out = seed_previous_location(ws(Some(v2_external("/home/u/vault/cowork-deck-tasks"))));
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn a_v3_config_is_left_alone_by_seeding() {
         let out = seed_previous_location(ws(Some(tracker(
-            TrackerRoot::Path { path: "/home/u/vault/Tasks".into() },
+            TrackerRoot::Path { path: "/home/u/vault".into() },
         ))));
         assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn an_unanswered_v1_pointer_survives_the_upgrade_to_v3() {
+        // Someone who never answered the v1 banner still has a pointer at the
+        // picked folder, which is where the cards are. Recomputing it for v3
+        // would send the migration into an empty directory.
+        let mut seeded = seed_previous_location(ws(Some(v1_external("/home/u/vault/Tasks"))));
+        // Simulate the config being read again by a newer build.
+        seeded.tracker.as_mut().unwrap().version = 2;
+        let out = seed_previous_location(seeded);
+        let prev = out.tracker.unwrap().previous_location.expect("kept");
+        assert_eq!(prev.root, "/home/u/vault/Tasks");
     }
 
     #[test]

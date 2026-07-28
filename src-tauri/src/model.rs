@@ -127,16 +127,17 @@ pub struct TrackerConfig {
     /// Where this workspace's cards were before its effective root last moved.
     #[serde(rename = "previousLocation", default, skip_serializing_if = "Option::is_none")]
     pub previous_location: Option<PreviousLocation>,
-    /// Storage format. Version 1 had no `previousLocation` and resolved an
-    /// external root verbatim, so its cards sit directly in the picked folder.
-    /// Records without the field are version 1 and are seeded on read.
+    /// Storage format for the layout below a picked path. Version 1 used the
+    /// picked folder verbatim; version 2 added a project subfolder; version 3
+    /// puts that subfolder inside a `cowork-deck-tasks` container. Records
+    /// without the field are version 1 and are seeded on read.
     #[serde(rename = "v", default = "tracker_v1")]
     pub version: u8,
 }
 
 fn tracker_v1() -> u8 { 1 }
 
-pub const TRACKER_CONFIG_VERSION: u8 = 2;
+pub const TRACKER_CONFIG_VERSION: u8 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
