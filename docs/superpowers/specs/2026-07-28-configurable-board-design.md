@@ -9,8 +9,15 @@ and expects `.tk-hidden { display: none }` (`styles.css:416`) to take it away.
 It does not: `#deck { display: grid }` on line 74 is an id selector and outweighs
 a class one, so the terminals stay put and `#board` — correctly taking `flex: 1`
 — opens beside them. The result reads as a panel on the right, which is not what
-the code intends and not what anyone wants. `layout.test.ts` missed it because it
-asserts the class, not the resulting `display`.
+the code intends and not what anyone wants.
+
+Nothing caught it because nothing covers it: no test exercises the view switch at
+all. `main.ts` does its work at module load and is imported by no test, and the
+only assertions about `tk-hidden` anywhere (`forms.test.ts:256-276`) are about
+form rows, which have no id and so are hidden correctly by the class alone. A
+test that asserts the class would have passed here too — the bug lives in the
+cascade, not in the code that sets the class, so the assertion has to be the
+resulting `display`.
 
 **Cards are whatever height their content makes them.** An unbounded title plus
 a full `damaged:` paragraph carrying a filesystem path means no two cards in a
@@ -145,9 +152,15 @@ board, the modal's selects and the `⚙` editor all read the same object, and th
 is no second channel to fall out of step with the first.
 
 Because that authority moves, `frontmatter.rs:57-69` gives up its own. An
-unrecognised `status:` or `kind:` no longer damages a card; the parser reads the
-string and passes it on. `damaged` keeps the meaning it had before those two
-cases were folded into it: a missing `id`, `title`, or `project`.
+unrecognised **value** no longer damages a card: the parser reads the string and
+passes it on, and whether it means anything is the configuration's business.
+
+A missing **field** is a different thing and keeps damaging the card as it does
+today — `no status field`, `no title field`, `no project field`, `no created
+field`. A card that does not say where it is, is malformed no matter what the
+configuration says. So exactly two arms of `parse_card` change: `Some(_) =>
+damage("unknown kind")` and `Some(_) => damage("unknown status")` stop damaging
+and start carrying the value through. The `None` arms are untouched.
 
 ### The unknown-step column
 
@@ -388,8 +401,10 @@ shows the parse error, and leaves the file alone.
 `frontmatter.rs` currently asserts that an unrecognised `status` or `kind` marks
 a card `damaged` (around `frontmatter.rs:267-273`). This design removes that
 judgement from the parser and gives it to the configuration, so those assertions
-are rewritten rather than repaired. Saying so here keeps the change from reading
-as a regression at review time.
+are rewritten rather than repaired: the same input must now yield a card carrying
+the unrecognised value with `damaged: None`. The neighbouring assertions about
+missing fields stay exactly as they are. Saying so here keeps the change from
+reading as a regression at review time.
 
 Also updated: `board.test.ts`, `tasks.test.ts`, `task-form.test.ts`,
 `layout.test.ts`, and the `cowork_task` tests.
