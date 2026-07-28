@@ -999,4 +999,18 @@ mod tests {
         assert_eq!(p.root, container.join("cowork-deck").to_string_lossy());
         assert_eq!(p.creating, vec!["cowork-deck"]);
     }
+
+    #[test]
+    fn preview_promises_nothing_when_the_picked_folder_is_already_the_project_root() {
+        // The third recognition case: the picked folder is already
+        // `<container>/<slug>`, i.e. already the effective root, so `root ==
+        // base` and the component walk between them must come out empty.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cowork-deck-tasks").join("cowork-deck");
+        std::fs::create_dir_all(&root).unwrap();
+        let p = root_preview("cowork-deck", &root.to_string_lossy());
+        assert_eq!(p.root, root.to_string_lossy());
+        assert!(p.creating.is_empty());
+        assert!(!p.base_missing);
+    }
 }
