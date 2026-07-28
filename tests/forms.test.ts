@@ -150,6 +150,22 @@ describe("workspaceForm", () => {
     expect(document.querySelector(".tk-f-preview-path")).toBeNull();
     expect(document.querySelector(".modal-ok")).not.toBeNull();
   });
+
+  it("a stale success cannot resurrect the preview after a guard clears it", async () => {
+    let release: (v: unknown) => void = () => {};
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    void workspaceForm();
+    fillTracker("/vault");
+    // The request fired by fillTracker's path input is still in flight.
+    // Blanking the name now must clear the preview immediately, and that
+    // clear must not be undone once the earlier request finally answers.
+    const nameInput = document.querySelector(".form-name") as HTMLInputElement;
+    nameInput.value = "";
+    nameInput.dispatchEvent(new Event("input"));
+    release({ root: "/vault/cowork-deck-tasks/deck", creating: [], baseMissing: false });
+    await settle();
+    expect(document.querySelector(".tk-f-preview-path")).toBeNull();
+  });
 });
 
 describe("workspaceForm — tracker", () => {

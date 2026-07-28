@@ -1060,9 +1060,14 @@ Inside `workspaceForm`, after `trackerPathRow` is assembled:
       }
     };
 
-    // A newer request must win even if an older one replies later.
+    // A newer request must win even if an older one replies later. The token
+    // is consumed before the guard, not after: a guard failure (tracker
+    // turned off, root switched back to project, name blanked mid-flight) has
+    // to invalidate an in-flight request too, or a stale success can redraw
+    // the very preview the guard just cleared.
     let previewToken = 0;
     const refreshPreview = async () => {
+      const token = ++previewToken;
       const picked = trackerPath.value.trim();
       // The project folder is a slug of the name, so a blank name would resolve
       // to slugify("") — "task" — and promise a folder that will never exist.
@@ -1071,7 +1076,6 @@ Inside `workspaceForm`, after `trackerPathRow` is assembled:
         renderPreview(null);
         return;
       }
-      const token = ++previewToken;
       try {
         const p = await trackerRootPreview(wsName, picked);
         if (token === previewToken) renderPreview(p);
@@ -1081,6 +1085,8 @@ Inside `workspaceForm`, after `trackerPathRow` is assembled:
       }
     };
 ```
+
+The token must be consumed at the very top of `refreshPreview`, before the guard runs, not after it. If it is bumped only on the valid branch, a guard failure — the tracker turned off, the root switched back to project, or (as here) the name blanked mid-flight — leaves `previewToken` untouched, so an older in-flight request that later resolves still matches it and redraws the very preview the guard just cleared. Every call has to invalidate whatever came before it, whether or not that call goes on to fire an IPC request.
 
 Wire every input that can move the resolved path. The name field is one of them, which is the whole reason `refreshPreview` reads both:
 
