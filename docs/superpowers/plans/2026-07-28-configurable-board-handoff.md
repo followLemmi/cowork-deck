@@ -172,10 +172,27 @@ None of these blocked a task; the final review should triage them.
    git -c credential.helper='!f() { echo username=followLemmi; echo password=$GH_TOKEN; }; f' push
    ```
 
-5. Task 4's task review was dispatched and had not returned when execution
-   stopped. Nothing depends on its verdict to start Task 5, but its findings
-   should be picked up before the branch is finished — re-run it over
-   `8904ae6..7219f88` if it is lost.
+5. Task 4's review came back **Approved** after the handoff was first written.
+   Two outcomes are already folded into the plan and need no further action:
+
+   - Its one Important finding was branch-level, not a Task 4 defect:
+     `boardError` crosses the IPC boundary and nothing reads it, and the
+     fallback it exists to explain silently mis-classifies cards. With a broken
+     `board.json` in a project whose terminal step is `shipped`, the default
+     two-step fallback makes `shipped` non-terminal — every closed card
+     reappears in the open column with ✓ offered, and the sidebar counts them as
+     open. The board looks plausible and is wrong. **The banner therefore moved
+     from Task 9 to Task 6**, which rewrites that rendering anyway; Task 9's old
+     step is kept as a marker so the move is traceable.
+   - Its one ⚠️ was about ruling 4: `taskPrompt` prints no steps line at all.
+     That is correct — the steps line belongs to **Task 11**, not Task 4. The
+     ruling ("omit the line when there are no steps") constrains Task 11, and
+     the reviewer had no way to know that from a Task 4 diff.
+
+   The review also confirmed all seven rulings followed, no step-id literal
+   surviving in control flow, `BOARD_FILE` never spelled as a path, and no test
+   in the diff that cannot fail — the last from reading, not reverting, which it
+   labelled as such.
 
 ## GitHub
 

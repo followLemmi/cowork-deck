@@ -2252,14 +2252,37 @@ In `src/styles.css`, replace the `.tk-cols` rule and add the card sizing:
 
 Keep the existing `.tk-card` border, padding and state colours; only add the layout properties above to that rule.
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 6: Show the configuration error, because the fallback lies quietly**
+
+Moved here from Task 9 after Task 4's review, and the reason matters more than the
+banner. `boardError` already crosses the IPC boundary and nothing reads it. Picture
+the state it exists to explain: `board.json` is broken in a project whose terminal
+step is `shipped`. The board falls back to the default two steps, so `shipped` is
+no longer terminal — **every closed card reappears in the open column with ✓
+offered on it, and the sidebar counts them all as open.** The board looks entirely
+plausible and is wrong, with the only signal sitting in a field no code consumes.
+Left in Task 9, that state ships through three tasks.
+
+`BoardState` gains `boardError: string | null`, filled from `caps.boardError` in
+`refreshBoard`. `BoardView.render` shows it above the columns as
+`p.tk-board-error`: `board.json could not be used: <error>. The default two-step
+board is shown instead, so cards may appear in the wrong column. The file was left
+alone.` The board still draws underneath it.
+
+The second sentence is not padding: it is the part that stops a person trusting
+the columns while the fallback is active.
+
+Add two `board.test.ts` cases: the message renders when `boardError` is set, and
+the columns still render alongside it.
+
+- [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `npx vitest run`
 Expected: 34 files, all passing (the `boardColumns` block replaces its predecessor, so the count moves rather than only growing).
 
 Run: `npx tsc --noEmit` — no errors.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/tasks.ts src/board.ts src/styles.css tests/tasks.test.ts tests/board.test.ts
@@ -2747,11 +2770,13 @@ async function editBoard() {
 
 Add `boardConfigSave`, `boardStepRewrite` and `boardStepUsage` wrappers to `src/ipc.ts` with a test each in `tests/ipc.test.ts`.
 
-- [ ] **Step 6: Show a configuration error on the board**
+- [ ] **Step 6: (moved to Task 6 — see the note there)**
 
-`BoardState` gains `boardError: string | null`, filled from `caps.boardError` in `refreshBoard`. `BoardView.render` shows it above the columns as `p.tk-board-error`: `board.json could not be used: <error>. The default two-step board is shown instead; the file was left alone.` The board still draws.
-
-Add a `board.test.ts` case asserting the message renders and the columns still do.
+The configuration-error banner was originally specified here. Task 4's review
+established that leaving it this late ships three tasks with a board that looks
+plausible and is wrong, so it moved to Task 6, which rewrites this rendering
+anyway. Nothing to do in this step; it is kept as a marker so the move is
+traceable.
 
 - [ ] **Step 7: Verify and commit**
 
