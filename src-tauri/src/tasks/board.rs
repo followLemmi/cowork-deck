@@ -328,10 +328,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_empty_kind_id_and_duplicate_kind_ids() {
+    fn rejects_an_empty_kind_id() {
         let e = parse(r#"{"steps":[{"id":"a","label":"A","terminal":true}],
                           "kinds":[{"id":"","label":"K"}]}"#).unwrap_err();
         assert!(matches!(e, BoardConfigError::EmptyKindId), "{e}");
+    }
+
+    #[test]
+    fn rejects_duplicate_kind_ids() {
         let e = parse(r#"{"steps":[{"id":"a","label":"A","terminal":true}],
                           "kinds":[{"id":"k","label":"K"},{"id":"k","label":"K2"}]}"#).unwrap_err();
         assert!(matches!(e, BoardConfigError::DuplicateKindId(ref s) if s == "k"), "{e}");
