@@ -37,7 +37,7 @@
 - `src/main.ts` — `setView` delegates to `applyView` and passes the terminals-only sidebar blocks (Task 1); `captureTask` passes the configuration (Task 4); wires the modal, the drag handlers and the editor (Tasks 7–9).
 - `src-tauri/src/tasks/mod.rs` — declare `board` (Task 2).
 - `src-tauri/src/tasks/model.rs` — `Task.kind: KindId`, `Task.status: StepId`, `TaskDraft.kind: KindId`; `TaskKind` and `TaskStatus` deleted (Task 4); `UnknownStep` and `UnknownKind` join `TaskError` (Task 5).
-- `src-tauri/src/tasks/frontmatter.rs` — two arms of `parse_card` stop damaging; `kind_str`/`status_str` deleted; `set_step` replaces `set_status_done` (Task 4); `set_fields_pub` and `replace_body` (Task 5).
+- `src-tauri/src/tasks/frontmatter.rs` — two arms of `parse_card` stop damaging; `kind_str`/`status_str` deleted; `set_step` replaces `set_status_done` (Task 4); `set_fields` becomes `pub` and `replace_body` joins it (Task 5).
 - `src-tauri/src/tasks/fs.rs` — `FsTaskProvider` carries a `BoardConfig`; `resolve` targets the first terminal step; `capabilities` reports the configured ids (Task 4); `writable_card` and `update` (Task 5).
 - `src-tauri/src/tasks/migrate.rs` — carry `board.json` to the destination (Task 3).
 - `src-tauri/src/tasks/provider.rs` — `TaskPatch`, and `update` joins the trait (Task 5).
@@ -1828,7 +1828,7 @@ Rewrite `resolve` in terms of it, then:
         if !fields.is_empty() {
             let refs: Vec<(&str, &str)> =
                 fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
-            updated = crate::tasks::frontmatter::set_fields_pub(&updated, &refs)
+            updated = crate::tasks::frontmatter::set_fields(&updated, &refs)
                 .ok_or_else(|| TaskError::Io("the card has no frontmatter block".to_string()))?;
         }
         if let Some(b) = &patch.body {
@@ -1844,15 +1844,23 @@ Rewrite `resolve` in terms of it, then:
 
 - [ ] **Step 6: Expose the two frontmatter helpers `update` needs**
 
-In `src-tauri/src/tasks/frontmatter.rs`, make `set_fields` reachable and add a body replacement. `set_fields` stays private and gains a public wrapper, so the invariant "callers pass flattened single-line values" has one documented door:
+In `src-tauri/src/tasks/frontmatter.rs`, make `set_fields` reachable and add a body replacement. `set_fields` becomes `pub` in place, with the caller's obligation written into its existing doc comment — a wrapper that only forwards would be one more name for the same function:
 
 ```rust
-/// `set_fields` for callers outside this module. Values must already be
-/// single-line: a newline in a value would end the frontmatter block early.
-pub fn set_fields_pub(text: &str, fields: &[(&str, &str)]) -> Option<String> {
-    set_fields(text, fields)
-}
+/// Set each `key: value` in an existing frontmatter block, replacing the line
+/// where the key is already present and appending it where it is not.
+///
+/// … (the existing doc comment stays; add:)
+///
+/// Values must already be single-line: a newline in one would end the
+/// frontmatter block early. `render_card` flattens with `split_whitespace` and
+/// callers outside this module must do the same.
+pub fn set_fields(text: &str, fields: &[(&str, &str)]) -> Option<String> {
+```
 
+and add a body replacement beside it:
+
+```rust
 /// Replace the body, leaving the frontmatter block byte-for-byte. Returns `None`
 /// when there is no frontmatter block.
 pub fn replace_body(text: &str, body: &str) -> Option<String> {
@@ -3237,7 +3245,7 @@ No gaps.
 - `initial_step()` was placed in Task 4 rather than Task 2, where its first caller is.
 - Task 4's file list said `src-tauri/tests/cowread_task.rs`. The file is `src-tauri/tests/cowork_task.rs`.
 - `set_step` takes `Option<&str>` rather than always stamping `resolved`, because a card dragged back out of `done` must not keep showing when it was closed.
-- `update` needed `set_fields` from outside `frontmatter.rs`, so Task 5 adds `set_fields_pub` and `replace_body` rather than making the private helper public without a documented contract.
+- `update` needed `set_fields` from outside `frontmatter.rs`. The first draft added a `set_fields_pub` wrapper to keep the private helper private; that is one more name for the same function, and a reviewer would rightly call it out. `set_fields` becomes `pub` in place, and the caller's obligation — values must be single-line — is written into the doc comment it already has.
 - **A real gap, not a tidy-up:** Task 4 changed `ProviderCapabilities` on the TypeScript side to carry `board` and `boardError`, and had no step sending them from Rust. `BoardCapabilities` with `#[serde(flatten)]` is now Task 4's Step 8. Without it every board would have rendered against `undefined`.
 - Task 4 created `src/board-config.ts` with no tests of its own. `tests/board-config.test.ts` is now Steps 10–11, and it is where the rule "an unknown step has no neighbours" — the reason a card in the unknown column shows no arrows — is pinned down.
 
