@@ -627,9 +627,9 @@ mod tests {
 
     #[test]
     fn a_folder_merely_sharing_the_project_name_is_an_ordinary_pick() {
-        // Only `<container>/<slug>` counts as already-resolved. Without the
-        // parent check, any folder named after the project would be mistaken
-        // for one of ours and never get a container.
+        // Only a folder whose parent is the container counts as already ours.
+        // Without the parent check, any folder named after the project would be
+        // mistaken for one of ours and never get a container.
         let w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/cowork-deck".into() })));
         let (root, _) = resolve_root(&w).expect("configured");
         assert_eq!(

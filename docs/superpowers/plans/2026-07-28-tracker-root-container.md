@@ -328,6 +328,13 @@ pass a reference. Behaviour is unchanged: the layout is still <picked>/<slug>."
 
 ## Task 3: One container instead of one folder per project
 
+> **Amended after the whole-epic review.** Recognition of an already-resolved
+> pick keys on the **parent** being the container, not on the leaf matching the
+> slug. The leaf rule was rename-unstable: renaming a workspace configured at
+> `<container>/deck` to "board" resolved to
+> `<container>/deck/cowork-deck-tasks/board`, nesting a container inside a
+> project folder. The code block in Step 3 and the tests below are as shipped.
+
 **Files:**
 - Modify: `src-tauri/src/tasks_cmd.rs:35-57` (`resolve_root`, plus the new constant and helper above it)
 - Test: `src-tauri/src/tasks_cmd.rs` (inline `mod tests`)
@@ -340,7 +347,7 @@ pass a reference. Behaviour is unchanged: the layout is still <picked>/<slug>."
 
 - [ ] **Step 1: Write the failing tests**
 
-In `src-tauri/src/tasks_cmd.rs`, replace `an_external_root_gets_a_per_project_subfolder` (the version Task 2 just wrote) with these four, and update the two assertions in `the_subfolder_is_a_slug_so_a_workspace_name_cannot_escape_the_picked_folder`:
+In `src-tauri/src/tasks_cmd.rs`, replace `an_external_root_gets_a_per_project_subfolder` (the version Task 2 just wrote) with these five, and update the two assertions in `the_subfolder_is_a_slug_so_a_workspace_name_cannot_escape_the_picked_folder`:
 
 ```rust
     #[test]
@@ -383,14 +390,31 @@ In `src-tauri/src/tasks_cmd.rs`, replace `an_external_root_gets_a_per_project_su
 
     #[test]
     fn a_folder_merely_sharing_the_project_name_is_an_ordinary_pick() {
-        // Only `<container>/<slug>` counts as already-resolved. Without the
-        // parent check, any folder named after the project would be mistaken
-        // for one of ours and never get a container.
+        // Only a folder whose parent is the container counts as already ours.
+        // Without the parent check, any folder named after the project would be
+        // mistaken for one of ours and never get a container.
         let w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/cowork-deck".into() })));
         let (root, _) = resolve_root(&w).expect("configured");
         assert_eq!(
             root,
             std::path::Path::new("/home/u/cowork-deck/cowork-deck-tasks/cowork-deck"),
+        );
+    }
+
+    #[test]
+    fn renaming_a_workspace_keeps_its_folder_beside_the_others_in_the_container() {
+        // The pick is a project folder of ours, but the name has changed since,
+        // so the slug no longer matches the folder it was named after. The root
+        // must move to the renamed sibling inside the same container.
+        let mut w = ws(Some(tracker(TrackerRoot::Path {
+            path: "/home/u/vault/cowork-deck-tasks/deck".into(),
+        })));
+        w.name = "board".into();
+        let (root, creation) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/board"));
+        assert_eq!(
+            creation,
+            RootCreation::InsideExisting { base: "/home/u/vault/cowork-deck-tasks/deck".into() },
         );
     }
 ```
@@ -416,7 +440,7 @@ The updated escape test — same guarantee, one level deeper:
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd src-tauri && cargo test tasks_cmd`
-Expected: FAIL — four assertion failures reading `left: /home/u/vault/cowork-deck` / `right: /home/u/vault/cowork-deck-tasks/cowork-deck` and similar. This is an assertion failure, not a compile error: `resolve_root` already exists and simply resolves to the old layout.
+Expected: FAIL — five assertion failures reading `left: /home/u/vault/cowork-deck` / `right: /home/u/vault/cowork-deck-tasks/cowork-deck` and similar. This is an assertion failure, not a compile error: `resolve_root` already exists and simply resolves to the old layout.
 
 - [ ] **Step 3: Add the constant, the helper, and use them**
 
@@ -437,21 +461,31 @@ pub const TRACKER_CONTAINER: &str = "cowork-deck-tasks";
 /// fail. A folder the person happens to have named `cowork-deck-tasks` is
 /// treated as ours, which is the answer we would want anyway.
 fn append_layout(picked: &std::path::Path, slug: &str) -> PathBuf {
-    let name = picked.file_name().and_then(|s| s.to_str());
-    // Already the project folder inside our container: this IS the root.
-    if name == Some(slug)
-        && picked.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str())
-            == Some(TRACKER_CONTAINER)
-    {
-        return picked.to_path_buf();
+    // Already a project folder inside our container: the root is this project's
+    // folder beside it. Keyed on the *parent* rather than on the leaf matching
+    // the slug, because the slug follows the workspace name and the name can be
+    // renamed. Matching the leaf would resolve a renamed workspace to
+    // `<container>/<old>/<container>/<new>` — a container nested inside a
+    // project folder, the exact doubling this layout exists to prevent. It
+    // subsumes the leaf rule: when the leaf already is the slug,
+    // `parent.join(slug)` is the picked folder itself.
+    if let Some(parent) = picked.parent() {
+        if parent.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
+            return parent.join(slug);
+        }
     }
     // Already the container: only the project folder is missing.
-    if name == Some(TRACKER_CONTAINER) {
+    if picked.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
         return picked.join(slug);
     }
     picked.join(TRACKER_CONTAINER).join(slug)
 }
 ```
+
+The parent check must come **first**. Picking the container itself does not match
+it (the container's own parent is the vault), so the second case still handles
+that; a folder inside the container matches the first and never reaches the
+second.
 
 Replace the path arm of `resolve_root` with:
 

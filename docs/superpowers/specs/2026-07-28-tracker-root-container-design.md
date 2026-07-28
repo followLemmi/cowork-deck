@@ -54,22 +54,21 @@ is ours to create:
 | --- | --- | --- |
 | an ordinary folder, `/vault` | `/vault/cowork-deck-tasks/my-project` | two levels |
 | the container, `/vault/cowork-deck-tasks` | `/vault/cowork-deck-tasks/my-project` | one level |
-| the project root, `/vault/cowork-deck-tasks/my-project` | itself | nothing |
+| a folder **inside** the container, `/vault/cowork-deck-tasks/anything` | `/vault/cowork-deck-tasks/my-project` — itself when `anything` is the slug | nothing, or the renamed sibling |
 
 Recognition is a pure function of the picked path and the workspace name:
 
 ```rust
 fn append_layout(picked: &Path, slug: &str) -> PathBuf {
-    let name = picked.file_name().and_then(|s| s.to_str());
-    // Already the project folder inside our container: this IS the root.
-    if name == Some(slug)
-        && picked.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str())
-            == Some(TRACKER_CONTAINER)
-    {
-        return picked.to_path_buf();
+    // Already a project folder inside our container: the root is this
+    // project's folder beside it.
+    if let Some(parent) = picked.parent() {
+        if parent.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
+            return parent.join(slug);
+        }
     }
     // Already the container: only the project folder is missing.
-    if name == Some(TRACKER_CONTAINER) {
+    if picked.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
         return picked.join(slug);
     }
     picked.join(TRACKER_CONTAINER).join(slug)
@@ -81,9 +80,30 @@ the container exists, so the next time someone opens the picker they see
 `cowork-deck-tasks` and choose it — and a rule that only ever appended would
 hand them `cowork-deck-tasks/cowork-deck-tasks/my-project`.
 
-The third case is rarer but free once the parent is being inspected anyway, and
-it is what makes re-picking the folder the board is already reading a no-op
-rather than another doubling.
+The third case recognises the **parent**, not the leaf. An earlier version of
+this design matched the leaf against the slug, which made the rule
+rename-unstable: a workspace configured at `/vault/cowork-deck-tasks/deck` and
+then renamed to "board" no longer matched its own folder, so it resolved to
+`/vault/cowork-deck-tasks/deck/cowork-deck-tasks/board` — a container nested
+inside a project folder, the exact pathology this design exists to prevent. No
+cards were lost (the migration banner offers the move, and the preview shows the
+nested path before anything is written), but the app proposed the doubling it
+was built to avoid. Keying on the parent means a rename stays **inside** the
+container, as a sibling.
+
+Parent recognition subsumes the leaf rule: when the leaf already is the slug,
+`parent.join(slug)` is the picked folder itself, so re-picking the folder the
+board is already reading remains a no-op. It has one accepted cost — picking
+*another* project's folder inside the container resolves to `<container>/<your
+slug>` rather than nesting a container inside that folder. That is the intended
+answer: anything inside the container is our space, and the layout there is ours
+to say.
+
+One consequence for the preview: the resolved root is no longer always *below*
+the picked folder. In the rename case it is a **sibling** of it, so `creating`
+cannot be computed by walking down from the base. It is computed by climbing
+from the root to the first directory that exists, which stops at or below the
+base because the base is known to exist.
 
 Recognition is deliberately **name-based, not content-based**. Asking the
 filesystem "does this folder look like one of ours" would make resolution depend
@@ -265,12 +285,15 @@ present, everything present, base missing — asserting `creating` and
 Frontend: the preview line renders the path it was given; the "will be created"
 line appears only when `creating` is non-empty and lists those names; the
 missing-base warning replaces it when `base_missing`; a blank name produces no
-preview and no call; a rejected preview call leaves the form usable with no line.
-Assertions key on classes and values, not on wording.
+preview and no call; a rejected preview call retracts a line already on screen
+and leaves the form usable. The region is `aria-live="polite"` and is hidden with
+the path block it explains. Assertions key on classes and values, not on wording.
 
-### A gap named rather than papered over
+### The agreement is asserted, not assumed
 
-Nothing here tests that the preview and `resolve_root` agree, because they are
-the same code path by construction — the command calls `resolve_root`. If a
-future change gives the preview its own resolution, that agreement becomes
-untested and the duplication this design exists to avoid is back.
+The preview and `resolve_root` share `append_layout` by construction, and one
+test now asks both and compares their answers rather than restating the
+preview's own output. Sharing the function is why they agree; the assertion is
+what would notice if a future change gave the preview its own resolution, since
+a second implementation that happened to agree on the day it was written would
+otherwise pass unchallenged.
