@@ -1,15 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import styles from "../src/styles.css?raw";
 import { applyView, type ViewElements } from "../src/view";
 
 function mount(): ViewElements {
   document.head.replaceChildren();
   const style = document.createElement("style");
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  style.textContent = readFileSync(join(__dirname, "../src/styles.css"), "utf8");
+  style.textContent = styles;
   document.head.append(style);
   document.body.innerHTML =
     '<div id="app"><aside id="sidebar"><div id="ws"></div><div id="sk"></div>' +
