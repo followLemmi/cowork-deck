@@ -101,6 +101,22 @@ pub struct Workspace {
     pub tracker: Option<TrackerConfig>,
 }
 
+/// Where a workspace's cards were before its effective root last moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviousLocation {
+    /// Where to look for the old cards.
+    pub root: String,
+    /// The project name at that time. When it differs from the current
+    /// `ws.name`, `project:` inside the moved cards has to be rewritten.
+    pub project: String,
+    /// Whether that was the in-project root, which decides whether damaged
+    /// cards come along: from `.cowork/tasks` everything is ours by
+    /// construction, from a shared vault a damaged card may be someone's note
+    /// that merely has an `id:` field.
+    #[serde(rename = "wasProjectRoot")]
+    pub was_project_root: bool,
+}
+
 /// Per-workspace tracker configuration. A list of providers rather than a
 /// single one, so GitHub/Jira arrive as an added element instead of a schema
 /// rewrite. Tokens never live here — they belong in the system keychain.
@@ -108,7 +124,19 @@ pub struct Workspace {
 pub struct TrackerConfig {
     #[serde(default)]
     pub providers: Vec<TrackerProvider>,
+    /// Where this workspace's cards were before its effective root last moved.
+    #[serde(rename = "previousLocation", default, skip_serializing_if = "Option::is_none")]
+    pub previous_location: Option<PreviousLocation>,
+    /// Storage format. Version 1 had no `previousLocation` and resolved an
+    /// external root verbatim, so its cards sit directly in the picked folder.
+    /// Records without the field are version 1 and are seeded on read.
+    #[serde(rename = "v", default = "tracker_v1")]
+    pub version: u8,
 }
+
+fn tracker_v1() -> u8 { 1 }
+
+pub const TRACKER_CONFIG_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -329,6 +357,8 @@ mod tests {
     fn tracker_config_round_trips_both_root_kinds() {
         let in_project = TrackerConfig {
             providers: vec![TrackerProvider::Fs { root: TrackerRoot::Project }],
+            previous_location: None,
+            version: TRACKER_CONFIG_VERSION,
         };
         let json = serde_json::to_string(&in_project).unwrap();
         let back: TrackerConfig = serde_json::from_str(&json).unwrap();
@@ -338,6 +368,8 @@ mod tests {
             providers: vec![TrackerProvider::Fs {
                 root: TrackerRoot::Path { path: "/home/u/vault/Tasks".into() },
             }],
+            previous_location: None,
+            version: TRACKER_CONFIG_VERSION,
         };
         let json = serde_json::to_string(&external).unwrap();
         let back: TrackerConfig = serde_json::from_str(&json).unwrap();

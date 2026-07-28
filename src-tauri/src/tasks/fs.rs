@@ -3,34 +3,61 @@ use crate::tasks::model::{Task, TaskDraft, TaskError, TaskStatus};
 use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
 use std::path::{Path, PathBuf};
 
+/// How much of a root a provider may bring into existence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootCreation {
+    /// The whole chain is ours: on a fresh project `<ws.path>/.cowork/tasks`
+    /// has neither `.cowork` nor `tasks` yet, so a "create the leaf inside an
+    /// existing parent" rule would refuse the case it is meant to handle.
+    Always,
+    /// Only the leaf, and only inside a parent that already exists. This is
+    /// what keeps a typo'd external path surfacing as `RootMissing` instead of
+    /// scattering an empty tree across the disk.
+    LeafInsideExistingParent,
+    /// Create nothing. `cowork_task` is handed an already-resolved
+    /// `COWORK_TASKS_DIR` and must not invent folders from a stale env var.
+    Never,
+}
+
 pub struct FsTaskProvider {
     root: PathBuf,
-    /// True only for the in-project `.cowork/tasks` root, which is ours to
-    /// create. An arbitrary path the user typed is never created silently — a
-    /// typo must surface as an error, not as an empty new folder.
-    create_root: bool,
+    creation: RootCreation,
 }
 
 impl FsTaskProvider {
-    pub fn new(root: PathBuf, create_root: bool) -> Self {
-        Self { root, create_root }
+    pub fn new(root: PathBuf, creation: RootCreation) -> Self {
+        Self { root, creation }
     }
 
     fn ensure_root(&self) -> Result<(), TaskError> {
         if self.root.is_dir() {
             return Ok(());
         }
-        if self.create_root {
-            std::fs::create_dir_all(&self.root).map_err(|e| TaskError::Io(e.to_string()))?;
-            return Ok(());
+        let missing = || TaskError::RootMissing(self.root.to_string_lossy().to_string());
+        match self.creation {
+            RootCreation::Always => {
+                std::fs::create_dir_all(&self.root).map_err(|e| TaskError::Io(e.to_string()))
+            }
+            RootCreation::LeafInsideExistingParent => match self.root.parent() {
+                Some(p) if p.is_dir() => {
+                    std::fs::create_dir(&self.root).map_err(|e| TaskError::Io(e.to_string()))
+                }
+                // The picked folder itself is missing: a typo, an unmounted
+                // volume, a deleted directory. Say so instead of creating it.
+                _ => Err(missing()),
+            },
+            RootCreation::Never => Err(missing()),
         }
-        Err(TaskError::RootMissing(self.root.to_string_lossy().to_string()))
     }
 
     /// Every card in the root, unfiltered, with `conflict` already set. One
     /// unreadable entry is skipped, never fatal: aborting the scan would hide
     /// every card that sorts after the bad one.
-    fn scan(&self) -> Result<Vec<Task>, TaskError> {
+    ///
+    /// `pub(crate)` because the migration reads an old root's cards unfiltered,
+    /// which `list` cannot supply: it filters by project before returning, and
+    /// the cards it throws away are exactly the ones the banner has to count.
+    pub(crate) fn scan(&self) -> Result<Vec<Task>, TaskError> {
         self.ensure_root()?;
         let entries = std::fs::read_dir(&self.root).map_err(|e| TaskError::Io(e.to_string()))?;
         let mut cards: Vec<Task> = Vec::new();
@@ -169,7 +196,7 @@ mod tests {
     }
 
     fn provider(dir: &std::path::Path) -> FsTaskProvider {
-        FsTaskProvider::new(dir.to_path_buf(), false)
+        FsTaskProvider::new(dir.to_path_buf(), RootCreation::Never)
     }
 
     #[test]
@@ -308,7 +335,7 @@ mod tests {
     fn missing_root_reports_the_path_instead_of_creating_it() {
         let dir = tempfile::tempdir().unwrap();
         let absent = dir.path().join("no-such-thing");
-        let p = FsTaskProvider::new(absent.clone(), false);
+        let p = FsTaskProvider::new(absent.clone(), RootCreation::Never);
         match p.list("deck") {
             Err(TaskError::RootMissing(path)) => assert!(path.contains("no-such-thing")),
             other => panic!("expected RootMissing, got {other:?}"),
@@ -320,7 +347,7 @@ mod tests {
     fn in_project_root_is_created_on_demand() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join(".cowork").join("tasks");
-        let p = FsTaskProvider::new(root.clone(), true);
+        let p = FsTaskProvider::new(root.clone(), RootCreation::Always);
         p.create(draft("The first", "deck")).unwrap();
         assert!(root.is_dir(), ".cowork/tasks is ours to create");
     }

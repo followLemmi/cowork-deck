@@ -6,7 +6,7 @@
 //! It links the same `tasks` module the app does, so there is exactly one
 //! implementation of the card format. It writes the file directly — no TCP, no
 //! listener — so filing a ticket works even when the app window is busy.
-use cowork_deck::tasks::fs::FsTaskProvider;
+use cowork_deck::tasks::fs::{FsTaskProvider, RootCreation as FsRootCreation};
 use cowork_deck::tasks::model::{TaskDraft, TaskKind, TaskOrigin};
 use cowork_deck::tasks::provider::TaskProvider;
 use std::io::Read;
@@ -92,7 +92,7 @@ fn run() -> Result<String, String> {
 
     // The in-project root is created by the app on first use; the CLI never
     // creates a root, so a stale env var cannot scatter empty folders.
-    let provider = FsTaskProvider::new(std::path::PathBuf::from(&dir), false);
+    let provider = FsTaskProvider::new(std::path::PathBuf::from(&dir), FsRootCreation::Never);
 
     match cmd {
         Cmd::New { kind, title } => {

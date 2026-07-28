@@ -3,7 +3,8 @@
 //! cards are files.
 use crate::commands::AppState;
 use crate::model::{TrackerProvider, TrackerRoot, Workspace};
-use crate::tasks::fs::FsTaskProvider;
+use crate::tasks::frontmatter::slugify;
+use crate::tasks::fs::{FsTaskProvider, RootCreation};
 use crate::tasks::model::{Task, TaskDraft, TaskKind, TaskOrigin};
 use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
 use serde::Deserialize;
@@ -26,33 +27,52 @@ pub struct TaskDraftInput {
     pub body: String,
 }
 
-/// The provider root for a workspace, plus whether we may create it.
+/// The provider root for a workspace, plus how much of it we may create.
 /// `None` means "no tracker configured" — a legal, non-error state.
-pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, bool)> {
+pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
     let cfg = ws.tracker.as_ref()?;
     let first = cfg.providers.first()?;
     match first {
-        TrackerProvider::Fs { root: TrackerRoot::Project } => {
-            Some((PathBuf::from(&ws.path).join(".cowork").join("tasks"), true))
-        }
-        TrackerProvider::Fs { root: TrackerRoot::Path { path } } => {
-            Some((PathBuf::from(path), false))
-        }
+        TrackerProvider::Fs { root: TrackerRoot::Project } => Some((
+            PathBuf::from(&ws.path).join(".cowork").join("tasks"),
+            RootCreation::Always,
+        )),
+        TrackerProvider::Fs { root: TrackerRoot::Path { path } } => Some((
+            // One folder per project inside the folder the person picked: they
+            // pick one place for every project's backlog, and without this the
+            // cards all land in the same directory.
+            //
+            // Slugified, not joined verbatim: a workspace name is free text, and
+            // `join("../..")` would put the cards outside the picked folder
+            // entirely. `slugify` yields exactly one component — only
+            // alphanumerics survive, so no separators and no `..` — and never
+            // returns empty.
+            PathBuf::from(path).join(slugify(&ws.name)),
+            RootCreation::LeafInsideExistingParent,
+        )),
     }
 }
 
-/// Create `root` only when `create` is true — the flag `resolve_root` returns
-/// for the in-project `.cowork/tasks` path. A user-supplied path (`create:
-/// false`) is never created here: an arbitrary typo'd path must surface as an
-/// error the first time something tries to read or write a card, not scatter
-/// an empty folder into place.
-///
-/// Called from `tasks_watch_sync` (so a watcher can attach to a fresh
-/// project) and from `start_session` (so `cowork_task` has somewhere to write
-/// on a workspace's very first ticket) — both call sites that hand out a
-/// project-kind root before anything has necessarily created it yet.
-pub fn ensure_root_if_ours(root: &std::path::Path, create: bool) -> std::io::Result<()> {
-    if create { std::fs::create_dir_all(root) } else { Ok(()) }
+/// Create as much of `root` as `creation` allows. A `LeafInsideExistingParent`
+/// root whose parent is missing is left alone here rather than reported:
+/// `FsTaskProvider::ensure_root` surfaces the same `RootMissing` loudly the
+/// moment a card is actually read or written, and this function's callers
+/// (`tasks_watch_sync`, `start_session`) are best-effort by design.
+pub fn ensure_root_if_ours(
+    root: &std::path::Path,
+    creation: RootCreation,
+) -> std::io::Result<()> {
+    if root.is_dir() {
+        return Ok(());
+    }
+    match creation {
+        RootCreation::Always => std::fs::create_dir_all(root),
+        RootCreation::LeafInsideExistingParent => match root.parent() {
+            Some(p) if p.is_dir() => std::fs::create_dir(root),
+            _ => Ok(()),
+        },
+        RootCreation::Never => Ok(()),
+    }
 }
 
 fn workspace(state: &State<AppState>, id: &str) -> Result<Workspace, String> {
@@ -65,8 +85,8 @@ fn workspace(state: &State<AppState>, id: &str) -> Result<Workspace, String> {
 }
 
 fn provider_for(ws: &Workspace) -> Result<FsTaskProvider, String> {
-    let (root, create) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
-    Ok(FsTaskProvider::new(root, create))
+    let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
+    Ok(FsTaskProvider::new(root, creation))
 }
 
 #[tauri::command]
@@ -158,11 +178,11 @@ pub fn tasks_watch_sync(app: tauri::AppHandle, state: State<AppState>) -> Result
     let wanted: Vec<(String, PathBuf)> = all
         .iter()
         .filter_map(|ws| {
-            let (root, create) = resolve_root(ws)?;
+            let (root, creation) = resolve_root(ws)?;
             // Best-effort: a create failure here does not stop the sync for
             // other workspaces. `FsTaskProvider::ensure_root` surfaces the
             // same failure loudly the moment a card is actually read/written.
-            let _ = ensure_root_if_ours(&root, create);
+            let _ = ensure_root_if_ours(&root, creation);
             Some((ws.id.clone(), root))
         })
         .collect();
@@ -185,6 +205,7 @@ struct TasksChanged {
 mod tests {
     use super::*;
     use crate::model::{TrackerConfig, TrackerProvider, TrackerRoot, Workspace};
+    use crate::tasks::fs::RootCreation;
 
     fn ws(tracker: Option<TrackerConfig>) -> Workspace {
         Workspace {
@@ -196,32 +217,55 @@ mod tests {
         }
     }
 
-    #[test]
-    fn project_root_lives_inside_the_workspace_and_is_ours_to_create() {
-        let w = ws(Some(TrackerConfig {
-            providers: vec![TrackerProvider::Fs { root: TrackerRoot::Project }],
-        }));
-        let (root, create) = resolve_root(&w).expect("configured");
-        assert_eq!(root, std::path::Path::new("/home/u/proj/.cowork/tasks"));
-        assert!(create);
+    fn tracker(root: TrackerRoot) -> TrackerConfig {
+        TrackerConfig {
+            providers: vec![TrackerProvider::Fs { root }],
+            previous_location: None,
+            version: crate::model::TRACKER_CONFIG_VERSION,
+        }
     }
 
     #[test]
-    fn external_root_is_used_verbatim_and_never_created() {
-        let w = ws(Some(TrackerConfig {
-            providers: vec![TrackerProvider::Fs {
-                root: TrackerRoot::Path { path: "/home/u/vault/Tasks".into() },
-            }],
-        }));
-        let (root, create) = resolve_root(&w).expect("configured");
-        assert_eq!(root, std::path::Path::new("/home/u/vault/Tasks"));
-        assert!(!create);
+    fn project_root_lives_inside_the_workspace_and_is_ours_to_create() {
+        let w = ws(Some(tracker(TrackerRoot::Project)));
+        let (root, creation) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/proj/.cowork/tasks"));
+        assert_eq!(creation, RootCreation::Always);
+    }
+
+    #[test]
+    fn an_external_root_gets_a_per_project_subfolder() {
+        let w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault/Tasks".into() })));
+        let (root, creation) = resolve_root(&w).expect("configured");
+        // One shared folder holding several projects is the whole reason this
+        // exists: the cards go one level down, named for the project.
+        assert_eq!(root, std::path::Path::new("/home/u/vault/Tasks/cowork-deck"));
+        assert_eq!(creation, RootCreation::LeafInsideExistingParent);
+    }
+
+    #[test]
+    fn the_subfolder_is_a_slug_so_a_workspace_name_cannot_escape_the_picked_folder() {
+        // A workspace name is free text from a form. Joined verbatim, "../.."
+        // would put the cards outside the folder the person picked.
+        let mut w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        w.name = "../../etc".into();
+        let (root, _) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/etc"));
+
+        w.name = "My Project".into();
+        let (root, _) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/my-project"));
     }
 
     #[test]
     fn no_tracker_is_a_legal_state_not_an_error() {
         assert!(resolve_root(&ws(None)).is_none());
-        assert!(resolve_root(&ws(Some(TrackerConfig { providers: vec![] }))).is_none());
+        assert!(resolve_root(&ws(Some(TrackerConfig {
+            providers: vec![],
+            previous_location: None,
+            version: crate::model::TRACKER_CONFIG_VERSION,
+        })))
+        .is_none());
     }
 
     #[test]
@@ -229,12 +273,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let project_root = dir.path().join("proj").join(".cowork").join("tasks");
-        ensure_root_if_ours(&project_root, true).unwrap();
+        ensure_root_if_ours(&project_root, RootCreation::Always).unwrap();
         assert!(project_root.is_dir(), "the in-project root is ours to create");
 
-        let path_root = dir.path().join("vault").join("Tasks");
-        ensure_root_if_ours(&path_root, false).unwrap();
-        assert!(!path_root.exists(), "a user-supplied path must never be created silently");
+        // The picked folder exists, so its project subfolder is ours to make.
+        let picked = dir.path().join("vault");
+        std::fs::create_dir(&picked).unwrap();
+        let leaf = picked.join("deck");
+        ensure_root_if_ours(&leaf, RootCreation::LeafInsideExistingParent).unwrap();
+        assert!(leaf.is_dir(), "a subfolder inside an existing parent is ours to make");
+    }
+
+    #[test]
+    fn ensure_root_if_ours_creates_nothing_when_the_picked_folder_is_a_typo() {
+        let dir = tempfile::tempdir().unwrap();
+        // This is the typo guarantee. If anyone "simplifies" the branch to
+        // create_dir_all, this test is what fails.
+        let leaf = dir.path().join("vualt").join("deck");
+        ensure_root_if_ours(&leaf, RootCreation::LeafInsideExistingParent).unwrap();
+        assert!(!leaf.exists(), "a typo'd parent must not be created");
+        assert!(!dir.path().join("vualt").exists(), "nor its parent");
+
+        let never = dir.path().join("cli-root");
+        ensure_root_if_ours(&never, RootCreation::Never).unwrap();
+        assert!(!never.exists(), "the CLI creates nothing");
     }
 
     #[test]
