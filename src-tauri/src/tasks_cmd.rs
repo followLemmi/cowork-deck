@@ -44,16 +44,21 @@ pub const TRACKER_CONTAINER: &str = "cowork-deck-tasks";
 /// fail. A folder the person happens to have named `cowork-deck-tasks` is
 /// treated as ours, which is the answer we would want anyway.
 fn append_layout(picked: &std::path::Path, slug: &str) -> PathBuf {
-    let name = picked.file_name().and_then(|s| s.to_str());
-    // Already the project folder inside our container: this IS the root.
-    if name == Some(slug)
-        && picked.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str())
-            == Some(TRACKER_CONTAINER)
-    {
-        return picked.to_path_buf();
+    // Already a project folder inside our container: the root is this project's
+    // folder beside it. Keyed on the *parent* rather than on the leaf matching
+    // the slug, because the slug follows the workspace name and the name can be
+    // renamed. Matching the leaf would resolve a renamed workspace to
+    // `<container>/<old>/<container>/<new>` — a container nested inside a
+    // project folder, the exact doubling this layout exists to prevent. It
+    // subsumes the leaf rule: when the leaf already is the slug,
+    // `parent.join(slug)` is the picked folder itself.
+    if let Some(parent) = picked.parent() {
+        if parent.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
+            return parent.join(slug);
+        }
     }
     // Already the container: only the project folder is missing.
-    if name == Some(TRACKER_CONTAINER) {
+    if picked.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
         return picked.join(slug);
     }
     picked.join(TRACKER_CONTAINER).join(slug)
@@ -89,18 +94,24 @@ pub fn root_preview(workspace_name: &str, picked_path: &str) -> TrackerRootPrevi
         return TrackerRootPreview { root: root_str, creating: Vec::new(), base_missing: true };
     }
 
-    // Every component between the base and the root, outermost first, keeping
-    // only what is absent. `root` always starts with `base`: all three
-    // recognition cases either return the base itself or join onto it.
+    // Every absent folder on the way to the root, innermost first while walking
+    // up and reversed at the end. Not a walk down from the base: recognising the
+    // container by its parent means the root can be a *sibling* of the picked
+    // folder (a renamed workspace), and a downward walk would then describe
+    // nothing at all. Climbing stops at the first directory that exists, and the
+    // base exists here, so this can never promise a folder above it.
     let mut creating = Vec::new();
-    let mut walk = base.clone();
-    let below = root.strip_prefix(&base).unwrap_or(std::path::Path::new(""));
-    for part in below.components() {
-        walk = walk.join(part);
-        if !walk.is_dir() {
-            creating.push(part.as_os_str().to_string_lossy().to_string());
+    let mut walk: &std::path::Path = &root;
+    while !walk.is_dir() {
+        match (walk.file_name(), walk.parent()) {
+            (Some(name), Some(parent)) => {
+                creating.push(name.to_string_lossy().to_string());
+                walk = parent;
+            }
+            _ => break,
         }
     }
+    creating.reverse();
     TrackerRootPreview { root: root_str, creating, base_missing: false }
 }
 
@@ -140,15 +151,12 @@ pub fn ensure_root_if_ours(
     root: &std::path::Path,
     creation: &RootCreation,
 ) -> std::io::Result<()> {
-    if root.is_dir() {
+    // `RootCreation::may_create` is the single statement of the policy; this
+    // function is only the silent half of the reaction to it.
+    if root.is_dir() || !creation.may_create() {
         return Ok(());
     }
-    match creation {
-        RootCreation::Always => std::fs::create_dir_all(root),
-        RootCreation::InsideExisting { base } if base.is_dir() => std::fs::create_dir_all(root),
-        RootCreation::InsideExisting { .. } => Ok(()),
-        RootCreation::Never => Ok(()),
-    }
+    std::fs::create_dir_all(root)
 }
 
 /// A workspace's effective root as a string, or `None` with no tracker.
@@ -590,6 +598,28 @@ mod tests {
     }
 
     #[test]
+    fn renaming_a_workspace_keeps_its_folder_beside_the_others_in_the_container() {
+        // The pick is a project folder of ours, but the name has changed since,
+        // so the slug no longer matches the folder it was named after. The root
+        // must move to the renamed sibling inside the same container. Recognising
+        // the leaf instead would give
+        // `<container>/deck/cowork-deck-tasks/board` — a container nested in a
+        // project folder, which is what this layout exists to prevent.
+        let mut w = ws(Some(tracker(TrackerRoot::Path {
+            path: "/home/u/vault/cowork-deck-tasks/deck".into(),
+        })));
+        w.name = "board".into();
+        let (root, creation) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/board"));
+        // The base is still what the person picked, so the sibling is ours to
+        // create and a vanished container still surfaces as RootMissing.
+        assert_eq!(
+            creation,
+            RootCreation::InsideExisting { base: "/home/u/vault/cowork-deck-tasks/deck".into() },
+        );
+    }
+
+    #[test]
     fn a_folder_merely_sharing_the_project_name_is_an_ordinary_pick() {
         // Only `<container>/<slug>` counts as already-resolved. Without the
         // parent check, any folder named after the project would be mistaken
@@ -669,7 +699,13 @@ mod tests {
         let base = dir.path().join("vualt");
         let root = base.join("deck");
         let p = FsTaskProvider::new(root, RootCreation::InsideExisting { base });
-        assert!(p.scan().is_err(), "a missing base is RootMissing, not an empty list");
+        let err = p.scan().expect_err("a missing base is not an empty list");
+        // The kind, not merely the failure: `RootMissing` is what the board turns
+        // into "that folder is gone", where an `Io` would read as a bug in us.
+        assert!(
+            matches!(err, crate::tasks::model::TaskError::RootMissing(_)),
+            "a missing base is RootMissing, got {err:?}",
+        );
     }
 
     fn v1_external(path: &str) -> TrackerConfig {
@@ -990,14 +1026,36 @@ mod tests {
 
     #[test]
     fn preview_resolves_a_picked_container_the_same_way_resolve_root_does() {
-        // The two share append_layout by construction; this pins that they are
-        // still wired to the same function.
+        // Both sides are asked, and their answers compared. Sharing
+        // `append_layout` is how they agree, but a second implementation that
+        // happened to agree on the day it was written would pass a test that only
+        // asserted the preview's own output.
         let dir = tempfile::tempdir().unwrap();
         let container = dir.path().join("cowork-deck-tasks");
         std::fs::create_dir(&container).unwrap();
-        let p = root_preview("cowork-deck", &container.to_string_lossy());
+        let picked = container.to_string_lossy().to_string();
+
+        let w = ws(Some(tracker(TrackerRoot::Path { path: picked.clone() })));
+        let (resolved, _) = resolve_root(&w).expect("configured");
+        let p = root_preview(&w.name, &picked);
+
+        assert_eq!(p.root, resolved.to_string_lossy());
         assert_eq!(p.root, container.join("cowork-deck").to_string_lossy());
         assert_eq!(p.creating, vec!["cowork-deck"]);
+    }
+
+    #[test]
+    fn preview_names_the_renamed_sibling_it_would_create_in_the_container() {
+        // The resolved root is not below the picked folder here but beside it, so
+        // a walk down from the base would describe nothing while a folder was
+        // about to be created behind the person's back.
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("cowork-deck-tasks").join("deck");
+        std::fs::create_dir_all(&old).unwrap();
+        let p = root_preview("board", &old.to_string_lossy());
+        assert_eq!(p.root, old.with_file_name("board").to_string_lossy());
+        assert_eq!(p.creating, vec!["board"]);
+        assert!(!p.base_missing);
     }
 
     #[test]

@@ -23,6 +23,31 @@ pub enum RootCreation {
     Never,
 }
 
+impl RootCreation {
+    /// Whether a missing root is ours to bring into existence.
+    ///
+    /// The one place the policy is written. Both callers ask this question —
+    /// `FsTaskProvider::ensure_root` and `tasks_cmd::ensure_root_if_ours` — and
+    /// they differ only in how they *react* to `false`: the provider reports
+    /// `RootMissing` where the best-effort helper stays silent. Two copies of
+    /// the match would agree today and drift apart at the next variant.
+    ///
+    /// Takes no root: nothing in the decision depends on the root itself, only
+    /// on the base it must sit inside. The caller has already established that
+    /// the root is absent.
+    pub fn may_create(&self) -> bool {
+        match self {
+            RootCreation::Always => true,
+            // `create_dir_all` below the base is safe precisely because the base
+            // was checked: recursion can only ever run below a directory the
+            // human pointed at, however many levels the layout adds. A missing
+            // base is a typo, an unmounted volume, a deleted directory.
+            RootCreation::InsideExisting { base } => base.is_dir(),
+            RootCreation::Never => false,
+        }
+    }
+}
+
 pub struct FsTaskProvider {
     root: PathBuf,
     creation: RootCreation,
@@ -37,22 +62,12 @@ impl FsTaskProvider {
         if self.root.is_dir() {
             return Ok(());
         }
-        let missing = || TaskError::RootMissing(self.root.to_string_lossy().to_string());
-        match &self.creation {
-            RootCreation::Always => {
-                std::fs::create_dir_all(&self.root).map_err(|e| TaskError::Io(e.to_string()))
-            }
-            // `create_dir_all` is safe precisely because the base was checked:
-            // recursion can only ever run below a directory the human pointed
-            // at, however many levels the layout adds.
-            RootCreation::InsideExisting { base } if base.is_dir() => {
-                std::fs::create_dir_all(&self.root).map_err(|e| TaskError::Io(e.to_string()))
-            }
-            // The picked folder itself is missing: a typo, an unmounted volume,
-            // a deleted directory. Say so instead of creating it.
-            RootCreation::InsideExisting { .. } => Err(missing()),
-            RootCreation::Never => Err(missing()),
+        // This is the half that has to be loud: a root we may not create is what
+        // the board surfaces to the person, not an empty list.
+        if !self.creation.may_create() {
+            return Err(TaskError::RootMissing(self.root.to_string_lossy().to_string()));
         }
+        std::fs::create_dir_all(&self.root).map_err(|e| TaskError::Io(e.to_string()))
     }
 
     /// Every card in the root, unfiltered, with `conflict` already set. One
@@ -204,6 +219,43 @@ mod tests {
 
     fn provider(dir: &std::path::Path) -> FsTaskProvider {
         FsTaskProvider::new(dir.to_path_buf(), RootCreation::Never)
+    }
+
+    #[test]
+    fn the_first_read_builds_the_whole_layout_below_a_base_that_exists() {
+        // The primary production path of the external root: the person picked a
+        // folder that exists and neither level below it has been made yet, so
+        // the first list or the first card write has to bring both into being.
+        // Two levels on purpose — a `create_dir` here would leave the deeper one
+        // missing and report Io instead of listing an empty board.
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("vault");
+        std::fs::create_dir(&base).unwrap();
+        let middle = base.join("container");
+        let root = middle.join("deck");
+
+        let p = FsTaskProvider::new(root.clone(), RootCreation::InsideExisting { base });
+        let cards = p.scan().expect("a fresh root is an empty board, not an error");
+
+        assert!(cards.is_empty());
+        assert!(middle.is_dir(), "the intermediate level is created too");
+        assert!(root.is_dir(), "and the root itself");
+    }
+
+    #[test]
+    fn the_first_card_write_builds_the_layout_too() {
+        // `create` calls ensure_root on its own: filing a card into a workspace
+        // whose board was never opened must not fail for want of a folder.
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("vault");
+        std::fs::create_dir(&base).unwrap();
+        let root = base.join("container").join("deck");
+
+        let p = FsTaskProvider::new(root.clone(), RootCreation::InsideExisting { base });
+        let made = p.create(draft("The pill blinks", "deck")).expect("the root is ours to make");
+
+        assert!(root.is_dir());
+        assert_eq!(p.list("deck").unwrap()[0].id, made.id);
     }
 
     #[test]
