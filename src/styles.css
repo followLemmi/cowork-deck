@@ -414,6 +414,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    the 1fr 1fr columns below) can actually do their job inside the flex row. */
 #board { flex: 1; min-width: 0; overflow: auto; padding: var(--sp-3); background: var(--bg-app); }
 #board.hidden, .tk-hidden { display: none; }
+/* `#deck` sets `display: grid` with an id selector, which outweighs a class.
+   Without this rule `tk-hidden` never hid the deck, and the board opened beside
+   the terminals instead of replacing them. */
+#deck.tk-hidden { display: none; }
 
 .tk-views { display: inline-flex; gap: 2px; background: var(--bg-raised); border-radius: var(--r-sm); padding: 2px; }
 .tk-views button {

@@ -1,6 +1,7 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
+import { applyView } from "./view";
 import { claudeAvailable, loadLayout, onScheduledFire, onSchedulerBroken, scheduleAck, schedulerReady } from "./ipc";
 import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
@@ -61,10 +62,8 @@ let boardTimer: ReturnType<typeof setInterval> | null = null;
 
 function setView(showBoard: boolean) {
   boardVisible = showBoard;
-  deckEl.classList.toggle("tk-hidden", showBoard);
-  boardEl.classList.toggle("hidden", !showBoard);
-  termBtn.classList.toggle("active", !showBoard);
-  boardBtn.classList.toggle("active", showBoard);
+  applyView({ deck: deckEl, board: boardEl, termBtn, boardBtn,
+              terminalsOnly: [skMount, newBtn, listMount] }, showBoard);
   if (showBoard) {
     void refreshBoard();
     // Polling is the primary refresh path; the watcher only makes it faster, so
