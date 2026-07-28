@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
 import { BoardView, emptyStateMessage } from "../src/board";
-import type { MigrationOffer, Task } from "../src/ipc";
+import type { BoardConfig, MigrationOffer, Task } from "../src/ipc";
+
+const CFG: BoardConfig = {
+  v: 1,
+  steps: [{ id: "open", label: "open" }, { id: "done", label: "done", terminal: true }],
+  kinds: [{ id: "bug", label: "bug" }, { id: "task", label: "task" }, { id: "idea", label: "idea" }],
+};
 
 const handlers = {
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
@@ -24,14 +30,14 @@ describe("emptyStateMessage", () => {
   });
 
   it("shows the failing path verbatim so a typo is findable", () => {
-    const m = emptyStateMessage({ canCreate: true, canResolve: true, statuses: [] },
+    const m = emptyStateMessage({ canCreate: true, canResolve: true, statuses: [], board: CFG, boardError: null },
       "the task folder is unreachable: /home/u/typo");
     expect(m.text).toContain("/home/u/typo");
   });
 });
 
 describe("BoardView", () => {
-  const caps = { canCreate: true, canResolve: true, statuses: ["open", "done"] };
+  const caps = { canCreate: true, canResolve: true, statuses: ["open", "done"], board: CFG, boardError: null };
 
   it("renders titles as text, never as markup", () => {
     const v = new BoardView({ ...handlers });
@@ -91,7 +97,7 @@ describe("BoardView", () => {
   it("hides create and close when the provider says it cannot", () => {
     const v = new BoardView({ ...handlers });
     v.render({
-      project: "deck", caps: { canCreate: false, canResolve: false, statuses: [] },
+      project: "deck", caps: { canCreate: false, canResolve: false, statuses: [], board: CFG, boardError: null },
       error: null, links: [], tasks: [card()],
     });
     expect(v.mount.querySelector(".tk-new")).toBeNull();
@@ -135,7 +141,7 @@ describe("BoardView migration banner", () => {
 
   const state = (migration: MigrationOffer | null) => ({
     project: "deck",
-    caps: { canCreate: true, canResolve: true, statuses: ["open", "done"] },
+    caps: { canCreate: true, canResolve: true, statuses: ["open", "done"], board: CFG, boardError: null },
     error: null,
     tasks: [],
     links: [],

@@ -178,14 +178,15 @@ fn move_one(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::model::{TaskKind, TaskOrigin, TaskStatus};
+    use crate::tasks::board::{BoardConfig, KindId};
+    use crate::tasks::model::TaskOrigin;
 
     fn card(id: &str, project: &str, damaged: Option<&str>) -> Task {
         Task {
             id: id.to_string(),
             title: "t".to_string(),
-            kind: TaskKind::Task,
-            status: TaskStatus::Open,
+            kind: KindId("task".into()),
+            status: BoardConfig::default_config().initial_step().clone(),
             project: project.to_string(),
             created: "2026-07-28T10:00:00Z".to_string(),
             resolved: None,

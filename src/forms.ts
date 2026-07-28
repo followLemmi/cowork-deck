@@ -5,7 +5,7 @@
 
 import { pickFolder } from "./dialog";
 import { trackerRootPreview } from "./ipc";
-import type { Schedule, SchedulePreset, TaskDraft, TaskKind, TrackerConfig, TrackerRootPreview } from "./ipc";
+import type { BoardConfig, KindId, Schedule, SchedulePreset, TaskDraft, TrackerConfig, TrackerRootPreview } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule, schedulePreview } from "./schedule";
 import { openDialog } from "./dialog-shell";
@@ -562,7 +562,7 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
 
 /** Quick capture of a card. The title is required: a nameless card is useless
  *  in a backlog, so an empty input does not close the dialog. */
-export function taskForm(): Promise<TaskDraft | null> {
+export function taskForm(cfg: BoardConfig): Promise<TaskDraft | null> {
   return new Promise((resolve) => {
     const { box, close: closeDialog } = openDialog({
       onCancel: () => close(null),
@@ -582,7 +582,9 @@ export function taskForm(): Promise<TaskDraft | null> {
     // the controls in a <div>, NOT labeled() — a click on a <label>'s text is
     // forwarded to the first control inside it and would silently change the
     // selection.
-    let kind: TaskKind = "task";
+    // One button per configured kind, the first selected: `validate` refuses a
+    // configuration with no kinds, so there is always one to preselect.
+    let kind: KindId = cfg.kinds[0]?.id ?? "";
     const kindRow = document.createElement("div");
     kindRow.className = "form-row";
     const kindLabelEl = document.createElement("span");
@@ -590,16 +592,15 @@ export function taskForm(): Promise<TaskDraft | null> {
     kindLabelEl.textContent = "Kind";
     const kindBox = document.createElement("div");
     kindBox.className = "tk-f-kinds";
-    const kinds: [TaskKind, string][] = [["bug", "bug"], ["task", "task"], ["idea", "idea"]];
-    for (const [value, label] of kinds) {
+    for (const k of cfg.kinds) {
       const b = document.createElement("button");
       b.type = "button";
-      b.dataset.kind = value;
-      b.textContent = label;
+      b.dataset.kind = k.id;
+      b.textContent = k.label;
       b.className = "tk-f-kind";
-      b.classList.toggle("selected", value === kind);
+      b.classList.toggle("selected", k.id === kind);
       b.onclick = () => {
-        kind = value;
+        kind = k.id;
         kindBox.querySelectorAll(".tk-f-kind").forEach((o) => o.classList.remove("selected"));
         b.classList.add("selected");
       };

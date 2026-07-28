@@ -1,4 +1,5 @@
 import type { MigrationOffer, ProviderCapabilities, Task } from "./ipc";
+import { isTerminal } from "./board-config";
 import { boardColumns, derivedStatus, kindLabel, type TaskSessionLink } from "./tasks";
 
 export interface BoardState {
@@ -78,7 +79,7 @@ export class BoardView {
       return;
     }
 
-    const cols = boardColumns(state.tasks, state.project);
+    const cols = boardColumns(state.tasks, state.project, caps.board);
     const wrap = el("div", "tk-cols");
     wrap.append(
       this.column(`open (${cols.open.length})`, cols.open, state, caps),
@@ -155,14 +156,14 @@ export class BoardView {
   }
 
   private card(t: Task, state: BoardState, caps: ProviderCapabilities) {
-    const status = derivedStatus(t, state.links);
+    const status = derivedStatus(t, state.links, caps.board);
     const box = el("div", `tk-card ${status}`);
     if (t.damaged) box.classList.add("damaged");
 
     box.append(el("div", "tk-card-title", t.title));
 
     const meta = el("div", "tk-meta");
-    meta.append(el("span", "tk-kind", kindLabel(t.kind)));
+    meta.append(el("span", "tk-kind", kindLabel(caps.board, t.kind)));
     if (t.origin === "session") meta.append(el("span", "tk-bot", "session"));
     if (status === "working") meta.append(el("span", "tk-busy", "in progress"));
     box.append(meta);
@@ -193,7 +194,9 @@ export class BoardView {
     // of two files to write into. A damaged card is never closed either: it may
     // be an ordinary Obsidian note that merely has an `id:` field, and
     // resolving it would rewrite a file we do not own (see fs.rs::resolve).
-    if (caps.canResolve && t.status === "open" && !t.conflict && !t.damaged) {
+    // Already in a terminal step: there is nothing for ✓ to do. Asked of the
+    // configuration, because which steps those are is board.json's decision.
+    if (caps.canResolve && !isTerminal(caps.board, t.status) && !t.conflict && !t.damaged) {
       const done = el("button", "tk-done", "✓");
       done.title = "Close this task";
       done.setAttribute("aria-label", "Close this task");

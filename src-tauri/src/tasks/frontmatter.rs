@@ -1,4 +1,5 @@
-use crate::tasks::model::{Task, TaskKind, TaskOrigin, TaskStatus};
+use crate::tasks::board::{KindId, StepId};
+use crate::tasks::model::{Task, TaskOrigin};
 
 const MAX_SLUG: usize = 40;
 
@@ -54,19 +55,15 @@ pub fn parse_card(text: &str, path: &str) -> Option<Task> {
         }
     };
 
-    let kind = match field(head, "kind") {
-        None => TaskKind::Task,
-        Some("bug") => TaskKind::Bug,
-        Some("task") => TaskKind::Task,
-        Some("idea") => TaskKind::Idea,
-        Some(_) => { damage("unknown kind"); TaskKind::Task }
-    };
+    // A missing `kind:` is legal and stays legal: the card simply does not say,
+    // and the board omits the chip. An unrecognised one is carried through —
+    // whether it means anything is board.json's business.
+    let kind = KindId(field(head, "kind").unwrap_or("").to_string());
 
     let status = match field(head, "status") {
-        Some("open") => TaskStatus::Open,
-        Some("done") => TaskStatus::Done,
-        None => { damage("no status field"); TaskStatus::Open }
-        Some(_) => { damage("unknown status"); TaskStatus::Open }
+        Some(s) => StepId(s.to_string()),
+        // Unchanged: a card that does not say where it is, is malformed.
+        None => { damage("no status field"); StepId(String::new()) }
     };
 
     let project = match field(head, "project") {
@@ -103,12 +100,6 @@ pub fn parse_card(text: &str, path: &str) -> Option<Task> {
     })
 }
 
-fn kind_str(k: TaskKind) -> &'static str {
-    match k { TaskKind::Bug => "bug", TaskKind::Task => "task", TaskKind::Idea => "idea" }
-}
-fn status_str(s: TaskStatus) -> &'static str {
-    match s { TaskStatus::Open => "open", TaskStatus::Done => "done" }
-}
 fn origin_str(o: TaskOrigin) -> &'static str {
     match o { TaskOrigin::Human => "human", TaskOrigin::Session => "session" }
 }
@@ -120,8 +111,8 @@ pub fn render_card(t: &Task) -> String {
     let mut out = String::from("---\n");
     out.push_str(&format!("id: {}\n", one_line(&t.id)));
     out.push_str(&format!("title: {}\n", one_line(&t.title)));
-    out.push_str(&format!("kind: {}\n", kind_str(t.kind)));
-    out.push_str(&format!("status: {}\n", status_str(t.status)));
+    out.push_str(&format!("kind: {}\n", t.kind.as_str()));
+    out.push_str(&format!("status: {}\n", t.status.as_str()));
     out.push_str(&format!("project: {}\n", one_line(&t.project)));
     out.push_str(&format!("created: {}\n", one_line(&t.created)));
     if let Some(r) = &t.resolved {
@@ -140,14 +131,19 @@ pub fn render_card(t: &Task) -> String {
     out
 }
 
-/// Close a card: `status: done` plus a `resolved:` timestamp.
+/// Move a card to a step, stamping `resolved:` on the way into a terminal one
+/// and clearing it on the way out.
 ///
-/// This exists so `resolve` never goes through `render_card` (which only
-/// knows nine keys) on a real vault file: a card that also carries `tags:`,
-/// `aliases:`, or Dataview fields would otherwise lose them the moment it is
-/// closed. Returns `None` when `text` has no frontmatter block at all.
-pub fn set_status_done(text: &str, resolved_ts: &str) -> Option<String> {
-    set_fields(text, &[("status", "done"), ("resolved", resolved_ts)])
+/// Clearing matters: a card dragged back from `done` to `todo` would otherwise
+/// keep showing when it was closed. `set_fields` cannot delete a line, and does
+/// not need to — `field()` treats an empty value as absent (see line 21).
+///
+/// Goes through `set_fields` rather than `render_card` for the reason
+/// `set_status_done` did: `render_card` knows nine keys, so a vault card also
+/// carrying `tags:`, `aliases:` or Dataview fields would lose them. Returns
+/// `None` when `text` has no frontmatter block at all.
+pub fn set_step(text: &str, step: &StepId, resolved_ts: Option<&str>) -> Option<String> {
+    set_fields(text, &[("status", step.as_str()), ("resolved", resolved_ts.unwrap_or(""))])
 }
 
 /// Repoint a card at a renamed project. Needed because `list` filters cards by
@@ -223,7 +219,7 @@ pub fn slugify(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::model::{TaskKind, TaskOrigin, TaskStatus};
+    use crate::tasks::model::TaskOrigin;
 
     const VALID: &str = "---\n\
 id: 01K1B7QW9XZ3M4N5P6R7S8T9V0\n\
@@ -242,8 +238,8 @@ Repro: three workspaces, Cmd+2.\n";
         let card = parse_card(VALID, "/r/01K1-pill.md").expect("card");
         assert_eq!(card.id, "01K1B7QW9XZ3M4N5P6R7S8T9V0");
         assert_eq!(card.title, "The pill blinks when switching");
-        assert_eq!(card.kind, TaskKind::Bug);
-        assert_eq!(card.status, TaskStatus::Open);
+        assert_eq!(card.kind.as_str(), "bug");
+        assert_eq!(card.status.as_str(), "open");
         assert_eq!(card.project, "cowork-deck");
         assert_eq!(card.origin, TaskOrigin::Session);
         assert_eq!(card.session.as_deref(), Some("a3f1c2"));
@@ -267,10 +263,49 @@ Repro: three workspaces, Cmd+2.\n";
         let text = "---\nid: 01K1B7QW9XZ3M4N5P6R7S8T9V0\nstatus: nonsense\n---\nbody\n";
         let card = parse_card(text, "/r/01K1-x.md").expect("still a card");
         assert_eq!(card.id, "01K1B7QW9XZ3M4N5P6R7S8T9V0");
+        // Damaged by the *missing* title, project and created fields — not by
+        // `status: nonsense`, which is carried through untouched now that
+        // board.json decides what a step value means.
         assert!(card.damaged.is_some(), "must be flagged, never silently hidden");
         // The title falls back to the file name so the card stays visible on the board.
         assert_eq!(card.title, "01K1-x.md");
-        assert_eq!(card.status, TaskStatus::Open);
+        assert_eq!(card.status.as_str(), "nonsense");
+    }
+
+    #[test]
+    fn an_unrecognised_status_is_carried_through_undamaged() {
+        // Whether "nonsense" means anything is board.json's business now. The
+        // parser's opinion would mass-damage a board the moment a step was
+        // renamed, and a damaged card loses both ▶ and ✓.
+        let text = "---\nid: 01K1B7QW9XZ3M4N5P6R7S8T9V0\ntitle: t\nproject: p\ncreated: c\nstatus: nonsense\n---\nbody\n";
+        let card = parse_card(text, "/t/c.md").expect("a card");
+        assert_eq!(card.status.as_str(), "nonsense");
+        assert_eq!(card.damaged, None);
+    }
+
+    #[test]
+    fn an_unrecognised_kind_is_carried_through_undamaged() {
+        let text = "---\nid: 01K1\nstatus: open\ntitle: t\nproject: p\ncreated: c\nkind: chore\n---\n";
+        let card = parse_card(text, "/t/c.md").expect("a card");
+        assert_eq!(card.kind.as_str(), "chore");
+        assert_eq!(card.damaged, None);
+    }
+
+    #[test]
+    fn a_missing_status_field_still_damages_the_card() {
+        // Unchanged on purpose: a card that does not say where it is, is
+        // malformed whatever the configuration says.
+        let text = "---\nid: 01K1\ntitle: t\nproject: p\ncreated: c\n---\nbody\n";
+        let card = parse_card(text, "/t/c.md").expect("a card");
+        assert_eq!(card.damaged.as_deref(), Some("no status field"));
+    }
+
+    #[test]
+    fn a_missing_kind_field_does_not_damage_the_card() {
+        let text = "---\nid: 01K1\ntitle: t\nproject: p\ncreated: c\nstatus: open\n---\n";
+        let card = parse_card(text, "/t/c.md").expect("a card");
+        assert_eq!(card.damaged, None);
+        assert_eq!(card.kind.as_str(), "");
     }
 
     #[test]
@@ -309,51 +344,77 @@ Repro: three workspaces, Cmd+2.\n";
         assert_eq!(slugify(&"я".repeat(80)).chars().count(), 40);
     }
 
+    /// The terminal step of the fixtures below. A literal here and nowhere in
+    /// control flow: what "done" means is board.json's business, but a test has
+    /// to name some step to move a card to.
+    fn done() -> StepId { StepId("done".into()) }
+
     #[test]
-    fn set_status_done_preserves_an_unknown_key() {
+    fn set_step_stamps_resolved_for_a_terminal_move() {
+        let text = "---\nid: 01K1\nstatus: todo\ntags: [inbox]\n---\nbody\n";
+        let out = set_step(text, &StepId("done".into()), Some("2026-07-28T14:00:00Z")).unwrap();
+        assert!(out.contains("status: done"), "{out}");
+        assert!(out.contains("resolved: 2026-07-28T14:00:00Z"), "{out}");
+        assert!(out.contains("tags: [inbox]"), "unknown keys survive: {out}");
+    }
+
+    #[test]
+    fn set_step_clears_resolved_when_a_card_moves_back_out_of_a_terminal_step() {
+        // Otherwise a card sitting in `todo` would still show when it was
+        // closed. `set_fields` cannot delete a line, and it does not need to:
+        // `field()` already treats an empty value as absent.
+        let text = "---\nid: 01K1\nstatus: done\nresolved: 2020-01-01T00:00:00Z\n---\nbody\n";
+        let out = set_step(text, &StepId("todo".into()), None).unwrap();
+        assert!(out.contains("status: todo"), "{out}");
+        let card = parse_card(&out, "/t/c.md").expect("a card");
+        assert_eq!(card.resolved, None);
+    }
+
+    #[test]
+    fn set_step_preserves_an_unknown_key() {
         let text = "---\nid: 01K1\ntitle: t\nstatus: open\nproject: p\ntags: [inbox]\n---\nbody\n";
-        let out = set_status_done(text, "2026-07-27T14:00:00Z").expect("has frontmatter");
+        let out = set_step(text, &done(), Some("2026-07-27T14:00:00Z")).expect("has frontmatter");
         assert!(out.contains("tags: [inbox]"), "unknown key must survive: {out}");
         assert!(out.contains("status: done"));
         assert!(out.contains("resolved: 2026-07-27T14:00:00Z"));
     }
 
     #[test]
-    fn set_status_done_inserts_resolved_when_missing() {
+    fn set_step_inserts_resolved_when_missing() {
         let text = "---\nid: 01K1\nstatus: open\n---\nbody\n";
-        let out = set_status_done(text, "2026-07-27T14:00:00Z").unwrap();
+        let out = set_step(text, &done(), Some("2026-07-27T14:00:00Z")).unwrap();
         assert_eq!(out.matches("resolved:").count(), 1);
         assert!(out.contains("resolved: 2026-07-27T14:00:00Z"));
     }
 
     #[test]
-    fn set_status_done_replaces_resolved_when_already_present() {
+    fn set_step_replaces_resolved_when_already_present() {
         let text = "---\nid: 01K1\nstatus: open\nresolved: 2020-01-01T00:00:00Z\n---\nbody\n";
-        let out = set_status_done(text, "2026-07-27T14:00:00Z").unwrap();
+        let out = set_step(text, &done(), Some("2026-07-27T14:00:00Z")).unwrap();
         assert_eq!(out.matches("resolved:").count(), 1, "must not duplicate the line");
         assert!(out.contains("resolved: 2026-07-27T14:00:00Z"));
         assert!(!out.contains("2020-01-01"));
     }
 
     #[test]
-    fn set_status_done_leaves_the_body_untouched() {
+    fn set_step_leaves_the_body_untouched() {
         let text = "---\nid: 01K1\nstatus: open\n---\nFirst line.\nSecond line.\n";
-        let out = set_status_done(text, "ts").unwrap();
+        let out = set_step(text, &done(), Some("ts")).unwrap();
         assert!(out.ends_with("First line.\nSecond line.\n"));
     }
 
     #[test]
-    fn set_status_done_keeps_crlf_input_crlf() {
+    fn set_step_keeps_crlf_input_crlf() {
         let text = "---\r\nid: 01K1\r\nstatus: open\r\n---\r\nbody\r\n";
-        let out = set_status_done(text, "ts").unwrap();
+        let out = set_step(text, &done(), Some("ts")).unwrap();
         assert!(!out.contains("open"));
         assert!(out.contains("\r\n"), "line endings must stay CRLF: {out:?}");
         assert!(!out.replace("\r\n", "").contains('\n'), "no stray bare LF: {out:?}");
     }
 
     #[test]
-    fn set_status_done_returns_none_without_frontmatter() {
-        assert!(set_status_done("just text\n", "ts").is_none());
+    fn set_step_returns_none_without_frontmatter() {
+        assert!(set_step("just text\n", &done(), Some("ts")).is_none());
     }
 
     #[test]
@@ -393,7 +454,7 @@ Repro: three workspaces, Cmd+2.\n";
         let card = parse_card(&crlf, "/r/01K1-pill.md").expect("card");
         assert_eq!(card.id, "01K1B7QW9XZ3M4N5P6R7S8T9V0");
         assert_eq!(card.title, "The pill blinks when switching");
-        assert_eq!(card.status, TaskStatus::Open);
+        assert_eq!(card.status.as_str(), "open");
         assert_eq!(card.project, "cowork-deck");
         assert!(card.damaged.is_none(), "a stray \\r must not leak into a field value");
     }
@@ -403,8 +464,8 @@ Repro: three workspaces, Cmd+2.\n";
         let card = Task {
             id: "01K1".to_string(),
             title: "Bug:\nthe pill\nblinks".to_string(),
-            kind: TaskKind::Bug,
-            status: TaskStatus::Open,
+            kind: KindId("bug".into()),
+            status: StepId("open".into()),
             project: "cowork-deck".to_string(),
             created: "2026-07-27T13:20:11Z".to_string(),
             resolved: None,

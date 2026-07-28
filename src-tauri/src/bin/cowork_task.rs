@@ -7,7 +7,8 @@
 //! implementation of the card format. It writes the file directly — no TCP, no
 //! listener — so filing a ticket works even when the app window is busy.
 use cowork_deck::tasks::fs::{FsTaskProvider, RootCreation as FsRootCreation};
-use cowork_deck::tasks::model::{TaskDraft, TaskKind, TaskOrigin};
+use cowork_deck::tasks::board::KindId;
+use cowork_deck::tasks::model::{TaskDraft, TaskOrigin};
 use cowork_deck::tasks::provider::TaskProvider;
 use std::io::Read;
 
@@ -15,15 +16,6 @@ use std::io::Read;
 pub enum Cmd {
     New { kind: String, title: String },
     Done { id: String },
-}
-
-pub fn kind_from_str(s: &str) -> Option<TaskKind> {
-    match s {
-        "bug" => Some(TaskKind::Bug),
-        "task" => Some(TaskKind::Task),
-        "idea" => Some(TaskKind::Idea),
-        _ => None,
-    }
 }
 
 pub fn parse_args(argv: &[String]) -> Result<Cmd, String> {
@@ -64,7 +56,7 @@ pub fn parse_args(argv: &[String]) -> Result<Cmd, String> {
 const USAGE: &str = "\
 cowork_task — file a card in the cowork-deck tracker.
 
-  cowork_task new --kind bug|task|idea --title \"…\"   (the body is read from stdin)
+  cowork_task new --kind <kind> --title \"…\"   (the body is read from stdin)
   cowork_task done <id>
 
 Requires the environment variables the deck sets on a session:
@@ -96,8 +88,17 @@ fn run() -> Result<String, String> {
 
     match cmd {
         Cmd::New { kind, title } => {
-            let kind = kind_from_str(&kind)
-                .ok_or_else(|| format!("unknown --kind: {kind} (bug|task|idea)"))?;
+            // The configuration decides which kinds exist, so the check has to
+            // happen here rather than in `parse_args`: the provider — and with
+            // it board.json — is only resolved once the environment is read.
+            let kind = KindId(kind);
+            if !provider.board().has_kind(&kind) {
+                return Err(format!(
+                    "unknown --kind: {} (configured: {})",
+                    kind.as_str(),
+                    provider.board().kinds.iter().map(|k| k.id.as_str()).collect::<Vec<_>>().join(", ")
+                ));
+            }
             let mut body = String::new();
             // Best effort: a session may pipe a body or may not pipe anything.
             let _ = std::io::stdin().read_to_string(&mut body);
@@ -175,13 +176,5 @@ mod tests {
     fn unknown_subcommand_is_an_error_not_a_silent_noop() {
         let argv = ["cowork_task", "frobnicate"].map(String::from).to_vec();
         assert!(parse_args(&argv).is_err());
-    }
-
-    #[test]
-    fn kind_strings_map_to_the_model() {
-        assert_eq!(kind_from_str("bug"), Some(TaskKind::Bug));
-        assert_eq!(kind_from_str("idea"), Some(TaskKind::Idea));
-        assert_eq!(kind_from_str("task"), Some(TaskKind::Task));
-        assert_eq!(kind_from_str("whatever"), None);
     }
 }

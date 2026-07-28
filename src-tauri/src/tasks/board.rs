@@ -163,6 +163,18 @@ impl BoardConfig {
             .id
     }
 
+    /// Where a new card lands: the first non-terminal step, so a board that opens
+    /// with `backlog` puts new cards in the backlog rather than in `done`. When
+    /// every step is terminal — legal, if unusual — that is where they go,
+    /// because there is nowhere else.
+    pub fn initial_step(&self) -> &StepId {
+        self.steps
+            .iter()
+            .find(|s| !s.terminal)
+            .map(|s| &s.id)
+            .unwrap_or_else(|| self.first_terminal())
+    }
+
     pub fn is_terminal(&self, id: &StepId) -> bool {
         self.steps.iter().any(|s| &s.id == id && s.terminal)
     }
@@ -286,6 +298,20 @@ mod tests {
         let text = r#"{"steps":[{"id":"a","label":"A","terminal":true}],
                        "kinds":[{"id":"k","label":"K"}]}"#;
         assert_eq!(parse(text).unwrap().working_step(), None);
+    }
+
+    #[test]
+    fn a_new_card_lands_in_the_first_non_terminal_step() {
+        let c = parse(GOOD).unwrap();
+        assert_eq!(c.initial_step().as_str(), "todo");
+    }
+
+    #[test]
+    fn a_config_whose_only_step_is_terminal_puts_new_cards_there() {
+        // Legal, and there is nowhere else to put them.
+        let c = parse(r#"{"steps":[{"id":"d","label":"D","terminal":true}],
+                          "kinds":[{"id":"k","label":"K"}]}"#).unwrap();
+        assert_eq!(c.initial_step().as_str(), "d");
     }
 
     #[test]

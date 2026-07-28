@@ -1,10 +1,12 @@
-import type { SessionState, Task, TaskKind } from "./ipc";
+import type { BoardConfig, SessionState, Task } from "./ipc";
+import { isTerminal, kindLabel } from "./board-config";
 
 /** A live tile, as far as the board cares: which card it came from and how it is doing. */
 export interface TaskSessionLink { session: string; taskId?: string; state: SessionState }
 
-const KIND_LABEL: Record<TaskKind, string> = { bug: "bug", task: "task", idea: "idea" };
-export function kindLabel(kind: TaskKind): string { return KIND_LABEL[kind]; }
+// Re-exported so the board keeps one import for everything card-shaped; the
+// reader itself lives with the rest of them in board-config.ts.
+export { kindLabel };
 
 /** States in which a session still counts as alive — launching a second session
  *  for the same card would duplicate the work. */
@@ -19,19 +21,21 @@ export function liveSessionForTask(taskId: string, links: TaskSessionLink[]): st
 
 /** Board status. Never stored: a dead session simply stops being counted, so a
  *  card cannot get stuck "in progress". */
-export function derivedStatus(task: Task, links: TaskSessionLink[]): "open" | "done" | "working" {
-  if (task.status === "done") return "done";
+export function derivedStatus(
+  task: Task, links: TaskSessionLink[], cfg: BoardConfig,
+): "open" | "done" | "working" {
+  if (isTerminal(cfg, task.status)) return "done";
   const busy = links.some((l) => l.taskId === task.id && BUSY.includes(l.state));
   return busy ? "working" : "open";
 }
 
 /** Initial prompt for a session launched from a card. */
-export function taskPrompt(task: Task): string {
+export function taskPrompt(task: Task, cfg: BoardConfig): string {
   const lines = [
     "A task from the cowork-deck tracker.",
     "",
     `Title: ${task.title}`,
-    `Kind: ${kindLabel(task.kind)}`,
+    `Kind: ${kindLabel(cfg, task.kind)}`,
     `id: ${task.id}`,
     `Card file: ${task.path}`,
   ];
@@ -61,7 +65,9 @@ function byTimeDesc(a: string, b: string): number {
   return a < b ? 1 : a > b ? -1 : 0;
 }
 
-export function boardColumns(tasks: Task[], project: string, doneLimit = 20): BoardColumns {
+export function boardColumns(
+  tasks: Task[], project: string, cfg: BoardConfig, doneLimit = 20,
+): BoardColumns {
   const mine: Task[] = [];
   const foreignCount = new Map<string, number>();
   for (const t of tasks) {
@@ -71,9 +77,9 @@ export function boardColumns(tasks: Task[], project: string, doneLimit = 20): Bo
     else foreignCount.set(t.project, (foreignCount.get(t.project) ?? 0) + 1);
   }
 
-  const open = mine.filter((t) => t.status === "open")
+  const open = mine.filter((t) => !isTerminal(cfg, t.status))
     .sort((a, b) => byTimeDesc(a.created, b.created));
-  const doneAll = mine.filter((t) => t.status === "done")
+  const doneAll = mine.filter((t) => isTerminal(cfg, t.status))
     .sort((a, b) => byTimeDesc(a.resolved ?? "", b.resolved ?? ""));
 
   return {

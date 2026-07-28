@@ -1,5 +1,6 @@
-use crate::tasks::frontmatter::{parse_card, render_card, set_status_done, slugify};
-use crate::tasks::model::{Task, TaskDraft, TaskError, TaskStatus};
+use crate::tasks::board::{self, BoardConfig};
+use crate::tasks::frontmatter::{parse_card, render_card, set_step, slugify};
+use crate::tasks::model::{Task, TaskDraft, TaskError};
 use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
 use std::path::{Path, PathBuf};
 
@@ -54,12 +55,37 @@ impl RootCreation {
 pub struct FsTaskProvider {
     root: PathBuf,
     creation: RootCreation,
+    board: BoardConfig,
+    board_error: Option<String>,
 }
 
 impl FsTaskProvider {
+    /// Reads the configuration beside the cards, creating the default when there
+    /// is none. Once, at construction: `list` runs on every board tick and every
+    /// sidebar count, and re-reading the file per call would put a filesystem
+    /// round trip in front of each of them.
     pub fn new(root: PathBuf, creation: RootCreation) -> Self {
-        Self { root, creation }
+        // A root that does not exist yet is not a configuration problem: the
+        // provider is constructed before `ensure_root` runs, so loading here
+        // would try to write the default into a missing directory and report a
+        // failure the person can do nothing about. The default applies until the
+        // root exists, and the next construction writes the file.
+        if !root.is_dir() {
+            return Self { root, creation, board: BoardConfig::default_config(), board_error: None };
+        }
+        let loaded = board::load_or_create(&root);
+        Self { root, creation, board: loaded.config, board_error: loaded.error }
     }
+
+    /// For tests and for callers that already hold a configuration. Touches no
+    /// file, so a test does not need a `board.json` on disk to describe a
+    /// workflow.
+    pub fn with_board(root: PathBuf, creation: RootCreation, board: BoardConfig) -> Self {
+        Self { root, creation, board, board_error: None }
+    }
+
+    pub fn board(&self) -> &BoardConfig { &self.board }
+    pub fn board_error(&self) -> Option<&str> { self.board_error.as_deref() }
 
     fn ensure_root(&self) -> Result<(), TaskError> {
         if self.root.is_dir() {
@@ -128,7 +154,7 @@ impl TaskProvider for FsTaskProvider {
         ProviderCapabilities {
             can_create: true,
             can_resolve: true,
-            statuses: vec!["open".to_string(), "done".to_string()],
+            statuses: self.board.step_ids(),
         }
     }
 
@@ -150,7 +176,7 @@ impl TaskProvider for FsTaskProvider {
             id,
             title: draft.title,
             kind: draft.kind,
-            status: TaskStatus::Open,
+            status: self.board.initial_step().clone(),
             project: draft.project,
             created: Self::now_iso(),
             resolved: None,
@@ -182,19 +208,20 @@ impl TaskProvider for FsTaskProvider {
                     return Err(TaskError::Damaged(card.path.clone()));
                 }
                 let path = PathBuf::from(&card.path);
+                let step = self.board.first_terminal().clone();
                 let resolved = Self::now_iso();
                 // Edit the frontmatter in place rather than re-rendering the
                 // whole card: `render_card` only knows nine keys, so closing a
                 // card that also carries `tags:`, `aliases:`, or Dataview
                 // fields through it would silently drop them.
                 let text = std::fs::read_to_string(&path).map_err(|e| TaskError::Io(e.to_string()))?;
-                let updated = set_status_done(&text, &resolved).ok_or_else(|| {
+                let updated = set_step(&text, &step, Some(&resolved)).ok_or_else(|| {
                     TaskError::Io("the card has no frontmatter block".to_string())
                 })?;
                 self.write_atomic(&path, &updated)?;
 
                 let mut card = card.clone();
-                card.status = TaskStatus::Done;
+                card.status = step;
                 card.resolved = Some(resolved);
                 card.conflict = false;
                 Ok(card)
@@ -206,13 +233,14 @@ impl TaskProvider for FsTaskProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::model::{TaskKind, TaskOrigin, TaskStatus};
+    use crate::tasks::board::{KindId, StepId};
+    use crate::tasks::model::TaskOrigin;
     use crate::tasks::provider::TaskProvider;
 
     fn draft(title: &str, project: &str) -> TaskDraft {
         TaskDraft {
             title: title.to_string(),
-            kind: TaskKind::Bug,
+            kind: KindId("bug".into()),
             body: "body".to_string(),
             project: project.to_string(),
             origin: TaskOrigin::Human,
@@ -223,6 +251,13 @@ mod tests {
     fn provider(dir: &std::path::Path) -> FsTaskProvider {
         FsTaskProvider::new(dir.to_path_buf(), RootCreation::Never)
     }
+
+    // The steps `provider()` above ends up with: its tempdir has no board.json,
+    // so `new` writes the default and reads it back. Asked of the configuration
+    // rather than spelled out, because which ids those are is
+    // `default_config`'s business and not this module's.
+    fn initial() -> StepId { BoardConfig::default_config().initial_step().clone() }
+    fn terminal() -> StepId { BoardConfig::default_config().first_terminal().clone() }
 
     #[test]
     fn the_first_read_builds_the_whole_layout_below_a_base_that_exists() {
@@ -266,7 +301,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = provider(dir.path());
         let made = p.create(draft("The pill blinks", "deck")).unwrap();
-        assert_eq!(made.status, TaskStatus::Open);
+        assert_eq!(made.status, initial(), "the default configuration's first step");
         assert!(!made.created.is_empty());
 
         let all = p.list("deck").unwrap();
@@ -299,7 +334,7 @@ mod tests {
         std::fs::rename(&made.path, &renamed).unwrap();
 
         let done = p.resolve(&made.id).unwrap();
-        assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(done.status, terminal());
         assert!(done.resolved.is_some(), "resolved timestamp is needed to sort the done column");
         assert_eq!(
             std::path::Path::new(&done.path).file_name().unwrap(),
@@ -380,10 +415,13 @@ mod tests {
         let p = provider(dir.path());
         p.create(draft("Atomic", "deck")).unwrap();
 
+        // `board.json` is expected beside the cards — the provider's constructor
+        // wrote it — so the question this asks is about everything *else*.
         let names: Vec<String> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != board::BOARD_FILE)
             .collect();
         assert_eq!(names.len(), 1, "temp file must be gone after rename: {names:?}");
         assert!(names[0].ends_with(".md"));
@@ -403,6 +441,20 @@ mod tests {
             other => panic!("expected RootMissing, got {other:?}"),
         }
         assert!(!absent.exists(), "an arbitrary user path must never be created silently");
+    }
+
+    #[test]
+    fn a_provider_built_on_a_missing_root_reports_no_configuration_error() {
+        // `provider_for` constructs the provider before `ensure_root` runs, so
+        // on a brand-new external root there is nowhere yet to write the
+        // default `board.json`. That absence must not surface as an error the
+        // person can do nothing about — the default configuration applies
+        // until the root exists, and the next construction writes the file.
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("not-here-yet");
+        let p = FsTaskProvider::new(absent, RootCreation::Never);
+        assert_eq!(p.board_error(), None);
+        assert_eq!(p.board().step_ids(), vec!["open", "done"]);
     }
 
     #[test]
@@ -455,7 +507,7 @@ The body, unchanged.\n";
 
         let p = provider(dir.path());
         let done = p.resolve("01K1").unwrap();
-        assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(done.status, terminal());
         assert!(done.resolved.is_some());
 
         let after = std::fs::read_to_string(&path).unwrap();
@@ -466,11 +518,52 @@ The body, unchanged.\n";
     }
 
     #[test]
+    fn resolve_moves_a_card_to_the_first_terminal_step_of_the_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"todo","label":"To do"},{"id":"shipped","label":"Shipped","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        ).unwrap();
+        let p = FsTaskProvider::with_board(dir.path().to_path_buf(), RootCreation::Always, cfg);
+        let card = p.create(TaskDraft {
+            title: "T".into(), kind: KindId("task".into()), body: String::new(),
+            project: "proj".into(), origin: TaskOrigin::Human, session: None,
+        }).unwrap();
+        assert_eq!(card.status.as_str(), "todo", "a new card lands in the first non-terminal step");
+        let closed = p.resolve(&card.id).unwrap();
+        assert_eq!(closed.status.as_str(), "shipped");
+        assert!(closed.resolved.is_some());
+    }
+
+    #[test]
+    fn capabilities_report_the_configured_steps_in_board_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"a","label":"A"},{"id":"b","label":"B"},{"id":"z","label":"Z","terminal":true}],
+                "kinds":[{"id":"k","label":"K"}]}"#,
+        ).unwrap();
+        let p = FsTaskProvider::with_board(dir.path().to_path_buf(), RootCreation::Always, cfg);
+        assert_eq!(p.capabilities().statuses, vec!["a", "b", "z"]);
+    }
+
+    #[test]
+    fn a_provider_built_without_a_configuration_reads_the_one_beside_the_cards() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(crate::tasks::board::BOARD_FILE),
+            r#"{"steps":[{"id":"only","label":"Only","terminal":true}],"kinds":[{"id":"k","label":"K"}]}"#,
+        ).unwrap();
+        let p = FsTaskProvider::new(dir.path().to_path_buf(), RootCreation::Always);
+        assert_eq!(p.board().step_ids(), vec!["only"]);
+        assert_eq!(p.board_error(), None);
+    }
+
+    #[test]
     fn capabilities_allow_everything_for_files() {
         let dir = tempfile::tempdir().unwrap();
         let caps = provider(dir.path()).capabilities();
         assert!(caps.can_create);
         assert!(caps.can_resolve);
-        assert_eq!(caps.statuses, vec!["open".to_string(), "done".to_string()]);
+        assert_eq!(caps.statuses, BoardConfig::default_config().step_ids());
     }
 }

@@ -1,12 +1,5 @@
+use crate::tasks::board::{KindId, StepId};
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TaskKind { Bug, Task, Idea }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TaskStatus { Open, Done }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -20,8 +13,10 @@ pub enum TaskOrigin { Human, Session }
 pub struct Task {
     pub id: String,
     pub title: String,
-    pub kind: TaskKind,
-    pub status: TaskStatus,
+    /// Free-form: `BoardConfig` decides whether it means anything, and a value
+    /// it does not know still has to reach the board.
+    pub kind: KindId,
+    pub status: StepId,
     pub project: String,
     pub created: String,
     pub resolved: Option<String>,
@@ -39,7 +34,7 @@ pub struct Task {
 #[serde(rename_all = "camelCase")]
 pub struct TaskDraft {
     pub title: String,
-    pub kind: TaskKind,
+    pub kind: KindId,
     pub body: String,
     pub project: String,
     pub origin: TaskOrigin,

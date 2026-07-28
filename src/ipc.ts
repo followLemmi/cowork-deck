@@ -96,12 +96,18 @@ export interface TokenUsage { input: number; output: number; cacheCreation: numb
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
 export const sessionTokens = (sessionId: string) => invoke<TokenUsage>("session_tokens", { sessionId });
 
-export type TaskKind = "bug" | "task" | "idea";
-export type TaskStatus = "open" | "done";
+/** A step id and a kind id are whatever `board.json` says they are — the
+ *  frontend never enumerates them, it reads them (see src/board-config.ts). */
+export type StepId = string;
+export type KindId = string;
 export type TaskOrigin = "human" | "session";
 
+export interface BoardStep { id: StepId; label: string; terminal?: boolean; working?: boolean }
+export interface BoardKind { id: KindId; label: string }
+export interface BoardConfig { v: number; steps: BoardStep[]; kinds: BoardKind[] }
+
 export interface Task {
-  id: string; title: string; kind: TaskKind; status: TaskStatus; project: string;
+  id: string; title: string; kind: KindId; status: StepId; project: string;
   created: string; resolved: string | null; origin: TaskOrigin; session: string | null;
   body: string; path: string;
   /** Why the card could not be parsed in full. Shown, not hidden. */
@@ -111,8 +117,20 @@ export interface Task {
 }
 // project/origin are set by the backend (workspace name / "human") and are
 // deliberately not settable from here — see tasks_cmd::TaskDraftInput.
-export interface TaskDraft { title: string; kind: TaskKind; body: string; }
-export interface ProviderCapabilities { canCreate: boolean; canResolve: boolean; statuses: string[] }
+export interface TaskDraft { title: string; kind: KindId; body: string; }
+/** Capabilities and the board configuration arrive together, flattened into one
+ *  object by `tasks_cmd::BoardCapabilities`: the board, the card modal and the
+ *  ⚙ editor all read the same thing, so there is no second channel to fall out
+ *  of step with the first. */
+export interface ProviderCapabilities {
+  canCreate: boolean;
+  canResolve: boolean;
+  statuses: StepId[];
+  board: BoardConfig;
+  /** Why `board.json` could not be used, when it could not. The board draws
+   *  either way; the person has to be told which they are looking at. */
+  boardError: string | null;
+}
 export type TrackerRoot = { kind: "project" } | { kind: "path"; path: string };
 export interface TrackerConfig { providers: { type: "fs"; root: TrackerRoot }[] }
 

@@ -8,7 +8,8 @@ use crate::model::{
 use crate::tasks::frontmatter::slugify;
 use crate::tasks::fs::{FsTaskProvider, RootCreation};
 use crate::tasks::migrate::{apply, plan, MigrationPlan, MigrationReport};
-use crate::tasks::model::{Task, TaskDraft, TaskKind, TaskOrigin};
+use crate::tasks::board::{BoardConfig, KindId};
+use crate::tasks::model::{Task, TaskDraft, TaskOrigin};
 use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -26,7 +27,7 @@ use tauri::State;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskDraftInput {
     pub title: String,
-    pub kind: TaskKind,
+    pub kind: KindId,
     pub body: String,
 }
 
@@ -310,14 +311,35 @@ fn provider_for(ws: &Workspace) -> Result<FsTaskProvider, String> {
     Ok(FsTaskProvider::new(root, creation))
 }
 
+/// Capabilities plus the board configuration, flattened into one object: the
+/// board, the card modal and the ⚙ editor all read the same thing, so there is
+/// no second channel to fall out of step with the first.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardCapabilities {
+    #[serde(flatten)]
+    pub caps: ProviderCapabilities,
+    pub board: BoardConfig,
+    /// Why `board.json` could not be used, when it could not. The board draws
+    /// either way; the person has to be told which they are looking at.
+    pub board_error: Option<String>,
+}
+
 #[tauri::command]
 pub fn tasks_capabilities(
     state: State<AppState>,
     workspace_id: String,
-) -> Result<Option<ProviderCapabilities>, String> {
+) -> Result<Option<BoardCapabilities>, String> {
     let ws = workspace(&state, &workspace_id)?;
+    // `None` still means "no tracker configured for this workspace" and nothing
+    // else — a configured root that cannot be read yields real capabilities plus
+    // an error from `tasks_list`. The board treats the two differently.
     match provider_for(&ws) {
-        Ok(p) => Ok(Some(p.capabilities())),
+        Ok(p) => Ok(Some(BoardCapabilities {
+            caps: p.capabilities(),
+            board: p.board().clone(),
+            board_error: p.board_error().map(str::to_string),
+        })),
         Err(_) => Ok(None),
     }
 }
@@ -375,7 +397,10 @@ pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::Has
         let n = match p.list(&ws.name) {
             Ok(cards) => cards
                 .iter()
-                .filter(|c| matches!(c.status, crate::tasks::model::TaskStatus::Open))
+                // "Open" is "not closed": which steps count as closed is
+                // board.json's business, and a board with `backlog`/`todo`/
+                // `doing` has three of them.
+                .filter(|c| !p.board().is_terminal(&c.status))
                 .count(),
             Err(_) => continue,
         };
@@ -1063,11 +1088,27 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_board_file_yields_the_default_steps_and_an_error_the_board_can_show() {
+        // Both halves matter: the board has to draw something, and the person has
+        // to be told they are not looking at the workflow they wrote.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = ws(Some(tracker(TrackerRoot::Path { path: dir.path().to_string_lossy().to_string() })));
+        let (root, _) = resolve_root(&ws).expect("configured");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(crate::tasks::board::BOARD_FILE), "{ \"steps\": [ oops").unwrap();
+
+        let p = provider_for(&ws).expect("configured");
+        assert_eq!(p.board().step_ids(), BoardConfig::default_config().step_ids());
+        let err = p.board_error().expect("the reason has to reach the board");
+        assert!(err.contains(crate::tasks::board::BOARD_FILE), "{err}");
+    }
+
+    #[test]
     fn task_draft_input_deserializes_from_exactly_what_the_frontend_sends() {
         let json = r#"{"title":"Fix the thing","kind":"bug","body":"details here"}"#;
         let draft: TaskDraftInput = serde_json::from_str(json).expect("must deserialize");
         assert_eq!(draft.title, "Fix the thing");
-        assert!(matches!(draft.kind, crate::tasks::model::TaskKind::Bug));
+        assert_eq!(draft.kind.as_str(), "bug");
         assert_eq!(draft.body, "details here");
     }
 

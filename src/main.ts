@@ -141,7 +141,7 @@ async function captureTask() {
     await alertModal("No task tracker is configured for this workspace. Set one up in its settings (✎).");
     return;
   }
-  const draft = await taskForm();
+  const draft = await taskForm(caps.board);
   if (!draft) return;
   try {
     await createTask(ws.id, draft);
@@ -164,7 +164,14 @@ async function launchFromTask(t: Task) {
       `Was the workspace renamed? The launch was cancelled rather than start work in the wrong directory.`);
     return;
   }
-  await deck.launchFromTask(target, t, taskPrompt(t));
+  // The *target* workspace's configuration, not the active board's: on a shared
+  // root the card may belong to another project with another board.json, and the
+  // kind's label comes from whichever one owns the card.
+  const caps = await taskCapabilities(target.id).catch(() => null);
+  // No tracker configured there: the kind's own id is the best label available,
+  // which is what an empty configuration makes `kindLabel` fall back to.
+  const cfg = caps?.board ?? { v: 1, steps: [], kinds: [] };
+  await deck.launchFromTask(target, t, taskPrompt(t, cfg));
   // Both "launched" and "focused" leave a session worth looking at — staying on
   // the board would look like the button did nothing.
   setView(false);
