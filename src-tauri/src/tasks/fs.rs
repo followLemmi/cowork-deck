@@ -54,10 +54,12 @@ impl FsTaskProvider {
     /// unreadable entry is skipped, never fatal: aborting the scan would hide
     /// every card that sorts after the bad one.
     ///
-    /// `pub(crate)` because the migration reads an old root's cards unfiltered,
-    /// which `list` cannot supply: it filters by project before returning, and
-    /// the cards it throws away are exactly the ones the banner has to count.
-    pub(crate) fn scan(&self) -> Result<Vec<Task>, TaskError> {
+    /// Public because the migration reads an old root's cards unfiltered, which
+    /// `list` cannot supply: it filters by project before returning, and the
+    /// cards it throws away are exactly the ones the banner has to count.
+    /// `pub(crate)` would not reach the caller — `tasks_cmd` is part of the
+    /// binary crate, which links this one through `use cowork_deck::tasks`.
+    pub fn scan(&self) -> Result<Vec<Task>, TaskError> {
         self.ensure_root()?;
         let entries = std::fs::read_dir(&self.root).map_err(|e| TaskError::Io(e.to_string()))?;
         let mut cards: Vec<Task> = Vec::new();

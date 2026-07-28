@@ -7,6 +7,7 @@ use crate::model::{
 };
 use crate::tasks::frontmatter::slugify;
 use crate::tasks::fs::{FsTaskProvider, RootCreation};
+use crate::tasks::migrate::{apply, plan, MigrationPlan, MigrationReport};
 use crate::tasks::model::{Task, TaskDraft, TaskKind, TaskOrigin};
 use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
 use serde::Deserialize;
@@ -286,6 +287,147 @@ struct TasksChanged {
     workspace_id: String,
 }
 
+/// What the board needs to describe a pending move.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationOffer {
+    /// Both paths in full: the person picked them and needs to recognise them.
+    pub from: String,
+    pub to: String,
+    pub moving: usize,
+    pub leaving_foreign: usize,
+    pub leaving_damaged: usize,
+    /// Whether `project:` inside the moved cards will be rewritten, which is
+    /// true exactly when the workspace has been renamed since the cards were
+    /// written.
+    pub renaming_project: bool,
+}
+
+/// Read the old root and describe what a move would do, or `None` when there is
+/// nothing to offer.
+///
+/// `None` covers three different situations, and only one of them means the
+/// pointer can be forgotten — see `clear_previous_location`'s caller.
+pub fn offer_for(ws: &Workspace) -> Result<Option<(MigrationOffer, MigrationPlan)>, String> {
+    let Some(previous) = ws.tracker.as_ref().and_then(|c| c.previous_location.clone()) else {
+        return Ok(None);
+    };
+    let Some((to, _)) = resolve_root(ws) else { return Ok(None) };
+    let from = PathBuf::from(&previous.root);
+
+    // A missing old root is an unmounted volume as often as a deleted folder,
+    // so it is not an error and not a resolved migration either: no offer now,
+    // and the caller leaves the pointer alone so the banner returns with the
+    // volume.
+    if !from.is_dir() {
+        return Ok(None);
+    }
+
+    // `Never`: reading the old root must not create it, least of all when it is
+    // a mount point that happens to be empty right now.
+    let old = FsTaskProvider::new(from.clone(), RootCreation::Never);
+    let cards = old.scan().map_err(|e| e.to_string())?;
+    let p = plan(&cards, &previous.project, previous.was_project_root);
+    if p.moves.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some((
+        MigrationOffer {
+            from: previous.root.clone(),
+            to: to.to_string_lossy().to_string(),
+            moving: p.moves.len(),
+            leaving_foreign: p.left_foreign,
+            leaving_damaged: p.left_damaged,
+            renaming_project: previous.project != ws.name,
+        },
+        p,
+    )))
+}
+
+/// Forget where the cards were. Stamps the version too, or the next read would
+/// re-seed a version 1 config and the banner would come back.
+fn clear_previous_location(state: &State<AppState>, workspace_id: &str) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    let mut all = store.workspaces();
+    let Some(w) = all.iter_mut().find(|w| w.id == workspace_id) else {
+        return Ok(());
+    };
+    if let Some(cfg) = w.tracker.as_mut() {
+        cfg.previous_location = None;
+        cfg.version = TRACKER_CONFIG_VERSION;
+    }
+    store.save_workspaces(&all).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn tasks_migration_status(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<Option<MigrationOffer>, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    let Some((offer, _)) = offer_for(&ws)? else {
+        // Nothing of ours is at the old root any more, so the pointer has done
+        // its job — but only when the folder is actually readable. A missing
+        // root keeps its pointer: see `offer_for`.
+        let has_pointer = ws
+            .tracker
+            .as_ref()
+            .and_then(|c| c.previous_location.as_ref())
+            .map(|p| PathBuf::from(&p.root).is_dir())
+            .unwrap_or(false);
+        if has_pointer {
+            clear_previous_location(&state, &workspace_id)?;
+        }
+        return Ok(None);
+    };
+    Ok(Some(offer))
+}
+
+#[tauri::command]
+pub fn tasks_migrate(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<MigrationReport, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    let (root, creation) = resolve_root(&ws).ok_or_else(|| "not-configured".to_string())?;
+
+    // Before planning anything: moving some cards and then discovering there is
+    // nowhere to put the rest is worse than refusing up front.
+    ensure_root_if_ours(&root, creation).map_err(|e| e.to_string())?;
+    if !root.is_dir() {
+        return Err(crate::tasks::model::TaskError::RootMissing(
+            root.to_string_lossy().to_string(),
+        )
+        .to_string());
+    }
+
+    let Some((_, p)) = offer_for(&ws)? else {
+        return Ok(MigrationReport::default());
+    };
+    let previous_project = ws
+        .tracker
+        .as_ref()
+        .and_then(|c| c.previous_location.as_ref())
+        .map(|prev| prev.project.clone())
+        .unwrap_or_default();
+    let rename = (previous_project != ws.name).then_some(ws.name.as_str());
+
+    let report = apply(&p, &root, rename);
+    if report.is_complete() {
+        clear_previous_location(&state, &workspace_id)?;
+    }
+    Ok(report)
+}
+
+#[tauri::command]
+pub fn tasks_migration_dismiss(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    clear_previous_location(&state, &workspace_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +633,96 @@ mod tests {
         // true while every persisting path leaves v at the current value.
         let out = with_previous_location(None, ws(Some(v1_external("/home/u/vault/Tasks"))));
         assert_eq!(out.tracker.unwrap().version, TRACKER_CONFIG_VERSION);
+    }
+
+    /// A workspace whose external root is `dir`, with `previous_location`
+    /// pointing at `old` as a folder the cards were never moved out of.
+    fn ws_with_previous(dir: &std::path::Path, name: &str, old: &std::path::Path) -> Workspace {
+        Workspace {
+            id: "w1".into(),
+            name: name.into(),
+            path: "/home/u/proj".into(),
+            color: "#61afef".into(),
+            tracker: Some(TrackerConfig {
+                providers: vec![TrackerProvider::Fs {
+                    root: TrackerRoot::Path { path: dir.to_string_lossy().to_string() },
+                }],
+                previous_location: Some(PreviousLocation {
+                    root: old.to_string_lossy().to_string(),
+                    project: "cowork-deck".into(),
+                    was_project_root: false,
+                }),
+                version: TRACKER_CONFIG_VERSION,
+            }),
+        }
+    }
+
+    fn write_card(dir: &std::path::Path, id: &str, project: &str) {
+        std::fs::write(
+            dir.join(format!("{id}-t.md")),
+            format!("---\nid: {id}\ntitle: t\nkind: task\nstatus: open\nproject: {project}\ncreated: c\norigin: human\n---\nbody\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn offer_counts_what_moves_and_what_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("Tasks");
+        std::fs::create_dir_all(&old).unwrap();
+        write_card(&old, "01A", "cowork-deck");
+        write_card(&old, "01B", "cowork-deck");
+        write_card(&old, "01C", "other-project");
+
+        let ws = ws_with_previous(dir.path(), "cowork-deck", &old);
+        let (offer, _) = offer_for(&ws).expect("readable").expect("an offer");
+
+        assert_eq!(offer.moving, 2);
+        assert_eq!(offer.leaving_foreign, 1);
+        assert_eq!(offer.from, old.to_string_lossy());
+        assert_eq!(offer.to, dir.path().join("cowork-deck").to_string_lossy());
+        assert!(!offer.renaming_project);
+    }
+
+    #[test]
+    fn offer_says_project_gets_rewritten_after_a_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("cowork-deck");
+        std::fs::create_dir_all(&old).unwrap();
+        write_card(&old, "01A", "cowork-deck");
+
+        // previous_location.project is "cowork-deck", the workspace is now "deck".
+        let ws = ws_with_previous(dir.path(), "deck", &old);
+        let (offer, _) = offer_for(&ws).expect("readable").expect("an offer");
+
+        assert!(offer.renaming_project, "cards still name the old project");
+        assert_eq!(offer.moving, 1);
+    }
+
+    #[test]
+    fn there_is_no_offer_when_the_old_root_holds_nothing_of_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("Tasks");
+        std::fs::create_dir_all(&old).unwrap();
+        write_card(&old, "01C", "other-project");
+
+        let ws = ws_with_previous(dir.path(), "cowork-deck", &old);
+        assert!(offer_for(&ws).expect("readable").is_none());
+    }
+
+    #[test]
+    fn a_missing_old_root_yields_no_offer_but_is_not_an_error() {
+        // An unmounted volume, not a resolved migration. The caller must not
+        // clear the pointer on this — the folder can come back.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = ws_with_previous(dir.path(), "cowork-deck", &dir.path().join("gone"));
+        assert!(offer_for(&ws).expect("not an error").is_none());
+    }
+
+    #[test]
+    fn there_is_no_offer_without_a_previous_location() {
+        let ws = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        assert!(offer_for(&ws).expect("readable").is_none());
     }
 
     #[test]

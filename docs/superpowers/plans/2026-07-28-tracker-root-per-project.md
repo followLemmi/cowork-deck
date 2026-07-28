@@ -17,7 +17,7 @@
 - **One failing handle does not fail the tick.** Every added IPC call in `refreshBoard` gets its own `try`/`catch`, matching the existing `taskCapabilities`/`listTasks` treatment.
 - **`TRACKER_CONFIG_VERSION = 2`.** Every code path that persists a `TrackerConfig` stamps this value, or a dismissed banner comes back on the next read.
 
-## Three corrections to the spec
+## Four corrections to the spec
 
 Both were found while writing this plan. Implement the plan's version.
 
@@ -25,7 +25,9 @@ Both were found while writing this plan. Implement the plan's version.
 
 2. **The old root in `moving_back_to_where_the_cards_are_clears_the_pointer` is `/home/u/vault/tasks`, lowercase.** Found while executing Task 3: the test as first written seeded the pointer at `/home/u/vault/Tasks` and then renamed the workspace to `Tasks`, expecting the two to meet. They cannot — correction 1 makes the subfolder `slugify(&ws.name)`, and `slugify` lowercases, so the effective root is `/home/u/vault/tasks`. The implementation was right and the expectation was wrong, which is what the corrected spelling records.
 
-3. **`previousLocation` is cleared from `apply`'s report, not from a re-plan.** The spec said to re-plan the old root and clear when `moves` is empty. That never clears when a card was skipped because the destination already had a file of that name: the card is still at the old root, so it is still in the plan, and the banner would nag forever. `apply` therefore classifies skips, and the caller clears when every skip is `AlreadyAtDestination`.
+3. **`FsTaskProvider::scan` becomes `pub`, not `pub(crate)`.** Found while executing Task 6: `tasks/fs.rs` is part of the `cowork_deck` **library** crate, while `tasks_cmd.rs` is a module of the **binary** crate, which reaches the tasks tree through `use cowork_deck::tasks` in `main.rs`. `pub(crate)` therefore does not reach the caller, and the build fails with `method scan is private`. Widening the otherwise deliberately minimal library surface is the cost of `offer_for` needing unfiltered cards.
+
+4. **`previousLocation` is cleared from `apply`'s report, not from a re-plan.** The spec said to re-plan the old root and clear when `moves` is empty. That never clears when a card was skipped because the destination already had a file of that name: the card is still at the old root, so it is still in the plan, and the banner would nag forever. `apply` therefore classifies skips, and the caller clears when every skip is `AlreadyAtDestination`.
 
 ---
 
