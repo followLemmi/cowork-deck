@@ -115,7 +115,13 @@ pub fn root_preview(workspace_name: &str, picked_path: &str) -> TrackerRootPrevi
     TrackerRootPreview { root: root_str, creating, base_missing: false }
 }
 
-#[tauri::command]
+/// `async` because it stats the filesystem on every keystroke in the form, and
+/// the picked path can be an unmounted network volume where a single `is_dir`
+/// blocks for seconds. On the main thread that would freeze the modal mid-typing;
+/// on the thread pool a slow answer is only a late one, and the frontend's token
+/// guard already discards replies that arrive out of order. Safe to move off the
+/// main thread because the body touches no `AppState` and returns owned data.
+#[tauri::command(async)]
 pub fn tracker_root_preview(workspace_name: String, picked_path: String) -> TrackerRootPreview {
     root_preview(&workspace_name, &picked_path)
 }
