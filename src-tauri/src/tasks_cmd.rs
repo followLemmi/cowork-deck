@@ -30,6 +30,35 @@ pub struct TaskDraftInput {
     pub body: String,
 }
 
+/// The one folder cowork-deck creates inside a picked tracker path. Every
+/// project's cards live in a subfolder of it, so pointing three workspaces at
+/// one vault grows one directory there instead of three interleaved with
+/// whatever the person keeps in it.
+pub const TRACKER_CONTAINER: &str = "cowork-deck-tasks";
+
+/// Where the cards go inside the folder the human picked.
+///
+/// Recognition is name-based on purpose. `resolve_root` runs on every list,
+/// count and watcher sync, and asking the filesystem "does this folder look
+/// like one of ours" would make all of them depend on a directory read that can
+/// fail. A folder the person happens to have named `cowork-deck-tasks` is
+/// treated as ours, which is the answer we would want anyway.
+fn append_layout(picked: &std::path::Path, slug: &str) -> PathBuf {
+    let name = picked.file_name().and_then(|s| s.to_str());
+    // Already the project folder inside our container: this IS the root.
+    if name == Some(slug)
+        && picked.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str())
+            == Some(TRACKER_CONTAINER)
+    {
+        return picked.to_path_buf();
+    }
+    // Already the container: only the project folder is missing.
+    if name == Some(TRACKER_CONTAINER) {
+        return picked.join(slug);
+    }
+    picked.join(TRACKER_CONTAINER).join(slug)
+}
+
 /// The provider root for a workspace, plus how much of it we may create.
 /// `None` means "no tracker configured" — a legal, non-error state.
 pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
@@ -46,7 +75,7 @@ pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
             // and `join("../..")` would put the cards outside the picked
             // folder entirely. `slugify` yields exactly one component and never
             // returns empty.
-            let root = base.join(slugify(&ws.name));
+            let root = append_layout(&base, &slugify(&ws.name));
             Some((root, RootCreation::InsideExisting { base }))
         }
     }
@@ -455,15 +484,53 @@ mod tests {
     }
 
     #[test]
-    fn an_external_root_gets_a_per_project_subfolder() {
-        let w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault/Tasks".into() })));
+    fn an_external_root_gets_a_container_and_a_project_folder() {
+        let w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
         let (root, creation) = resolve_root(&w).expect("configured");
-        assert_eq!(root, std::path::Path::new("/home/u/vault/Tasks/cowork-deck"));
-        // The base is the folder the human picked, whatever the layout adds
-        // below it. That is the whole point of the variant.
+        // One folder of ours in the person's space, not one per project.
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/cowork-deck"));
+        assert_eq!(creation, RootCreation::InsideExisting { base: "/home/u/vault".into() });
+    }
+
+    #[test]
+    fn picking_the_container_itself_does_not_nest_a_second_one() {
+        // The case that matters in practice: after the first migration the
+        // container exists, so it is what the picker shows and what a person
+        // naturally chooses. A rule that only appended would hand them
+        // cowork-deck-tasks/cowork-deck-tasks/cowork-deck.
+        let w = ws(Some(tracker(TrackerRoot::Path {
+            path: "/home/u/vault/cowork-deck-tasks".into(),
+        })));
+        let (root, creation) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/cowork-deck"));
+        // The base is still the picked folder, so only the project level is ours.
         assert_eq!(
             creation,
-            RootCreation::InsideExisting { base: "/home/u/vault/Tasks".into() },
+            RootCreation::InsideExisting { base: "/home/u/vault/cowork-deck-tasks".into() },
+        );
+    }
+
+    #[test]
+    fn picking_the_project_folder_itself_resolves_to_it_unchanged() {
+        // Re-pointing the tracker at the folder the board already reads must be
+        // a no-op, not another doubling.
+        let w = ws(Some(tracker(TrackerRoot::Path {
+            path: "/home/u/vault/cowork-deck-tasks/cowork-deck".into(),
+        })));
+        let (root, _) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/cowork-deck"));
+    }
+
+    #[test]
+    fn a_folder_merely_sharing_the_project_name_is_an_ordinary_pick() {
+        // Only `<container>/<slug>` counts as already-resolved. Without the
+        // parent check, any folder named after the project would be mistaken
+        // for one of ours and never get a container.
+        let w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/cowork-deck".into() })));
+        let (root, _) = resolve_root(&w).expect("configured");
+        assert_eq!(
+            root,
+            std::path::Path::new("/home/u/cowork-deck/cowork-deck-tasks/cowork-deck"),
         );
     }
 
@@ -474,11 +541,11 @@ mod tests {
         let mut w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
         w.name = "../../etc".into();
         let (root, _) = resolve_root(&w).expect("configured");
-        assert_eq!(root, std::path::Path::new("/home/u/vault/etc"));
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/etc"));
 
         w.name = "My Project".into();
         let (root, _) = resolve_root(&w).expect("configured");
-        assert_eq!(root, std::path::Path::new("/home/u/vault/my-project"));
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/my-project"));
     }
 
     #[test]
@@ -592,7 +659,7 @@ mod tests {
         let out = with_previous_location(Some(&old), new);
         let prev = out.tracker.unwrap().previous_location.expect("recorded");
         // The folder is named for the project, so a rename moves the root too.
-        assert_eq!(prev.root, "/home/u/vault/cowork-deck");
+        assert_eq!(prev.root, "/home/u/vault/cowork-deck-tasks/cowork-deck");
         assert_eq!(prev.project, "cowork-deck");
     }
 
@@ -627,12 +694,15 @@ mod tests {
 
     #[test]
     fn moving_back_to_where_the_cards_are_clears_the_pointer() {
-        // The subfolder is the *slug* of the workspace name, so the old root has
-        // to be spelled the way `slugify` spells it: a workspace named "Tasks"
-        // resolves to the folder `tasks`.
-        let old = seed_previous_location(ws(Some(v1_external("/home/u/vault/tasks"))));
-        // Picking a folder whose project subfolder IS the old location.
-        let mut new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        // The cards are at /home/u/vault/cowork-deck-tasks/tasks, and pointing
+        // the tracker straight at that folder resolves to it unchanged — the
+        // third recognition case. There is nothing to migrate.
+        let old = seed_previous_location(ws(Some(v1_external(
+            "/home/u/vault/cowork-deck-tasks/tasks",
+        ))));
+        let mut new = ws(Some(tracker(TrackerRoot::Path {
+            path: "/home/u/vault/cowork-deck-tasks/tasks".into(),
+        })));
         new.name = "Tasks".into();
         let out = with_previous_location(Some(&old), new);
         assert!(out.tracker.unwrap().previous_location.is_none());
@@ -691,7 +761,10 @@ mod tests {
         assert_eq!(offer.moving, 2);
         assert_eq!(offer.leaving_foreign, 1);
         assert_eq!(offer.from, old.to_string_lossy());
-        assert_eq!(offer.to, dir.path().join("cowork-deck").to_string_lossy());
+        assert_eq!(
+            offer.to,
+            dir.path().join("cowork-deck-tasks").join("cowork-deck").to_string_lossy(),
+        );
         assert!(!offer.renaming_project);
     }
 
