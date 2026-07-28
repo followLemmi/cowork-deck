@@ -36,32 +36,52 @@ pub struct TaskDraftInput {
 /// whatever the person keeps in it.
 pub const TRACKER_CONTAINER: &str = "cowork-deck-tasks";
 
+/// Where the cards go inside the folder the human picked, and the folder that
+/// has to exist for the rest of it to be ours.
+struct RootLayout {
+    /// The effective root: where the cards live.
+    root: PathBuf,
+    /// An ancestor of `root` that must already exist. Everything below it is
+    /// ours to create, so it is what a typo'd path is caught by.
+    base: PathBuf,
+}
+
 /// Where the cards go inside the folder the human picked.
+///
+/// Returns the base as well as the root because they are one decision: which
+/// recognition case applies fixes both, and the root is only *below* the picked
+/// folder in the ordinary case. Whenever the pick is already part of our layout
+/// the base is the container, since that is the ancestor the root actually
+/// hangs off — pairing the root with the picked folder instead made the
+/// creation of a sibling depend on a folder with no authority over it.
 ///
 /// Recognition is name-based on purpose. `resolve_root` runs on every list,
 /// count and watcher sync, and asking the filesystem "does this folder look
 /// like one of ours" would make all of them depend on a directory read that can
 /// fail. A folder the person happens to have named `cowork-deck-tasks` is
 /// treated as ours, which is the answer we would want anyway.
-fn append_layout(picked: &std::path::Path, slug: &str) -> PathBuf {
+fn append_layout(picked: &std::path::Path, slug: &str) -> RootLayout {
     // Already a project folder inside our container: the root is this project's
-    // folder beside it. Keyed on the *parent* rather than on the leaf matching
-    // the slug, because the slug follows the workspace name and the name can be
-    // renamed. Matching the leaf would resolve a renamed workspace to
-    // `<container>/<old>/<container>/<new>` — a container nested inside a
-    // project folder, the exact doubling this layout exists to prevent. It
-    // subsumes the leaf rule: when the leaf already is the slug,
-    // `parent.join(slug)` is the picked folder itself.
+    // folder beside it, and the container is the base. Keyed on the *parent*
+    // rather than on the leaf matching the slug, because the slug follows the
+    // workspace name and the name can be renamed. Matching the leaf would
+    // resolve a renamed workspace to `<container>/<old>/<container>/<new>` — a
+    // container nested inside a project folder, the exact doubling this layout
+    // exists to prevent. It subsumes the leaf rule: when the leaf already is
+    // the slug, `parent.join(slug)` is the picked folder itself.
     if let Some(parent) = picked.parent() {
         if parent.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
-            return parent.join(slug);
+            return RootLayout { root: parent.join(slug), base: parent.to_path_buf() };
         }
     }
     // Already the container: only the project folder is missing.
     if picked.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
-        return picked.join(slug);
+        return RootLayout { root: picked.join(slug), base: picked.to_path_buf() };
     }
-    picked.join(TRACKER_CONTAINER).join(slug)
+    RootLayout {
+        root: picked.join(TRACKER_CONTAINER).join(slug),
+        base: picked.to_path_buf(),
+    }
 }
 
 /// What the workspace form shows under the folder picker.
@@ -74,7 +94,9 @@ pub struct TrackerRootPreview {
     /// Single folder names, outermost first, that do not exist yet — never full
     /// paths. Empty when `base_missing`, because then nothing is created.
     pub creating: Vec<String>,
-    /// The picked folder itself is absent, so nothing will be created.
+    /// The folder the root would be created inside is absent — the picked folder
+    /// itself, or the container it already sits in — so nothing will be created.
+    /// Either way the picked folder is gone too, which is what the form says.
     pub base_missing: bool,
 }
 
@@ -86,22 +108,22 @@ pub struct TrackerRootPreview {
 /// they were written and disagree after the next change to either — and one of
 /// them would be in a language that cannot call the other.
 pub fn root_preview(workspace_name: &str, picked_path: &str) -> TrackerRootPreview {
-    let base = PathBuf::from(picked_path);
-    let root = append_layout(&base, &slugify(workspace_name));
-    let root_str = root.to_string_lossy().to_string();
+    let layout = append_layout(std::path::Path::new(picked_path), &slugify(workspace_name));
+    let root_str = layout.root.to_string_lossy().to_string();
 
-    if !base.is_dir() {
+    if !layout.base.is_dir() {
         return TrackerRootPreview { root: root_str, creating: Vec::new(), base_missing: true };
     }
 
     // Every absent folder on the way to the root, innermost first while walking
-    // up and reversed at the end. Not a walk down from the base: recognising the
-    // container by its parent means the root can be a *sibling* of the picked
-    // folder (a renamed workspace), and a downward walk would then describe
+    // up and reversed at the end. Not a walk down from the picked folder:
+    // recognising the container by its parent means the root can be a *sibling*
+    // of the pick (a renamed workspace), and a downward walk would then describe
     // nothing at all. Climbing stops at the first directory that exists, and the
-    // base exists here, so this can never promise a folder above it.
+    // base is both an ancestor of the root and known to exist here, so the walk
+    // stops at the base at the latest and never names it or anything above it.
     let mut creating = Vec::new();
-    let mut walk: &std::path::Path = &root;
+    let mut walk: &std::path::Path = &layout.root;
     while !walk.is_dir() {
         match (walk.file_name(), walk.parent()) {
             (Some(name), Some(parent)) => {
@@ -137,13 +159,15 @@ pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
             RootCreation::Always,
         )),
         TrackerProvider::Fs { root: TrackerRoot::Path { path } } => {
-            let base = PathBuf::from(path);
             // Slugified, not joined verbatim: a workspace name is free text,
             // and `join("../..")` would put the cards outside the picked
             // folder entirely. `slugify` yields exactly one component and never
             // returns empty.
-            let root = append_layout(&base, &slugify(&ws.name));
-            Some((root, RootCreation::InsideExisting { base }))
+            //
+            // The base comes from the same call as the root, so the two cannot
+            // disagree about which folder the root hangs off.
+            let layout = append_layout(std::path::Path::new(path), &slugify(&ws.name));
+            Some((layout.root, RootCreation::InsideExisting { base: layout.base }))
         }
     }
 }
@@ -617,11 +641,13 @@ mod tests {
         w.name = "board".into();
         let (root, creation) = resolve_root(&w).expect("configured");
         assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/board"));
-        // The base is still what the person picked, so the sibling is ours to
-        // create and a vanished container still surfaces as RootMissing.
+        // The base is the container, not the picked folder: the root is a sibling
+        // of the pick, so the pick has no authority over it, and gating creation
+        // on it would refuse a path inside a container that is entirely ours. A
+        // vanished *container* still surfaces as RootMissing.
         assert_eq!(
             creation,
-            RootCreation::InsideExisting { base: "/home/u/vault/cowork-deck-tasks/deck".into() },
+            RootCreation::InsideExisting { base: "/home/u/vault/cowork-deck-tasks".into() },
         );
     }
 
@@ -712,6 +738,73 @@ mod tests {
             matches!(err, crate::tasks::model::TaskError::RootMissing(_)),
             "a missing base is RootMissing, got {err:?}",
         );
+    }
+
+    #[test]
+    fn a_root_inside_our_container_survives_the_loss_of_the_configured_folder() {
+        // Four ordinary steps get here: point a workspace at `<container>/deck`,
+        // rename it to "board" so the banner moves the cards to
+        // `<container>/board`, delete the emptied `<container>/deck` that `apply`
+        // leaves behind, then rename again to "chart". The path in the config now
+        // names a folder that is gone, but the root is its sibling inside a
+        // container that is entirely ours — so the base has to be the container,
+        // and the board has to open. Pairing the root with the picked folder made
+        // this `RootMissing` on a path we had every right to create.
+        let dir = tempfile::tempdir().unwrap();
+        let container = dir.path().join(TRACKER_CONTAINER);
+        std::fs::create_dir(&container).unwrap();
+        let configured = container.join("deck");
+        assert!(!configured.exists(), "the folder the config still names is gone");
+
+        let mut w = ws(Some(tracker(TrackerRoot::Path {
+            path: configured.to_string_lossy().to_string(),
+        })));
+        w.name = "chart".into();
+        let (root, creation) = resolve_root(&w).expect("configured");
+        assert_eq!(root, container.join("chart"));
+        assert_eq!(creation, RootCreation::InsideExisting { base: container.clone() });
+
+        // The loud half, because `RootMissing` is what the board showed: reading
+        // this root creates it and yields an empty list.
+        let p = FsTaskProvider::new(root.clone(), creation);
+        let cards = p.scan().expect("a sibling inside our own container is readable");
+        assert!(cards.is_empty());
+        assert!(root.is_dir(), "and it is ours to bring into existence");
+    }
+
+    #[test]
+    fn a_typo_above_the_container_creates_nothing_even_though_the_base_moved_up() {
+        // Making the base the container moved it *up* the path in the recognition
+        // cases, so the typo guarantee has to be re-earned there. A mistyped vault
+        // carrying a correct-looking layout below it now yields the container as
+        // the base — and that container is inside the typo, so it is missing too
+        // and nothing is created. Same for a mistyped container name, which is not
+        // recognised at all and leaves the base at the picked folder.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        let typo = dir.path().join("vualt");
+
+        for picked in [
+            // The vault is mistyped and the layout below it looks right, so the
+            // base is the container named inside the typo — absent with it.
+            typo.join(TRACKER_CONTAINER).join("deck"),
+            // The vault is real but the container is mistyped, so nothing is
+            // recognised and the base stays at the picked folder.
+            vault.join("cowork-deck-taksk").join("deck"),
+        ] {
+            let w = ws(Some(tracker(TrackerRoot::Path {
+                path: picked.to_string_lossy().to_string(),
+            })));
+            let (root, creation) = resolve_root(&w).expect("configured");
+            assert!(!creation.may_create(), "a typo'd path is nobody's to create: {picked:?}");
+            ensure_root_if_ours(&root, &creation).unwrap();
+            assert!(!root.exists(), "nothing created for {picked:?}");
+            assert!(!picked.exists(), "nor the picked folder: {picked:?}");
+            assert!(!typo.exists(), "nor the mistyped vault");
+            // Not even one level inside the vault that does exist.
+            assert_eq!(std::fs::read_dir(&vault).unwrap().count(), 0);
+        }
     }
 
     fn v1_external(path: &str) -> TrackerConfig {
@@ -1067,8 +1160,9 @@ mod tests {
     #[test]
     fn preview_promises_nothing_when_the_picked_folder_is_already_the_project_root() {
         // The third recognition case: the picked folder is already
-        // `<container>/<slug>`, i.e. already the effective root, so `root ==
-        // base` and the component walk between them must come out empty.
+        // `<container>/<slug>`, i.e. already the effective root. The base is the
+        // container above it, so the climb has one level to consider and must
+        // find it already there.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("cowork-deck-tasks").join("cowork-deck");
         std::fs::create_dir_all(&root).unwrap();

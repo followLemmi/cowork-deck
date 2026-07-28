@@ -4,7 +4,7 @@
 
 **Goal:** An external tracker path resolves to `<picked>/cowork-deck-tasks/<project-slug>` so the app grows one recognisable folder in the person's space instead of one per project, and the workspace form names the folders it is about to create before the save rather than after.
 
-**Architecture:** `resolve_root` in `src-tauri/src/tasks_cmd.rs` stays the single choke point and gains a pure `append_layout` implementing three recognition cases. `RootCreation::LeafInsideExistingParent` becomes `InsideExisting { base }`, carrying the folder the human picked so "the base must exist, everything below it is ours" is one rule for zero, one and two levels. `TRACKER_CONFIG_VERSION` goes to 3 and `seed_previous_location` decides per version where the cards physically are, reusing the migration banner built in the previous plan. A `tracker_root_preview` command shares `append_layout` and `slugify` with `resolve_root` so the form never reimplements either.
+**Architecture:** `resolve_root` in `src-tauri/src/tasks_cmd.rs` stays the single choke point and gains a pure `append_layout` implementing three recognition cases. `RootCreation::LeafInsideExistingParent` becomes `InsideExisting { base }`, carrying an ancestor of the root — the picked folder for an ordinary pick, the container when the pick is already inside our layout — so "the base must exist, everything below it is ours" is one rule for zero, one and two levels. `TRACKER_CONFIG_VERSION` goes to 3 and `seed_previous_location` decides per version where the cards physically are, reusing the migration banner built in the previous plan. A `tracker_root_preview` command shares `append_layout` and `slugify` with `resolve_root` so the form never reimplements either.
 
 **Tech Stack:** Rust + Tauri 2 backend (`serde`, `tempfile` for tests), TypeScript frontend with Vitest + jsdom. No new dependencies.
 
@@ -12,7 +12,7 @@
 
 - **English only.** Every string, comment, test name and doc is English. See `CLAUDE.md`; the only Cyrillic exceptions are the existing fixtures in `placeholders.ts`, `commands.ts`, `frontmatter.rs::slugify_keeps_cyrillic_and_strips_punctuation` and the filename assertion in `fs.rs`.
 - **The container name is fixed:** `TRACKER_CONTAINER = "cowork-deck-tasks"`, declared once in `tasks_cmd.rs` and never spelled as a literal anywhere else outside test assertions.
-- **A user-supplied path is never created silently.** The base — the folder the human picked — must already exist. A typo must surface as `TaskError::RootMissing`, never as a new tree, at any depth.
+- **A user-supplied path is never created silently.** The base — the folder the human picked, or the container they picked inside of — must already exist. A typo must surface as `TaskError::RootMissing`, never as a new tree, at any depth.
 - **Recognition is name-based, never content-based.** `resolve_root` runs on every list, count and watcher sync; it must not depend on a directory read that can fail.
 - **The layout lives in exactly one function.** `append_layout` is the only place that knows about the container, and `tracker_root_preview` calls it rather than restating it.
 - **`TRACKER_CONFIG_VERSION = 3`.** Every code path that persists a `TrackerConfig` stamps this value, or a dismissed banner comes back on the next read.
@@ -106,6 +106,16 @@ tells a screen reader to pronounce an English interface as Russian."
 ---
 
 ## Task 2: A creation policy that carries its base
+
+> **Amended after the whole-epic review (#79).** The base is an **ancestor of the
+> root**, which is the folder the human picked only for an ordinary pick. Once
+> Task 3 recognises the container by the pick's *parent*, the root is a sibling of
+> the pick, and pairing it with the pick gated creation on a folder with no
+> authority over the root. `append_layout` returns the base with the root, and it
+> is the container in both recognition cases. Task 2 as written is unaffected —
+> its layout is `<picked>/<slug>`, where the base really is the pick — but the
+> wording below states the boundary in general terms, so read "an ancestor of the
+> root" wherever it says "the folder the human picked".
 
 `LeafInsideExistingParent` means "create exactly one level, and only if the parent exists". The container layout needs two, and the variant that replaces it names the boundary explicitly instead of encoding a depth.
 
@@ -315,10 +325,11 @@ LeafInsideExistingParent encoded a depth: exactly one level, parent must
 exist. The container layout needs two, and a variant named after a depth
 would have to be renamed or duplicated for every layout change.
 
-InsideExisting { base } names the boundary instead. The base is the folder the
-human picked, everything below it is ours, and the typo guarantee is one
-condition covering zero, one and two levels. create_dir_all below the base is
-safe exactly because the base was checked first.
+InsideExisting { base } names the boundary instead. The base is an ancestor of
+the root that must already exist — here the folder the human picked — everything
+below it is ours, and the typo guarantee is one condition covering zero, one and
+two levels. create_dir_all below the base is safe exactly because the base was
+checked first.
 
 The PathBuf costs the enum its Copy derive, which is why four call sites now
 pass a reference. Behaviour is unchanged: the layout is still <picked>/<slug>."
@@ -334,6 +345,14 @@ pass a reference. Behaviour is unchanged: the layout is still <picked>/<slug>."
 > `<container>/deck` to "board" resolved to
 > `<container>/deck/cowork-deck-tasks/board`, nesting a container inside a
 > project folder. The code block in Step 3 and the tests below are as shipped.
+>
+> **Amended again (#79).** Parent recognition makes the root a **sibling** of the
+> pick, so `append_layout` now returns the base with the root and the base is the
+> **container** in both recognition cases. Pairing the sibling root with the
+> picked folder left creation gated on a directory with no authority over it: a
+> workspace configured at `<c>/deck`, renamed so its cards moved to `<c>/board`,
+> whose emptied `<c>/deck` was then deleted, died with `RootMissing` on the next
+> rename. The blocks below are as shipped after that fix.
 
 **Files:**
 - Modify: `src-tauri/src/tasks_cmd.rs:35-57` (`resolve_root`, plus the new constant and helper above it)
@@ -343,7 +362,7 @@ pass a reference. Behaviour is unchanged: the layout is still <picked>/<slug>."
 - Consumes: `RootCreation::InsideExisting` (Task 2); `slugify` from `crate::tasks::frontmatter`.
 - Produces:
   - `pub const TRACKER_CONTAINER: &str = "cowork-deck-tasks";`
-  - `fn append_layout(picked: &Path, slug: &str) -> PathBuf` — private; `resolve_root` and `root_preview` (Task 5) are its only callers.
+  - `fn append_layout(picked: &Path, slug: &str) -> RootLayout` — private, returning the root together with the base that must exist; `resolve_root` and `root_preview` (Task 5) are its only callers.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -412,9 +431,12 @@ In `src-tauri/src/tasks_cmd.rs`, replace `an_external_root_gets_a_per_project_su
         w.name = "board".into();
         let (root, creation) = resolve_root(&w).expect("configured");
         assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/board"));
+        // The base is the container, not the picked folder: the root is a sibling
+        // of the pick, so gating creation on the pick would refuse a path inside
+        // a container that is entirely ours.
         assert_eq!(
             creation,
-            RootCreation::InsideExisting { base: "/home/u/vault/cowork-deck-tasks/deck".into() },
+            RootCreation::InsideExisting { base: "/home/u/vault/cowork-deck-tasks".into() },
         );
     }
 ```
@@ -453,32 +475,51 @@ In `src-tauri/src/tasks_cmd.rs`, immediately above `resolve_root`:
 /// whatever the person keeps in it.
 pub const TRACKER_CONTAINER: &str = "cowork-deck-tasks";
 
+/// Where the cards go inside the folder the human picked, and the folder that
+/// has to exist for the rest of it to be ours.
+struct RootLayout {
+    /// The effective root: where the cards live.
+    root: PathBuf,
+    /// An ancestor of `root` that must already exist. Everything below it is
+    /// ours to create, so it is what a typo'd path is caught by.
+    base: PathBuf,
+}
+
 /// Where the cards go inside the folder the human picked.
+///
+/// Returns the base as well as the root because they are one decision: which
+/// recognition case applies fixes both, and the root is only *below* the picked
+/// folder in the ordinary case. Whenever the pick is already part of our layout
+/// the base is the container, since that is the ancestor the root actually
+/// hangs off.
 ///
 /// Recognition is name-based on purpose. `resolve_root` runs on every list,
 /// count and watcher sync, and asking the filesystem "does this folder look
 /// like one of ours" would make all of them depend on a directory read that can
 /// fail. A folder the person happens to have named `cowork-deck-tasks` is
 /// treated as ours, which is the answer we would want anyway.
-fn append_layout(picked: &std::path::Path, slug: &str) -> PathBuf {
+fn append_layout(picked: &std::path::Path, slug: &str) -> RootLayout {
     // Already a project folder inside our container: the root is this project's
-    // folder beside it. Keyed on the *parent* rather than on the leaf matching
-    // the slug, because the slug follows the workspace name and the name can be
-    // renamed. Matching the leaf would resolve a renamed workspace to
-    // `<container>/<old>/<container>/<new>` — a container nested inside a
-    // project folder, the exact doubling this layout exists to prevent. It
-    // subsumes the leaf rule: when the leaf already is the slug,
-    // `parent.join(slug)` is the picked folder itself.
+    // folder beside it, and the container is the base. Keyed on the *parent*
+    // rather than on the leaf matching the slug, because the slug follows the
+    // workspace name and the name can be renamed. Matching the leaf would
+    // resolve a renamed workspace to `<container>/<old>/<container>/<new>` — a
+    // container nested inside a project folder, the exact doubling this layout
+    // exists to prevent. It subsumes the leaf rule: when the leaf already is
+    // the slug, `parent.join(slug)` is the picked folder itself.
     if let Some(parent) = picked.parent() {
         if parent.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
-            return parent.join(slug);
+            return RootLayout { root: parent.join(slug), base: parent.to_path_buf() };
         }
     }
     // Already the container: only the project folder is missing.
     if picked.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
-        return picked.join(slug);
+        return RootLayout { root: picked.join(slug), base: picked.to_path_buf() };
     }
-    picked.join(TRACKER_CONTAINER).join(slug)
+    RootLayout {
+        root: picked.join(TRACKER_CONTAINER).join(slug),
+        base: picked.to_path_buf(),
+    }
 }
 ```
 
@@ -491,13 +532,15 @@ Replace the path arm of `resolve_root` with:
 
 ```rust
         TrackerProvider::Fs { root: TrackerRoot::Path { path } } => {
-            let base = PathBuf::from(path);
             // Slugified, not joined verbatim: a workspace name is free text,
             // and `join("../..")` would put the cards outside the picked
             // folder entirely. `slugify` yields exactly one component and never
             // returns empty.
-            let root = append_layout(&base, &slugify(&ws.name));
-            Some((root, RootCreation::InsideExisting { base }))
+            //
+            // The base comes from the same call as the root, so the two cannot
+            // disagree about which folder the root hangs off.
+            let layout = append_layout(std::path::Path::new(path), &slugify(&ws.name));
+            Some((layout.root, RootCreation::InsideExisting { base: layout.base }))
         }
 ```
 
@@ -829,7 +872,9 @@ pub struct TrackerRootPreview {
     /// Single folder names, outermost first, that do not exist yet — never full
     /// paths. Empty when `base_missing`, because then nothing is created.
     pub creating: Vec<String>,
-    /// The picked folder itself is absent, so nothing will be created.
+    /// The folder the root would be created inside is absent — the picked folder
+    /// itself, or the container it already sits in — so nothing will be created.
+    /// Either way the picked folder is gone too, which is what the form says.
     pub base_missing: bool,
 }
 
@@ -841,26 +886,32 @@ pub struct TrackerRootPreview {
 /// they were written and disagree after the next change to either — and one of
 /// them would be in a language that cannot call the other.
 pub fn root_preview(workspace_name: &str, picked_path: &str) -> TrackerRootPreview {
-    let base = PathBuf::from(picked_path);
-    let root = append_layout(&base, &slugify(workspace_name));
-    let root_str = root.to_string_lossy().to_string();
+    let layout = append_layout(std::path::Path::new(picked_path), &slugify(workspace_name));
+    let root_str = layout.root.to_string_lossy().to_string();
 
-    if !base.is_dir() {
+    if !layout.base.is_dir() {
         return TrackerRootPreview { root: root_str, creating: Vec::new(), base_missing: true };
     }
 
-    // Every component between the base and the root, outermost first, keeping
-    // only what is absent. `root` always starts with `base`: all three
-    // recognition cases either return the base itself or join onto it.
+    // Every absent folder on the way to the root, innermost first while walking
+    // up and reversed at the end. Not a walk down from the picked folder:
+    // recognising the container by its parent means the root can be a *sibling*
+    // of the pick (a renamed workspace), and a downward walk would then describe
+    // nothing at all. Climbing stops at the first directory that exists, and the
+    // base is both an ancestor of the root and known to exist here, so the walk
+    // stops at the base at the latest and never names it or anything above it.
     let mut creating = Vec::new();
-    let mut walk = base.clone();
-    let below = root.strip_prefix(&base).unwrap_or(std::path::Path::new(""));
-    for part in below.components() {
-        walk = walk.join(part);
-        if !walk.is_dir() {
-            creating.push(part.as_os_str().to_string_lossy().to_string());
+    let mut walk: &std::path::Path = &layout.root;
+    while !walk.is_dir() {
+        match (walk.file_name(), walk.parent()) {
+            (Some(name), Some(parent)) => {
+                creating.push(name.to_string_lossy().to_string());
+                walk = parent;
+            }
+            _ => break,
         }
     }
+    creating.reverse();
     TrackerRootPreview { root: root_str, creating, base_missing: false }
 }
 

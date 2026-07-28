@@ -47,33 +47,51 @@ Out of scope:
 ## Root resolution
 
 One constant, `TRACKER_CONTAINER = "cowork-deck-tasks"`, and three cases. In all
-three the **base is the folder the human picked**, and everything below the base
-is ours to create:
+three there is a **base**: an ancestor of the root that must already exist, and
+everything below which is ours to create. For an ordinary pick the base is the
+folder the human picked. Where the pick is already part of our layout the base is
+the **container**, because that is the ancestor the root actually hangs off — the
+root is then a child of the container and not necessarily below the pick at all:
 
-| Picked | Effective root | Ours to create |
-| --- | --- | --- |
-| an ordinary folder, `/vault` | `/vault/cowork-deck-tasks/my-project` | two levels |
-| the container, `/vault/cowork-deck-tasks` | `/vault/cowork-deck-tasks/my-project` | one level |
-| a folder **inside** the container, `/vault/cowork-deck-tasks/anything` | `/vault/cowork-deck-tasks/my-project` — itself when `anything` is the slug | nothing, or the renamed sibling |
+| Picked | Effective root | Base | Ours to create |
+| --- | --- | --- | --- |
+| an ordinary folder, `/vault` | `/vault/cowork-deck-tasks/my-project` | `/vault` | two levels |
+| the container, `/vault/cowork-deck-tasks` | `/vault/cowork-deck-tasks/my-project` | `/vault/cowork-deck-tasks` | one level |
+| a folder **inside** the container, `/vault/cowork-deck-tasks/anything` | `/vault/cowork-deck-tasks/my-project` — itself when `anything` is the slug | `/vault/cowork-deck-tasks` | nothing, or the renamed sibling |
 
-Recognition is a pure function of the picked path and the workspace name:
+One function returns both, so which case applies fixes the root and the base
+together and they cannot drift apart. Recognition is a pure function of the
+picked path and the workspace name:
 
 ```rust
-fn append_layout(picked: &Path, slug: &str) -> PathBuf {
+/// The root, with the ancestor of it that must already exist.
+struct RootLayout { root: PathBuf, base: PathBuf }
+
+fn append_layout(picked: &Path, slug: &str) -> RootLayout {
     // Already a project folder inside our container: the root is this
-    // project's folder beside it.
+    // project's folder beside it, and the container is the base.
     if let Some(parent) = picked.parent() {
         if parent.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
-            return parent.join(slug);
+            return RootLayout { root: parent.join(slug), base: parent.to_path_buf() };
         }
     }
     // Already the container: only the project folder is missing.
     if picked.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
-        return picked.join(slug);
+        return RootLayout { root: picked.join(slug), base: picked.to_path_buf() };
     }
-    picked.join(TRACKER_CONTAINER).join(slug)
+    RootLayout {
+        root: picked.join(TRACKER_CONTAINER).join(slug),
+        base: picked.to_path_buf(),
+    }
 }
 ```
+
+Pairing the root of a recognition case with the *picked* folder instead would
+gate creation on a directory with no authority over the root, and four ordinary
+steps break it: configure a workspace at `<c>/deck`, rename it so the cards move
+to `<c>/board`, delete the emptied `<c>/deck` the migration leaves behind, rename
+again — and `<c>/chart` is refused as `RootMissing` because a sibling that is
+gone was standing in for the container that is not.
 
 The second case is the one that matters in practice. After the first migration
 the container exists, so the next time someone opens the picker they see
@@ -101,9 +119,10 @@ to say.
 
 One consequence for the preview: the resolved root is no longer always *below*
 the picked folder. In the rename case it is a **sibling** of it, so `creating`
-cannot be computed by walking down from the base. It is computed by climbing
-from the root to the first directory that exists, which stops at or below the
-base because the base is known to exist.
+cannot be computed by walking down from the pick. It is computed by climbing from
+the root to the first directory that exists, which stops at the base at the
+latest — the base is an ancestor of the root and known to exist — so it never
+names the base itself or anything above it.
 
 Recognition is deliberately **name-based, not content-based**. Asking the
 filesystem "does this folder look like one of ours" would make resolution depend
@@ -126,7 +145,8 @@ replaces it carries the base explicitly:
 pub enum RootCreation {
     /// The whole chain is ours: `<ws.path>/.cowork/tasks`.
     Always,
-    /// `base` must already exist; everything below it is ours to create.
+    /// `base` — an ancestor of the root, decided with it by `append_layout` —
+    /// must already exist; everything below it is ours to create.
     InsideExisting { base: PathBuf },
     /// Create nothing. The CLI receives an already-resolved COWORK_TASKS_DIR.
     Never,
@@ -137,7 +157,7 @@ pub enum RootCreation {
 `RootMissing` — nothing is created, which is the typo guarantee stated once and
 now covering any depth. Otherwise `create_dir_all(root)`, which is safe
 precisely because the base was checked: recursion can only run below a directory
-the human pointed at.
+the human pointed at or pointed inside of.
 
 The `PathBuf` costs `RootCreation` its `Copy` derive. Three call sites pass it
 by value today (`provider_for`, `tasks_watch_sync`, `start_session`) and become
@@ -236,8 +256,14 @@ and it is left alone rather than recomputed into an empty directory.
 
 ## Error handling
 
-**The picked folder is missing.** `RootMissing`, nothing created, at any depth.
-The form says so up front; the board says so on read. Save is still allowed:
+**The base is missing.** `RootMissing`, nothing created, at any depth. For an
+ordinary pick that is the picked folder, so a mistyped vault creates nothing. For
+a pick inside an existing container it is the container, so a mistyped *leaf*
+there — `<c>/dekc` — resolves to `<c>/<slug>` and is created: anything inside the
+container is our space, and the layout there is ours to say. A mistyped path
+*above* the container still fails, because the container named inside a typo does
+not exist either. The form says so up front; the board says so on read. Save is
+still allowed:
 an unmounted volume is a legitimate configuration that is temporarily absent,
 and refusing the save would make the app unusable in exactly the case the
 previous design took care to survive.
@@ -256,8 +282,10 @@ still accepted for the same reason.
 Pure `resolve_root`, no tempdir:
 
 - An ordinary folder gains both levels, and the base is the picked folder.
-- The container gains only the project level.
-- The project folder inside the container resolves to itself.
+- The container gains only the project level, and is its own base.
+- The project folder inside the container resolves to itself, with the container
+  as the base — so the root survives the loss of the folder the config names,
+  which is where the four-step rename/delete/rename sequence used to die.
 - **The `../..` escape test from the previous design must still pass.** It is
   the reason the project component is a slug, and the new cases must not have
   moved that guarantee.
@@ -266,11 +294,15 @@ Pure `resolve_root`, no tempdir:
 
 - Two levels created inside an existing base.
 - One level created when the container already exists.
-- Nothing created, and no error, when root equals base and base exists.
+- Nothing created, and no error, when the root already exists.
 - **Nothing created when the base is missing.** This test must fail if anyone
   reduces the branch to an unguarded `create_dir_all` — it is the typo
   guarantee, and it is now the only thing standing between a mistyped path and a
   two-level tree.
+- **Nothing created for a typo above the container.** The base moved *up* the
+  path in the recognition cases, so the guarantee has to be re-earned there: a
+  mistyped vault carrying a correct-looking layout below it, and a mistyped
+  container name, must both leave the disk untouched.
 
 `seed_previous_location`: a `v: 1` config seeds the picked folder; a `v: 2`
 config seeds `<picked>/<slug>`; a `v: 3` config is untouched; a `v: 2` config

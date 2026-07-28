@@ -13,10 +13,12 @@ pub enum RootCreation {
     /// has neither `.cowork` nor `tasks` yet, so a rule that required an
     /// existing parent would refuse the case it is meant to handle.
     Always,
-    /// `base` — the folder the human picked — must already exist; everything
-    /// below it is ours to create. This is what keeps a typo'd external path
-    /// surfacing as `RootMissing` instead of scattering a tree across the disk,
-    /// and it says so once for any number of levels.
+    /// `base` — the folder the human picked, or the container they picked inside
+    /// of — must already exist; everything below it is ours to create. This is
+    /// what keeps a typo'd external path surfacing as `RootMissing` instead of
+    /// scattering a tree across the disk, and it says so once for any number of
+    /// levels. `tasks_cmd::append_layout` decides the base together with the
+    /// root, so the base is always an ancestor of the root it guards.
     InsideExisting { base: PathBuf },
     /// Create nothing. `cowork_task` is handed an already-resolved
     /// `COWORK_TASKS_DIR` and must not invent folders from a stale env var.
@@ -40,8 +42,9 @@ impl RootCreation {
             RootCreation::Always => true,
             // `create_dir_all` below the base is safe precisely because the base
             // was checked: recursion can only ever run below a directory the
-            // human pointed at, however many levels the layout adds. A missing
-            // base is a typo, an unmounted volume, a deleted directory.
+            // human pointed at or pointed inside of, however many levels the
+            // layout adds. A missing base is a typo, an unmounted volume, a
+            // deleted directory.
             RootCreation::InsideExisting { base } => base.is_dir(),
             RootCreation::Never => false,
         }
