@@ -194,6 +194,60 @@ pub fn parse(text: &str) -> Result<BoardConfig, BoardConfigError> {
     Ok(cfg)
 }
 
+use crate::tasks::model::TaskError;
+use std::path::Path;
+
+/// A configuration and, when the file on disk could not be used, the reason.
+/// Both together: the board must draw either way, and the person must be told.
+pub struct Loaded {
+    pub config: BoardConfig,
+    pub error: Option<String>,
+}
+
+fn fallback(reason: String) -> Loaded {
+    Loaded { config: BoardConfig::default_config(), error: Some(reason) }
+}
+
+/// Read the project's configuration, writing the default when there is none.
+///
+/// A file that cannot be used is never rewritten: the default is returned with
+/// the reason attached, and the bytes on disk stay as they are so the person can
+/// fix their own typo.
+pub fn load_or_create(root: &Path) -> Loaded {
+    let path = root.join(BOARD_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match parse(&text) {
+            Ok(config) => Loaded { config, error: None },
+            Err(e) => fallback(format!("{}: {e}", BOARD_FILE)),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let config = BoardConfig::default_config();
+            match save(root, &config) {
+                Ok(()) => Loaded { config, error: None },
+                Err(e) => fallback(format!("could not create {}: {e}", BOARD_FILE)),
+            }
+        }
+        Err(e) => fallback(format!("could not read {}: {e}", BOARD_FILE)),
+    }
+}
+
+pub fn save(root: &Path, cfg: &BoardConfig) -> Result<(), TaskError> {
+    let text = serde_json::to_string_pretty(cfg).map_err(|e| TaskError::Io(e.to_string()))?;
+    std::fs::write(root.join(BOARD_FILE), text + "\n").map_err(|e| TaskError::Io(e.to_string()))
+}
+
+/// Carry a configuration to a root that has none. Best effort by design: it runs
+/// during a card migration, and a migration that moved every card must not be
+/// reported as failed because a configuration copy did not land.
+pub fn copy_if_absent(from: &Path, to: &Path) {
+    let src = from.join(BOARD_FILE);
+    let dst = to.join(BOARD_FILE);
+    if dst.exists() || !src.exists() {
+        return;
+    }
+    let _ = std::fs::copy(&src, &dst);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +407,100 @@ mod tests {
         let back = parse(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back.step_ids(), c.step_ids());
         assert_eq!(back.steps[1].working, c.steps[1].working);
+    }
+
+    #[test]
+    fn creates_the_default_when_the_file_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let loaded = load_or_create(dir.path());
+        assert!(loaded.error.is_none());
+        assert_eq!(loaded.config.step_ids(), vec!["open", "done"]);
+        let on_disk = std::fs::read_to_string(dir.path().join(BOARD_FILE)).expect("written");
+        assert_eq!(parse(&on_disk).unwrap().step_ids(), vec!["open", "done"]);
+    }
+
+    #[test]
+    fn reads_an_existing_file_without_rewriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(BOARD_FILE);
+        std::fs::write(&path, GOOD).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let loaded = load_or_create(dir.path());
+        assert!(loaded.error.is_none());
+        assert_eq!(loaded.config.step_ids(), vec!["todo", "doing", "done"]);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "an existing file is not rewritten");
+    }
+
+    #[test]
+    fn a_broken_file_yields_the_default_plus_an_error_and_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(BOARD_FILE);
+        std::fs::write(&path, "{ \"steps\": [ oops").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let loaded = load_or_create(dir.path());
+        assert_eq!(loaded.config.step_ids(), vec!["open", "done"]);
+        let msg = loaded.error.expect("the person has to see why");
+        assert!(msg.contains("board.json"), "{msg}");
+        // Overwriting would erase the typo together with what they meant to write.
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_invalid_but_parseable_file_is_also_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(BOARD_FILE);
+        // Valid JSON, invalid configuration: no terminal step.
+        std::fs::write(&path, r#"{"steps":[{"id":"a","label":"A"}],"kinds":[{"id":"k","label":"K"}]}"#).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let loaded = load_or_create(dir.path());
+        assert_eq!(loaded.config.step_ids(), vec!["open", "done"]);
+        assert!(loaded.error.unwrap().contains("terminal"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_unreachable_root_reports_an_error_rather_than_panicking() {
+        let loaded = load_or_create(std::path::Path::new("/definitely/not/here"));
+        assert_eq!(loaded.config.step_ids(), vec!["open", "done"]);
+        assert!(loaded.error.is_some());
+    }
+
+    #[test]
+    fn save_round_trips_through_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = parse(GOOD).unwrap();
+        save(dir.path(), &cfg).expect("saved");
+        assert_eq!(load_or_create(dir.path()).config.step_ids(), vec!["todo", "doing", "done"]);
+    }
+
+    #[test]
+    fn copy_if_absent_carries_the_configuration_to_a_new_root() {
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        std::fs::write(from.path().join(BOARD_FILE), GOOD).unwrap();
+        copy_if_absent(from.path(), to.path());
+        // Without this the destination would fall back to open/done and every
+        // migrated card would land in the unknown-step column.
+        assert_eq!(load_or_create(to.path()).config.step_ids(), vec!["todo", "doing", "done"]);
+    }
+
+    #[test]
+    fn copy_if_absent_does_not_overwrite_a_destination_that_has_one() {
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        std::fs::write(from.path().join(BOARD_FILE), GOOD).unwrap();
+        let mine = r#"{"steps":[{"id":"mine","label":"Mine","terminal":true}],
+                       "kinds":[{"id":"k","label":"K"}]}"#;
+        std::fs::write(to.path().join(BOARD_FILE), mine).unwrap();
+        copy_if_absent(from.path(), to.path());
+        assert_eq!(load_or_create(to.path()).config.step_ids(), vec!["mine"]);
+    }
+
+    #[test]
+    fn copy_if_absent_is_silent_when_the_source_has_none() {
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        copy_if_absent(from.path(), to.path());
+        assert!(!to.path().join(BOARD_FILE).exists());
     }
 }

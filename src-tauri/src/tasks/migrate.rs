@@ -116,6 +116,13 @@ pub fn apply(
     to: &std::path::Path,
     rename_project_to: Option<&str>,
 ) -> MigrationReport {
+    // Before any card moves: the cards name steps that only the source's
+    // configuration defines, so a destination without it would show every one of
+    // them in the unknown-step column. Every move in a plan comes from the same
+    // old root, so the first one's parent directory is that root.
+    if let Some(from_root) = p.moves.first().and_then(|m| m.from.parent()) {
+        crate::tasks::board::copy_if_absent(from_root, to);
+    }
     let mut report = MigrationReport::default();
     for m in &p.moves {
         let dest = to.join(&m.file_name);
@@ -361,5 +368,33 @@ mod tests {
         let report = apply(&MigrationPlan::default(), dir.path(), None);
         assert_eq!(report.moved, 0);
         assert!(report.is_complete());
+    }
+
+    #[test]
+    fn migrating_carries_the_board_configuration_to_the_destination() {
+        // A source root with one card and a three-step configuration, and an
+        // empty destination — built with this module's existing fixture
+        // helpers. After the move the destination knows the steps the card
+        // refers to, rather than falling back to open/done.
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        let to = dir.path().join("to");
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(
+            from.join(crate::tasks::board::BOARD_FILE),
+            r#"{"steps":[{"id":"todo","label":"To do"},{"id":"done","label":"Done","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        )
+        .unwrap();
+
+        let p = one_card_at(&from, "01H-t.md", CARD, "old-name");
+        let report = apply(&p, &to, None);
+
+        assert_eq!(report.moved, 1);
+        assert_eq!(
+            crate::tasks::board::load_or_create(&to).config.step_ids(),
+            vec!["todo", "done"]
+        );
     }
 }
