@@ -413,7 +413,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    lets it shrink below its content's intrinsic width so overflow:auto (and
    the 1fr 1fr columns below) can actually do their job inside the flex row. */
 #board { flex: 1; min-width: 0; overflow: auto; padding: var(--sp-3); background: var(--bg-app); }
-#board.hidden, .tk-hidden { display: none; }
+/* Deliberately two rules, not one grouped selector list. jsdom's
+   getComputedStyle applies a group's highest specificity to every selector in
+   it, so grouping `.tk-hidden` with `#board.hidden` would give it that weight in
+   tests and let the deck hide without the `#deck.tk-hidden` override below —
+   making the regression test pass against the very bug it exists to catch.
+   Browsers score each selector in a group on its own, so this split changes
+   nothing at runtime. */
+#board.hidden { display: none; }
+.tk-hidden { display: none; }
 /* `#deck` sets `display: grid` with an id selector, which outweighs a class.
    Without this rule `tk-hidden` never hid the deck, and the board opened beside
    the terminals instead of replacing them. */
