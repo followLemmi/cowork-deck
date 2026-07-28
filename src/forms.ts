@@ -4,7 +4,8 @@
 // their own DOM here rather than extending modal.ts's single-field helpers.
 
 import { pickFolder } from "./dialog";
-import type { Schedule, SchedulePreset, TaskDraft, TaskKind, TrackerConfig } from "./ipc";
+import { trackerRootPreview } from "./ipc";
+import type { Schedule, SchedulePreset, TaskDraft, TaskKind, TrackerConfig, TrackerRootPreview } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule, schedulePreview } from "./schedule";
 import { openDialog } from "./dialog-shell";
@@ -101,6 +102,7 @@ export function workspaceForm(
       if (p) {
         path.value = p;
         if (!name.value.trim()) name.value = p.split("/").filter(Boolean).pop() ?? "";
+        void refreshPreview();
       }
     };
     const pathRow = document.createElement("div");
@@ -167,17 +169,75 @@ export function workspaceForm(
     trackerPick.textContent = "Choose folder…";
     trackerPick.onclick = async () => {
       const p = await pickFolder();
-      if (p) trackerPath.value = p;
+      if (p) { trackerPath.value = p; void refreshPreview(); }
     };
     const trackerPathRow = document.createElement("div");
     trackerPathRow.className = "form-pathrow";
     trackerPathRow.append(trackerPath, trackerPick);
+
+    // Cards land in folders the app creates, so the form names them before the
+    // save rather than leaving the person to find them afterwards.
+    const trackerPreview = document.createElement("div");
+    trackerPreview.className = "tk-f-preview";
+
+    const renderPreview = (p: TrackerRootPreview | null) => {
+      trackerPreview.replaceChildren();
+      if (!p) return;
+      const head = document.createElement("p");
+      head.className = "tk-f-preview-head";
+      head.textContent = "Cards will live in:";
+      const where = document.createElement("p");
+      where.className = "tk-f-preview-path";
+      where.textContent = p.root;
+      trackerPreview.append(head, where);
+      if (p.baseMissing) {
+        const warn = document.createElement("p");
+        warn.className = "tk-f-preview-warn";
+        warn.textContent = "That folder does not exist, so nothing will be created.";
+        trackerPreview.append(warn);
+        return;
+      }
+      // Absent when there is nothing to create: an "already exists" line would
+      // be noise on every later edit of the same workspace.
+      if (p.creating.length) {
+        const made = document.createElement("p");
+        made.className = "tk-f-preview-creating";
+        made.textContent =
+          `${p.creating.map((n) => `${n}/`).join(" and ")} will be created for you.`;
+        trackerPreview.append(made);
+      }
+    };
+
+    // A newer request must win even if an older one replies later.
+    let previewToken = 0;
+    const refreshPreview = async () => {
+      const picked = trackerPath.value.trim();
+      // The project folder is a slug of the name, so a blank name would resolve
+      // to slugify("") — "task" — and promise a folder that will never exist.
+      const wsName = name.value.trim();
+      if (!onInput.checked || !pathRadio.checked || !picked || !wsName) {
+        renderPreview(null);
+        return;
+      }
+      const token = ++previewToken;
+      try {
+        const p = await trackerRootPreview(wsName, picked);
+        if (token === previewToken) renderPreview(p);
+      } catch {
+        // An explanatory line in a form is not worth a visible failure.
+        if (token === previewToken) renderPreview(null);
+      }
+    };
+
+    trackerPath.oninput = () => void refreshPreview();
+    name.oninput = () => void refreshPreview();
 
     const syncTracker = () => {
       rootRow.classList.toggle("tk-hidden", !onInput.checked);
       // Hide the row, not just the input: the pick button lives beside it and
       // would otherwise stay behind on its own.
       trackerPathRow.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
+      void refreshPreview();
     };
     onInput.onchange = syncTracker;
     projectRadio.onchange = syncTracker;
@@ -199,7 +259,7 @@ export function workspaceForm(
     error.className = "form-error"; error.style.display = "none";
     const { row, ok, cancel } = actions();
     box.append(title, labeled("Name", name), labeled("Folder", pathRow), colorRow,
-      onRow, rootRow, trackerPathRow, error, row);
+      onRow, rootRow, trackerPathRow, trackerPreview, error, row);
 
     const close = (v: WorkspaceFormResult | null) => { closeDialog(); resolve(v); };
     const submit = () => {

@@ -216,6 +216,18 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 /* Keyed to .modal-input, not .form-path: the tracker root uses the same row
    with its own field class. */
 .form-pathrow .modal-input { flex: 1; }
+
+/* --- Where a picked tracker folder resolves to --------------------------- */
+
+.tk-f-preview { margin: var(--sp-1) 0 0; }
+.tk-f-preview p { margin: 0 0 2px; }
+.tk-f-preview-head { color: var(--fg-muted); font-size: var(--fs-xs); }
+/* The path is the one thing here the person has to recognise. */
+.tk-f-preview-path {
+  color: var(--fg); font-size: var(--fs-sm); word-break: break-all;
+}
+.tk-f-preview-creating { color: var(--fg-muted); font-size: var(--fs-xs); }
+.tk-f-preview-warn { color: var(--st-error); font-size: var(--fs-xs); }
 .form-pick { padding: 6px 10px; border-radius: var(--r-sm); border: 1px dashed var(--border); background: none; color: var(--fg-muted); font: inherit; font-size: var(--fs-sm); cursor: pointer; white-space: nowrap; }
 .form-pick:hover { border-color: var(--accent); color: var(--accent); border-style: solid; }
 .form-prompt { resize: vertical; min-height: 72px; font-family: var(--font-mono); }

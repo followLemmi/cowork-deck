@@ -3,8 +3,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { pickFolderMock } = vi.hoisted(() => ({ pickFolderMock: vi.fn() }));
 vi.mock("../src/dialog", () => ({ pickFolder: pickFolderMock }));
+vi.mock("@tauri-apps/api/core");
 
 import { workspaceForm, skillForm, placeholderForm } from "../src/forms";
+import { invoke } from "@tauri-apps/api/core";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -57,6 +59,96 @@ describe("workspaceForm", () => {
     document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
     const res = await p;
     expect(res!.color).not.toBe("#61afef"); // not reset to the first swatch
+  });
+
+  /** The form debounces nothing, but it does await IPC — let the microtasks run. */
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  const fillTracker = (path: string, wsName = "deck") => {
+    (document.querySelector(".form-name") as HTMLInputElement).value = wsName;
+    document.querySelector<HTMLInputElement>(".tk-f-on")!.checked = true;
+    const pathRadio = document.querySelector<HTMLInputElement>("input[value='path']")!;
+    pathRadio.checked = true;
+    pathRadio.dispatchEvent(new Event("change"));
+    const tp = document.querySelector(".tk-f-path") as HTMLInputElement;
+    tp.value = path;
+    tp.dispatchEvent(new Event("input"));
+  };
+
+  it("names the folders it will create before the save", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      root: "/vault/cowork-deck-tasks/deck",
+      creating: ["cowork-deck-tasks", "deck"],
+      baseMissing: false,
+    });
+    void workspaceForm();
+    fillTracker("/vault");
+    await settle();
+    expect(document.querySelector(".tk-f-preview-path")!.textContent)
+      .toBe("/vault/cowork-deck-tasks/deck");
+    const made = document.querySelector(".tk-f-preview-creating")!.textContent!;
+    expect(made).toContain("cowork-deck-tasks/");
+    expect(made).toContain("deck/");
+  });
+
+  it("says nothing about creating when both folders are already there", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      root: "/vault/cowork-deck-tasks/deck", creating: [], baseMissing: false,
+    });
+    void workspaceForm();
+    fillTracker("/vault");
+    await settle();
+    expect(document.querySelector(".tk-f-preview-path")).not.toBeNull();
+    expect(document.querySelector(".tk-f-preview-creating")).toBeNull();
+  });
+
+  it("warns instead of promising folders when the picked path does not exist", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      root: "/vualt/cowork-deck-tasks/deck", creating: [], baseMissing: true,
+    });
+    void workspaceForm();
+    fillTracker("/vualt");
+    await settle();
+    expect(document.querySelector(".tk-f-preview-warn")).not.toBeNull();
+    expect(document.querySelector(".tk-f-preview-creating")).toBeNull();
+  });
+
+  it("asks nothing while the workspace name is blank", async () => {
+    // slugify("") is "task", so a preview here would promise a folder that will
+    // never exist.
+    void workspaceForm();
+    fillTracker("/vault", "");
+    await settle();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(document.querySelector(".tk-f-preview-path")).toBeNull();
+  });
+
+  it("recomputes when the name changes, because the folder is named after it", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      root: "/vault/cowork-deck-tasks/deck", creating: [], baseMissing: false,
+    });
+    void workspaceForm();
+    fillTracker("/vault");
+    await settle();
+    const before = vi.mocked(invoke).mock.calls.length;
+    const nameInput = document.querySelector(".form-name") as HTMLInputElement;
+    nameInput.value = "renamed";
+    nameInput.dispatchEvent(new Event("input"));
+    await settle();
+    expect(vi.mocked(invoke).mock.calls.length).toBeGreaterThan(before);
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith(
+      "tracker_root_preview", { workspaceName: "renamed", pickedPath: "/vault" },
+    );
+  });
+
+  it("keeps the form usable when the preview call fails", async () => {
+    vi.mocked(invoke).mockRejectedValue(new Error("nope"));
+    void workspaceForm();
+    fillTracker("/vault");
+    await settle();
+    // An explanatory line is not worth failing a form over.
+    expect(document.querySelector(".tk-f-preview-path")).toBeNull();
+    expect(document.querySelector(".modal-ok")).not.toBeNull();
   });
 });
 
