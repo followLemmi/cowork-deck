@@ -2,7 +2,9 @@
 //! every path/config decision on this side, so the frontend never learns that
 //! cards are files.
 use crate::commands::AppState;
-use crate::model::{TrackerProvider, TrackerRoot, Workspace};
+use crate::model::{
+    PreviousLocation, TrackerProvider, TrackerRoot, Workspace, TRACKER_CONFIG_VERSION,
+};
 use crate::tasks::frontmatter::slugify;
 use crate::tasks::fs::{FsTaskProvider, RootCreation};
 use crate::tasks::model::{Task, TaskDraft, TaskKind, TaskOrigin};
@@ -75,10 +77,99 @@ pub fn ensure_root_if_ours(
     }
 }
 
-fn workspace(state: &State<AppState>, id: &str) -> Result<Workspace, String> {
+/// A workspace's effective root as a string, or `None` with no tracker.
+fn effective_root(ws: &Workspace) -> Option<String> {
+    resolve_root(ws).map(|(root, _)| root.to_string_lossy().to_string())
+}
+
+/// Whether this workspace's cards live in the in-project root, where every card
+/// is ours by construction.
+fn is_project_root(ws: &Workspace) -> bool {
+    matches!(
+        ws.tracker.as_ref().and_then(|c| c.providers.first()),
+        Some(TrackerProvider::Fs { root: TrackerRoot::Project })
+    )
+}
+
+/// Stamp the config version and, when saving `new` moves the effective root,
+/// record where the cards were so the board can offer to bring them along.
+///
+/// Pure: no filesystem and no store access. Whether any cards are actually at
+/// the old root is the banner's question — asking it here would make saving a
+/// workspace depend on a directory read that can fail.
+pub fn with_previous_location(old: Option<&Workspace>, mut new: Workspace) -> Workspace {
+    if let Some(cfg) = new.tracker.as_mut() {
+        cfg.version = TRACKER_CONFIG_VERSION;
+    }
+
+    // Creating a workspace: there is no old root, and seeding one from a
+    // freshly picked folder would offer to move cards nobody has filed yet.
+    let Some(old) = old else { return new };
+
+    // Turning the tracker off: nowhere to move cards to, so nothing to record.
+    let Some(new_root) = effective_root(&new) else { return new };
+
+    // An un-acted-on pointer wins over the old effective root. A seeded v1
+    // config, or an earlier move nobody confirmed, still names where the cards
+    // physically are; nothing was ever written to a root that was configured
+    // and then left behind.
+    let previous = match old.tracker.as_ref().and_then(|c| c.previous_location.clone()) {
+        Some(pending) => pending,
+        None => match effective_root(old) {
+            Some(root) => PreviousLocation {
+                root,
+                project: old.name.clone(),
+                was_project_root: is_project_root(old),
+            },
+            None => return new,
+        },
+    };
+
+    // Configured back to where the cards already are: nothing to migrate.
+    if previous.root == new_root {
+        return new;
+    }
+    if let Some(cfg) = new.tracker.as_mut() {
+        cfg.previous_location = Some(previous);
+    }
+    new
+}
+
+/// A `v: 1` config resolved an external root verbatim, so its cards sit
+/// directly in the picked folder rather than in the project subfolder this
+/// version resolves to. Seed that as the previous location, or updating the app
+/// would empty the board with no explanation.
+pub fn seed_previous_location(mut ws: Workspace) -> Workspace {
+    let name = ws.name.clone();
+    let Some(cfg) = ws.tracker.as_mut() else { return ws };
+    if cfg.version >= TRACKER_CONFIG_VERSION || cfg.previous_location.is_some() {
+        return ws;
+    }
+    let picked = match cfg.providers.first() {
+        Some(TrackerProvider::Fs { root: TrackerRoot::Path { path } }) => path.clone(),
+        // A project root did not move: `<ws.path>/.cowork/tasks` is what
+        // version 1 resolved to as well.
+        _ => return ws,
+    };
+    cfg.previous_location = Some(PreviousLocation {
+        root: picked,
+        project: name,
+        was_project_root: false,
+    });
+    ws
+}
+
+/// Workspaces as the tracker sees them: a config written before
+/// `TRACKER_CONFIG_VERSION` gets its previous location seeded. Normalizing here
+/// rather than in `Store` keeps storage free of tracker semantics — and the
+/// seed needs `ws.name`, which is not on `TrackerConfig` at all.
+fn tracker_workspaces(state: &State<AppState>) -> Result<Vec<Workspace>, String> {
     let store = state.store.lock().map_err(|_| "store lock".to_string())?;
-    store
-        .workspaces()
+    Ok(store.workspaces().into_iter().map(seed_previous_location).collect())
+}
+
+fn workspace(state: &State<AppState>, id: &str) -> Result<Workspace, String> {
+    tracker_workspaces(state)?
         .into_iter()
         .find(|w| w.id == id)
         .ok_or_else(|| format!("workspace not found: {id}"))
@@ -147,10 +238,7 @@ pub fn tasks_resolve(
 /// than failing the whole map.
 #[tauri::command]
 pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::HashMap<String, usize>, String> {
-    let all = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
-        store.workspaces()
-    };
+    let all = tracker_workspaces(&state)?;
     let mut out = std::collections::HashMap::new();
     for ws in all {
         let Ok(p) = provider_for(&ws) else { continue };
@@ -171,10 +259,7 @@ pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::Has
 /// move, or disappear at runtime.
 #[tauri::command]
 pub fn tasks_watch_sync(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
-    let all = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
-        store.workspaces()
-    };
+    let all = tracker_workspaces(&state)?;
     let wanted: Vec<(String, PathBuf)> = all
         .iter()
         .filter_map(|ws| {
@@ -297,6 +382,124 @@ mod tests {
         let never = dir.path().join("cli-root");
         ensure_root_if_ours(&never, RootCreation::Never).unwrap();
         assert!(!never.exists(), "the CLI creates nothing");
+    }
+
+    fn v1_external(path: &str) -> TrackerConfig {
+        TrackerConfig {
+            providers: vec![TrackerProvider::Fs { root: TrackerRoot::Path { path: path.into() } }],
+            previous_location: None,
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn a_v1_external_config_is_seeded_with_the_picked_folder_itself() {
+        // Version 1 resolved the picked folder verbatim, so that is where the
+        // cards physically are. Without seeding, the board would silently go
+        // empty the first time someone updated the app.
+        let out = seed_previous_location(ws(Some(v1_external("/home/u/vault/Tasks"))));
+        let prev = out.tracker.unwrap().previous_location.expect("seeded");
+        assert_eq!(prev.root, "/home/u/vault/Tasks");
+        assert_eq!(prev.project, "cowork-deck");
+        assert!(!prev.was_project_root);
+    }
+
+    #[test]
+    fn a_v1_project_config_is_not_seeded_because_its_path_did_not_move() {
+        let mut cfg = tracker(TrackerRoot::Project);
+        cfg.version = 1;
+        let out = seed_previous_location(ws(Some(cfg)));
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn a_current_config_is_left_alone_by_seeding() {
+        let out = seed_previous_location(ws(Some(tracker(
+            TrackerRoot::Path { path: "/home/u/vault/Tasks".into() },
+        ))));
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn moving_the_root_records_where_the_cards_were() {
+        let old = ws(Some(tracker(TrackerRoot::Project)));
+        let new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let out = with_previous_location(Some(&old), new);
+        let prev = out.tracker.unwrap().previous_location.expect("recorded");
+        assert_eq!(prev.root, "/home/u/proj/.cowork/tasks");
+        assert_eq!(prev.project, "cowork-deck");
+        assert!(prev.was_project_root, "damaged cards come along from our own folder");
+    }
+
+    #[test]
+    fn renaming_the_workspace_records_the_old_name_and_the_old_root() {
+        let old = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let mut new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        new.name = "deck".into();
+        let out = with_previous_location(Some(&old), new);
+        let prev = out.tracker.unwrap().previous_location.expect("recorded");
+        // The folder is named for the project, so a rename moves the root too.
+        assert_eq!(prev.root, "/home/u/vault/cowork-deck");
+        assert_eq!(prev.project, "cowork-deck");
+    }
+
+    #[test]
+    fn saving_without_moving_the_root_records_nothing() {
+        let old = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let mut new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        new.color = "#98c379".into();
+        let out = with_previous_location(Some(&old), new);
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn creating_a_workspace_records_nothing() {
+        let new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let out = with_previous_location(None, new);
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn an_unmoved_pending_pointer_wins_over_the_old_effective_root() {
+        // The cards are at the seeded location, not at the root the old config
+        // resolved to — nothing was ever written to a root that was configured
+        // and then left behind. Overwriting the pointer here would send the
+        // migration looking in an empty folder.
+        let old = seed_previous_location(ws(Some(v1_external("/home/u/vault/Tasks"))));
+        let new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/other".into() })));
+        let out = with_previous_location(Some(&old), new);
+        let prev = out.tracker.unwrap().previous_location.expect("carried forward");
+        assert_eq!(prev.root, "/home/u/vault/Tasks");
+    }
+
+    #[test]
+    fn moving_back_to_where_the_cards_are_clears_the_pointer() {
+        // The subfolder is the *slug* of the workspace name, so the old root has
+        // to be spelled the way `slugify` spells it: a workspace named "Tasks"
+        // resolves to the folder `tasks`.
+        let old = seed_previous_location(ws(Some(v1_external("/home/u/vault/tasks"))));
+        // Picking a folder whose project subfolder IS the old location.
+        let mut new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        new.name = "Tasks".into();
+        let out = with_previous_location(Some(&old), new);
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn every_save_stamps_the_current_config_version() {
+        // A dismissed banner must not come back on the next read, which is only
+        // true while every persisting path leaves v at the current value.
+        let out = with_previous_location(None, ws(Some(v1_external("/home/u/vault/Tasks"))));
+        assert_eq!(out.tracker.unwrap().version, TRACKER_CONFIG_VERSION);
+    }
+
+    #[test]
+    fn turning_the_tracker_off_records_nothing() {
+        // There is nowhere to move cards to, so a pointer would describe a
+        // migration that can never be offered.
+        let old = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let out = with_previous_location(Some(&old), ws(None));
+        assert!(out.tracker.is_none());
     }
 
     #[test]

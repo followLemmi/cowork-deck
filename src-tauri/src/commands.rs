@@ -80,7 +80,16 @@ pub fn list_workspaces(state: State<AppState>) -> Vec<Workspace> {
 }
 #[tauri::command]
 pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Workspace>, String> {
-    state.store.lock().unwrap().upsert_workspace(ws).map_err(|e| e.to_string())
+    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    // Seeded the same way the tracker reads them, so a version 1 config's
+    // cards are not forgotten by the very save that bumps it to version 2.
+    let old = store
+        .workspaces()
+        .into_iter()
+        .map(crate::tasks_cmd::seed_previous_location)
+        .find(|w| w.id == ws.id);
+    let ws = crate::tasks_cmd::with_previous_location(old.as_ref(), ws);
+    store.upsert_workspace(ws).map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn remove_workspace(state: State<AppState>, id: String) -> Result<Vec<Workspace>, String> {
