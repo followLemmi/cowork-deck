@@ -1,4 +1,4 @@
-use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, Workspace, SCHEDULE_STATE_VERSION};
+use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, Workspace};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -158,7 +158,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{SessionEntry, UiState, Workspace};
+    use crate::model::{SessionEntry, UiState, Workspace, SCHEDULE_STATE_VERSION};
 
     fn tmp() -> std::path::PathBuf {
         // Unique per call, even under parallel test threads: SystemTime alone
