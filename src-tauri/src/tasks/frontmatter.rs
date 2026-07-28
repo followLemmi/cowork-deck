@@ -140,35 +140,52 @@ pub fn render_card(t: &Task) -> String {
     out
 }
 
-/// Edit an existing frontmatter block in place: set `status:` to `done` and
-/// `resolved:` to `resolved_ts` — replacing the line if present, inserting it
-/// if absent. Every other line, and the body, is left untouched byte-for-byte.
+/// Close a card: `status: done` plus a `resolved:` timestamp.
 ///
 /// This exists so `resolve` never goes through `render_card` (which only
 /// knows nine keys) on a real vault file: a card that also carries `tags:`,
 /// `aliases:`, or Dataview fields would otherwise lose them the moment it is
 /// closed. Returns `None` when `text` has no frontmatter block at all.
 pub fn set_status_done(text: &str, resolved_ts: &str) -> Option<String> {
-    // The whole document uses one line-ending style throughout; reuse it for
-    // both edited and freshly inserted lines so CRLF input stays CRLF.
+    set_fields(text, &[("status", "done"), ("resolved", resolved_ts)])
+}
+
+/// Repoint a card at a renamed project. Needed because `list` filters cards by
+/// the workspace name, so cards moved by a rename would arrive at the new root
+/// and still read as another project's.
+pub fn set_project(text: &str, new_project: &str) -> Option<String> {
+    set_fields(text, &[("project", new_project)])
+}
+
+/// Set each `key: value` in an existing frontmatter block, replacing the line
+/// where the key is already present and appending it where it is not. Keys are
+/// appended in the order given. Every other line, and the body, is left
+/// untouched byte-for-byte, and the document's line-ending style is reused for
+/// both edited and inserted lines. Returns `None` when `text` has no
+/// frontmatter block.
+fn set_fields(text: &str, fields: &[(&str, &str)]) -> Option<String> {
+    // The whole document uses one line-ending style throughout; reuse it so
+    // CRLF input stays CRLF.
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let (head, body) = split_frontmatter(text)?;
 
     let mut lines: Vec<String> = Vec::new();
-    let mut saw_status = false;
-    let mut saw_resolved = false;
+    let mut seen = vec![false; fields.len()];
     for line in head.lines() {
-        match line.split_once(':').map(|(k, _)| k.trim()) {
-            Some("status") => { lines.push("status: done".to_string()); saw_status = true; }
-            Some("resolved") => {
-                lines.push(format!("resolved: {resolved_ts}"));
-                saw_resolved = true;
+        let key = line.split_once(':').map(|(k, _)| k.trim());
+        match fields.iter().position(|(k, _)| Some(*k) == key) {
+            Some(i) => {
+                lines.push(format!("{}: {}", fields[i].0, fields[i].1));
+                seen[i] = true;
             }
-            _ => lines.push(line.to_string()),
+            None => lines.push(line.to_string()),
         }
     }
-    if !saw_status { lines.push("status: done".to_string()); }
-    if !saw_resolved { lines.push(format!("resolved: {resolved_ts}")); }
+    for (i, (k, v)) in fields.iter().enumerate() {
+        if !seen[i] {
+            lines.push(format!("{k}: {v}"));
+        }
+    }
 
     let mut out = String::from("---");
     out.push_str(nl);
@@ -337,6 +354,37 @@ Repro: three workspaces, Cmd+2.\n";
     #[test]
     fn set_status_done_returns_none_without_frontmatter() {
         assert!(set_status_done("just text\n", "ts").is_none());
+    }
+
+    #[test]
+    fn set_project_replaces_an_existing_line() {
+        let text = "---\nid: 01K1\ntitle: t\nproject: old-name\nstatus: open\n---\nbody\n";
+        let out = set_project(text, "new-name").expect("has frontmatter");
+        assert!(out.contains("project: new-name"), "{out}");
+        assert!(!out.contains("old-name"), "the old value must be gone: {out}");
+        assert!(out.contains("title: t"), "other keys must survive: {out}");
+    }
+
+    #[test]
+    fn set_project_inserts_the_line_when_missing() {
+        let text = "---\nid: 01K1\nstatus: open\n---\nbody\n";
+        let out = set_project(text, "deck").expect("has frontmatter");
+        assert!(out.contains("project: deck"), "{out}");
+        assert!(out.contains("status: open"), "{out}");
+    }
+
+    #[test]
+    fn set_project_preserves_an_unknown_key_and_crlf() {
+        let text = "---\r\nid: 01K1\r\nproject: old\r\ntags: [inbox]\r\n---\r\nbody\r\n";
+        let out = set_project(text, "deck").expect("has frontmatter");
+        assert!(out.contains("tags: [inbox]"), "a vault key must survive: {out}");
+        assert!(out.contains("project: deck\r\n"), "CRLF must be reused: {out}");
+        assert!(!out.contains("project: deck\n\r"), "no mixed endings: {out}");
+    }
+
+    #[test]
+    fn set_project_returns_none_without_frontmatter() {
+        assert!(set_project("just text\n", "deck").is_none());
     }
 
     #[test]
