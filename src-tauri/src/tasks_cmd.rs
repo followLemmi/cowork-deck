@@ -59,6 +59,56 @@ fn append_layout(picked: &std::path::Path, slug: &str) -> PathBuf {
     picked.join(TRACKER_CONTAINER).join(slug)
 }
 
+/// What the workspace form shows under the folder picker.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackerRootPreview {
+    /// The resolved effective root, in full: the person picked the folder and
+    /// needs to recognise where the cards will land.
+    pub root: String,
+    /// Single folder names, outermost first, that do not exist yet — never full
+    /// paths. Empty when `base_missing`, because then nothing is created.
+    pub creating: Vec<String>,
+    /// The picked folder itself is absent, so nothing will be created.
+    pub base_missing: bool,
+}
+
+/// Describe what configuring `picked_path` for a workspace called
+/// `workspace_name` would resolve to, and which folders that would create.
+///
+/// Shares `append_layout` and `slugify` with `resolve_root` rather than
+/// recomputing them. Two implementations of the layout would agree on the day
+/// they were written and disagree after the next change to either — and one of
+/// them would be in a language that cannot call the other.
+pub fn root_preview(workspace_name: &str, picked_path: &str) -> TrackerRootPreview {
+    let base = PathBuf::from(picked_path);
+    let root = append_layout(&base, &slugify(workspace_name));
+    let root_str = root.to_string_lossy().to_string();
+
+    if !base.is_dir() {
+        return TrackerRootPreview { root: root_str, creating: Vec::new(), base_missing: true };
+    }
+
+    // Every component between the base and the root, outermost first, keeping
+    // only what is absent. `root` always starts with `base`: all three
+    // recognition cases either return the base itself or join onto it.
+    let mut creating = Vec::new();
+    let mut walk = base.clone();
+    let below = root.strip_prefix(&base).unwrap_or(std::path::Path::new(""));
+    for part in below.components() {
+        walk = walk.join(part);
+        if !walk.is_dir() {
+            creating.push(part.as_os_str().to_string_lossy().to_string());
+        }
+    }
+    TrackerRootPreview { root: root_str, creating, base_missing: false }
+}
+
+#[tauri::command]
+pub fn tracker_root_preview(workspace_name: String, picked_path: String) -> TrackerRootPreview {
+    root_preview(&workspace_name, &picked_path)
+}
+
 /// The provider root for a workspace, plus how much of it we may create.
 /// `None` means "no tracker configured" — a legal, non-error state.
 pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
@@ -894,5 +944,59 @@ mod tests {
         let json = r#"{"title":"t","kind":"bug","body":"b","origin":"session"}"#;
         let result: Result<TaskDraftInput, _> = serde_json::from_str(json);
         assert!(result.is_err(), "smuggled `origin` must be rejected, got {result:?}");
+    }
+
+    #[test]
+    fn preview_names_both_folders_when_neither_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = root_preview("cowork-deck", &dir.path().to_string_lossy());
+        // Outermost first, so the form can read them out in the order they
+        // appear in the path.
+        assert_eq!(p.creating, vec!["cowork-deck-tasks", "cowork-deck"]);
+        assert!(!p.base_missing);
+        assert_eq!(
+            p.root,
+            dir.path().join("cowork-deck-tasks").join("cowork-deck").to_string_lossy(),
+        );
+    }
+
+    #[test]
+    fn preview_names_only_the_project_folder_when_the_container_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("cowork-deck-tasks")).unwrap();
+        let p = root_preview("cowork-deck", &dir.path().to_string_lossy());
+        assert_eq!(p.creating, vec!["cowork-deck"]);
+        assert!(!p.base_missing);
+    }
+
+    #[test]
+    fn preview_promises_nothing_when_everything_is_already_there() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("cowork-deck-tasks").join("cowork-deck")).unwrap();
+        let p = root_preview("cowork-deck", &dir.path().to_string_lossy());
+        // Silence means there is nothing to create. An "already exists" line
+        // would be noise on every later edit of the same workspace.
+        assert!(p.creating.is_empty());
+        assert!(!p.base_missing);
+    }
+
+    #[test]
+    fn preview_promises_nothing_when_the_picked_folder_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = root_preview("cowork-deck", &dir.path().join("vualt").to_string_lossy());
+        assert!(p.base_missing);
+        assert!(p.creating.is_empty(), "nothing is created when the base is absent");
+    }
+
+    #[test]
+    fn preview_resolves_a_picked_container_the_same_way_resolve_root_does() {
+        // The two share append_layout by construction; this pins that they are
+        // still wired to the same function.
+        let dir = tempfile::tempdir().unwrap();
+        let container = dir.path().join("cowork-deck-tasks");
+        std::fs::create_dir(&container).unwrap();
+        let p = root_preview("cowork-deck", &container.to_string_lossy());
+        assert_eq!(p.root, container.join("cowork-deck").to_string_lossy());
+        assert_eq!(p.creating, vec!["cowork-deck"]);
     }
 }

@@ -155,6 +155,7 @@ fn main() {
             tasks_cmd::tasks_migration_status,
             tasks_cmd::tasks_migrate,
             tasks_cmd::tasks_migration_dismiss,
+            tasks_cmd::tracker_root_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");

@@ -149,5 +149,17 @@ export const taskMigrate = (workspaceId: string) =>
 export const taskMigrationDismiss = (workspaceId: string) =>
   invoke<void>("tasks_migration_dismiss", { workspaceId });
 
+/** What configuring a picked folder would resolve to, and what it would create. */
+export interface TrackerRootPreview {
+  root: string;
+  /** Single folder names, outermost first, that do not exist yet. */
+  creating: string[];
+  /** The picked folder itself is absent, so nothing will be created. */
+  baseMissing: boolean;
+}
+
+export const trackerRootPreview = (workspaceName: string, pickedPath: string) =>
+  invoke<TrackerRootPreview>("tracker_root_preview", { workspaceName, pickedPath });
+
 export const onTasksChanged = (cb: (workspaceId: string) => void): Promise<UnlistenFn> =>
   listen<{ workspaceId: string }>("tasks://changed", (e) => cb(e.payload.workspaceId));
