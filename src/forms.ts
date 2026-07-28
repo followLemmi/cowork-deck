@@ -179,6 +179,12 @@ export function workspaceForm(
     // save rather than leaving the person to find them afterwards.
     const trackerPreview = document.createElement("div");
     trackerPreview.className = "tk-f-preview";
+    // Polite, never assertive: this redraws on every keystroke of the name and
+    // the path, and an assertive region would interrupt the person mid-word to
+    // read out a path they are still typing. Announcing the whole region at once
+    // keeps "Cards will live in: <path>" from arriving as two unrelated updates.
+    trackerPreview.setAttribute("aria-live", "polite");
+    trackerPreview.setAttribute("aria-atomic", "true");
 
     const renderPreview = (p: TrackerRootPreview | null) => {
       trackerPreview.replaceChildren();
@@ -241,6 +247,10 @@ export function workspaceForm(
       // Hide the row, not just the input: the pick button lives beside it and
       // would otherwise stay behind on its own.
       trackerPathRow.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
+      // Hidden with the block it explains, not merely emptied by the guard
+      // below. Both are true today; only this one is structural, and an
+      // aria-live region left in the tree is a region a reader can still reach.
+      trackerPreview.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
       void refreshPreview();
     };
     onInput.onchange = syncTracker;

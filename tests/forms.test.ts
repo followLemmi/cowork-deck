@@ -141,13 +141,27 @@ describe("workspaceForm", () => {
     );
   });
 
-  it("keeps the form usable when the preview call fails", async () => {
-    vi.mocked(invoke).mockRejectedValue(new Error("nope"));
+  it("clears a preview already on screen when the next call fails", async () => {
+    // What the failure path actually has to do is retract a path it has already
+    // promised: a stale root left standing after the call that would have
+    // corrected it failed is worse than no line at all. Starting from an empty
+    // form would assert nothing, because nothing is rendered either way.
+    vi.mocked(invoke).mockResolvedValueOnce({
+      root: "/vault/cowork-deck-tasks/deck", creating: [], baseMissing: false,
+    });
     void workspaceForm();
     fillTracker("/vault");
     await settle();
-    // An explanatory line is not worth failing a form over.
+    expect(document.querySelector(".tk-f-preview-path")).not.toBeNull();
+
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("nope"));
+    const tp = document.querySelector(".tk-f-path") as HTMLInputElement;
+    tp.value = "/other";
+    tp.dispatchEvent(new Event("input"));
+    await settle();
+
     expect(document.querySelector(".tk-f-preview-path")).toBeNull();
+    // And an explanatory line is still not worth failing a form over.
     expect(document.querySelector(".modal-ok")).not.toBeNull();
   });
 
@@ -245,6 +259,31 @@ describe("workspaceForm — tracker", () => {
     expect(row().classList.contains("tk-hidden")).toBe(false);
     ov().querySelector<HTMLInputElement>(".tk-f-root[value=project]")!.click();
     expect(row().classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+  });
+
+  // The preview explains the path field, so it belongs to that block's
+  // visibility. Emptying it in the guard happens to have the same effect today;
+  // only hiding it with the row makes the structure say so.
+  it("hides the preview together with the tracker path block", () => {
+    workspaceForm();
+    const preview = () => ov().querySelector<HTMLElement>(".tk-f-preview")!;
+    expect(preview().classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    expect(preview().classList.contains("tk-hidden")).toBe(false);
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=project]")!.click();
+    expect(preview().classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+  });
+
+  // A path that changes while you type is exactly the kind of update a screen
+  // reader has to be told about, and exactly the kind it must not be
+  // interrupted for.
+  it("announces the preview politely rather than assertively", () => {
+    workspaceForm();
+    const preview = ov().querySelector<HTMLElement>(".tk-f-preview")!;
+    expect(preview.getAttribute("aria-live")).toBe("polite");
     ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
   });
 
