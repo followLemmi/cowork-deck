@@ -17,7 +17,7 @@
 - **One failing handle does not fail the tick.** Every added IPC call in `refreshBoard` gets its own `try`/`catch`, matching the existing `taskCapabilities`/`listTasks` treatment.
 - **`TRACKER_CONFIG_VERSION = 2`.** Every code path that persists a `TrackerConfig` stamps this value, or a dismissed banner comes back on the next read.
 
-## Four corrections to the spec
+## Five corrections to the spec
 
 Both were found while writing this plan. Implement the plan's version.
 
@@ -27,7 +27,9 @@ Both were found while writing this plan. Implement the plan's version.
 
 3. **`FsTaskProvider::scan` becomes `pub`, not `pub(crate)`.** Found while executing Task 6: `tasks/fs.rs` is part of the `cowork_deck` **library** crate, while `tasks_cmd.rs` is a module of the **binary** crate, which reaches the tasks tree through `use cowork_deck::tasks` in `main.rs`. `pub(crate)` therefore does not reach the caller, and the build fails with `method scan is private`. Widening the otherwise deliberately minimal library surface is the cost of `offer_for` needing unfiltered cards.
 
-4. **`previousLocation` is cleared from `apply`'s report, not from a re-plan.** The spec said to re-plan the old root and clear when `moves` is empty. That never clears when a card was skipped because the destination already had a file of that name: the card is still at the old root, so it is still in the plan, and the banner would nag forever. `apply` therefore classifies skips, and the caller clears when every skip is `AlreadyAtDestination`.
+4. **The "destination is unreachable" banner test keeps `caps` non-null, and `BoardHandlers`' two new fields mean the pre-existing `BoardView` tests move to the shared stub.** Both found while executing Task 7. `caps: null` and a `RootMissing` error cannot coexist: `tasks_capabilities` returns `None` only for "no tracker configured" and never touches the disk, so a configured-but-unreachable root yields real capabilities plus an error from `tasks_list` — and `emptyStateMessage` checks `caps === null` first, so the plan's version asserted on the no-tracker message instead of the error. Separately, `onMigrate`/`onDismissMigration` are required fields, so the eight existing four-handler literals fail `tsc`; they become `{ ...handlers }`, which is what the shared stub is for.
+
+5. **`previousLocation` is cleared from `apply`'s report, not from a re-plan.** The spec said to re-plan the old root and clear when `moves` is empty. That never clears when a card was skipped because the destination already had a file of that name: the card is still at the old root, so it is still in the plan, and the banner would nag forever. `apply` therefore classifies skips, and the caller clears when every skip is `AlreadyAtDestination`.
 
 ---
 

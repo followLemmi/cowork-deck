@@ -125,5 +125,29 @@ export const taskCapabilities = (workspaceId: string) =>
   invoke<ProviderCapabilities | null>("tasks_capabilities", { workspaceId });
 export const taskOpenCounts = () => invoke<Record<string, number>>("tasks_open_counts");
 export const taskWatchSync = () => invoke<void>("tasks_watch_sync");
+/** A pending move of this workspace's cards from where they used to live. */
+export interface MigrationOffer {
+  from: string; to: string;
+  moving: number;
+  leavingForeign: number;
+  leavingDamaged: number;
+  /** Whether `project:` inside the moved cards will be rewritten. */
+  renamingProject: boolean;
+}
+export type SkipReason =
+  | { kind: "alreadyAtDestination" }
+  | { kind: "failed"; detail: string };
+export interface MigrationReport {
+  moved: number;
+  skipped: { fileName: string; reason: SkipReason }[];
+}
+
+export const taskMigrationStatus = (workspaceId: string) =>
+  invoke<MigrationOffer | null>("tasks_migration_status", { workspaceId });
+export const taskMigrate = (workspaceId: string) =>
+  invoke<MigrationReport>("tasks_migrate", { workspaceId });
+export const taskMigrationDismiss = (workspaceId: string) =>
+  invoke<void>("tasks_migration_dismiss", { workspaceId });
+
 export const onTasksChanged = (cb: (workspaceId: string) => void): Promise<UnlistenFn> =>
   listen<{ workspaceId: string }>("tasks://changed", (e) => cb(e.payload.workspaceId));

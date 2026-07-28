@@ -434,6 +434,39 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tk-foreign { color: var(--fg-subtle); font-size: var(--fs-xs); margin-top: var(--sp-3); }
 .tk-empty { color: var(--fg-muted); font-size: var(--fs-sm); }
 
+/* --- Cards left at a previous tracker root ------------------------------- */
+
+.tk-migrate {
+  background: var(--bg-panel); border: 1px solid var(--st-working);
+  border-radius: var(--r-md); padding: var(--sp-3); margin-bottom: var(--sp-3);
+}
+.tk-migrate p { margin: 0 0 var(--sp-1); }
+.tk-migrate-count { color: var(--fg); font-size: var(--fs-base); }
+/* A path is the one thing here the person has to recognise, so it does not get
+   the muted treatment the rest of the explanation does. */
+.tk-migrate-from {
+  color: var(--fg); font-size: var(--fs-sm); word-break: break-all;
+}
+.tk-migrate-foreign, .tk-migrate-consequence {
+  color: var(--fg-muted); font-size: var(--fs-xs);
+}
+.tk-migrate-acts { display: flex; gap: var(--sp-2); margin: var(--sp-2) 0; }
+.tk-migrate-go, .tk-migrate-skip {
+  font: inherit; font-size: var(--fs-sm);
+  border-radius: var(--r-sm); min-height: 24px;
+  padding: var(--sp-1) var(--sp-2); cursor: pointer;
+}
+.tk-migrate-go {
+  background: var(--accent); color: var(--bg-app); border: none;
+  font-weight: var(--fw-medium);
+}
+.tk-migrate-skip {
+  background: var(--bg-raised); color: var(--fg-muted); border: 1px solid var(--border);
+}
+.tk-migrate-go:focus-visible, .tk-migrate-skip:focus-visible {
+  outline: none; box-shadow: var(--focus-ring);
+}
+
 .tk-acts { display: flex; gap: var(--sp-1); margin-top: var(--sp-2); }
 .tk-acts button, .tk-new, .tk-configure {
   font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);

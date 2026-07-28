@@ -6,8 +6,9 @@ import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
 import {
   listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
+  taskMigrationStatus, taskMigrate, taskMigrationDismiss,
 } from "./ipc";
-import type { Task } from "./ipc";
+import type { MigrationOffer, Task } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -50,6 +51,8 @@ const board = new BoardView({
   onNew: () => void captureTask(),
   onConfigure: () => void alertModal(
     "Configure the tracker in the workspace settings (✎): a folder in the project, or one of your own."),
+  onMigrate: () => void migrateCards(),
+  onDismissMigration: () => void dismissMigration(),
 });
 boardEl.append(board.mount);
 
@@ -185,10 +188,13 @@ async function refreshBoard() {
     try { tasks = await listTasks(wsId); }
     catch (e) { error = String(e); }
   }
+  let migration: MigrationOffer | null = null;
+  try { migration = await taskMigrationStatus(wsId); }
+  catch (e) { console.debug("migration status failed", e); }
   // The workspace may have been switched while we waited on IPC: a late reply
   // must not repaint the board with another workspace's data over the current one.
   if (workspaces.active?.id !== wsId) return;
-  board.render({ project: ws.name, caps, error, tasks, links: deck.taskLinks() });
+  board.render({ project: ws.name, caps, error, tasks, links: deck.taskLinks(), migration });
 }
 
 /** The sidebar counts — one handle covering every workspace. */
@@ -204,6 +210,37 @@ async function closeTask(t: Task) {
   catch (e) { await alertModal(`Could not close the task: ${String(e)}`); }
   await refreshBoard();
   await refreshCounts();
+}
+
+/** Move the cards left at a previous root. The watcher has to be re-pointed
+ *  afterwards: the destination may have been created moments ago, and without
+ *  the re-sync the board would only update on the five-second poll. */
+async function migrateCards() {
+  const ws = workspaces.active;
+  if (!ws) return;
+  try {
+    const report = await taskMigrate(ws.id);
+    const failed = report.skipped.filter((s) => s.reason.kind === "failed");
+    if (failed.length) {
+      await alertModal(
+        `Moved ${report.moved}. ${failed.length} could not be moved:\n` +
+        failed.map((s) => `${s.fileName}: ${s.reason.kind === "failed" ? s.reason.detail : ""}`).join("\n"),
+      );
+    }
+  } catch (e) {
+    await alertModal(`Could not move the cards: ${String(e)}`);
+  }
+  await taskWatchSync().catch((e) => console.debug("watch sync failed", e));
+  await refreshBoard();
+  await refreshCounts();
+}
+
+async function dismissMigration() {
+  const ws = workspaces.active;
+  if (!ws) return;
+  try { await taskMigrationDismiss(ws.id); }
+  catch (e) { await alertModal(`Could not dismiss: ${String(e)}`); }
+  await refreshBoard();
 }
 
 /** Why a scheduled fire did or did not produce a run. The backend-driven path

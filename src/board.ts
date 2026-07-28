@@ -1,4 +1,4 @@
-import type { ProviderCapabilities, Task } from "./ipc";
+import type { MigrationOffer, ProviderCapabilities, Task } from "./ipc";
 import { boardColumns, derivedStatus, kindLabel, type TaskSessionLink } from "./tasks";
 
 export interface BoardState {
@@ -7,6 +7,9 @@ export interface BoardState {
   error: string | null;
   tasks: Task[];
   links: TaskSessionLink[];
+  /** Optional so the pre-existing render tests keep compiling; absent means
+   *  there is nothing to move. */
+  migration?: MigrationOffer | null;
 }
 
 export interface BoardHandlers {
@@ -14,6 +17,8 @@ export interface BoardHandlers {
   onResolve: (task: Task) => void;
   onNew: () => void;
   onConfigure: () => void;
+  onMigrate: () => void;
+  onDismissMigration: () => void;
 }
 
 /** `caps === null` means no tracker is configured — a legal state, not a failure. */
@@ -56,6 +61,10 @@ export class BoardView {
     }
     this.mount.append(head);
 
+    // Before the early return on purpose: when the destination's parent is
+    // missing, the error and this banner explain each other.
+    if (state.migration) this.mount.append(this.migrationBanner(state.migration));
+
     if (caps === null || error) {
       const msg = emptyStateMessage(caps, error);
       const box = el("div", "tk-empty");
@@ -90,6 +99,52 @@ export class BoardView {
         `${f.count} card(s) name a different project: ${f.project} — was the workspace renamed?`,
       ));
     }
+  }
+
+  /** Cards left at a previous root. Rendered as a banner rather than a modal so
+   *  it survives an app restart and does not demand a decision at save time. */
+  private migrationBanner(m: MigrationOffer): HTMLElement {
+    const box = el("div", "tk-migrate");
+    box.append(el(
+      "p", "tk-migrate-count",
+      `${m.moving} card${m.moving === 1 ? "" : "s"} ${m.moving === 1 ? "is" : "are"} still in the previous location:`,
+    ));
+    box.append(el("p", "tk-migrate-from", m.from));
+    if (m.leavingForeign > 0) {
+      box.append(el(
+        "p", "tk-migrate-foreign",
+        `${m.leavingForeign} card${m.leavingForeign === 1 ? "" : "s"} there belong${m.leavingForeign === 1 ? "s" : ""} to other projects and stay.`,
+      ));
+    }
+    if (m.leavingDamaged > 0) {
+      box.append(el(
+        "p", "tk-migrate-foreign",
+        `${m.leavingDamaged} damaged card${m.leavingDamaged === 1 ? "" : "s"} there stay too — a damaged card in a shared folder may not be ours.`,
+      ));
+    }
+
+    const acts = el("div", "tk-migrate-acts");
+    const go = el("button", "tk-migrate-go", "Move them here");
+    go.onclick = () => this.h.onMigrate();
+    const skip = el("button", "tk-migrate-skip", "Leave them there");
+    skip.onclick = () => this.h.onDismissMigration();
+    acts.append(go, skip);
+    box.append(acts);
+
+    // Not decoration: after this the cards are outside the effective root and
+    // the board will not show them again. Recoverable by hand, but it reads as
+    // disappearance, so the button cannot just say "Leave them" and stop.
+    box.append(el(
+      "p", "tk-migrate-consequence",
+      "Left there, they stay on disk but this board will not show them.",
+    ));
+    if (m.renamingProject) {
+      box.append(el(
+        "p", "tk-migrate-consequence",
+        "Moving them also updates the project name inside each card.",
+      ));
+    }
+    return box;
   }
 
   private column(label: string, tasks: Task[], state: BoardState, caps: ProviderCapabilities) {
