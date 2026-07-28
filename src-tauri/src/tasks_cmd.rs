@@ -40,40 +40,34 @@ pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
             PathBuf::from(&ws.path).join(".cowork").join("tasks"),
             RootCreation::Always,
         )),
-        TrackerProvider::Fs { root: TrackerRoot::Path { path } } => Some((
-            // One folder per project inside the folder the person picked: they
-            // pick one place for every project's backlog, and without this the
-            // cards all land in the same directory.
-            //
-            // Slugified, not joined verbatim: a workspace name is free text, and
-            // `join("../..")` would put the cards outside the picked folder
-            // entirely. `slugify` yields exactly one component — only
-            // alphanumerics survive, so no separators and no `..` — and never
+        TrackerProvider::Fs { root: TrackerRoot::Path { path } } => {
+            let base = PathBuf::from(path);
+            // Slugified, not joined verbatim: a workspace name is free text,
+            // and `join("../..")` would put the cards outside the picked
+            // folder entirely. `slugify` yields exactly one component and never
             // returns empty.
-            PathBuf::from(path).join(slugify(&ws.name)),
-            RootCreation::LeafInsideExistingParent,
-        )),
+            let root = base.join(slugify(&ws.name));
+            Some((root, RootCreation::InsideExisting { base }))
+        }
     }
 }
 
-/// Create as much of `root` as `creation` allows. A `LeafInsideExistingParent`
-/// root whose parent is missing is left alone here rather than reported:
+/// Create as much of `root` as `creation` allows. An `InsideExisting` root whose
+/// base is missing is left alone here rather than reported:
 /// `FsTaskProvider::ensure_root` surfaces the same `RootMissing` loudly the
 /// moment a card is actually read or written, and this function's callers
 /// (`tasks_watch_sync`, `start_session`) are best-effort by design.
 pub fn ensure_root_if_ours(
     root: &std::path::Path,
-    creation: RootCreation,
+    creation: &RootCreation,
 ) -> std::io::Result<()> {
     if root.is_dir() {
         return Ok(());
     }
     match creation {
         RootCreation::Always => std::fs::create_dir_all(root),
-        RootCreation::LeafInsideExistingParent => match root.parent() {
-            Some(p) if p.is_dir() => std::fs::create_dir(root),
-            _ => Ok(()),
-        },
+        RootCreation::InsideExisting { base } if base.is_dir() => std::fs::create_dir_all(root),
+        RootCreation::InsideExisting { .. } => Ok(()),
         RootCreation::Never => Ok(()),
     }
 }
@@ -268,7 +262,7 @@ pub fn tasks_watch_sync(app: tauri::AppHandle, state: State<AppState>) -> Result
             // Best-effort: a create failure here does not stop the sync for
             // other workspaces. `FsTaskProvider::ensure_root` surfaces the
             // same failure loudly the moment a card is actually read/written.
-            let _ = ensure_root_if_ours(&root, creation);
+            let _ = ensure_root_if_ours(&root, &creation);
             Some((ws.id.clone(), root))
         })
         .collect();
@@ -394,7 +388,7 @@ pub fn tasks_migrate(
 
     // Before planning anything: moving some cards and then discovering there is
     // nowhere to put the rest is worse than refusing up front.
-    ensure_root_if_ours(&root, creation).map_err(|e| e.to_string())?;
+    ensure_root_if_ours(&root, &creation).map_err(|e| e.to_string())?;
     if !root.is_dir() {
         return Err(crate::tasks::model::TaskError::RootMissing(
             root.to_string_lossy().to_string(),
@@ -432,7 +426,7 @@ pub fn tasks_migration_dismiss(
 mod tests {
     use super::*;
     use crate::model::{TrackerConfig, TrackerProvider, TrackerRoot, Workspace};
-    use crate::tasks::fs::RootCreation;
+    use crate::tasks::fs::{FsTaskProvider, RootCreation};
 
     fn ws(tracker: Option<TrackerConfig>) -> Workspace {
         Workspace {
@@ -464,10 +458,13 @@ mod tests {
     fn an_external_root_gets_a_per_project_subfolder() {
         let w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault/Tasks".into() })));
         let (root, creation) = resolve_root(&w).expect("configured");
-        // One shared folder holding several projects is the whole reason this
-        // exists: the cards go one level down, named for the project.
         assert_eq!(root, std::path::Path::new("/home/u/vault/Tasks/cowork-deck"));
-        assert_eq!(creation, RootCreation::LeafInsideExistingParent);
+        // The base is the folder the human picked, whatever the layout adds
+        // below it. That is the whole point of the variant.
+        assert_eq!(
+            creation,
+            RootCreation::InsideExisting { base: "/home/u/vault/Tasks".into() },
+        );
     }
 
     #[test]
@@ -496,34 +493,48 @@ mod tests {
     }
 
     #[test]
-    fn ensure_root_if_ours_creates_a_project_root_but_never_a_path_root() {
+    fn ensure_root_if_ours_creates_a_project_root_and_a_subtree_inside_a_picked_folder() {
         let dir = tempfile::tempdir().unwrap();
 
         let project_root = dir.path().join("proj").join(".cowork").join("tasks");
-        ensure_root_if_ours(&project_root, RootCreation::Always).unwrap();
+        ensure_root_if_ours(&project_root, &RootCreation::Always).unwrap();
         assert!(project_root.is_dir(), "the in-project root is ours to create");
 
-        // The picked folder exists, so its project subfolder is ours to make.
+        // The picked folder exists, so everything below it is ours — one level
+        // today, two once the container lands, and this must not care which.
         let picked = dir.path().join("vault");
         std::fs::create_dir(&picked).unwrap();
-        let leaf = picked.join("deck");
-        ensure_root_if_ours(&leaf, RootCreation::LeafInsideExistingParent).unwrap();
-        assert!(leaf.is_dir(), "a subfolder inside an existing parent is ours to make");
+        let deep = picked.join("container").join("deck");
+        ensure_root_if_ours(&deep, &RootCreation::InsideExisting { base: picked.clone() }).unwrap();
+        assert!(deep.is_dir(), "a subtree inside an existing base is ours to make");
     }
 
     #[test]
     fn ensure_root_if_ours_creates_nothing_when_the_picked_folder_is_a_typo() {
         let dir = tempfile::tempdir().unwrap();
-        // This is the typo guarantee. If anyone "simplifies" the branch to
-        // create_dir_all, this test is what fails.
-        let leaf = dir.path().join("vualt").join("deck");
-        ensure_root_if_ours(&leaf, RootCreation::LeafInsideExistingParent).unwrap();
-        assert!(!leaf.exists(), "a typo'd parent must not be created");
-        assert!(!dir.path().join("vualt").exists(), "nor its parent");
+        // The typo guarantee, now stated once for any depth. If anyone drops the
+        // base check and calls create_dir_all unconditionally, this is what
+        // fails.
+        let base = dir.path().join("vualt");
+        let leaf = base.join("cowork-deck-tasks").join("deck");
+        ensure_root_if_ours(&leaf, &RootCreation::InsideExisting { base: base.clone() }).unwrap();
+        assert!(!leaf.exists(), "a typo'd base must not be created");
+        assert!(!base.exists(), "nor the base itself");
 
         let never = dir.path().join("cli-root");
-        ensure_root_if_ours(&never, RootCreation::Never).unwrap();
+        ensure_root_if_ours(&never, &RootCreation::Never).unwrap();
         assert!(!never.exists(), "the CLI creates nothing");
+    }
+
+    #[test]
+    fn a_provider_refuses_to_read_a_root_whose_base_is_missing() {
+        // ensure_root_if_ours is best-effort and silent; FsTaskProvider is the
+        // half that has to be loud, and it is what the board surfaces.
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("vualt");
+        let root = base.join("deck");
+        let p = FsTaskProvider::new(root, RootCreation::InsideExisting { base });
+        assert!(p.scan().is_err(), "a missing base is RootMissing, not an empty list");
     }
 
     fn v1_external(path: &str) -> TrackerConfig {

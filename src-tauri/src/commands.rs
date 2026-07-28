@@ -232,7 +232,7 @@ pub fn start_session(
                         // session is about to get has somewhere to write.
                         // Best-effort: an I/O failure surfaces the usual way
                         // the first time `cowork_task` touches the directory.
-                        let _ = crate::tasks_cmd::ensure_root_if_ours(root, *creation);
+                        let _ = crate::tasks_cmd::ensure_root_if_ours(root, creation);
                     }
                     let root = resolved.map(|(r, _)| r);
                     (root, ws.name)

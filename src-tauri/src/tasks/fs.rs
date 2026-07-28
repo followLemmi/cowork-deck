@@ -4,16 +4,20 @@ use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
 use std::path::{Path, PathBuf};
 
 /// How much of a root a provider may bring into existence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy`: `InsideExisting` owns the base path. Passing it by reference at
+/// the four call sites is cheaper than recomputing the base from the root.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RootCreation {
     /// The whole chain is ours: on a fresh project `<ws.path>/.cowork/tasks`
-    /// has neither `.cowork` nor `tasks` yet, so a "create the leaf inside an
-    /// existing parent" rule would refuse the case it is meant to handle.
+    /// has neither `.cowork` nor `tasks` yet, so a rule that required an
+    /// existing parent would refuse the case it is meant to handle.
     Always,
-    /// Only the leaf, and only inside a parent that already exists. This is
-    /// what keeps a typo'd external path surfacing as `RootMissing` instead of
-    /// scattering an empty tree across the disk.
-    LeafInsideExistingParent,
+    /// `base` — the folder the human picked — must already exist; everything
+    /// below it is ours to create. This is what keeps a typo'd external path
+    /// surfacing as `RootMissing` instead of scattering a tree across the disk,
+    /// and it says so once for any number of levels.
+    InsideExisting { base: PathBuf },
     /// Create nothing. `cowork_task` is handed an already-resolved
     /// `COWORK_TASKS_DIR` and must not invent folders from a stale env var.
     Never,
@@ -34,18 +38,19 @@ impl FsTaskProvider {
             return Ok(());
         }
         let missing = || TaskError::RootMissing(self.root.to_string_lossy().to_string());
-        match self.creation {
+        match &self.creation {
             RootCreation::Always => {
                 std::fs::create_dir_all(&self.root).map_err(|e| TaskError::Io(e.to_string()))
             }
-            RootCreation::LeafInsideExistingParent => match self.root.parent() {
-                Some(p) if p.is_dir() => {
-                    std::fs::create_dir(&self.root).map_err(|e| TaskError::Io(e.to_string()))
-                }
-                // The picked folder itself is missing: a typo, an unmounted
-                // volume, a deleted directory. Say so instead of creating it.
-                _ => Err(missing()),
-            },
+            // `create_dir_all` is safe precisely because the base was checked:
+            // recursion can only ever run below a directory the human pointed
+            // at, however many levels the layout adds.
+            RootCreation::InsideExisting { base } if base.is_dir() => {
+                std::fs::create_dir_all(&self.root).map_err(|e| TaskError::Io(e.to_string()))
+            }
+            // The picked folder itself is missing: a typo, an unmounted volume,
+            // a deleted directory. Say so instead of creating it.
+            RootCreation::InsideExisting { .. } => Err(missing()),
             RootCreation::Never => Err(missing()),
         }
     }
