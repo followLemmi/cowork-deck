@@ -479,6 +479,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* The card's title is a button, not a div wrapping one — see board.ts's
+   comment on `openBtn`. It needs the button reset a plain title never did. */
+.tk-card-open {
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+  width: 100%;
+}
+.tk-card-open:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .tk-meta { grid-row: 3; display: flex; gap: var(--sp-2); margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--fg-subtle); }
 .tk-bot { color: var(--st-ended); }
 /* Pulse via opacity only: animating box-shadow once hung the whole system. */
@@ -546,3 +554,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .tk-f-kind.selected { border-color: var(--accent); color: var(--fg); }
 .tk-f-kind:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* --- The opened card (card-modal.ts) ------------------------------------- */
+.tk-c-selects { display: flex; gap: var(--sp-2); }
+.tk-c-body { min-height: 12rem; width: 100%; }
+.tk-c-facts { color: var(--fg-subtle); font-size: var(--fs-xs); display: flex; flex-direction: column; gap: 2px; }
+.tk-c-broken { color: var(--st-error); font-size: var(--fs-xs); }

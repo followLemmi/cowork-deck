@@ -11,7 +11,7 @@ const CFG: BoardConfig = {
 
 const handlers = {
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
-  onMigrate: vi.fn(), onDismissMigration: vi.fn(),
+  onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(),
 };
 
 function card(over: Partial<Task> = {}): Task {
@@ -132,6 +132,25 @@ describe("BoardView", () => {
     v.render({ project: "deck", caps, error: null, links: [], tasks: [card()] });
     expect(v.mount.querySelector(".tk-run")!.getAttribute("aria-label")).toBe("Start a session from this task");
     expect(v.mount.querySelector(".tk-done")!.getAttribute("aria-label")).toBe("Close this task");
+  });
+
+  it("opens the card when its title is clicked", () => {
+    let opened: string | null = null;
+    const v = new BoardView({ ...handlers, onOpen: (t) => { opened = t.id; } });
+    v.render({ project: "deck", caps, error: null, links: [], tasks: [card()] });
+    const btn = v.mount.querySelector<HTMLButtonElement>(".tk-card-title")!;
+    expect(btn.tagName).toBe("BUTTON");
+    expect(btn.getAttribute("aria-label")).toBe(`Open card: ${card().title}`);
+    btn.click();
+    expect(opened).toBe("01AAA");
+  });
+
+  it("does not open the card when an action button is clicked", () => {
+    const onOpen = vi.fn();
+    const v = new BoardView({ ...handlers, onOpen });
+    v.render({ project: "deck", caps, error: null, links: [], tasks: [card()] });
+    v.mount.querySelector<HTMLButtonElement>(".tk-run")!.click();
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });
 

@@ -20,6 +20,7 @@ export interface BoardHandlers {
   onConfigure: () => void;
   onMigrate: () => void;
   onDismissMigration: () => void;
+  onOpen: (task: Task) => void;
 }
 
 /** `caps === null` means no tracker is configured — a legal state, not a failure. */
@@ -187,7 +188,15 @@ export class BoardView {
     const box = el("div", `tk-card ${status}`);
     if (t.damaged) box.classList.add("damaged");
 
-    box.append(el("div", "tk-card-title", t.title));
+    // The grid child Task 6 placed, not a child of it: `.tk-card-title` carries
+    // `grid-row: 1` and the two-line clamp, so it becomes the button itself —
+    // wrapping a button inside it would put the clamp on the div and the click
+    // target on something else.
+    const openBtn = el("button", "tk-card-title tk-card-open", t.title);
+    openBtn.type = "button";
+    openBtn.setAttribute("aria-label", `Open card: ${t.title}`);
+    openBtn.onclick = () => this.h.onOpen(t);
+    box.append(openBtn);
 
     const meta = el("div", "tk-meta");
     const kind = kindLabel(caps.board, t.kind);

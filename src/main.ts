@@ -7,7 +7,7 @@ import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
 import {
   listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
-  taskMigrationStatus, taskMigrate, taskMigrationDismiss,
+  taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
 } from "./ipc";
 import type { MigrationOffer, Task } from "./ipc";
 import { alertModal } from "./modal";
@@ -20,6 +20,7 @@ import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { taskPrompt } from "./tasks";
 import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm, taskForm } from "./forms";
+import { computePatch, openCardModal } from "./card-modal";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -54,6 +55,7 @@ const board = new BoardView({
     "Configure the tracker in the workspace settings (✎): a folder in the project, or one of your own."),
   onMigrate: () => void migrateCards(),
   onDismissMigration: () => void dismissMigration(),
+  onOpen: (t) => void openCard(t),
 });
 boardEl.append(board.mount);
 
@@ -214,6 +216,24 @@ async function closeTask(t: Task) {
   if (!ws) return;
   try { await resolveTask(ws.id, t.id); }
   catch (e) { await alertModal(`Could not close the task: ${String(e)}`); }
+  await refreshBoard();
+  await refreshCounts();
+}
+
+/** Open a card, edit it, and save only what changed — see card-modal.ts for
+ *  why a full-field patch would be unsafe here. */
+async function openCard(t: Task) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  const caps = await taskCapabilities(ws.id).catch(() => null);
+  if (!caps) return;
+  const canWrite = !t.damaged && !t.conflict;
+  const edited = await openCardModal(t, caps.board, canWrite);
+  if (!edited) return;
+  const patch = computePatch(t, edited);
+  if (Object.keys(patch).length === 0) return;
+  try { await updateTask(ws.id, t.id, patch); }
+  catch (e) { await alertModal(`Could not save the card: ${String(e)}`); }
   await refreshBoard();
   await refreshCounts();
 }
