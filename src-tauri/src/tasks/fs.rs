@@ -278,8 +278,16 @@ impl TaskProvider for FsTaskProvider {
             };
             fields.push(("status", s.0.clone()));
             // Empty clears it: `field()` treats an empty value as absent, and
-            // `set_fields` cannot delete a line.
-            fields.push(("resolved", resolved.clone().unwrap_or_default()));
+            // `set_fields` cannot delete a line. But a plain relabelling
+            // leaves `resolved` unchanged (the `_` arm above), so writing it
+            // unconditionally would still push an empty `resolved: ` line
+            // into a card that never had one — `card.resolved` here is still
+            // the value *before* this patch, which is what makes the
+            // comparison meaningful; only push when the transition actually
+            // changes it.
+            if resolved != card.resolved {
+                fields.push(("resolved", resolved.clone().unwrap_or_default()));
+            }
             card.status = s.clone();
             card.resolved = resolved;
         }
@@ -725,6 +733,11 @@ The body, unchanged.\n";
         // returned `Task` — that struct is assembled in memory regardless of
         // whether the frontmatter write actually happened.
         assert!(after.contains("status: doing"), "{after}");
+        // `todo` -> `doing` is non-terminal to non-terminal: a plain move,
+        // not a resolution or a reopening, so `resolved` must not appear at
+        // all — not even as an empty `resolved: ` line. A fresh card never
+        // had the key, and this patch must not be the one that adds it.
+        assert!(!after.contains("resolved"), "a plain move must not add a resolved line: {after}");
     }
 
     #[test]
