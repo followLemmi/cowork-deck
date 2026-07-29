@@ -68,8 +68,10 @@ describe("BoardView", () => {
   });
 
   it("shows damaged and conflicting cards with their reason", () => {
-    // p.tk-warn is gone (task 6): the reason now lives on .tk-warn-glyph's
-    // aria-label/title rather than in the card's visible text.
+    // p.tk-warn is gone (task 6): both reasons now live on .tk-warn-glyph's
+    // aria-label/title rather than in the card's visible text. This card is
+    // both damaged and conflicting, so it is the only place the conflict
+    // message is asserted — keep both checks, not just the damaged one.
     const v = new BoardView({ ...handlers });
     v.render({
       project: "deck", caps, error: null, links: [],
@@ -77,9 +79,11 @@ describe("BoardView", () => {
     });
     const el = v.mount.querySelector(".tk-card")!;
     expect(el.classList.contains("damaged")).toBe(true);
-    const warn = el.querySelector(".tk-warn-glyph")!.getAttribute("aria-label");
-    expect(warn).toContain("no status field");
-    expect(warn).toContain("id");
+    const warn = el.querySelector(".tk-warn-glyph")!.getAttribute("aria-label")!;
+    expect(warn).toContain("no status field"); // the damaged reason
+    // The only instruction the person gets for a state they must resolve by
+    // hand — it has to name the id, not just say "a conflict exists".
+    expect(warn).toContain("more than one file carries id 01AAA — fix it by hand");
     expect(el.querySelector(".tk-done")).toBeNull(); // a conflicting card must not be closed
   });
 
