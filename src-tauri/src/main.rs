@@ -7,6 +7,8 @@ mod listener;
 mod pty;
 mod commands;
 mod scheduler;
+mod tasks_cmd;
+use cowork_deck::tasks;
 
 use commands::AppState;
 use std::path::{Path, PathBuf};
@@ -44,6 +46,18 @@ fn reporter_path() -> String {
         .to_string()
 }
 
+fn task_bin_name() -> &'static str {
+    if cfg!(windows) { "cowork_task.exe" } else { "cowork_task" }
+}
+
+fn task_bin_path() -> String {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    resolve_reporter_path(&dir, task_bin_name(), |p| p.exists())
+        .to_string_lossy()
+        .to_string()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -72,7 +86,9 @@ fn main() {
                 pty: pty::PtyManager::new(),
                 listener_port: port,
                 reporter_path: reporter_path(),
+                task_bin_path: task_bin_path(),
                 scheduler_ready: scheduler_ready.clone(),
+                watchers: std::sync::Arc::new(tasks::watch::TaskWatchers::new()),
             });
 
             // Scheduled scenarios: the backend decides *when* and emits
@@ -130,6 +146,20 @@ fn main() {
             commands::scheduler_ready,
             commands::schedule_ack,
             commands::load_schedule_state,
+            tasks_cmd::tasks_list,
+            tasks_cmd::tasks_create,
+            tasks_cmd::tasks_resolve,
+            tasks_cmd::tasks_update,
+            tasks_cmd::tasks_capabilities,
+            tasks_cmd::tasks_open_counts,
+            tasks_cmd::tasks_watch_sync,
+            tasks_cmd::tasks_migration_status,
+            tasks_cmd::tasks_migrate,
+            tasks_cmd::tasks_migration_dismiss,
+            tasks_cmd::tracker_root_preview,
+            tasks_cmd::board_config_save,
+            tasks_cmd::board_step_rewrite,
+            tasks_cmd::board_step_usage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running cowork-deck");
@@ -162,5 +192,12 @@ mod tests {
         let dir = Path::new("/app");
         let got = resolve_reporter_path(dir, "cowork_report", |_| false);
         assert_eq!(got, Path::new("/app/cowork_report"));
+    }
+
+    #[test]
+    fn task_bin_resolves_next_to_the_exe_like_the_reporter() {
+        let dir = Path::new("/app");
+        let got = resolve_reporter_path(dir, task_bin_name(), |p| p == Path::new("/app/cowork_task"));
+        assert_eq!(got, Path::new("/app/cowork_task"));
     }
 }

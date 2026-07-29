@@ -27,6 +27,7 @@ impl PtyManager {
         cwd: &str,
         cols: u16,
         rows: u16,
+        env: &[(String, String)],
         on_output: F,
         on_exit: impl Fn(bool) + Send + 'static,
     ) -> std::io::Result<()>
@@ -44,6 +45,9 @@ impl PtyManager {
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         cmd.cwd(cwd);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
 
         let mut child = pair.slave.spawn_command(cmd).map_err(to_io)?;
         let killer = child.clone_killer();
@@ -152,7 +156,7 @@ mod tests {
         let (prog, args) = ("/bin/sh", vec!["-c".to_string(), "printf COWORK_OK".to_string()]);
 
         mgr.spawn(
-            "s1", prog, &args, ".", 80, 24,
+            "s1", prog, &args, ".", 80, 24, &[],
             move |bytes| { let _ = tx.send(bytes); },
             move |ok| { let _ = etx.send(ok); },
         ).unwrap();

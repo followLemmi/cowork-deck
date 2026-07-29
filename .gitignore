@@ -4,3 +4,6 @@ dist/
 .DS_Store
 src-tauri/gen/
 src-tauri/binaries/
+
+# superpowers SDD scratch (ledger, briefs, review packages)
+.superpowers/

@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
  *  `done` — the agent finished its turn and the prompt is free: nothing is
  *  blocked, but work got done, which is worth a notification. */
 export type SessionState = "idle" | "working" | "waitingInput" | "done" | "ended" | "error";
-export interface Workspace { id: string; name: string; path: string; color: string; }
+export interface Workspace { id: string; name: string; path: string; color: string; tracker?: TrackerConfig | null; }
 export type SchedulePreset =
   | { kind: "hourly"; minute: number }
   | { kind: "daily"; hour: number; minute: number }
@@ -16,6 +16,8 @@ export interface Schedule { preset: SchedulePreset; defaults: Record<string, str
 export interface Skill { id: string; name: string; icon: string; prompt: string; workspaceId?: string | null; schedule?: Schedule | null; }
 export interface SessionEntry {
   sessionId: string; cwd: string; name: string; workspaceId?: string;
+  /** Set when the session was launched from a tracker card. */
+  taskId?: string;
   /** Set when the session came from a schedule — re-arms the overlap guard
    *  on restore, so catch-up cannot duplicate a run that is already back. */
   scheduledSkillId?: string;
@@ -42,8 +44,9 @@ export const removeSkill = (id: string) => invoke<Skill[]>("remove_skill", { id 
 export const claudeAvailable = () => invoke<boolean>("claude_available");
 
 export const startSession = (
-  session: string, cwd: string, initialPrompt: string | null, cols: number, rows: number, resume: boolean,
-) => invoke<void>("start_session", { session, cwd, initialPrompt, cols, rows, resume });
+  session: string, cwd: string, workspaceId: string | null, initialPrompt: string | null,
+  taskId: string | null, cols: number, rows: number, resume: boolean,
+) => invoke<void>("start_session", { session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume });
 export const writeSession = (session: string, data: string) => invoke<void>("write_session", { session, data });
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
@@ -92,3 +95,116 @@ export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
 export const sessionTokens = (sessionId: string) => invoke<TokenUsage>("session_tokens", { sessionId });
+
+/** A step id and a kind id are whatever `board.json` says they are — the
+ *  frontend never enumerates them, it reads them (see src/board-config.ts). */
+export type StepId = string;
+export type KindId = string;
+export type TaskOrigin = "human" | "session";
+
+export interface BoardStep { id: StepId; label: string; terminal?: boolean; working?: boolean }
+export interface BoardKind { id: KindId; label: string }
+export interface BoardConfig { v: number; steps: BoardStep[]; kinds: BoardKind[] }
+
+export interface Task {
+  id: string; title: string; kind: KindId; status: StepId; project: string;
+  created: string; resolved: string | null; origin: TaskOrigin; session: string | null;
+  body: string; path: string;
+  /** Why the card could not be parsed in full. Shown, not hidden. */
+  damaged: string | null;
+  /** More than one file carries this id. */
+  conflict: boolean;
+}
+// project/origin are set by the backend (workspace name / "human") and are
+// deliberately not settable from here — see tasks_cmd::TaskDraftInput.
+export interface TaskDraft { title: string; kind: KindId; body: string; }
+/** Which fields of a card to write. Every field optional: Save applies only
+ *  what the person touched, and a step-only move (drag-and-drop, `‹`/`›`) is a
+ *  patch carrying only `status` — see tasks_cmd::tasks_update. */
+export interface TaskPatch { title?: string; kind?: KindId; status?: StepId; body?: string }
+/** Capabilities and the board configuration arrive together, flattened into one
+ *  object by `tasks_cmd::BoardCapabilities`: the board, the card modal and the
+ *  ⚙ editor all read the same thing, so there is no second channel to fall out
+ *  of step with the first. */
+export interface ProviderCapabilities {
+  canCreate: boolean;
+  canResolve: boolean;
+  statuses: StepId[];
+  board: BoardConfig;
+  /** Why `board.json` could not be used, when it could not. The board draws
+   *  either way; the person has to be told which they are looking at. */
+  boardError: string | null;
+}
+export type TrackerRoot = { kind: "project" } | { kind: "path"; path: string };
+export interface TrackerConfig { providers: { type: "fs"; root: TrackerRoot }[] }
+
+export const listTasks = (workspaceId: string) => invoke<Task[]>("tasks_list", { workspaceId });
+export const createTask = (workspaceId: string, draft: TaskDraft) =>
+  invoke<Task>("tasks_create", { workspaceId, draft });
+export const resolveTask = (workspaceId: string, id: string) =>
+  invoke<Task>("tasks_resolve", { workspaceId, id });
+export const updateTask = (workspaceId: string, id: string, patch: TaskPatch) =>
+  invoke<Task>("tasks_update", { workspaceId, id, patch });
+export const taskCapabilities = (workspaceId: string) =>
+  invoke<ProviderCapabilities | null>("tasks_capabilities", { workspaceId });
+export const taskOpenCounts = () => invoke<Record<string, number>>("tasks_open_counts");
+export const taskWatchSync = () => invoke<void>("tasks_watch_sync");
+/** A pending move of this workspace's cards from where they used to live. */
+export interface MigrationOffer {
+  from: string; to: string;
+  moving: number;
+  leavingForeign: number;
+  leavingDamaged: number;
+  /** Whether `project:` inside the moved cards will be rewritten. */
+  renamingProject: boolean;
+}
+export type SkipReason =
+  | { kind: "alreadyAtDestination" }
+  | { kind: "failed"; detail: string };
+export interface MigrationReport {
+  moved: number;
+  skipped: { fileName: string; reason: SkipReason }[];
+}
+
+export const taskMigrationStatus = (workspaceId: string) =>
+  invoke<MigrationOffer | null>("tasks_migration_status", { workspaceId });
+export const taskMigrate = (workspaceId: string) =>
+  invoke<MigrationReport>("tasks_migrate", { workspaceId });
+export const taskMigrationDismiss = (workspaceId: string) =>
+  invoke<void>("tasks_migration_dismiss", { workspaceId });
+
+/** What configuring a picked folder would resolve to, and what it would create. */
+export interface TrackerRootPreview {
+  root: string;
+  /** Single folder names, outermost first, that do not exist yet. */
+  creating: string[];
+  /** The picked folder itself is absent, so nothing will be created. */
+  baseMissing: boolean;
+}
+
+export const trackerRootPreview = (workspaceName: string, pickedPath: string) =>
+  invoke<TrackerRootPreview>("tracker_root_preview", { workspaceName, pickedPath });
+
+export const onTasksChanged = (cb: (workspaceId: string) => void): Promise<UnlistenFn> =>
+  listen<{ workspaceId: string }>("tasks://changed", (e) => cb(e.payload.workspaceId));
+
+/** How many of this project's cards currently sit in one step — including a
+ *  step the configuration no longer lists, since the ⚙ editor needs to know a
+ *  step is occupied precisely when it is about to disappear. */
+export interface StepUsage { step: StepId; count: number }
+/** A card that could not be moved by a step rewrite, and why. */
+export interface RewriteSkip { fileName: string; reason: string }
+/** What a step rename or removal left behind: how many cards moved, and which
+ *  ones could not be. */
+export interface RewriteReport { rewritten: number; skipped: RewriteSkip[] }
+
+export const boardConfigSave = (workspaceId: string, config: BoardConfig) =>
+  invoke<void>("board_config_save", { workspaceId, config });
+/** `config` is the draft the ⚙ editor is about to save, not whatever
+ *  board.json currently holds: a rename's target id is not yet on disk, and
+ *  validating `to` against the on-disk file would refuse every card of it —
+ *  see tasks_cmd::rewrite_step's docstring on the Rust side. */
+export const boardStepRewrite = (workspaceId: string, from: StepId, to: StepId, config: BoardConfig) =>
+  invoke<RewriteReport>("board_step_rewrite", { workspaceId, from, to, config });
+export const boardStepUsage = (workspaceId: string) =>
+  invoke<StepUsage[]>("board_step_usage", { workspaceId });

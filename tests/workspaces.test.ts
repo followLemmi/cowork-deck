@@ -20,7 +20,20 @@ vi.mock("../src/ipc", () => ({
 vi.mock("../src/forms", () => ({ workspaceForm }));
 vi.mock("../src/modal", () => ({ confirmModal: confirmModalMock }));
 
-import { WorkspacesPanel } from "../src/workspaces";
+import { WorkspacesPanel, openTaskCountLabel } from "../src/workspaces";
+
+describe("openTaskCountLabel", () => {
+  it("uses the singular for exactly 1", () => {
+    expect(openTaskCountLabel(1)).toBe("1 open task");
+  });
+  it("uses the plural for everything else, zero included", () => {
+    expect(openTaskCountLabel(0)).toBe("0 open tasks");
+    expect(openTaskCountLabel(2)).toBe("2 open tasks");
+    expect(openTaskCountLabel(11)).toBe("11 open tasks");
+    // 21 ends in 1 but is not 1: only the whole count decides the form.
+    expect(openTaskCountLabel(21)).toBe("21 open tasks");
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

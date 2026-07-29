@@ -17,6 +17,13 @@ export function describeDeleteImpact(workspaceId: string, skills: Skill[]): stri
     + " — they will stop running.";
 }
 
+/** Tooltip for the open-task badge. English needs one distinction rather than
+ *  the three the Russian original agreed with, but it still needs that one:
+ *  "1 open tasks" reads as a bug in the code, not as a count. */
+export function openTaskCountLabel(n: number): string {
+  return `${n} open task${n === 1 ? "" : "s"}`;
+}
+
 export class WorkspacesPanel {
   /** Scenarios, so deletion can report what it will strand. Injected because
    *  the skills panel owns them and loads independently. */
@@ -24,7 +31,18 @@ export class WorkspacesPanel {
   setSkillsSource(get: () => Skill[]) { this.getSkills = get; }
   private items: Workspace[] = [];
   private activeId: string | null = null;
-  constructor(private mount: HTMLElement, private onSelect: (ws: Workspace) => void) {}
+  /** Open tasks per workspace; filled in by main.ts. */
+  private counts = new Map<string, number>();
+  constructor(
+    private mount: HTMLElement,
+    private onSelect: (ws: Workspace) => void,
+    private onChanged?: () => void,
+  ) {}
+
+  setCounts(counts: Record<string, number>) {
+    this.counts = new Map(Object.entries(counts));
+    this.render();
+  }
 
   get active(): Workspace | null {
     return this.items.find((w) => w.id === this.activeId) ?? null;
@@ -55,15 +73,17 @@ export class WorkspacesPanel {
     if (!res) return;
     const ws: Workspace = { id: crypto.randomUUID(), ...res };
     this.items = await saveWorkspace(ws);
+    this.onChanged?.();
     this.select(ws.id);
   }
 
   private async edit(id: string) {
     const cur = this.items.find((w) => w.id === id);
     if (!cur) return;
-    const res = await workspaceForm({ name: cur.name, path: cur.path, color: cur.color });
+    const res = await workspaceForm({ name: cur.name, path: cur.path, color: cur.color, tracker: cur.tracker ?? null });
     if (!res) return;
     this.items = await saveWorkspace({ ...cur, ...res });
+    this.onChanged?.();
     this.render();
   }
 
@@ -98,7 +118,16 @@ export class WorkspacesPanel {
       edit.onclick = () => this.edit(w.id);
       const x = iconButton("trash", `Delete workspace: ${w.name}`, "ws-del btn--icon--danger");
       x.onclick = () => this.del(w.id);
-      row.append(dot, label, edit, x);
+      row.append(dot, label);
+      const n = this.counts.get(w.id) ?? 0;
+      if (n > 0) {
+        const count = document.createElement("span");
+        count.className = "ws-count";
+        count.textContent = String(n);
+        count.title = openTaskCountLabel(n);
+        row.append(count);
+      }
+      row.append(edit, x);
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");

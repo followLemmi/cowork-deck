@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, saveLayout, type SessionState, type Skill, type Workspace, type SessionEntry } from "./ipc";
+import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type Task, type BoardConfig } from "./ipc";
 import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -11,6 +11,8 @@ import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
 import { icon, iconButton } from "./icons";
+import { liveSessionForTask, taskPrompt } from "./tasks";
+import { workingStep } from "./board-config";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -18,6 +20,8 @@ interface Tile {
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
+  /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
+  taskId?: string;
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -165,6 +169,42 @@ export class Deck {
     return true;
   }
 
+  /** Launch a session from a tracker card. If the card already has a live
+   *  session, focus it rather than raise a second one — the same call a
+   *  scheduled scenario makes when it skips an overlapping run. */
+  async launchFromTask(
+    workspace: Workspace, task: Task, cfg: BoardConfig,
+  ): Promise<"launched" | "focused"> {
+    const alive = liveSessionForTask(task.id, this.taskLinks());
+    if (alive) { this.focusTile(alive); return "focused"; }
+    // ▶ writes the step itself, so the card moves whether or not the agent
+    // remembers to. A failure must not block the launch: the work matters more
+    // than the bookkeeping, and the board's stale marker will show the mismatch.
+    let current = task;
+    const step = workingStep(cfg);
+    if (step !== null && task.status !== step) {
+      // The prompt is built from `current` below, so it must reflect what the
+      // move actually did, not what it was meant to do: on a failed write
+      // `current` stays the unmoved card, which is the true state the session
+      // is starting from. Predicting the destination here would tell the
+      // agent a step it never reached whenever the write fails.
+      current = await updateTask(workspace.id, task.id, { status: step }).catch((e) => {
+        console.warn("could not move the card to the working step:", e);
+        return task;
+      });
+    }
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd: workspace.path,
+      workspaceId: workspace.id,
+      titleText: `☑ ${task.title}`,
+      prompt: taskPrompt(current, cfg),
+      resume: false,
+      taskId: task.id,
+    });
+    return "launched";
+  }
+
   setActiveWorkspace(id: string | null) {
     this.zoomedSession = null;
     this.activeWorkspaceId = id;
@@ -191,6 +231,8 @@ export class Deck {
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
     scheduledSkillId?: string;
+    /** Tracker card this tile is working on. */
+    taskId?: string;
     /** Marks the tile as started by a schedule. Shown as its own icon rather
      *  than glued to the title, which gets clipped by text-overflow. */
     scheduled?: boolean;
@@ -238,7 +280,7 @@ export class Deck {
       restart.style.display = "none";
       tile.panel.write("\r\n[restarting session...]\r\n");
       try {
-        await tile.panel.start(tile.workspacePath, null, true);
+        await tile.panel.start(tile.workspacePath, tile.workspaceId ?? null, null, tile.taskId ?? null, true);
         this.setState(session, "idle");
         void this.persistLayout();
       } catch (e) {
@@ -280,14 +322,14 @@ export class Deck {
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
+      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId, taskId: opts.taskId,
     };
     this.tiles.set(session, tile);
     if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
     try {
-      await panel.start(cwd, prompt, resume);
+      await panel.start(cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume);
       void this.persistLayout();
     } catch (e) {
       this.setState(session, "error");
@@ -328,13 +370,18 @@ export class Deck {
         await this.spawnTile({
           session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
           titleText: e.name, prompt: null, resume: true,
-          scheduledSkillId: e.scheduledSkillId,
+          scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
         });
       }
     } finally {
       this.restoring = false;
     }
     void this.persistLayout();
+  }
+
+  /** Live tiles in the shape the board needs. */
+  taskLinks(): { session: string; taskId?: string; state: SessionState }[] {
+    return [...this.tiles.values()].map((t) => ({ session: t.session, taskId: t.taskId, state: t.state }));
   }
 
   get activeSession(): string | null {
@@ -601,6 +648,7 @@ export class Deck {
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
       session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
       scheduledSkillId: t.scheduledSkillId,
+      taskId: t.taskId,
     })));
     return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
@@ -717,13 +765,14 @@ export function nextWaitingAcross(
 export function serializeTiles(
   tiles: {
     session: string; workspacePath: string; name: string; workspaceId?: string;
-    scheduledSkillId?: string;
+    scheduledSkillId?: string; taskId?: string;
   }[],
 ): SessionEntry[] {
   return tiles.map((t) => ({
     sessionId: t.session, cwd: t.workspacePath, name: t.name,
     ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
     ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
+    ...(t.taskId ? { taskId: t.taskId } : {}),
   }));
 }
 

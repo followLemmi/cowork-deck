@@ -34,6 +34,8 @@ export function matchHotkey(
 
   if (e.code === "Enter" && letterOk) return "zoom";
   if (e.code === "BracketRight" && e.shiftKey) return "next-waiting";
+  // Shift on both platforms: the plain letter belongs to the terminal.
+  if (e.code === "KeyT" && e.shiftKey) return "new-task";
 
   const letters: Record<string, string> = {
     KeyK: "palette", KeyN: "new-session", KeyW: "close-active",

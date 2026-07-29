@@ -12,10 +12,16 @@ pub struct AppState {
     pub pty: PtyManager,
     pub listener_port: u16,
     pub reporter_path: String,
+    /// Absolute path to the `cowork_task` sidecar, handed to sessions via
+    /// COWORK_TASK_BIN.
+    pub task_bin_path: String,
     /// Signalled once by the frontend (`scheduler_ready`) after it attaches its
     /// `schedule://fire` listener, so the scheduler's first (catch-up) tick is
     /// not emitted into the void.
     pub scheduler_ready: std::sync::Arc<tokio::sync::Notify>,
+    /// Live directory watchers for configured tracker roots. Rebuilt via
+    /// `tasks_watch_sync` whenever the workspace set or its config changes.
+    pub watchers: std::sync::Arc<cowork_deck::tasks::watch::TaskWatchers>,
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
@@ -42,6 +48,34 @@ pub fn build_claude_args(
     args
 }
 
+/// Environment a session needs to file its own tickets. When the workspace has
+/// no tracker, the tracker vars are omitted entirely rather than set to an
+/// empty string — the CLI then fails loudly instead of writing somewhere
+/// arbitrary, and the agent has no empty path to misread. `COWORK_TASK_ID` is
+/// the exception: it is pushed unconditionally, same as `COWORK_SESSION`,
+/// because the hooks that key off it need to know a card is linked even when
+/// the workspace's tracker is unreachable.
+pub fn session_env(
+    root: Option<&std::path::Path>,
+    project: &str,
+    task_bin: &str,
+    session: &str,
+    task_id: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut env = vec![("COWORK_SESSION".to_string(), session.to_string())];
+    if let Some(root) = root {
+        env.push(("COWORK_TASKS_DIR".to_string(), root.to_string_lossy().to_string()));
+        env.push(("COWORK_PROJECT".to_string(), project.to_string()));
+        env.push(("COWORK_TASK_BIN".to_string(), task_bin.to_string()));
+    }
+    // The hooks in hooks.rs find the card through this. Set on resume too:
+    // a restored session that lost it would silently stop being reminded.
+    if let Some(id) = task_id {
+        env.push(("COWORK_TASK_ID".to_string(), id.to_string()));
+    }
+    env
+}
+
 #[derive(Clone, Serialize)]
 struct OutputPayload { session: String, #[serde(rename = "dataB64")] data_b64: String }
 #[derive(Clone, Serialize)]
@@ -55,7 +89,16 @@ pub fn list_workspaces(state: State<AppState>) -> Vec<Workspace> {
 }
 #[tauri::command]
 pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Workspace>, String> {
-    state.store.lock().unwrap().upsert_workspace(ws).map_err(|e| e.to_string())
+    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    // Seeded the same way the tracker reads them, so a version 1 config's
+    // cards are not forgotten by the very save that bumps it to version 2.
+    let old = store
+        .workspaces()
+        .into_iter()
+        .map(crate::tasks_cmd::seed_previous_location)
+        .find(|w| w.id == ws.id);
+    let ws = crate::tasks_cmd::with_previous_location(old.as_ref(), ws);
+    store.upsert_workspace(ws).map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn remove_workspace(state: State<AppState>, id: String) -> Result<Vec<Workspace>, String> {
@@ -171,14 +214,49 @@ pub fn start_session(
     state: State<AppState>,
     session: String,
     cwd: String,
+    workspace_id: Option<String>,
     initial_prompt: Option<String>,
+    // Set when the session is launched from (or restored with) a tracker
+    // card — see `session_env`.
+    task_id: Option<String>,
     cols: u16,
     rows: u16,
     resume: bool,
 ) -> Result<(), String> {
     let program = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
-    let settings = build_settings_json(&state.reporter_path, state.listener_port, &session);
+    let settings = build_settings_json(&state.reporter_path, state.listener_port, &session, &state.task_bin_path);
     let args = build_claude_args(&settings, &initial_prompt, &session, resume);
+
+    // Tracker env, resolved from the workspace's config. A missing or
+    // unconfigured workspace simply yields no tracker vars.
+    let (root, project) = match workspace_id.as_deref() {
+        Some(id) => {
+            let ws = {
+                let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+                store.workspaces().into_iter().find(|w| w.id == id)
+            };
+            match ws {
+                Some(ws) => {
+                    let resolved = crate::tasks_cmd::resolve_root(&ws);
+                    if let Some((root, creation)) = &resolved {
+                        // A project-kind root may not exist yet on a freshly
+                        // configured workspace — create it now so the CLI the
+                        // session is about to get has somewhere to write.
+                        // Best-effort: an I/O failure surfaces the usual way
+                        // the first time `cowork_task` touches the directory.
+                        let _ = crate::tasks_cmd::ensure_root_if_ours(root, creation);
+                    }
+                    let root = resolved.map(|(r, _)| r);
+                    (root, ws.name)
+                }
+                None => (None, String::new()),
+            }
+        }
+        None => (None, String::new()),
+    };
+    let env = session_env(
+        root.as_deref(), &project, &state.task_bin_path, &session, task_id.as_deref(),
+    );
 
     let app_out = app.clone();
     let sess_out = session.clone();
@@ -196,7 +274,7 @@ pub fn start_session(
     };
 
     state.pty
-        .spawn(&session, &program, &args, &cwd, cols, rows, on_output, on_exit)
+        .spawn(&session, &program, &args, &cwd, cols, rows, &env, on_output, on_exit)
         .map_err(|e| e.to_string())
 }
 
@@ -306,6 +384,41 @@ pub fn session_tokens(session_id: String) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_env_carries_tracker_paths_when_configured() {
+        let root = std::path::PathBuf::from("/home/u/vault/Tasks");
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", None);
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("COWORK_TASKS_DIR"), Some("/home/u/vault/Tasks"));
+        assert_eq!(get("COWORK_PROJECT"), Some("cowork-deck"));
+        assert_eq!(get("COWORK_TASK_BIN"), Some("/opt/cowork_task"));
+        assert_eq!(get("COWORK_SESSION"), Some("sess-9"));
+    }
+
+    #[test]
+    fn session_env_omits_tracker_vars_when_not_configured() {
+        // Otherwise the agent would see an empty path and start guessing.
+        let env = session_env(None, "cowork-deck", "/opt/cowork_task", "sess-9", None);
+        assert!(env.iter().all(|(n, _)| n != "COWORK_TASKS_DIR"));
+        assert!(env.iter().all(|(n, _)| n != "COWORK_TASK_BIN"));
+    }
+
+    #[test]
+    fn a_session_launched_from_a_card_carries_its_id() {
+        let root = std::path::PathBuf::from("/home/u/vault/Tasks");
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", Some("01K1CARD"));
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("COWORK_TASK_ID"), Some("01K1CARD"));
+    }
+
+    #[test]
+    fn a_session_launched_without_a_card_carries_no_card_id() {
+        // The guard reads its absence as "nothing to demand" and allows.
+        let root = std::path::PathBuf::from("/home/u/vault/Tasks");
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", None);
+        assert!(env.iter().all(|(n, _)| n != "COWORK_TASK_ID"));
+    }
 
     #[test]
     fn sum_usage_lines_adds_assistant_usage_only() {

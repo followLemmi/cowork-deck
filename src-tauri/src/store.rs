@@ -1,4 +1,4 @@
-use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, Workspace, SCHEDULE_STATE_VERSION};
+use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, Workspace};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -158,7 +158,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{SessionEntry, UiState, Workspace};
+    use crate::model::{SessionEntry, UiState, Workspace, SCHEDULE_STATE_VERSION};
 
     fn tmp() -> std::path::PathBuf {
         // Unique per call, even under parallel test threads: SystemTime alone
@@ -180,7 +180,7 @@ mod tests {
     fn empty_store_reads_empty_then_upserts_and_deletes() {
         let s = Store::new(tmp());
         assert!(s.workspaces().is_empty());
-        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into() };
+        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into(), tracker: None };
         let after = s.upsert_workspace(w.clone()).unwrap();
         assert_eq!(after.len(), 1);
         // reload from disk
@@ -219,6 +219,7 @@ mod tests {
             name: "First".into(),
             path: "/tmp/a".into(),
             color: "#111111".into(),
+            tracker: None,
         };
         s.upsert_workspace(w1.clone()).unwrap();
 
@@ -240,6 +241,7 @@ mod tests {
             name: "Second".into(),
             path: "/tmp/b".into(),
             color: "#222222".into(),
+            tracker: None,
         };
         let result = s.upsert_workspace(w2);
         assert!(
@@ -260,8 +262,15 @@ mod tests {
         let s = Store::new(tmp());
         assert!(s.layout().is_empty()); // NotFound -> empty
         let entries = vec![
-            SessionEntry { session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into(), workspace_id: Some("w1".into()), scheduled_skill_id: None },
-            SessionEntry { session_id: "s2".into(), cwd: "/tmp/b".into(), name: "terminal · P".into(), workspace_id: None, scheduled_skill_id: None },
+            SessionEntry {
+                session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into(),
+                workspace_id: Some("w1".into()), task_id: Some("01AAA".into()),
+                scheduled_skill_id: None,
+            },
+            SessionEntry {
+                session_id: "s2".into(), cwd: "/tmp/b".into(), name: "terminal · P".into(),
+                workspace_id: None, task_id: None, scheduled_skill_id: None,
+            },
         ];
         s.save_layout(&entries).unwrap();
         let reloaded = Store::new(s.dir.clone()).layout();

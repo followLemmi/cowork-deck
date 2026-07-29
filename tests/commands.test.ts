@@ -55,6 +55,14 @@ describe("matchHotkey", () => {
     expect(matchHotkey({ ...base, code: "F6" }, true)).toBe("next-region");
     expect(matchHotkey({ ...base, code: "F6", shiftKey: true }, true)).toBe("prev-region");
   });
+  it("maps the capture hotkey without shadowing readline", () => {
+    const ev = { ...base, code: "KeyT", metaKey: true, shiftKey: true };
+    expect(matchHotkey(ev, true)).toBe("new-task");
+    // Without Shift it is not our hotkey — the bare letter belongs to the terminal.
+    expect(matchHotkey({ ...ev, shiftKey: false }, true)).toBeNull();
+    // Linux/Windows: ctrl+shift only, so readline keeps Ctrl+T.
+    expect(matchHotkey({ ...base, code: "KeyT", ctrlKey: true, shiftKey: true }, false)).toBe("new-task");
+  });
 });
 
 describe("nextWaitingIndex", () => {

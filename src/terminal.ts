@@ -64,9 +64,12 @@ export class TerminalPanel {
     this.term.onData((d) => { void writeSession(this.session, d); });
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
   }
-  async start(cwd: string, initialPrompt: string | null, resume = false) {
+  async start(
+    cwd: string, workspaceId: string | null, initialPrompt: string | null,
+    taskId: string | null = null, resume = false,
+  ) {
     const { cols, rows } = this.term;
-    await startSession(this.session, cwd, initialPrompt, cols, rows, resume);
+    await startSession(this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume);
   }
   write(text: string) { this.term.write(text); }
   focus() { this.term.focus(); }
