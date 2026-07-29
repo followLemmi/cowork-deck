@@ -54,6 +54,11 @@ pub enum TaskError {
     /// happens to carry an `id:` for unrelated reasons. The string is the
     /// file's path, so the user knows which file to fix by hand.
     Damaged(String),
+    /// The caller named a step or kind `board.json` does not define. Refused
+    /// rather than written: a card carrying a value nothing defines lands in the
+    /// unknown-step column, and we would have put it there ourselves.
+    UnknownStep(String),
+    UnknownKind(String),
 }
 
 impl std::fmt::Display for TaskError {
@@ -70,6 +75,8 @@ impl std::fmt::Display for TaskError {
                 f,
                 "the card is damaged and will not be closed automatically — repair it by hand: {path}"
             ),
+            TaskError::UnknownStep(s) => write!(f, "no step named {s} in board.json"),
+            TaskError::UnknownKind(s) => write!(f, "no kind named {s} in board.json"),
         }
     }
 }

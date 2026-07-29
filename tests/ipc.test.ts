@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/api/event");
 
-import { listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck } from "../src/ipc";
+import { listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck, updateTask } from "../src/ipc";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -45,6 +45,14 @@ describe("ipc", () => {
     await scheduleAck("s1", 1_700_000_000_000, "no-workspace");
     expect(invoke).toHaveBeenCalledWith("schedule_ack", {
       skillId: "s1", occurrenceMs: 1_700_000_000_000, outcome: "no-workspace",
+    });
+  });
+
+  it("updateTask sends only the fields named in the patch", async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    await updateTask("w1", "01K1", { title: "Renamed" });
+    expect(invoke).toHaveBeenCalledWith("tasks_update", {
+      workspaceId: "w1", id: "01K1", patch: { title: "Renamed" },
     });
   });
 

@@ -118,6 +118,10 @@ export interface Task {
 // project/origin are set by the backend (workspace name / "human") and are
 // deliberately not settable from here — see tasks_cmd::TaskDraftInput.
 export interface TaskDraft { title: string; kind: KindId; body: string; }
+/** Which fields of a card to write. Every field optional: Save applies only
+ *  what the person touched, and a step-only move (drag-and-drop, `‹`/`›`) is a
+ *  patch carrying only `status` — see tasks_cmd::tasks_update. */
+export interface TaskPatch { title?: string; kind?: KindId; status?: StepId; body?: string }
 /** Capabilities and the board configuration arrive together, flattened into one
  *  object by `tasks_cmd::BoardCapabilities`: the board, the card modal and the
  *  ⚙ editor all read the same thing, so there is no second channel to fall out
@@ -139,6 +143,8 @@ export const createTask = (workspaceId: string, draft: TaskDraft) =>
   invoke<Task>("tasks_create", { workspaceId, draft });
 export const resolveTask = (workspaceId: string, id: string) =>
   invoke<Task>("tasks_resolve", { workspaceId, id });
+export const updateTask = (workspaceId: string, id: string, patch: TaskPatch) =>
+  invoke<Task>("tasks_update", { workspaceId, id, patch });
 export const taskCapabilities = (workspaceId: string) =>
   invoke<ProviderCapabilities | null>("tasks_capabilities", { workspaceId });
 export const taskOpenCounts = () => invoke<Record<string, number>>("tasks_open_counts");

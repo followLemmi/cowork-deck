@@ -149,6 +149,7 @@ fn main() {
             tasks_cmd::tasks_list,
             tasks_cmd::tasks_create,
             tasks_cmd::tasks_resolve,
+            tasks_cmd::tasks_update,
             tasks_cmd::tasks_capabilities,
             tasks_cmd::tasks_open_counts,
             tasks_cmd::tasks_watch_sync,

@@ -10,7 +10,7 @@ use crate::tasks::fs::{FsTaskProvider, RootCreation};
 use crate::tasks::migrate::{apply, plan, MigrationPlan, MigrationReport};
 use crate::tasks::board::{BoardConfig, KindId};
 use crate::tasks::model::{Task, TaskDraft, TaskOrigin};
-use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
+use crate::tasks::provider::{ProviderCapabilities, TaskPatch, TaskProvider};
 use serde::Deserialize;
 use std::path::PathBuf;
 use tauri::State;
@@ -383,6 +383,22 @@ pub fn tasks_resolve(
     let ws = workspace(&state, &workspace_id)?;
     let p = provider_for(&ws)?;
     p.resolve(&id).map_err(|e| e.to_string())
+}
+
+/// One command for four callers: the card modal's Save, a drag-and-drop, the
+/// `‹`/`›` arrows, and `cowork_task status` all write only the fields the
+/// caller names — see `TaskPatch`'s doc comment for why every field is
+/// optional.
+#[tauri::command]
+pub fn tasks_update(
+    state: State<AppState>,
+    workspace_id: String,
+    id: String,
+    patch: TaskPatch,
+) -> Result<Task, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    let p = provider_for(&ws)?;
+    p.update(&id, patch).map_err(|e| e.to_string())
 }
 
 /// Open-card count per workspace id, for the sidebar badges. One call instead of

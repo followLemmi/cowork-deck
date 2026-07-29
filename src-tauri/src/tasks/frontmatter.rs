@@ -124,7 +124,10 @@ pub fn render_card(t: &Task) -> String {
     }
     out.push_str("---\n");
     if !t.body.is_empty() {
-        if !t.body.starts_with('\n') { out.push('\n'); }
+        // No separator pushed here: `split_frontmatter` strips exactly the one
+        // newline that terminates the closing `---` line, so an inserted blank
+        // line would come back as a leading `\n` glued to the body on the next
+        // read — the very thing `update` (see `fs.rs`) must round-trip exactly.
         out.push_str(&t.body);
         if !t.body.ends_with('\n') { out.push('\n'); }
     }
@@ -159,7 +162,11 @@ pub fn set_project(text: &str, new_project: &str) -> Option<String> {
 /// untouched byte-for-byte, and the document's line-ending style is reused for
 /// both edited and inserted lines. Returns `None` when `text` has no
 /// frontmatter block.
-fn set_fields(text: &str, fields: &[(&str, &str)]) -> Option<String> {
+///
+/// Values must already be single-line: a newline in one would end the
+/// frontmatter block early. `render_card` flattens with `split_whitespace` and
+/// callers outside this module must do the same.
+pub fn set_fields(text: &str, fields: &[(&str, &str)]) -> Option<String> {
     // The whole document uses one line-ending style throughout; reuse it so
     // CRLF input stays CRLF.
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
@@ -192,6 +199,27 @@ fn set_fields(text: &str, fields: &[(&str, &str)]) -> Option<String> {
     out.push_str("---");
     out.push_str(nl);
     out.push_str(body);
+    Some(out)
+}
+
+/// Replace the body, leaving the frontmatter block byte-for-byte. Returns `None`
+/// when there is no frontmatter block.
+pub fn replace_body(text: &str, body: &str) -> Option<String> {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let (head, _) = split_frontmatter(text)?;
+    let mut out = String::from("---");
+    out.push_str(nl);
+    for line in head.lines() {
+        out.push_str(line);
+        out.push_str(nl);
+    }
+    out.push_str("---");
+    out.push_str(nl);
+    if !body.is_empty() {
+        if !body.starts_with('\n') { out.push_str(nl); }
+        out.push_str(body);
+        if !body.ends_with('\n') { out.push_str(nl); }
+    }
     Some(out)
 }
 
@@ -457,6 +485,25 @@ Repro: three workspaces, Cmd+2.\n";
         assert_eq!(card.status.as_str(), "open");
         assert_eq!(card.project, "cowork-deck");
         assert!(card.damaged.is_none(), "a stray \\r must not leak into a field value");
+    }
+
+    #[test]
+    fn replace_body_leaves_an_unknown_frontmatter_key_alone() {
+        let text = "---\nid: 01K1\ntitle: t\ntags: [inbox]\n---\nOld body.\n";
+        let out = replace_body(text, "New body.\n").expect("has frontmatter");
+        assert!(out.contains("tags: [inbox]"), "{out}");
+        assert!(out.contains("id: 01K1"), "{out}");
+        assert!(out.ends_with("New body.\n"));
+        assert!(!out.contains("Old body."));
+    }
+
+    #[test]
+    fn replace_body_keeps_a_crlf_document_crlf() {
+        let text = "---\r\nid: 01K1\r\ntags: [inbox]\r\n---\r\nOld body.\r\n";
+        let out = replace_body(text, "New body.\r\n").expect("has frontmatter");
+        assert!(out.contains("tags: [inbox]"), "{out}");
+        assert!(out.starts_with("---\r\n"), "{out:?}");
+        assert!(!out.replace("\r\n", "").contains('\n'), "no stray bare LF: {out:?}");
     }
 
     #[test]

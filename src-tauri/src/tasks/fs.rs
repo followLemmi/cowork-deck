@@ -1,7 +1,7 @@
 use crate::tasks::board::{self, BoardConfig};
 use crate::tasks::frontmatter::{parse_card, render_card, set_step, slugify};
 use crate::tasks::model::{Task, TaskDraft, TaskError};
-use crate::tasks::provider::{ProviderCapabilities, TaskProvider};
+use crate::tasks::provider::{ProviderCapabilities, TaskPatch, TaskProvider};
 use std::path::{Path, PathBuf};
 
 /// How much of a root a provider may bring into existence.
@@ -147,6 +147,26 @@ impl FsTaskProvider {
     fn now_iso() -> String {
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
     }
+
+    /// The one card with this id, refusing the two states we will not write
+    /// into. Shared by `resolve` and `update` so the refusals cannot drift apart.
+    fn writable_card(&self, id: &str) -> Result<Task, TaskError> {
+        let cards = self.scan()?;
+        let matches: Vec<&Task> = cards.iter().filter(|c| c.id == id).collect();
+        match matches.len() {
+            0 => Err(TaskError::NotFound(id.to_string())),
+            n if n > 1 => Err(TaskError::Conflict(id.to_string())),
+            _ => {
+                let card = matches[0];
+                // May well be an unrelated Obsidian note that merely has an
+                // `id:` field. Refuse before touching the filesystem.
+                if card.damaged.is_some() {
+                    return Err(TaskError::Damaged(card.path.clone()));
+                }
+                Ok(card.clone())
+            }
+        }
+    }
 }
 
 impl TaskProvider for FsTaskProvider {
@@ -192,41 +212,77 @@ impl TaskProvider for FsTaskProvider {
     }
 
     fn resolve(&self, id: &str) -> Result<Task, TaskError> {
-        let cards = self.scan()?;
-        let matches: Vec<&Task> = cards.iter().filter(|c| c.id == id).collect();
-        match matches.len() {
-            0 => Err(TaskError::NotFound(id.to_string())),
-            // Refuse rather than guess which of two copies to write into.
-            n if n > 1 => Err(TaskError::Conflict(id.to_string())),
-            _ => {
-                let card = matches[0];
-                // A damaged card may well be an unrelated Obsidian note that
-                // merely has an `id:` field. Writing into it — from the UI or
-                // from `cowork_task done` — would rewrite a file we do not
-                // own. Refuse before touching the filesystem at all.
-                if card.damaged.is_some() {
-                    return Err(TaskError::Damaged(card.path.clone()));
-                }
-                let path = PathBuf::from(&card.path);
-                let step = self.board.first_terminal().clone();
-                let resolved = Self::now_iso();
-                // Edit the frontmatter in place rather than re-rendering the
-                // whole card: `render_card` only knows nine keys, so closing a
-                // card that also carries `tags:`, `aliases:`, or Dataview
-                // fields through it would silently drop them.
-                let text = std::fs::read_to_string(&path).map_err(|e| TaskError::Io(e.to_string()))?;
-                let updated = set_step(&text, &step, Some(&resolved)).ok_or_else(|| {
-                    TaskError::Io("the card has no frontmatter block".to_string())
-                })?;
-                self.write_atomic(&path, &updated)?;
+        let mut card = self.writable_card(id)?;
+        let path = PathBuf::from(&card.path);
+        let step = self.board.first_terminal().clone();
+        let resolved = Self::now_iso();
+        // Edit the frontmatter in place rather than re-rendering the whole
+        // card: `render_card` only knows nine keys, so closing a card that
+        // also carries `tags:`, `aliases:`, or Dataview fields through it
+        // would silently drop them.
+        let text = std::fs::read_to_string(&path).map_err(|e| TaskError::Io(e.to_string()))?;
+        let updated = set_step(&text, &step, Some(&resolved))
+            .ok_or_else(|| TaskError::Io("the card has no frontmatter block".to_string()))?;
+        self.write_atomic(&path, &updated)?;
 
-                let mut card = card.clone();
-                card.status = step;
-                card.resolved = Some(resolved);
-                card.conflict = false;
-                Ok(card)
+        card.status = step;
+        card.resolved = Some(resolved);
+        card.conflict = false;
+        Ok(card)
+    }
+
+    fn update(&self, id: &str, patch: TaskPatch) -> Result<Task, TaskError> {
+        if let Some(k) = &patch.kind {
+            if !self.board.has_kind(k) {
+                return Err(TaskError::UnknownKind(k.0.clone()));
             }
         }
+        if let Some(s) = &patch.status {
+            if !self.board.has_step(s) {
+                return Err(TaskError::UnknownStep(s.0.clone()));
+            }
+        }
+        let mut card = self.writable_card(id)?;
+        let path = PathBuf::from(&card.path);
+        let text = std::fs::read_to_string(&path).map_err(|e| TaskError::Io(e.to_string()))?;
+
+        // Frontmatter first, one `set_fields` pass, so a card carrying keys we do
+        // not know keeps them.
+        let mut fields: Vec<(&str, String)> = Vec::new();
+        let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if let Some(t) = &patch.title {
+            fields.push(("title", flat(t)));
+            card.title = t.clone();
+        }
+        if let Some(k) = &patch.kind {
+            fields.push(("kind", k.0.clone()));
+            card.kind = k.clone();
+        }
+        if let Some(s) = &patch.status {
+            let resolved = if self.board.is_terminal(s) { Some(Self::now_iso()) } else { None };
+            fields.push(("status", s.0.clone()));
+            // Empty clears it: `field()` treats an empty value as absent, and
+            // `set_fields` cannot delete a line.
+            fields.push(("resolved", resolved.clone().unwrap_or_default()));
+            card.status = s.clone();
+            card.resolved = resolved;
+        }
+
+        let mut updated = text;
+        if !fields.is_empty() {
+            let refs: Vec<(&str, &str)> =
+                fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            updated = crate::tasks::frontmatter::set_fields(&updated, &refs)
+                .ok_or_else(|| TaskError::Io("the card has no frontmatter block".to_string()))?;
+        }
+        if let Some(b) = &patch.body {
+            updated = crate::tasks::frontmatter::replace_body(&updated, b)
+                .ok_or_else(|| TaskError::Io("the card has no frontmatter block".to_string()))?;
+            card.body = b.clone();
+        }
+        self.write_atomic(&path, &updated)?;
+        card.conflict = false;
+        Ok(card)
     }
 }
 
@@ -565,5 +621,149 @@ The body, unchanged.\n";
         assert!(caps.can_create);
         assert!(caps.can_resolve);
         assert_eq!(caps.statuses, BoardConfig::default_config().step_ids());
+    }
+
+    fn three_step_provider(dir: &std::path::Path) -> FsTaskProvider {
+        let cfg = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"todo","label":"To do"},{"id":"doing","label":"Doing","working":true},
+                         {"id":"done","label":"Done","terminal":true}],
+                "kinds":[{"id":"bug","label":"Bug"},{"id":"task","label":"Task"}]}"#,
+        ).unwrap();
+        FsTaskProvider::with_board(dir.to_path_buf(), RootCreation::Always, cfg)
+    }
+
+    fn a_card(p: &FsTaskProvider) -> Task {
+        p.create(TaskDraft {
+            title: "Original".into(), kind: KindId("task".into()), body: "Body.\n".into(),
+            project: "proj".into(), origin: TaskOrigin::Human, session: None,
+        }).unwrap()
+    }
+
+    #[test]
+    fn update_writes_only_the_fields_it_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let after = p.update(&card.id, TaskPatch {
+            title: Some("Renamed".into()), kind: None, status: None, body: None,
+        }).unwrap();
+        assert_eq!(after.title, "Renamed");
+        assert_eq!(after.kind.as_str(), "task", "an untouched field is untouched");
+        assert_eq!(after.status.as_str(), "todo");
+        assert_eq!(after.body, "Body.\n");
+    }
+
+    #[test]
+    fn update_never_renames_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let before = card.path.clone();
+        let after = p.update(&card.id, TaskPatch {
+            title: Some("A completely different title".into()),
+            kind: None, status: None, body: None,
+        }).unwrap();
+        // The id is the identity. A rename would break Obsidian links and make
+        // the watcher report a delete plus a create instead of an edit.
+        assert_eq!(after.path, before);
+        assert!(std::path::Path::new(&before).exists());
+    }
+
+    #[test]
+    fn update_preserves_frontmatter_keys_it_does_not_know() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let path = std::path::PathBuf::from(&card.path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("---\nid:", "---\ntags: [inbox]\nid:")).unwrap();
+        p.update(&card.id, TaskPatch { title: None, kind: None,
+            status: Some(StepId("doing".into())), body: None }).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("tags: [inbox]"), "{after}");
+    }
+
+    #[test]
+    fn a_step_only_patch_moves_the_card_and_stamps_or_clears_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let closed = p.update(&card.id, TaskPatch { title: None, kind: None,
+            status: Some(StepId("done".into())), body: None }).unwrap();
+        assert!(closed.resolved.is_some(), "a terminal step stamps when");
+        let back = p.update(&card.id, TaskPatch { title: None, kind: None,
+            status: Some(StepId("todo".into())), body: None }).unwrap();
+        assert_eq!(back.resolved, None, "moving back out clears it");
+    }
+
+    #[test]
+    fn update_rewrites_the_body_only_when_it_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let after = p.update(&card.id, TaskPatch { title: None, kind: None, status: None,
+            body: Some("Replaced.\n".into()) }).unwrap();
+        assert_eq!(after.body, "Replaced.\n");
+        let on_disk = std::fs::read_to_string(&card.path).unwrap();
+        assert!(on_disk.contains("Replaced.\n"), "{on_disk}");
+        assert!(!on_disk.contains("Body.\n"));
+    }
+
+    #[test]
+    fn update_refuses_a_damaged_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        // A card with an `id` and nothing else may be an ordinary vault note.
+        std::fs::write(dir.path().join("note.md"), "---\nid: 01ABC\n---\nA note.\n").unwrap();
+        let e = p.update("01ABC", TaskPatch { title: Some("Mine now".into()),
+            kind: None, status: None, body: None }).unwrap_err();
+        assert!(matches!(e, TaskError::Damaged(_)), "{e}");
+    }
+
+    #[test]
+    fn update_refuses_a_conflicting_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let text = std::fs::read_to_string(&card.path).unwrap();
+        std::fs::write(dir.path().join("copy.md"), text).unwrap();
+        let e = p.update(&card.id, TaskPatch { title: Some("X".into()),
+            kind: None, status: None, body: None }).unwrap_err();
+        assert!(matches!(e, TaskError::Conflict(_)), "{e}");
+    }
+
+    #[test]
+    fn update_refuses_a_step_the_configuration_does_not_know() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let e = p.update(&card.id, TaskPatch { title: None, kind: None,
+            status: Some(StepId("invented".into())), body: None }).unwrap_err();
+        assert!(matches!(e, TaskError::UnknownStep(ref s) if s == "invented"), "{e}");
+    }
+
+    #[test]
+    fn update_refuses_a_kind_the_configuration_does_not_know() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let e = p.update(&card.id, TaskPatch { title: None, kind: Some(KindId("chore".into())),
+            status: None, body: None }).unwrap_err();
+        assert!(matches!(e, TaskError::UnknownKind(ref s) if s == "chore"), "{e}");
+    }
+
+    #[test]
+    fn update_accepts_a_card_currently_sitting_in_an_unknown_step() {
+        // The whole point of the unknown-step column: the card is alive, and the
+        // modal is how it gets out.
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let path = std::path::PathBuf::from(&card.path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("status: todo", "status: legacy")).unwrap();
+        let after = p.update(&card.id, TaskPatch { title: None, kind: None,
+            status: Some(StepId("todo".into())), body: None }).unwrap();
+        assert_eq!(after.status.as_str(), "todo");
     }
 }
