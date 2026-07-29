@@ -66,10 +66,13 @@ function makeDataTransfer(): DataTransfer {
   } as unknown as DataTransfer;
 }
 
-function fireDrag(type: string, target: HTMLElement, dataTransfer: DataTransfer) {
+// `dispatchEvent` returns `false` exactly when a handler called
+// `preventDefault()` — the one way this suite can see that the two
+// `preventDefault` calls that make dropping possible at all are actually there.
+function fireDrag(type: string, target: HTMLElement, dataTransfer: DataTransfer): boolean {
   const event = new Event(type, { bubbles: true, cancelable: true }) as Event & { dataTransfer: DataTransfer };
   event.dataTransfer = dataTransfer;
-  target.dispatchEvent(event);
+  return target.dispatchEvent(event);
 }
 
 function dragCardToElement(id: string, target: HTMLElement) {
@@ -120,6 +123,27 @@ describe("BoardView — dragging and the keyboard equivalent", () => {
     expect(cols.map((c) => c.dataset.step)).toEqual(["backlog", "todo", "doing", "done"]);
   });
 
+  it("withholds the arrows and dragging from a damaged card", () => {
+    render([card({ id: "a", status: "todo", damaged: "no status field" })]);
+    expect(btn("a", ".tk-prev")).toBeNull();
+    expect(btn("a", ".tk-next")).toBeNull();
+    expect(cardEl("a").draggable).toBe(false);
+  });
+
+  it("marks the card being dragged and the column being dragged over, and clears both", () => {
+    render([card({ id: "a", status: "todo" })]);
+    const col = view.mount.querySelector<HTMLElement>('.tk-col[data-step="done"]')!;
+    const dt = makeDataTransfer();
+    fireDrag("dragstart", cardEl("a"), dt);
+    expect(cardEl("a").classList.contains("tk-dragging")).toBe(true);
+    fireDrag("dragover", col, dt);
+    expect(col.classList.contains("tk-col-over")).toBe(true);
+    fireDrag("drop", col, dt);
+    expect(col.classList.contains("tk-col-over")).toBe(false);
+    fireDrag("dragend", cardEl("a"), dt);
+    expect(cardEl("a").classList.contains("tk-dragging")).toBe(false);
+  });
+
   it("moves the card on a drop into another column", () => {
     render([card({ id: "a", status: "todo" })]);
     dragCardTo("a", "done");
@@ -138,5 +162,28 @@ describe("BoardView — dragging and the keyboard equivalent", () => {
     expect(unknown.dataset.step).toBeUndefined();
     dragCardToElement("a", unknown);
     expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it("offers a configured column as a drop target by preventing the dragover default", () => {
+    render([card({ id: "a", status: "todo" })]);
+    const col = view.mount.querySelector<HTMLElement>('.tk-col[data-step="done"]')!;
+    const dt = makeDataTransfer();
+    fireDrag("dragstart", cardEl("a"), dt);
+    expect(fireDrag("dragover", col, dt)).toBe(false); // false === default prevented
+    expect(fireDrag("drop", col, dt)).toBe(false);
+  });
+
+  it("leaves the unknown column's dragover default alone", () => {
+    render([card({ id: "a", status: "todo" }), card({ id: "x", status: "legacy" })]);
+    const unknown = view.mount.querySelector<HTMLElement>(".tk-col-unknown")!;
+    const dt = makeDataTransfer();
+    fireDrag("dragstart", cardEl("a"), dt);
+    expect(fireDrag("dragover", unknown, dt)).toBe(true); // nothing prevents it
+  });
+
+  it("rescues a card out of an unknown step by dropping it in a real column", () => {
+    render([card({ id: "x", status: "legacy" })]);
+    dragCardTo("x", "todo");
+    expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "x" }), "todo");
   });
 });

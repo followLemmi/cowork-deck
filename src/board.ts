@@ -193,6 +193,9 @@ export class BoardView {
     node.ondragover = (e) => {
       // Without this a drop never fires at all — it is the browser's default.
       e.preventDefault();
+      // The cursor otherwise shows the browser's default badge — a copy `+` —
+      // on what is a move.
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
       node.classList.add("tk-col-over");
     };
     node.ondragleave = () => node.classList.remove("tk-col-over");
@@ -211,12 +214,21 @@ export class BoardView {
     const box = el("div", `tk-card ${status}`);
     if (t.damaged) box.classList.add("damaged");
 
+    // The same condition card-modal.ts's `canWrite` applies to the whole
+    // modal, and `▶`/`✓` apply below: a damaged card's fields may be
+    // unreadable and a conflicting card's file is ambiguous, so a step write
+    // is refused server-side either way (see fs.rs's update guards). Offering
+    // a control that can only ever error is worse than not offering it.
+    const canWrite = !t.damaged && !t.conflict;
+
     // Native drag needs the id on the wire, and a visual cue while it's in
     // flight; `dragend` fires whether the drop was accepted or not, so it is
     // the one place to take `tk-dragging` back off.
-    box.draggable = true;
+    box.draggable = canWrite;
     box.ondragstart = (e) => {
       e.dataTransfer?.setData("text/plain", t.id);
+      // Paired with `makeDropTarget`'s `dropEffect` above: same reason, same badge.
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
       box.classList.add("tk-dragging");
     };
     box.ondragend = () => box.classList.remove("tk-dragging");
@@ -264,9 +276,11 @@ export class BoardView {
     // aria-label. `null` (first step, last step, or a step board.json does not
     // know) means no neighbour, so the arrow is simply not rendered — no
     // separate check for the unknown step, `stepBefore`/`stepAfter` already
-    // say "no neighbour" for it.
+    // say "no neighbour" for it. Withheld from a damaged or conflicting card
+    // for the same reason `draggable` is above: the write would only ever be
+    // refused.
     const prevStep = stepBefore(caps.board, t.status);
-    if (prevStep !== null) {
+    if (prevStep !== null && canWrite) {
       const prev = el("button", "tk-prev", "‹");
       prev.title = "Move to the previous step";
       prev.setAttribute("aria-label", "Move to the previous step");
@@ -301,7 +315,7 @@ export class BoardView {
       acts.append(done);
     }
     const nextStep = stepAfter(caps.board, t.status);
-    if (nextStep !== null) {
+    if (nextStep !== null && canWrite) {
       const next = el("button", "tk-next", "›");
       next.title = "Move to the next step";
       next.setAttribute("aria-label", "Move to the next step");

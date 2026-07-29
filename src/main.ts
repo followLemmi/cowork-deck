@@ -228,8 +228,10 @@ async function moveTask(t: Task, step: StepId) {
   if (!ws) return;
   try { await updateTask(ws.id, t.id, { status: step }); }
   catch (e) {
-    // The optimistic move has to be explained: without this the card just
-    // springs back on the next poll and the board looks broken.
+    // Nothing here is optimistic — a native drag never moves the node, and this
+    // awaits the write before re-reading the board. So a refusal has to be said
+    // out loud: without the alert the drag or the arrow would simply appear to
+    // do nothing at all.
     await alertModal(`Could not move the card: ${String(e)}`);
   }
   await refreshBoard();
