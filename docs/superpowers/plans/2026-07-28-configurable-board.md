@@ -2898,6 +2898,14 @@ In `src-tauri/src/tasks_cmd.rs`'s test module, following its existing fixture st
 
 Name the private helpers `rewrite_step`, `step_usage` and `save_config` and let the three `#[tauri::command]` functions be thin wrappers over them — the commands cannot be called from a unit test, and the previous plan's `root_preview` / `tracker_root_preview` split is the pattern to follow.
 
+**The fixtures those tests use do not exist.** `tasks_cmd.rs`'s test module has only `ws(tracker)` and `tracker(root)`; `workspace_with_root`, `write_card` and `write_card_with_extra` are yours to write. `workspace_with_root` needs a `tempfile::tempdir` whose path goes into a `TrackerRoot::Path`, and the workspace's `name` is what `rewrite_step` and `step_usage` match cards against — the tests above assume that name is `proj`, so either name it so or adjust the fixtures consistently.
+
+**`Step` really does have `terminal: bool` and `working: bool`** (not `Option<bool>`), both `#[serde(default, skip_serializing_if = "is_false")]`, so the struct literals above compile as written.
+
+**`RewriteReport`, `RewriteSkip` and `StepUsage` all need `#[serde(rename_all = "camelCase")]`** — `main.ts` reads `s.fileName`, and without it the field crosses as `file_name` and reads `undefined`.
+
+Register all three commands in `src-tauri/src/main.rs` beside the `tasks_*` ones.
+
 - [ ] **Step 2: Run to verify it fails, then implement**
 
 Run: `cd src-tauri && cargo test tasks_cmd::`
@@ -2934,7 +2942,7 @@ describe("validateDraft", () => {
 });
 ```
 
-`validateDraft` mirrors `BoardConfig::validate` so the editor can refuse before saving; the backend still validates, because a configuration can also arrive by hand.
+`validateDraft` mirrors `BoardConfig::validate` so the editor can refuse before saving; the backend still validates, because a configuration can also arrive by hand. Mirror it exactly — the Rust side rejects, in this order: an empty step list, an empty step id, whitespace in a step id, a duplicate step id, no terminal step, more than one working step, an empty kind list, an empty kind id, a duplicate kind id. Note there is deliberately **no** whitespace rule for kind ids; do not invent one, and do not omit one the Rust side has.
 
 - [ ] **Step 4: Build the editor modal**
 
@@ -2948,7 +2956,7 @@ Three rules the editor enforces in the dialog rather than at save time:
 
 - [ ] **Step 5: Wire it in `main.ts`**
 
-`⚙` sits beside `+ task` in `BoardView`'s head as `button.tk-configure-board` with `aria-label` `Configure the board`, calling a new `onEditBoard` handler:
+`⚙` sits beside `+ task` in `BoardView`'s head as **`button.tk-board-edit`** with `aria-label` `Configure the board`, calling a new `onEditBoard` handler. Not `tk-configure-board`: `board.ts` already has a `button.tk-configure` reading `Configure`, shown when no tracker is set up at all, and two near-identical class names for "set up a tracker" and "edit this board's steps" is a trap for whoever reads it next. **`onEditBoard` joins `BoardHandlers`, so the `handlers` mocks in both `tests/board.test.ts` and `tests/board-drag.test.ts` need it** — every case in each spreads the mock into `new BoardView({…})`.
 
 ```ts
 async function editBoard() {
