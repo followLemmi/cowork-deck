@@ -3057,24 +3057,27 @@ git commit -m "feat(board): configure the steps and kinds, and move the cards a 
 
 - [ ] **Step 1: Write the failing tests**
 
-In `src-tauri/src/commands.rs`'s test module, beside the existing tracker-env tests (`get("COWORK_TASKS_DIR")` around line 379):
+The function is **`session_env(root, project, task_bin, session)`** — a standalone `pub fn` at `commands.rs:55`, tested directly, not a helper called `tracker_env`. It gains a fifth parameter, `task_id: Option<&str>`. Its two existing tests build their lookup with a local closure, `let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());` — follow that, and add beside them:
 
 ```rust
     #[test]
     fn a_session_launched_from_a_card_carries_its_id() {
-        let env = tracker_env(Some("/vault/tasks"), "proj", Some("01K1CARD"));
-        assert_eq!(get_from(&env, "COWORK_TASK_ID"), Some("01K1CARD"));
+        let root = std::path::PathBuf::from("/home/u/vault/Tasks");
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", Some("01K1CARD"));
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("COWORK_TASK_ID"), Some("01K1CARD"));
     }
 
     #[test]
     fn a_session_launched_without_a_card_carries_no_card_id() {
         // The guard reads its absence as "nothing to demand" and allows.
-        let env = tracker_env(Some("/vault/tasks"), "proj", None);
+        let root = std::path::PathBuf::from("/home/u/vault/Tasks");
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", None);
         assert!(env.iter().all(|(n, _)| n != "COWORK_TASK_ID"));
     }
 ```
 
-Adapt to the helper the existing tests use to build the env vector; extend that helper with the card id rather than adding a second one.
+Both existing `session_env` tests gain the new argument too; name them in the report as touched rather than letting a changed call signature pass as an incidental diff.
 
 In `src-tauri/tests/cowork_task.rs`:
 
@@ -3124,7 +3127,15 @@ fn status_needs_both_an_id_and_a_step() {
 }
 ```
 
-Reuse the harness this file already has for setting the three environment variables and invoking `run`; add `tempdir_with_board` beside it and a `DEFAULT_BOARD` constant matching `BoardConfig::default_config()`.
+**That harness does not exist.** `tests/cowork_task.rs` has exactly one helper, `new_card(dir, kind) -> (bool, usize)`, which hard-codes the title, pipes stdout **and stderr to `Stdio::null()`**, and returns only success plus a file count. Every test above needs text back, so you are writing the harness:
+
+- `run(dir, args) -> Result<String, String>` — spawns `env!("CARGO_BIN_EXE_cowork_task")` with `COWORK_TASKS_DIR` and `COWORK_PROJECT` set, **captures both stdout and stderr**, and returns `Ok(stdout)` on success or `Err(stderr)` on failure. That capture is the whole point: `status_refuses_an_unknown_step_and_lists_the_configured_ones` asserts on the message.
+- `create_card(dir, kind, title) -> String` returning the new card's id — `new_card` returns no id, and `run` alone cannot give you one unless `new` prints it.
+- `card_text(dir, id) -> String` — read the card whose filename carries that id.
+- `tempdir_with_board(json)` — write `board.json` into a fresh tempdir. **Return the `TempDir` guard and bind it in each test** (`let (_dir, …)` or equivalent); a fixture that leaks with `TempDir::keep` was a review finding on Task 9a, and one that drops the guard before the caller sees the path deletes the directory out from under the test.
+- `DEFAULT_BOARD` matching `BoardConfig::default_config()` exactly: steps `open` (not terminal) and `done` (terminal), kinds `bug`, `task`, `idea`. The unknown-step test asserts the message lists `open` and `done`, so a mismatch here makes that test lie.
+
+Keep `new_card` and its two tests working; they cover ground these do not.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -3185,7 +3196,11 @@ Extend `USAGE` with both, and say that `done` moves the card to the first termin
 
 - [ ] **Step 4: Plumb the card id into the environment**
 
-In `src-tauri/src/commands.rs`, `start_session` gains a `task_id: Option<String>` parameter after `initial_prompt`, and the tracker-env block gains:
+In `src-tauri/src/commands.rs`, `start_session` gains a `task_id: Option<String>` parameter after `initial_prompt`, and passes it to `session_env`.
+
+**On the clippy ceiling:** `start_session` already takes nine arguments and is already one of the two `too_many_arguments` warnings in the count (`commands.rs:203`, currently reported as `9/7`). A tenth makes it `10/7` — the same single warning, so the ceiling of exactly 6 holds. Do not refactor it to dodge a warning that is already counted, and do not read the changed number as a new one.
+
+The `session_env` body gains:
 
 ```rust
         // The hooks in hooks.rs find the card through this. Set on resume too:
@@ -3195,11 +3210,13 @@ In `src-tauri/src/commands.rs`, `start_session` gains a `task_id: Option<String>
         }
 ```
 
-In `src/ipc.ts`, add `taskId?: string` to the `startSession` wrapper's arguments. In `src/sessions.ts`, `launchFromTask` passes the card's id, and the restore path passes `entry.taskId`, which `SessionEntry` already carries.
+In `src/ipc.ts`, `startSession` is an arrow const taking seven positional parameters and has exactly **one** caller, `src/terminal.ts:69`. Add `taskId` and thread it from there. `spawnTile` in `src/sessions.ts` already carries `taskId` in its options and already sets it from `launchFromTask` and from the restore path (`entry.taskId`, which `SessionEntry` already has) — so the frontend already knows the id everywhere; what is missing is only the last hop into the IPC call.
 
 - [ ] **Step 5: Move the card to the working step on launch**
 
-In `src/sessions.ts`'s `launchFromTask`, after the launch guard decides a session will actually start and before the PTY is spawned:
+`launchFromTask(workspace, task, prompt)` currently narrows its `task` to `{ id: string; title: string }` and has no configuration in scope. It needs the card's `status` and the `BoardConfig`, so widen the parameter to `Task` and add the configuration. **Neither costs a call-site change beyond one argument:** the only caller is `src/main.ts:180`, which already passes a full `Task` and already has `cfg` in scope for `taskPrompt(t, cfg)` on the same line.
+
+Then, after the launch guard decides a session will actually start and before the PTY is spawned:
 
 ```ts
 // ▶ writes the step itself, so the card moves whether or not the agent
