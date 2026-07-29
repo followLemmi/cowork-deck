@@ -1,5 +1,5 @@
 use crate::tasks::board::{self, BoardConfig};
-use crate::tasks::frontmatter::{parse_card, render_card, set_step, slugify};
+use crate::tasks::frontmatter::{one_line, parse_card, render_card, set_step, slugify};
 use crate::tasks::model::{Task, TaskDraft, TaskError};
 use crate::tasks::provider::{ProviderCapabilities, TaskPatch, TaskProvider};
 use std::path::{Path, PathBuf};
@@ -249,10 +249,12 @@ impl TaskProvider for FsTaskProvider {
         // Frontmatter first, one `set_fields` pass, so a card carrying keys we do
         // not know keeps them.
         let mut fields: Vec<(&str, String)> = Vec::new();
-        let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
         if let Some(t) = &patch.title {
-            fields.push(("title", flat(t)));
-            card.title = t.clone();
+            // The returned `Task` must match what landed on disk: both calls go
+            // through the one shared `one_line`, so a caller never renders a
+            // title the file does not contain until the next `list`.
+            fields.push(("title", one_line(t)));
+            card.title = one_line(t);
         }
         if let Some(k) = &patch.kind {
             fields.push(("kind", k.0.clone()));
@@ -654,6 +656,30 @@ The body, unchanged.\n";
     }
 
     #[test]
+    fn a_title_and_kind_patch_both_land_on_disk_with_the_title_flattened() {
+        // A returned `Task` is not evidence of a write — only a fresh read of
+        // the file is. A multi-line title covers two things at once: that the
+        // title actually reached the frontmatter block, and that what reached
+        // it is flattened the same way the returned `Task` reports it, through
+        // the one `frontmatter::one_line` both call.
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        let after = p.update(&card.id, TaskPatch {
+            title: Some("Bug:\nthe pill\nblinks".into()),
+            kind: Some(KindId("bug".into())),
+            status: None, body: None,
+        }).unwrap();
+        assert_eq!(after.title, "Bug: the pill blinks");
+        assert_eq!(after.kind.as_str(), "bug");
+
+        let text = std::fs::read_to_string(&card.path).unwrap();
+        let reread = crate::tasks::frontmatter::parse_card(&text, &card.path).expect("still a card");
+        assert_eq!(reread.title, "Bug: the pill blinks", "{text}");
+        assert_eq!(reread.kind.as_str(), "bug", "{text}");
+    }
+
+    #[test]
     fn update_never_renames_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let p = three_step_provider(dir.path());
@@ -681,6 +707,10 @@ The body, unchanged.\n";
             status: Some(StepId("doing".into())), body: None }).unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("tags: [inbox]"), "{after}");
+        // The status write itself has to land on disk, not merely on the
+        // returned `Task` — that struct is assembled in memory regardless of
+        // whether the frontmatter write actually happened.
+        assert!(after.contains("status: doing"), "{after}");
     }
 
     #[test]

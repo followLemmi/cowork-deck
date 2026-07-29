@@ -104,10 +104,17 @@ fn origin_str(o: TaskOrigin) -> &'static str {
     match o { TaskOrigin::Human => "human", TaskOrigin::Session => "session" }
 }
 
+/// Flatten a value to one line: a newline in a title, or any other field, would
+/// otherwise end the frontmatter block early. `pub` so every writer of a card —
+/// `render_card` here and `update` in `fs.rs` — calls the same function rather
+/// than restating the obligation as a local closure that one of them can forget.
+pub fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Serialize a card back to markdown. Single-line fields are flattened so a
 /// multi-line title can never break the frontmatter block.
 pub fn render_card(t: &Task) -> String {
-    let one_line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out = String::from("---\n");
     out.push_str(&format!("id: {}\n", one_line(&t.id)));
     out.push_str(&format!("title: {}\n", one_line(&t.title)));
