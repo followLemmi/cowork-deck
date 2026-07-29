@@ -3256,7 +3256,14 @@ git commit -m "feat(session): hand the card id to the session, and let it move t
 - Consumes: `COWORK_TASK_ID` (Task 10), `BoardConfig`, `FsTaskProvider` (Task 4).
 - Produces: `Cmd::Guard` reading a hook payload on stdin and printing a hook reply.
 
-**The decision table this task exists to get right.** Exactly one row blocks:
+**The decision table this task exists to get right.** Exactly one row blocks.
+
+Two things about that row, both of which cost a fix round when they were left implicit:
+
+- **The reason goes to `stderr`.** Exit 2 feeds stderr back to the agent; stdout is surfaced only on exit 0. A reason on stdout is a block with no explanation.
+- **The test on that row asserts `assert_eq!(code, 2)`, not `assert_ne!(code, 0)`.** Only exit 2 blocks, so a `!= 0` assertion passes for `1` and for `101` — both of which are non-blocking errors, and one of which is what a panic produces. That is the most load-bearing assertion in the task; it must pin the exact code. The harness therefore has to return stderr, not discard it.
+
+The rows:
 
 | State | Reply |
 | --- | --- |
@@ -3452,7 +3459,13 @@ fn guard() -> i32 {
             0
         }
         "Stop" if open && !already_blocked => {
-            println!(
+            // **`eprintln!`, not `println!`.** On exit 2 Claude Code feeds
+            // *stderr* back to the agent; stdout is surfaced only on exit 0.
+            // Printing the reason to stdout blocks the stop and tells the agent
+            // nothing, so it stops again, `stop_hook_active` is then true, and
+            // the second stop is allowed — the block half works and the reason
+            // half is dropped, which is most of the point of this task.
+            eprintln!(
                 "Card {} is still in step \"{}\". Move it before finishing: \
                  \"$COWORK_TASK_BIN\" status {} <step> — or \"$COWORK_TASK_BIN\" done {} if it \
                  is finished. If it should stay where it is, say so and stop again.",
