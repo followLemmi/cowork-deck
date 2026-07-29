@@ -1889,7 +1889,11 @@ pub fn replace_body(text: &str, body: &str) -> Option<String> {
     out.push_str("---");
     out.push_str(nl);
     if !body.is_empty() {
-        if !body.starts_with('\n') { out.push_str(nl); }
+        // No separator before the body. `split_frontmatter` strips exactly the
+        // one newline that ends the closing `---` line, so a blank line here
+        // would come back glued to the front of the body on the next read —
+        // and the modal would show it. `render_card` and `set_fields` write no
+        // separator either; all three writers agree with the one reader.
         out.push_str(body);
         if !body.ends_with('\n') { out.push_str(nl); }
     }
@@ -1897,7 +1901,15 @@ pub fn replace_body(text: &str, body: &str) -> Option<String> {
 }
 ```
 
-Add a test that `replace_body` leaves an unknown frontmatter key alone and that a CRLF document stays CRLF.
+`render_card` has to stop emitting the separator for the same reason — it did,
+unconditionally, which is why a card written by `create` and read back carried a
+leading `\n`. Its two-line guard goes, and `render_then_parse_round_trips`
+becomes an exact comparison instead of a `.trim()`-equal one.
+
+Add a test that `replace_body` leaves an unknown frontmatter key alone and that a
+CRLF document stays CRLF, and one that a body written through `update` reads back
+byte-for-byte — the in-memory `Task` the call returns is not evidence, because
+`update` assigns that field rather than re-reading it.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
