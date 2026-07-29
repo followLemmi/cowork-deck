@@ -721,9 +721,18 @@ The body, unchanged.\n";
         let closed = p.update(&card.id, TaskPatch { title: None, kind: None,
             status: Some(StepId("done".into())), body: None }).unwrap();
         assert!(closed.resolved.is_some(), "a terminal step stamps when");
+        // The returned `Task` is assembled in memory regardless of whether the
+        // `resolved` write actually reached the file — only a fresh read proves
+        // the stamp landed on disk, not just in the struct handed back.
+        let on_disk = std::fs::read_to_string(&card.path).unwrap();
+        assert!(on_disk.contains("resolved: "), "{on_disk}");
+
         let back = p.update(&card.id, TaskPatch { title: None, kind: None,
             status: Some(StepId("todo".into())), body: None }).unwrap();
         assert_eq!(back.resolved, None, "moving back out clears it");
+        let on_disk = std::fs::read_to_string(&card.path).unwrap();
+        let reread = crate::tasks::frontmatter::parse_card(&on_disk, &card.path).expect("still a card");
+        assert_eq!(reread.resolved, None, "the clear must land on disk too: {on_disk}");
     }
 
     #[test]
