@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  firstTerminal, isKnownStep, isTerminal, kindLabel, stepAfter, stepBefore, stepLabel, workingStep,
+  firstTerminal, isKnownKind, isKnownStep, isTerminal, kindLabel, stepAfter, stepBefore, stepLabel, workingStep,
 } from "../src/board-config";
 import type { BoardConfig } from "../src/ipc";
 
@@ -31,6 +31,15 @@ describe("board-config readers", () => {
   it("knows its own steps", () => {
     expect(isKnownStep(CFG, "doing")).toBe(true);
     expect(isKnownStep(CFG, "legacy")).toBe(false);
+  });
+
+  it("knows its own kinds", () => {
+    expect(isKnownKind(CFG, "bug")).toBe(true);
+    expect(isKnownKind(CFG, "chore")).toBe(false);
+    // An absent kind is legal (see kindLabel above) but still not "known" —
+    // callers that need to tell "empty" from "unknown, non-empty" apart do so
+    // themselves, the way card-modal.ts's "(no kind)" option does.
+    expect(isKnownKind(CFG, "")).toBe(false);
   });
 
   it("reports the terminal and working steps", () => {

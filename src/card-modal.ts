@@ -4,7 +4,7 @@
 // machine's version — a patch carrying every field would silently undo that.
 
 import { openDialog } from "./dialog-shell";
-import { isKnownStep } from "./board-config";
+import { isKnownKind, isKnownStep } from "./board-config";
 import type { BoardConfig, KindId, StepId, Task, TaskPatch } from "./ipc";
 
 export interface CardFormValues { title: string; kind: KindId; status: StepId; body: string }
@@ -18,9 +18,16 @@ export function computePatch(original: Task, edited: CardFormValues): TaskPatch 
   if (title !== original.title.trim()) patch.title = title;
   if (edited.kind !== original.kind) patch.kind = edited.kind;
   if (edited.status !== original.status) patch.status = edited.status;
-  // Compared as written: an emptied body is a change, and `!edited.body` would
-  // read it as untouched.
-  if (edited.body !== original.body) patch.body = edited.body;
+  // Compared with separators normalised, because a `<textarea>`'s `value` gives
+  // newlines back as LF whatever the file used. A CRLF card would otherwise
+  // report its body changed the moment it was opened — so renaming such a card
+  // would also ship `body`, overwriting whatever an agent or a sync wrote to it
+  // meanwhile, and leave the file with a CRLF frontmatter block and an LF body.
+  // The Rust side preserves CRLF deliberately; do not defeat it from here.
+  // Still compared as *written* rather than emptiness-checked: an emptied body
+  // is a change, and `!edited.body` would read it as untouched.
+  const lf = (s: string) => s.replace(/\r\n/g, "\n");
+  if (lf(edited.body) !== lf(original.body)) patch.body = edited.body;
   return patch;
 }
 
@@ -34,20 +41,39 @@ function selectWrap(select: HTMLSelectElement): HTMLElement {
   return wrap;
 }
 
+/** A labelled row, matching `forms.ts`'s own `labeled()` (not exported there
+ *  either — see the note on `selectWrap` above). Without it the dialog opens
+ *  as a bare input, two bare selects and a bare textarea: a screen reader
+ *  announces "edit text, blank" and "combo box" twice with no indication of
+ *  what any of them is. */
+function labeled(labelText: string, field: HTMLElement): HTMLElement {
+  const wrap = document.createElement("label");
+  wrap.className = "form-row";
+  const span = document.createElement("span");
+  span.className = "form-label";
+  span.textContent = labelText;
+  wrap.append(span, field);
+  return wrap;
+}
+
 /** One <option> per configured entry, plus — when the card's own value is not
  *  among them — a leading option for that value, selected. A card can name a
  *  step or kind board.json does not know, and the only acceptable way out is
  *  to keep it: silently switching to a different one on save would be worse
- *  than showing it. */
+ *  than showing it. `unknownLabel` lets a caller say something other than
+ *  "<id> (not in board.json)" — needed because an *absent* kind (`""`) is a
+ *  legal state, not an unknown one, and that message would say something
+ *  untrue about it. */
 function buildSelect(
   className: string, options: { id: string; label: string }[], current: string, known: boolean,
+  unknownLabel: (id: string) => string = (id) => `${id} (not in board.json)`,
 ): HTMLSelectElement {
   const select = document.createElement("select");
   select.className = className;
   if (!known) {
     const opt = document.createElement("option");
     opt.value = current;
-    opt.textContent = `${current} (not in board.json)`;
+    opt.textContent = unknownLabel(current);
     select.append(opt);
   }
   for (const o of options) {
@@ -85,11 +111,23 @@ function brokenMessage(task: Task, canWrite: boolean): string {
  *  entirely, rather than offering an edit that cannot be written back. */
 export function openCardModal(task: Task, cfg: BoardConfig, canWrite: boolean): Promise<CardFormValues | null> {
   return new Promise((resolve) => {
+    // Named for a screen reader the way every other dialog in the app is —
+    // `forms.ts`'s `taskForm`/`workspaceForm`/`skillForm` all build a
+    // `div.modal-title`, and this one is not the exception. Keyed to the
+    // card's id so two card modals opened in immediate succession (open,
+    // cancel, open another) never collide on the same id.
+    const titleId = `card-modal-title-${task.id}`;
     const { box, close: closeDialog } = openDialog({
       onCancel: () => close(null),
       onAccept: () => { if (canWrite) submit(); },
+      labelledBy: titleId,
     });
     box.classList.add("modal-box--form");
+
+    const heading = document.createElement("div");
+    heading.className = "modal-title";
+    heading.id = titleId;
+    heading.textContent = "Card";
 
     const titleInput = document.createElement("input");
     titleInput.className = "modal-input tk-c-title";
@@ -97,14 +135,16 @@ export function openCardModal(task: Task, cfg: BoardConfig, canWrite: boolean): 
     titleInput.value = task.title;
 
     const kindSelect = buildSelect(
-      "tk-c-kind", cfg.kinds, task.kind, cfg.kinds.some((k) => k.id === task.kind),
+      "tk-c-kind", cfg.kinds, task.kind, isKnownKind(cfg, task.kind),
+      // An absent kind is legal, not unknown — see buildSelect's own comment.
+      (id) => (id ? `${id} (not in board.json)` : "(no kind)"),
     );
     const stepSelect = buildSelect(
       "tk-c-step", cfg.steps, task.status, isKnownStep(cfg, task.status),
     );
     const selectsRow = document.createElement("div");
     selectsRow.className = "tk-c-selects";
-    selectsRow.append(selectWrap(kindSelect), selectWrap(stepSelect));
+    selectsRow.append(labeled("Kind", selectWrap(kindSelect)), labeled("Step", selectWrap(stepSelect)));
 
     const bodyInput = document.createElement("textarea");
     bodyInput.className = "modal-input tk-c-body";
@@ -121,7 +161,9 @@ export function openCardModal(task: Task, cfg: BoardConfig, canWrite: boolean): 
       fact("path", task.path),
     );
 
-    const children: HTMLElement[] = [titleInput, selectsRow, bodyInput, facts];
+    const children: HTMLElement[] = [
+      heading, labeled("Title", titleInput), selectsRow, labeled("Body", bodyInput), facts,
+    ];
 
     if (task.damaged || task.conflict) {
       const broken = document.createElement("p");
@@ -165,6 +207,10 @@ export function openCardModal(task: Task, cfg: BoardConfig, canWrite: boolean): 
     };
     cancelBtn.onclick = () => close(null);
     if (okBtn) okBtn.onclick = submit;
-    titleInput.focus();
+    // A disabled `titleInput.focus()` is a no-op, and `FOCUSABLE` excludes
+    // disabled controls, so nothing would take focus at all — leaving it on
+    // the card's own title button *behind* the overlay, where Space (unlike
+    // Enter) is not intercepted by the shell and reopens a second modal.
+    (canWrite ? titleInput : cancelBtn).focus();
   });
 }

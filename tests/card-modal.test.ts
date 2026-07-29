@@ -51,6 +51,24 @@ describe("computePatch", () => {
   it("sends an emptied body as an empty string, not as untouched", () => {
     expect(computePatch(original, { ...same(), body: "" })).toEqual({ body: "" });
   });
+
+  it("treats a CRLF-vs-LF body as untouched, since a textarea always hands back LF", () => {
+    // A <textarea>'s `.value` normalises newlines to LF whatever the file used,
+    // so a CRLF card would otherwise report its body changed the instant it was
+    // opened — and renaming such a card would ship `body` too, overwriting
+    // whatever an agent or a sync wrote to it meanwhile, and leave the file with
+    // a CRLF frontmatter block and an LF body. The Rust side preserves CRLF on
+    // purpose; the frontend must not defeat that.
+    const crlf: Task = { ...original, body: "Line one.\r\nLine two.\r\n" };
+    const edited: CardFormValues = { ...same(), body: "Line one.\nLine two.\n" };
+    expect(computePatch(crlf, edited)).toEqual({});
+  });
+
+  it("still reports a real body edit on a CRLF card, not just the separator", () => {
+    const crlf: Task = { ...original, body: "Line one.\r\nLine two.\r\n" };
+    const edited: CardFormValues = { ...same(), body: "Line one.\nChanged.\n" };
+    expect(computePatch(crlf, edited)).toEqual({ body: "Line one.\nChanged.\n" });
+  });
 });
 
 describe("openCardModal", () => {
@@ -72,5 +90,34 @@ describe("openCardModal", () => {
     expect(document.querySelector(".modal-ok")).toBeNull();
     document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
     return expect(p).resolves.toBeNull();
+  });
+
+  it("focuses something reachable when the card cannot be written", () => {
+    // Focusing the (now disabled) title input is a no-op, and `FOCUSABLE`
+    // excludes disabled controls, so nothing takes focus unless something else
+    // is focused explicitly — leaving it on the card's title button *behind*
+    // the overlay, where Space (unlike Enter) is not intercepted and reopens
+    // a second modal on top of the first.
+    const p = openCardModal({ ...original, damaged: "no created field" }, CFG, false);
+    const overlay = document.querySelector(".modal-overlay")!;
+    expect(overlay.contains(document.activeElement)).toBe(true);
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    return expect(p).resolves.toBeNull();
+  });
+
+  it("resolves with the values the form holds when Save is clicked", async () => {
+    // The one seam `computePatch`'s pure tests structurally cannot reach: every
+    // one of them hand-builds its input, so a `kind`/`status` transposition in
+    // `submit`'s object literal — `StepId` and `KindId` are both `string`, so it
+    // would typecheck — would ship a step id as a kind and go unnoticed.
+    const p = openCardModal(original, CFG, true);
+    const ov = document.querySelector(".modal-overlay")!;
+    ov.querySelector<HTMLInputElement>(".tk-c-title")!.value = "Renamed";
+    ov.querySelector<HTMLSelectElement>(".tk-c-kind")!.value = "bug";
+    ov.querySelector<HTMLSelectElement>(".tk-c-step")!.value = "doing";
+    ov.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const edited = await p;
+    expect(edited).toEqual({ title: "Renamed", kind: "bug", status: "doing", body: "Body.\n" });
+    expect(computePatch(original, edited!)).toEqual({ title: "Renamed", kind: "bug", status: "doing" });
   });
 });

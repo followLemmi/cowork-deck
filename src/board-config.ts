@@ -17,6 +17,13 @@ export function isKnownStep(cfg: BoardConfig, id: StepId): boolean {
   return cfg.steps.some((s) => s.id === id);
 }
 
+/** An absent kind (`""`) is legal (see `kindLabel` above) but is never
+ *  "known" — a caller that needs to tell "empty" from "unknown, non-empty"
+ *  apart does so itself. */
+export function isKnownKind(cfg: BoardConfig, id: KindId): boolean {
+  return cfg.kinds.some((k) => k.id === id);
+}
+
 export function isTerminal(cfg: BoardConfig, id: StepId): boolean {
   return cfg.steps.some((s) => s.id === id && s.terminal === true);
 }
