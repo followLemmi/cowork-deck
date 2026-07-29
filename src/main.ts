@@ -11,7 +11,7 @@ import {
   boardConfigSave, boardStepRewrite, boardStepUsage,
 } from "./ipc";
 import type { MigrationOffer, StepId, Task } from "./ipc";
-import { alertModal } from "./modal";
+import { alertModal, confirmModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
@@ -22,7 +22,7 @@ import { taskPrompt } from "./tasks";
 import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
-import { openBoardEditor } from "./board-editor";
+import { applyBoardEdit, openBoardEditor } from "./board-editor";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -279,23 +279,16 @@ async function editBoard() {
   const usage = await boardStepUsage(ws.id).catch(() => []);
   const result = await openBoardEditor(caps.board, usage);
   if (!result) return;
-  // Rewrites first: a card must never point at a step the saved configuration
-  // no longer has, and saving first would leave exactly that window open.
-  for (const r of result.rewrites) {
-    try {
-      const report = await boardStepRewrite(ws.id, r.from, r.to, result.config);
-      if (report.skipped.length) {
-        await alertModal(
-          `Moved ${report.rewritten} card(s) to "${r.to}". ${report.skipped.length} could not be moved:\n` +
-          report.skipped.map((s) => `${s.fileName}: ${s.reason}`).join("\n"));
-      }
-    } catch (e) {
-      await alertModal(`Could not update the cards in "${r.from}": ${String(e)}`);
-      return; // Leave the configuration alone: it still matches what is on disk.
-    }
-  }
-  try { await boardConfigSave(ws.id, result.config); }
-  catch (e) { await alertModal(`Could not save the board configuration: ${String(e)}`); }
+  // The rewrite-then-save sequence lives in board-editor.ts, taking what it
+  // needs as arguments: the decision it makes when cards are skipped is worth a
+  // test, and main.ts is not reachable from one.
+  const written = await applyBoardEdit(result, {
+    rewrite: (from, to, config) => boardStepRewrite(ws.id, from, to, config),
+    save: (config) => boardConfigSave(ws.id, config),
+    alert: alertModal,
+    confirm: confirmModal,
+  });
+  if (!written) return;
   await refreshBoard();
   await refreshCounts();
 }

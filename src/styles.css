@@ -593,12 +593,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   font-size: var(--fs-xs); color: var(--fg-muted); white-space: nowrap; cursor: pointer;
 }
 .tk-e-check input { accent-color: var(--accent); cursor: pointer; }
-.tk-e-step-up, .tk-e-step-down, .tk-e-step-remove, .tk-e-kind-remove {
+.tk-e-step-up, .tk-e-step-down, .tk-e-step-remove,
+.tk-e-kind-up, .tk-e-kind-down, .tk-e-kind-remove {
   font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);
   background: var(--bg-raised); border: 1px solid var(--border);
   border-radius: var(--r-sm); min-width: 24px; min-height: 24px; cursor: pointer;
 }
-.tk-e-step-up:hover, .tk-e-step-down:hover, .tk-e-step-remove:hover, .tk-e-kind-remove:hover { color: var(--fg); }
+.tk-e-step-up:hover, .tk-e-step-down:hover, .tk-e-step-remove:hover,
+.tk-e-kind-up:hover, .tk-e-kind-down:hover, .tk-e-kind-remove:hover { color: var(--fg); }
 .tk-e-step-dest { background: var(--bg-app); border: 1px solid var(--border-strong); border-radius: var(--r-sm);
   color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 6px 8px; }
 /* A rename's effect, or a pending removal's headcount — informational, not an
