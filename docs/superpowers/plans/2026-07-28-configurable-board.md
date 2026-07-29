@@ -2467,19 +2467,42 @@ export function computePatch(original: Task, edited: CardFormValues): TaskPatch 
   if (title !== original.title.trim()) patch.title = title;
   if (edited.kind !== original.kind) patch.kind = edited.kind;
   if (edited.status !== original.status) patch.status = edited.status;
-  // Compared as written: an emptied body is a change, and `!edited.body` would
-  // read it as untouched.
-  if (edited.body !== original.body) patch.body = edited.body;
+  // Compared with separators normalised, because a `<textarea>`'s `value` gives
+  // newlines back as LF whatever the file used. A CRLF card would otherwise
+  // report its body changed the moment it was opened — so renaming such a card
+  // would also ship `body`, overwriting whatever an agent or a sync wrote to it
+  // meanwhile, and leave the file with a CRLF frontmatter block and an LF body.
+  // The Rust side preserves CRLF deliberately; do not defeat it from here.
+  // Still compared as *written* rather than emptiness-checked: an emptied body
+  // is a change, and `!edited.body` would read it as untouched.
+  const lf = (s: string) => s.replace(/\r\n/g, "\n");
+  if (lf(edited.body) !== lf(original.body)) patch.body = edited.body;
   return patch;
 }
 ```
+
+Add a test that a card whose body is `"Line one.\r\nLine two.\r\n"` yields an empty
+patch when the textarea hands back `"Line one.\nLine two.\n"` — the separator alone
+is not an edit.
 
 - [ ] **Step 4: Build the modal**
 
 Add `openCardModal` to the same file, on `openDialog` exactly as `taskForm` uses it. Structure, top to bottom:
 
-- `input.tk-c-title` carrying the title, focused on open.
-- Two `select`s side by side: `select.tk-c-kind` with one `option` per `cfg.kinds`, and `select.tk-c-step` with one per `cfg.steps`. When the card's current step or kind is not in the configuration, prepend an `option` for it, selected, labelled `<id> (not in board.json)` — otherwise opening a card and saving an unrelated edit would move it somewhere nobody asked for.
+- `div.modal-title` naming the dialog, with an `id` passed to `openDialog` as
+  `labelledBy`, and each of the four controls wrapped by the same `labeled()`
+  helper `taskForm` uses. Without these the dialog opens as a bare input, two bare
+  selects and a bare textarea: a screen reader announces "edit text, blank" and
+  "combo box" twice with no indication of what any of them is, and there is no
+  heading for a sighted reader either. Every other dialog in the app builds a
+  `modal-title`; this one is not the exception.
+- `input.tk-c-title` carrying the title, focused on open **when the card can be
+  written**. When it cannot, focus the Cancel button instead: focusing a disabled
+  input is a no-op, `dialog-shell`'s `FOCUSABLE` list excludes disabled controls so
+  nothing else takes it, and focus is then left on the card's own title button
+  *behind* the overlay — where Space, which the shell does not intercept, activates
+  it again and stacks a second modal over the first.
+- Two `select`s side by side: `select.tk-c-kind` with one `option` per `cfg.kinds`, and `select.tk-c-step` with one per `cfg.steps`. When the card's current step or kind is not in the configuration, prepend an `option` for it, selected, labelled `<id> (not in board.json)` — otherwise opening a card and saving an unrelated edit would move it somewhere nobody asked for. **An absent kind is not an unknown kind:** a missing `kind:` is legal, and labelling it `" (not in board.json)"` states something untrue about an empty value. Give that case an `(no kind)` option instead. Decide "is this value known" through `isKnownStep` and a new `isKnownKind` beside it in `board-config.ts`, not through an inline `.some()` for one and a helper for the other — `BoardConfig`'s authority belongs in one file.
 - `textarea.tk-c-body` carrying the body.
 - `div.tk-c-facts`: `id`, `created`, `resolved`, `origin`, `session`, `path`, each as a `<span>` with the value in `textContent` — never `innerHTML`, for the reason `board.ts:41` gives.
 - When `task.damaged` or `task.conflict`: `p.tk-c-broken` with the full message and the path.
@@ -2553,6 +2576,29 @@ Reuse the form styling already in `styles.css` for `.tk-f-*`; add `.tk-c-facts {
     return expect(p).resolves.toBeNull();
   });
 ```
+
+And one test that clicks **Save**, which nothing else in the suite does:
+
+```ts
+  it("resolves with the values the form holds when Save is clicked", async () => {
+    const p = openCardModal(original, CFG, true);
+    const ov = document.querySelector(".modal-overlay")!;
+    ov.querySelector<HTMLInputElement>(".tk-c-title")!.value = "Renamed";
+    ov.querySelector<HTMLSelectElement>(".tk-c-kind")!.value = "bug";
+    ov.querySelector<HTMLSelectElement>(".tk-c-step")!.value = "doing";
+    ov.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const edited = await p;
+    // Each value on the field it belongs to. `StepId` and `KindId` are both
+    // `string`, so transposing them in `submit`'s object literal typechecks and
+    // would ship a step id as a kind — and `computePatch`'s own tests cannot
+    // catch it, because every one of them hand-builds its input.
+    expect(edited).toEqual({ title: "Renamed", kind: "bug", status: "doing", body: "Body.\n" });
+    expect(computePatch(original, edited!)).toEqual({ title: "Renamed", kind: "bug", status: "doing" });
+  });
+```
+
+That seam — the form's values becoming a `CardFormValues` — is the one thing
+`computePatch`'s pure tests structurally cannot reach.
 
 **`openDialog` builds no buttons.** It returns `{ overlay, box, close }` and owns only
 the overlay, Escape, Enter, Tab trapping and focus restoration; each caller appends its
