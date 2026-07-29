@@ -41,11 +41,11 @@
 - `src-tauri/src/tasks/fs.rs` — `FsTaskProvider` carries a `BoardConfig`; `resolve` targets the first terminal step; `capabilities` reports the configured ids (Task 4); `writable_card` and `update` (Task 5).
 - `src-tauri/src/tasks/migrate.rs` — carry `board.json` to the destination (Task 3).
 - `src-tauri/src/tasks/provider.rs` — `TaskPatch`, and `update` joins the trait (Task 5).
-- `src-tauri/src/tasks_cmd.rs` — capabilities carry the configuration and its error (Task 4); `task_update` (Task 5); `board_config_save`, `board_step_rewrite`, `board_step_usage` (Task 9).
+- `src-tauri/src/tasks_cmd.rs` — capabilities carry the configuration and its error (Task 4); `tasks_update` (Task 5); `board_config_save`, `board_step_rewrite`, `board_step_usage` (Task 9).
 - `src-tauri/src/commands.rs` — `start_session` takes `task_id` and exports `COWORK_TASK_ID` (Task 10); the `build_settings_json` call gains the sidecar path (Task 11).
 - `src-tauri/src/hooks.rs` — a second hook command on `UserPromptSubmit` and `Stop` (Task 11).
 - `src-tauri/src/bin/cowork_task.rs` — kinds validated against the configuration (Task 4); `status` and `steps` (Task 10); `guard` (Task 11).
-- `src-tauri/src/main.rs` — register `task_update` (Task 5) and the three `board_*` commands (Task 9).
+- `src-tauri/src/main.rs` — register `tasks_update` (Task 5) and the three `board_*` commands (Task 9).
 - `src/ipc.ts` — `StepId`, `KindId`, `BoardConfig`, the reshaped `Task` and `ProviderCapabilities` (Task 4); `TaskPatch` and `updateTask` (Task 5); the `board_*` wrappers (Task 9); `taskId` on `startSession` (Task 10).
 - `src/board.ts` — the configuration threaded through (Task 4); columns, fixed-height cards, the stale marker (Task 6); the card opens (Task 7); drag targets and arrows (Task 8); the `⚙` button and the configuration-error banner (Task 9).
 - `src/tasks.ts` — `derivedStatus` and `boardColumns` take the configuration (Task 4); `boardColumns` over N steps and `isStale` (Task 6); `taskPrompt` gains the step line (Task 11).
@@ -1533,7 +1533,7 @@ git commit -m "refactor: step and kind ids instead of two enums, decided by the 
 
 ---
 
-## Task 5: `task_update` — editing a card without clobbering it
+## Task 5: `tasks_update` — editing a card without clobbering it
 
 **Files:**
 - Modify: `src-tauri/src/tasks/provider.rs`
@@ -1556,13 +1556,13 @@ pub struct TaskPatch {
 }
 // on the TaskProvider trait:
 fn update(&self, id: &str, patch: TaskPatch) -> Result<Task, TaskError>;
-// command:
-#[tauri::command] pub fn task_update(state: State<AppState>, workspace_id: String, id: String, patch: TaskPatch) -> Result<Task, String>
+// command — `tasks_`, plural, like every sibling in tasks_cmd.rs:
+#[tauri::command] pub fn tasks_update(state: State<AppState>, workspace_id: String, id: String, patch: TaskPatch) -> Result<Task, String>
 ```
 
 ```ts
 export interface TaskPatch { title?: string; kind?: KindId; status?: StepId; body?: string }
-export async function updateTask(workspaceId: string, id: string, patch: TaskPatch): Promise<Task>
+export const updateTask = (workspaceId: string, id: string, patch: TaskPatch) => Promise<Task>
 ```
 
 **One command for four callers.** The modal's Save, a drop, `‹`/`›`, and `cowork_task status` are all "write these fields of this card". A step-only move is a patch carrying only `status`, so no second command is needed.
@@ -1911,29 +1911,32 @@ In `src-tauri/src/tasks_cmd.rs`, beside `task_resolve`, following the same works
 
 ```rust
 #[tauri::command]
-pub fn task_update(
+pub fn tasks_update(
     state: State<AppState>,
     workspace_id: String,
     id: String,
     patch: TaskPatch,
 ) -> Result<Task, String> {
-    let provider = provider_for(&state, &workspace_id)?;
-    provider.update(&id, patch).map_err(|e| e.to_string())
+    let ws = workspace(&state, &workspace_id)?;
+    let p = provider_for(&ws)?;
+    p.update(&id, patch).map_err(|e| e.to_string())
 }
 ```
 
-Use whatever the module's existing helper for "the provider for this workspace" is called; if there is none, follow the shape `task_resolve` uses rather than inventing a second one.
+That is `tasks_resolve`'s shape exactly — the module's two helpers are
+`workspace(&state, id)` and `provider_for(&ws)`, in that order. There is no
+single-call `provider_for(&state, &workspace_id)`; do not add one.
 
-Register it in `src-tauri/src/main.rs` beside the other `task_*` commands.
+Register it in `src-tauri/src/main.rs` beside the other `tasks_*` commands.
 
-In `src/ipc.ts`:
+In `src/ipc.ts`, in the arrow-const style of its neighbours (`resolveTask`,
+`createTask`) rather than as an `async function`:
 
 ```ts
 export interface TaskPatch { title?: string; kind?: KindId; status?: StepId; body?: string }
 
-export async function updateTask(workspaceId: string, id: string, patch: TaskPatch): Promise<Task> {
-  return invoke("task_update", { workspaceId, id, patch });
-}
+export const updateTask = (workspaceId: string, id: string, patch: TaskPatch) =>
+  invoke<Task>("tasks_update", { workspaceId, id, patch });
 ```
 
 Add a test to `tests/ipc.test.ts` in the style of its neighbours, asserting the invoke name and argument shape.
