@@ -360,7 +360,10 @@ Repro: three workspaces, Cmd+2.\n";
         assert_eq!(again.created, card.created);
         assert_eq!(again.origin, card.origin);
         assert_eq!(again.session, card.session);
-        assert_eq!(again.body.trim(), card.body.trim());
+        // Exact, not `.trim()`: `render_card` must not insert a separator blank
+        // line before the body, since `split_frontmatter` only ever strips the
+        // one newline that terminates the closing `---` line on the way back in.
+        assert_eq!(again.body, card.body);
     }
 
     #[test]
