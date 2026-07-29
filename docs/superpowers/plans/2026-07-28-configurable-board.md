@@ -2643,7 +2643,16 @@ git commit -m "feat(board): open a card to read it, and save only what changed"
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `tests/board-drag.test.ts` with a mounted `BoardView` and the four-step `CFG` from Task 6:
+Create `tests/board-drag.test.ts`. It is a new file, so it declares its own
+four-step `CFG` (`backlog`, `todo`, `doing` with `working`, `done` with `terminal`)
+and its own `card` helper — `tests/board.test.ts`'s are module-private to that file.
+It also owns the helpers the cases below use, none of which exist yet: `view` and
+`render(tasks)` mounting a `BoardView` with a `handlers` mock whose `onMove` is the
+`vi.fn()` the assertions read, `cardEl(id)`, `btn(id, sel)`, `dragCardTo(id, step)`
+and `dragCardToElement(id, element)` — the last two differing only in how the drop
+target is found, so write one in terms of the other.
+
+The cases:
 
 ```ts
   it("gives a card in a known step both arrows in the middle of the board", () => {
@@ -2712,9 +2721,12 @@ Expected: FAIL — no `.tk-prev`, no `data-step`.
 
 - [ ] **Step 3: Implement in `board.ts`**
 
-- `BoardHandlers` gains `onMove: (task: Task, step: StepId) => void`.
-- `column` sets `data-step` on the column element for a configured step and **not** for the unknown column, so "is this a drop target" is one check: `col.dataset.step !== undefined`.
+- `BoardHandlers` gains `onMove: (task: Task, step: StepId) => void`. **`tests/board.test.ts`'s `handlers` mock gains `onMove: vi.fn()`** — every case there spreads it into `new BoardView({…})`, so a required new field fails `tsc` against all of them until it does. Same for the mock in `tests/card-modal.test.ts` if it builds one.
+- **`data-step` already exists.** Task 6 set it on every configured column and deliberately left it off the synthetic unknown column, so `col.dataset.step !== undefined` is already the one check for "is this a drop target", and the unknown-column case below already passes. Do not re-implement it; confirm it and say so in your report rather than reporting a RED you did not see.
+- **`stepBefore`/`stepAfter` already return `null` for an unknown step** — `findIndex` gives `-1`, and `i > 0` and `i >= 0` both reject it. So "a card in an unknown step gets no arrows" needs no special case; it falls out of rendering an arrow only when the helper returns non-null. Do not add a check for the unknown step.
 - `card` sets `draggable = true` and on `dragstart` puts the card id into `dataTransfer` under `text/plain`, adding class `tk-dragging` for the duration.
+
+  **Check this against Task 7 in a real browser, not only in jsdom.** Task 7 turned the card's title into a `button` filling the whole title row, and a native drag does not begin on a `<button>` — so most of the card's upper area may no longer be a drag handle. The tests dispatch `dragstart` on the card element directly and cannot see this. If the card is not draggable by its visible body, say so in your report; the remedy (a drag handle, or `draggable` on an inner region) is a design decision and mine to make, not yours to improvise.
 - Each column with a `data-step` gets `dragover` calling `preventDefault` (without it there is no drop) and toggling `tk-col-over`, and `drop` reading the id, finding the task, and calling `onMove` unless the step is the one it already has.
 - Arrows: `‹` as `button.tk-prev` and `›` as `button.tk-next`, prepended and appended around `▶` and `✓` in `tk-acts`, rendered only when `stepBefore` / `stepAfter` return non-null, with `title` and `aria-label` `Move to the previous step` / `Move to the next step`.
 
