@@ -3267,6 +3267,11 @@ git commit -m "feat(session): hand the card id to the session, and let it move t
 | `Stop`, card in a terminal step | allow |
 | card not found, damaged, conflicting | allow |
 | `board.json` unusable, root unreachable, read fails | allow |
+| **`COWORK_TASK_ID` set but `COWORK_TASKS_DIR` unset** | **allow** — see below |
+
+**That last row is a trap, and it is reachable.** Task 10 pushes `COWORK_TASK_ID` unconditionally, so a session restored into a workspace that has since lost its tracker configuration carries a card id with no tracker directory beside it. The danger is not the state itself but how `guard` reaches it: every other subcommand begins by resolving `COWORK_TASKS_DIR` and **fails** when it is missing, deliberately, so a session never writes somewhere arbitrary. If `Cmd::Guard` inherits that refusal it exits non-zero — and **a non-zero `Stop` hook blocks the session.** The one row that must never block would become the row that blocks hardest, on a workspace with no tracker at all.
+
+So `guard` does not share the other subcommands' environment contract. It resolves what it can and allows on anything missing, which is the same rule as every other allow row: the guard never blocks a session on a tracker problem, and every failure path exits 0.
 
 - [ ] **Step 1: Write the failing tests**
 
