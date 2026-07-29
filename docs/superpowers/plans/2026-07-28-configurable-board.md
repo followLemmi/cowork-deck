@@ -3493,24 +3493,33 @@ In `src-tauri/src/hooks.rs`, `build_settings_json` gains a fourth parameter, `ta
     }
 ```
 
-Update the call in `commands.rs:215` to pass `&state.task_bin_path`.
+Update the call at **`commands.rs:227`** to pass `&state.task_bin_path`, which `AppState` already carries (`commands.rs:17`). `build_settings_json` also has **two existing tests** (`hooks.rs:35` and `:52`) which both gain the new argument — name them in the report as touched rather than letting a changed call signature pass as an incidental diff.
+
+Note the provider constructor is `RootCreation::Never`, however `fs.rs`'s enum is imported into `cowork_task.rs`; the variant exists.
 
 - [ ] **Step 5: Tell the prompt and the skill**
 
 In `src/tasks.ts`, `taskPrompt(task, cfg)` gains, before the closing line:
 
 ```ts
-  const steps = cfg.steps.map((s) => s.id).join(", ");
-  lines.push(
-    "",
-    `This card is in step "${task.status}". The board's steps are: ${steps}.`,
-    `Move it as the work progresses: "$COWORK_TASK_BIN" status ${task.id} <step>`,
-  );
+  // Omitted entirely when the configuration has no steps: "The board's steps
+  // are: ." is worse than silence, and a prompt is the one place an agent
+  // cannot check a claim against anything else. This is Task 4's ruling —
+  // `taskPrompt` deliberately shipped without a steps line until now, and the
+  // reviewer of Task 4 flagged its absence as correct rather than missing.
+  if (cfg.steps.length > 0) {
+    const steps = cfg.steps.map((s) => s.id).join(", ");
+    lines.push(
+      "",
+      `This card is in step "${task.status}". The board's steps are: ${steps}.`,
+      `Move it as the work progresses: "$COWORK_TASK_BIN" status ${task.id} <step>`,
+    );
+  }
 ```
 
 Keep the existing closing `done` line — it still works and now means the first terminal step.
 
-Add a test to `tests/tasks.test.ts` asserting the prompt names the card's current step, lists the configured ids, and still carries the `done` line.
+Add tests to `tests/tasks.test.ts`: one asserting the prompt names the card's current step, lists the configured ids, and still carries the `done` line; and **one asserting a configuration with no steps produces no steps line at all** — not an empty one. The second is the guard on Task 4's ruling, and without it the ruling survives only as a comment.
 
 In `.claude/skills/file-a-task/SKILL.md`, add a section documenting `status` and `steps`, saying explicitly that the steps differ per project and must be read with `cowork_task steps` rather than assumed. Do not list `open`/`done` as though they were universal.
 
