@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { BoardView, emptyStateMessage } from "../src/board";
-import type { BoardConfig, MigrationOffer, Task } from "../src/ipc";
+import type { BoardConfig, MigrationOffer, ProviderCapabilities, Task } from "../src/ipc";
 
 const CFG: BoardConfig = {
   v: 1,
@@ -68,6 +68,8 @@ describe("BoardView", () => {
   });
 
   it("shows damaged and conflicting cards with their reason", () => {
+    // p.tk-warn is gone (task 6): the reason now lives on .tk-warn-glyph's
+    // aria-label/title rather than in the card's visible text.
     const v = new BoardView({ ...handlers });
     v.render({
       project: "deck", caps, error: null, links: [],
@@ -75,8 +77,9 @@ describe("BoardView", () => {
     });
     const el = v.mount.querySelector(".tk-card")!;
     expect(el.classList.contains("damaged")).toBe(true);
-    expect(el.textContent).toContain("no status field");
-    expect(el.textContent).toContain("id");
+    const warn = el.querySelector(".tk-warn-glyph")!.getAttribute("aria-label");
+    expect(warn).toContain("no status field");
+    expect(warn).toContain("id");
     expect(el.querySelector(".tk-done")).toBeNull(); // a conflicting card must not be closed
   });
 
@@ -205,5 +208,99 @@ describe("BoardView migration banner", () => {
     v.mount.querySelector<HTMLButtonElement>(".tk-migrate-skip")!.click();
     expect(onMigrate).toHaveBeenCalledTimes(1);
     expect(onDismissMigration).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("BoardView columns from configuration", () => {
+  const CFG4: BoardConfig = {
+    v: 1,
+    steps: [
+      { id: "backlog", label: "Backlog" },
+      { id: "todo", label: "To do" },
+      { id: "doing", label: "Doing", working: true },
+      { id: "done", label: "Done", terminal: true },
+    ],
+    kinds: [{ id: "bug", label: "Bug" }, { id: "task", label: "Task" }],
+  };
+
+  function capsWith(cfg: BoardConfig): ProviderCapabilities {
+    return { canCreate: true, canResolve: true, statuses: cfg.steps.map((s) => s.id), board: cfg, boardError: null };
+  }
+
+  let view: BoardView;
+  beforeEach(() => { view = new BoardView({ ...handlers }); });
+
+  it("renders one column per step plus the unknown column only when it has cards", () => {
+    view.render({ project: "deck", caps: capsWith(CFG4), error: null,
+                  tasks: [card({ status: "todo" })], links: [] });
+    expect(view.mount.querySelectorAll(".tk-col")).toHaveLength(4);
+    expect(view.mount.querySelector(".tk-col-unknown")).toBeNull();
+
+    view.render({ project: "deck", caps: capsWith(CFG4), error: null,
+                  tasks: [card({ status: "legacy" })], links: [] });
+    expect(view.mount.querySelectorAll(".tk-col")).toHaveLength(5);
+    expect(view.mount.querySelector(".tk-col-unknown")).not.toBeNull();
+  });
+
+  it("gives every card a meta row and an action row whatever its content", () => {
+    // This is what makes the fixed height hold: the rows are always there, so
+    // they sit at the same offset in a short card and a long one.
+    view.render({ project: "deck", caps: capsWith(CFG4), error: null, tasks: [
+      card({ id: "short", title: "T", status: "todo" }),
+      card({ id: "long", title: "A ".repeat(60), status: "todo", damaged: "no created field" }),
+    ], links: [] });
+    for (const el of view.mount.querySelectorAll(".tk-card")) {
+      expect(el.querySelector(".tk-meta")).not.toBeNull();
+      expect(el.querySelector(".tk-acts")).not.toBeNull();
+    }
+  });
+
+  it("shows damage as a glyph on the card, not as a paragraph", () => {
+    view.render({ project: "deck", caps: capsWith(CFG4), error: null,
+                  tasks: [card({ status: "todo", damaged: "no created field" })], links: [] });
+    const warn = view.mount.querySelector(".tk-warn-glyph")!;
+    expect(warn.getAttribute("aria-label")).toContain("no created field");
+    expect(view.mount.querySelector("p.tk-warn")).toBeNull();
+  });
+
+  it("marks a card left in the working step with no session", () => {
+    view.render({ project: "deck", caps: capsWith(CFG4), error: null,
+                  tasks: [card({ status: "doing" })], links: [] });
+    expect(view.mount.querySelector(".tk-stale")!.textContent).toBe("no live session");
+  });
+
+  it("omits the kind chip for a card that does not name a kind", () => {
+    view.render({ project: "deck", caps: capsWith(CFG4), error: null,
+                  tasks: [card({ status: "todo", kind: "" })], links: [] });
+    expect(view.mount.querySelector(".tk-kind")).toBeNull();
+  });
+});
+
+describe("BoardView board configuration error", () => {
+  const errCaps: ProviderCapabilities = {
+    canCreate: true, canResolve: true, statuses: ["open", "done"], board: CFG,
+    boardError: "steps[1]: missing id",
+  };
+
+  it("shows the fallback message when boardError is set", () => {
+    const v = new BoardView({ ...handlers });
+    v.render({
+      project: "deck", caps: errCaps, error: null, tasks: [], links: [],
+      boardError: errCaps.boardError,
+    });
+    const banner = v.mount.querySelector("p.tk-board-error")!;
+    expect(banner).not.toBeNull();
+    expect(banner.textContent).toContain("board.json could not be used");
+    expect(banner.textContent).toContain("steps[1]: missing id");
+  });
+
+  it("still renders the columns underneath the board-error banner", () => {
+    const v = new BoardView({ ...handlers });
+    v.render({
+      project: "deck", caps: errCaps, error: null, tasks: [card()], links: [],
+      boardError: errCaps.boardError,
+    });
+    expect(v.mount.querySelector("p.tk-board-error")).not.toBeNull();
+    expect(v.mount.querySelectorAll(".tk-col").length).toBeGreaterThan(0);
   });
 });

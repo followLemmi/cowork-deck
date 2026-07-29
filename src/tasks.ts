@@ -1,5 +1,5 @@
-import type { BoardConfig, SessionState, Task } from "./ipc";
-import { isTerminal, kindLabel } from "./board-config";
+import type { BoardConfig, BoardStep, SessionState, Task } from "./ipc";
+import { isKnownStep, isTerminal, kindLabel, workingStep } from "./board-config";
 
 /** A live tile, as far as the board cares: which card it came from and how it is doing. */
 export interface TaskSessionLink { session: string; taskId?: string; state: SessionState }
@@ -48,11 +48,18 @@ export function taskPrompt(task: Task, cfg: BoardConfig): string {
   return lines.join("\n");
 }
 
+export interface BoardColumn {
+  step: BoardStep;
+  tasks: Task[];
+  /** How many the cap is hiding. Always 0 for a non-terminal step. */
+  hidden: number;
+}
+
 export interface BoardColumns {
-  open: Task[];
-  done: Task[];
-  /** How many done cards the limit is hiding. */
-  doneHidden: number;
+  columns: BoardColumn[];
+  /** Cards naming a step the configuration does not know. Alive and visible:
+   *  they arrive from a hand-edited or synced board.json, not from the editor. */
+  unknown: Task[];
   /** Cards belonging to other projects in a shared root — counted, not silently hidden. */
   foreign: { project: string; count: number }[];
 }
@@ -77,15 +84,33 @@ export function boardColumns(
     else foreignCount.set(t.project, (foreignCount.get(t.project) ?? 0) + 1);
   }
 
-  const open = mine.filter((t) => !isTerminal(cfg, t.status))
-    .sort((a, b) => byTimeDesc(a.created, b.created));
-  const doneAll = mine.filter((t) => isTerminal(cfg, t.status))
-    .sort((a, b) => byTimeDesc(a.resolved ?? "", b.resolved ?? ""));
+  const columns = cfg.steps.map((step) => {
+    const all = mine.filter((t) => t.status === step.id);
+    const sorted = step.terminal === true
+      ? all.sort((a, b) => byTimeDesc(a.resolved ?? "", b.resolved ?? ""))
+      : all.sort((a, b) => byTimeDesc(a.created, b.created));
+    // The cap is for a column that only grows and is only ever reviewed. A
+    // non-terminal column hiding a card is hiding work.
+    if (step.terminal !== true) return { step, tasks: sorted, hidden: 0 };
+    return {
+      step,
+      tasks: sorted.slice(0, doneLimit),
+      hidden: Math.max(0, sorted.length - doneLimit),
+    };
+  });
 
   return {
-    open,
-    done: doneAll.slice(0, doneLimit),
-    doneHidden: Math.max(0, doneAll.length - doneLimit),
+    columns,
+    unknown: mine.filter((t) => !isKnownStep(cfg, t.status)),
     foreign: [...foreignCount.entries()].map(([p, count]) => ({ project: p, count })),
   };
+}
+
+/** A card parked in the working step with nothing running on it. Possible only
+ *  because ▶ now writes the step, so the board has to say so rather than let it
+ *  read as work in progress. */
+export function isStale(task: Task, links: TaskSessionLink[], cfg: BoardConfig): boolean {
+  const working = workingStep(cfg);
+  if (working === null || task.status !== working) return false;
+  return !links.some((l) => l.taskId === task.id && ALIVE.includes(l.state));
 }

@@ -438,23 +438,49 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 
 .tk-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
 .tk-title { margin: 0; font-size: var(--fs-base); color: var(--fg); }
-.tk-cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); align-items: start; }
+/* As many columns as the configuration has steps. The wrapper scrolls, never
+   the page. */
+.tk-cols {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(240px, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
+  overflow-x: auto;
+  padding-bottom: var(--sp-2);
+}
 .tk-col-head { font-size: var(--fs-xs); color: var(--fg-subtle); margin-bottom: var(--sp-2); }
+.tk-col-unknown .tk-col-head { color: var(--st-error); }
 
+/* One height for every card, so a column reads as a grid. The title clamps and
+   the two bottom rows are pinned, which is what makes them line up rather than
+   nearly line up. */
 .tk-card {
   background: var(--bg-panel); border: 1px solid var(--border);
   border-radius: var(--r-md); padding: var(--sp-3); margin-bottom: var(--sp-2);
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  height: 108px;
+  box-sizing: border-box;
 }
 .tk-card.working { border-color: var(--st-working); }
 .tk-card.done { opacity: 0.6; }
 .tk-card.damaged { border-color: var(--st-error); }
-.tk-card-title { color: var(--fg); font-size: var(--fs-base); font-weight: var(--fw-medium); }
+.tk-card-title {
+  color: var(--fg); font-size: var(--fs-base); font-weight: var(--fw-medium);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .tk-meta { display: flex; gap: var(--sp-2); margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--fg-subtle); }
 .tk-bot { color: var(--st-ended); }
 /* Pulse via opacity only: animating box-shadow once hung the whole system. */
 .tk-busy { color: var(--st-working); animation: tk-pulse 1.6s var(--ease) infinite; }
 @keyframes tk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-.tk-warn { color: var(--st-error); font-size: var(--fs-xs); margin: var(--sp-1) 0 0; }
+.tk-warn-glyph { color: var(--st-error); cursor: help; }
+.tk-stale { color: var(--st-error); }
+.tk-board-error { color: var(--st-error); font-size: var(--fs-sm); margin-bottom: var(--sp-3); }
 .tk-foreign { color: var(--fg-subtle); font-size: var(--fs-xs); margin-top: var(--sp-3); }
 .tk-empty { color: var(--fg-muted); font-size: var(--fs-sm); }
 

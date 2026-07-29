@@ -1,6 +1,6 @@
 import type { MigrationOffer, ProviderCapabilities, Task } from "./ipc";
 import { isTerminal } from "./board-config";
-import { boardColumns, derivedStatus, kindLabel, type TaskSessionLink } from "./tasks";
+import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
 
 export interface BoardState {
   project: string;
@@ -11,6 +11,10 @@ export interface BoardState {
   /** Optional so the pre-existing render tests keep compiling; absent means
    *  there is nothing to move. */
   migration?: MigrationOffer | null;
+  /** Optional for the same reason `migration` is: every render call that
+   *  predates this field, in tests and in main.ts alike, omits it. Absent
+   *  means board.json was fine, so there is nothing to report. */
+  boardError?: string | null;
 }
 
 export interface BoardHandlers {
@@ -79,18 +83,29 @@ export class BoardView {
       return;
     }
 
+    // The fallback board still draws underneath this: silently keeping a
+    // renamed terminal step open would be a worse lie than a banner that says so.
+    if (state.boardError) {
+      this.mount.append(el(
+        "p", "tk-board-error",
+        `board.json could not be used: ${state.boardError}. The default two-step board is shown instead, ` +
+        "so cards may appear in the wrong column. The file was left alone.",
+      ));
+    }
+
     const cols = boardColumns(state.tasks, state.project, caps.board);
     const wrap = el("div", "tk-cols");
-    wrap.append(
-      this.column(`open (${cols.open.length})`, cols.open, state, caps),
-      this.column(
-        cols.doneHidden > 0 ? `done (${cols.done.length}+${cols.doneHidden})` : `done (${cols.done.length})`,
-        cols.done, state, caps,
-      ),
-    );
+    for (const c of cols.columns) wrap.append(this.column(c, state, caps));
+    if (cols.unknown.length > 0) {
+      const unknownCol = this.column(
+        { step: { id: "unknown", label: "unknown step" }, tasks: cols.unknown, hidden: 0 }, state, caps,
+      );
+      unknownCol.classList.add("tk-col-unknown");
+      wrap.append(unknownCol);
+    }
     this.mount.append(wrap);
 
-    if (cols.open.length === 0 && cols.done.length === 0) {
+    if (cols.columns.every((c) => c.tasks.length === 0) && cols.unknown.length === 0) {
       this.mount.append(el("div", "tk-empty", emptyStateMessage(caps, null).text));
     }
 
@@ -148,11 +163,17 @@ export class BoardView {
     return box;
   }
 
-  private column(label: string, tasks: Task[], state: BoardState, caps: ProviderCapabilities) {
-    const col = el("div", "tk-col");
-    col.append(el("div", "tk-col-head", label));
-    for (const t of tasks) col.append(this.card(t, state, caps));
-    return col;
+  /** `col.step.id` lands on `data-step`: task 8 reads it as the drop target,
+   *  even though nothing consumes it yet. */
+  private column(col: BoardColumn, state: BoardState, caps: ProviderCapabilities) {
+    const node = el("div", "tk-col");
+    node.dataset.step = col.step.id;
+    const heading = col.hidden > 0
+      ? `${col.step.label} (${col.tasks.length}+${col.hidden})`
+      : `${col.step.label} (${col.tasks.length})`;
+    node.append(el("div", "tk-col-head", heading));
+    for (const t of col.tasks) node.append(this.card(t, state, caps));
+    return node;
   }
 
   private card(t: Task, state: BoardState, caps: ProviderCapabilities) {
@@ -163,17 +184,26 @@ export class BoardView {
     box.append(el("div", "tk-card-title", t.title));
 
     const meta = el("div", "tk-meta");
-    meta.append(el("span", "tk-kind", kindLabel(caps.board, t.kind)));
+    const kind = kindLabel(caps.board, t.kind);
+    if (kind) meta.append(el("span", "tk-kind", kind));
     if (t.origin === "session") meta.append(el("span", "tk-bot", "session"));
     if (status === "working") meta.append(el("span", "tk-busy", "in progress"));
+    if (t.damaged || t.conflict) {
+      const reasons: string[] = [];
+      if (t.damaged) reasons.push(`damaged: ${t.damaged} · id ${t.id} · ${t.path}`);
+      if (t.conflict) reasons.push(`more than one file carries id ${t.id} — fix it by hand`);
+      const warn = el("span", "tk-warn-glyph", "⚠");
+      const message = reasons.join(" — ");
+      warn.title = message;
+      warn.setAttribute("aria-label", message);
+      meta.append(warn);
+    }
+    if (isStale(t, state.links, caps.board)) {
+      const stale = el("span", "tk-stale", "no live session");
+      stale.title = "This card sits in the working step, but no session is running on it.";
+      meta.append(stale);
+    }
     box.append(meta);
-
-    if (t.damaged) {
-      box.append(el("p", "tk-warn", `damaged: ${t.damaged} · id ${t.id} · ${t.path}`));
-    }
-    if (t.conflict) {
-      box.append(el("p", "tk-warn", `more than one file carries id ${t.id} — fix it by hand`));
-    }
 
     const acts = el("div", "tk-acts");
     // ▶ is hidden while the card reads as "in progress" (a working/waitingInput
@@ -203,7 +233,10 @@ export class BoardView {
       done.onclick = () => this.h.onResolve(t);
       acts.append(done);
     }
-    if (acts.childElementCount > 0) box.append(acts);
+    // Always present, even empty: this is what makes the fixed card height
+    // (styles.css .tk-card) hold — the meta and action rows sit at the same
+    // offset whatever the card's own content.
+    box.append(acts);
     return box;
   }
 }

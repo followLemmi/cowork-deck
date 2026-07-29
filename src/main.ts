@@ -200,7 +200,10 @@ async function refreshBoard() {
   // The workspace may have been switched while we waited on IPC: a late reply
   // must not repaint the board with another workspace's data over the current one.
   if (workspaces.active?.id !== wsId) return;
-  board.render({ project: ws.name, caps, error, tasks, links: deck.taskLinks(), migration });
+  board.render({
+    project: ws.name, caps, error, tasks, links: deck.taskLinks(), migration,
+    boardError: caps?.boardError,
+  });
 }
 
 /** The sidebar counts — one handle covering every workspace. */

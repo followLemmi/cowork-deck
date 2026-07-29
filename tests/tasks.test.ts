@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  taskPrompt, derivedStatus, liveSessionForTask, boardColumns, kindLabel,
+  taskPrompt, derivedStatus, liveSessionForTask, boardColumns, isStale, kindLabel,
   type TaskSessionLink,
 } from "../src/tasks";
 import type { BoardConfig, Task } from "../src/ipc";
@@ -9,6 +9,17 @@ const CFG: BoardConfig = {
   v: 1,
   steps: [{ id: "open", label: "open" }, { id: "done", label: "done", terminal: true }],
   kinds: [{ id: "bug", label: "bug" }, { id: "task", label: "task" }, { id: "idea", label: "idea" }],
+};
+
+const CFG4: BoardConfig = {
+  v: 1,
+  steps: [
+    { id: "backlog", label: "Backlog" },
+    { id: "todo", label: "To do" },
+    { id: "doing", label: "Doing", working: true },
+    { id: "done", label: "Done", terminal: true },
+  ],
+  kinds: [{ id: "bug", label: "Bug" }, { id: "task", label: "Task" }],
 };
 
 function card(over: Partial<Task> = {}): Task {
@@ -88,44 +99,93 @@ describe("launch guard", () => {
 });
 
 describe("boardColumns", () => {
-  it("splits open and done, newest first", () => {
-    const cards = [
-      card({ id: "a", created: "2026-07-01T00:00:00Z" }),
-      card({ id: "b", created: "2026-07-05T00:00:00Z" }),
-      card({ id: "c", status: "done", resolved: "2026-07-02T00:00:00Z" }),
-      card({ id: "d", status: "done", resolved: "2026-07-06T00:00:00Z" }),
-    ];
-    const b = boardColumns(cards, "deck", CFG);
-    expect(b.open.map((t) => t.id)).toEqual(["b", "a"]);
-    expect(b.done.map((t) => t.id)).toEqual(["d", "c"]);
-    expect(b.doneHidden).toBe(0);
+  it("returns one column per configured step, in configuration order", () => {
+    const cols = boardColumns([], "deck", CFG4);
+    expect(cols.columns.map((c) => c.step.id)).toEqual(["backlog", "todo", "doing", "done"]);
   });
 
-  it("caps the done column and reports how many are hidden", () => {
+  it("places each card in the column its status names", () => {
+    const cols = boardColumns(
+      [card({ id: "a", status: "backlog" }), card({ id: "b", status: "doing" })], "deck", CFG4);
+    const at = (id: string) => cols.columns.find((c) => c.step.id === id)!.tasks.map((t) => t.id);
+    expect(at("backlog")).toEqual(["a"]);
+    expect(at("doing")).toEqual(["b"]);
+    expect(at("todo")).toEqual([]);
+  });
+
+  it("collects a card whose step the configuration does not know", () => {
+    const cols = boardColumns([card({ id: "x", status: "legacy" })], "deck", CFG4);
+    expect(cols.unknown.map((t) => t.id)).toEqual(["x"]);
+    // Not silently dropped into some column: it would look like it moved.
+    expect(cols.columns.every((c) => c.tasks.length === 0)).toBe(true);
+  });
+
+  it("caps a terminal column and counts what it hid", () => {
     const many = Array.from({ length: 25 }, (_, i) =>
       card({ id: `d${i}`, status: "done", resolved: `2026-07-${String(i + 1).padStart(2, "0")}T00:00:00Z` }));
-    const b = boardColumns(many, "deck", CFG, 20);
-    expect(b.done).toHaveLength(20);
-    expect(b.doneHidden).toBe(5);
+    const done = boardColumns(many, "deck", CFG4, 20).columns.find((c) => c.step.id === "done")!;
+    expect(done.tasks).toHaveLength(20);
+    expect(done.hidden).toBe(5);
   });
 
-  it("lists foreign projects instead of hiding those cards without a trace", () => {
-    const cards = [card({ id: "a" }), card({ id: "x", project: "other" }), card({ id: "y", project: "other" })];
-    const b = boardColumns(cards, "deck", CFG);
-    expect(b.open.map((t) => t.id)).toEqual(["a"]);
-    expect(b.foreign).toEqual([{ project: "other", count: 2 }]);
+  it("never caps a non-terminal column", () => {
+    const many = Array.from({ length: 25 }, (_, i) => card({ id: `t${i}`, status: "todo" }));
+    const todo = boardColumns(many, "deck", CFG4, 20).columns.find((c) => c.step.id === "todo")!;
+    // A card in `todo` hidden behind a limit is a lost task.
+    expect(todo.tasks).toHaveLength(25);
+    expect(todo.hidden).toBe(0);
   });
 
-  it("keeps damaged cards in the open column whatever their project says", () => {
-    const cards = [card({ id: "bad", project: "", damaged: "no project field" })];
-    const b = boardColumns(cards, "deck", CFG);
-    expect(b.open.map((t) => t.id)).toEqual(["bad"]);
-    expect(b.foreign).toEqual([]);
+  it("sorts a card with no timestamp last instead of throwing", () => {
+    // Carried over from the block this one replaces: `byTimeDesc` survives the
+    // rewrite, and so must its empty-timestamp case.
+    const cols = boardColumns(
+      [card({ id: "a", status: "todo", created: "" }),
+       card({ id: "b", status: "todo", created: "2026-07-05T00:00:00Z" })], "deck", CFG4);
+    expect(cols.columns.find((c) => c.step.id === "todo")!.tasks.map((t) => t.id))
+      .toEqual(["b", "a"]);
   });
 
-  it("sorts cards with no timestamp last instead of throwing", () => {
-    const cards = [card({ id: "a", created: "" }), card({ id: "b", created: "2026-07-05T00:00:00Z" })];
-    expect(boardColumns(cards, "deck", CFG).open.map((t) => t.id)).toEqual(["b", "a"]);
+  it("sorts a terminal column by resolved and the others by created, newest first", () => {
+    const cols = boardColumns([
+      card({ id: "old", status: "todo", created: "2026-01-01T00:00:00Z" }),
+      card({ id: "new", status: "todo", created: "2026-07-01T00:00:00Z" }),
+      card({ id: "r1", status: "done", resolved: "2026-01-01T00:00:00Z" }),
+      card({ id: "r2", status: "done", resolved: "2026-07-01T00:00:00Z" }),
+    ], "deck", CFG4);
+    const at = (id: string) => cols.columns.find((c) => c.step.id === id)!.tasks.map((t) => t.id);
+    expect(at("todo")).toEqual(["new", "old"]);
+    expect(at("done")).toEqual(["r2", "r1"]);
+  });
+
+  it("counts other projects' cards instead of showing them", () => {
+    const cols = boardColumns([card({ id: "f", project: "other" })], "deck", CFG4);
+    expect(cols.foreign).toEqual([{ project: "other", count: 1 }]);
+    expect(cols.columns.every((c) => c.tasks.length === 0)).toBe(true);
+  });
+
+  it("keeps a damaged card whatever its project says", () => {
+    // It may be damaged *because* the project field is missing.
+    const cols = boardColumns(
+      [card({ id: "d", project: "", status: "todo", damaged: "no project field" })], "deck", CFG4);
+    expect(cols.columns.find((c) => c.step.id === "todo")!.tasks.map((t) => t.id)).toEqual(["d"]);
+  });
+});
+
+describe("isStale", () => {
+  it("is true for a card in the working step with no live session", () => {
+    expect(isStale(card({ id: "a", status: "doing" }), [], CFG4)).toBe(true);
+  });
+  it("is false while a session is alive on it", () => {
+    expect(isStale(card({ id: "a", status: "doing" }),
+      [{ session: "s", taskId: "a", state: "working" }], CFG4)).toBe(false);
+  });
+  it("is false for a card outside the working step", () => {
+    expect(isStale(card({ id: "a", status: "todo" }), [], CFG4)).toBe(false);
+  });
+  it("is false when no step is marked working", () => {
+    const cfg = { ...CFG4, steps: CFG4.steps.map((s) => ({ ...s, working: false })) };
+    expect(isStale(card({ id: "a", status: "doing" }), [], cfg)).toBe(false);
   });
 });
 
