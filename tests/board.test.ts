@@ -244,6 +244,9 @@ describe("BoardView columns from configuration", () => {
                   tasks: [card({ status: "legacy" })], links: [] });
     expect(view.mount.querySelectorAll(".tk-col")).toHaveLength(5);
     expect(view.mount.querySelector(".tk-col-unknown")).not.toBeNull();
+    // Not a configured step: a drop on it must not be indistinguishable from a
+    // drop on a real column through the same attribute (task 8's drop target).
+    expect(view.mount.querySelector(".tk-col-unknown")!.hasAttribute("data-step")).toBe(false);
   });
 
   it("gives every card a meta row and an action row whatever its content", () => {
@@ -265,6 +268,15 @@ describe("BoardView columns from configuration", () => {
     const warn = view.mount.querySelector(".tk-warn-glyph")!;
     expect(warn.getAttribute("aria-label")).toContain("no created field");
     expect(view.mount.querySelector("p.tk-warn")).toBeNull();
+    // A generic span's aria-label is not reliably announced without a role.
+    expect(warn.getAttribute("role")).toBe("img");
+  });
+
+  it("names the path in a conflict-only card's glyph, since it must be opened by hand", () => {
+    view.render({ project: "deck", caps: capsWith(CFG4), error: null,
+                  tasks: [card({ status: "todo", conflict: true })], links: [] });
+    const warn = view.mount.querySelector(".tk-warn-glyph")!;
+    expect(warn.getAttribute("aria-label")).toContain(card().path);
   });
 
   it("marks a card left in the working step with no session", () => {
@@ -286,24 +298,21 @@ describe("BoardView board configuration error", () => {
     boardError: "steps[1]: missing id",
   };
 
-  it("shows the fallback message when boardError is set", () => {
+  it("shows the fallback message when caps.boardError is set", () => {
     const v = new BoardView({ ...handlers });
-    v.render({
-      project: "deck", caps: errCaps, error: null, tasks: [], links: [],
-      boardError: errCaps.boardError,
-    });
+    v.render({ project: "deck", caps: errCaps, error: null, tasks: [], links: [] });
     const banner = v.mount.querySelector("p.tk-board-error")!;
     expect(banner).not.toBeNull();
     expect(banner.textContent).toContain("board.json could not be used");
     expect(banner.textContent).toContain("steps[1]: missing id");
+    // The part that stops a person trusting the columns while the fallback is
+    // active — the opening words alone would not.
+    expect(banner.textContent).toContain("so cards may appear in the wrong column. The file was left alone.");
   });
 
   it("still renders the columns underneath the board-error banner", () => {
     const v = new BoardView({ ...handlers });
-    v.render({
-      project: "deck", caps: errCaps, error: null, tasks: [card()], links: [],
-      boardError: errCaps.boardError,
-    });
+    v.render({ project: "deck", caps: errCaps, error: null, tasks: [card()], links: [] });
     expect(v.mount.querySelector("p.tk-board-error")).not.toBeNull();
     expect(v.mount.querySelectorAll(".tk-col").length).toBeGreaterThan(0);
   });

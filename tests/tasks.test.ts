@@ -159,9 +159,15 @@ describe("boardColumns", () => {
   });
 
   it("counts other projects' cards instead of showing them", () => {
-    const cols = boardColumns([card({ id: "f", project: "other" })], "deck", CFG4);
-    expect(cols.foreign).toEqual([{ project: "other", count: 1 }]);
-    expect(cols.columns.every((c) => c.tasks.length === 0)).toBe(true);
+    // Two of one project, plus a local card: the count is the only trace a card
+    // in a shared vault leaves when it is not shown, so the aggregation has to
+    // be asserted, not just the presence of a name.
+    const cols = boardColumns([
+      card({ id: "f1", project: "other" }), card({ id: "f2", project: "other" }),
+      card({ id: "mine", status: "todo" }),
+    ], "deck", CFG4);
+    expect(cols.foreign).toEqual([{ project: "other", count: 2 }]);
+    expect(cols.columns.find((c) => c.step.id === "todo")!.tasks.map((t) => t.id)).toEqual(["mine"]);
   });
 
   it("keeps a damaged card whatever its project says", () => {
@@ -169,6 +175,9 @@ describe("boardColumns", () => {
     const cols = boardColumns(
       [card({ id: "d", project: "", status: "todo", damaged: "no project field" })], "deck", CFG4);
     expect(cols.columns.find((c) => c.step.id === "todo")!.tasks.map((t) => t.id)).toEqual(["d"]);
+    // And is not *also* counted as foreign: it renders, so a banner saying a card
+    // named a different project would be a second, false statement about it.
+    expect(cols.foreign).toEqual([]);
   });
 });
 

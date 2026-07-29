@@ -466,14 +466,20 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tk-card.working { border-color: var(--st-working); }
 .tk-card.done { opacity: 0.6; }
 .tk-card.damaged { border-color: var(--st-error); }
+/* Placed explicitly, not auto-placed. The card appends three children, so
+   auto-placement would drop them into rows 1-2-3 and the `1fr` would land on
+   the meta row, stretching it and pulling its text up under the title — which
+   then moves with a one- versus two-line title, the opposite of the point.
+   The spacer has to be the row nothing is placed in. */
 .tk-card-title {
+  grid-row: 1;
   color: var(--fg); font-size: var(--fs-base); font-weight: var(--fw-medium);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.tk-meta { display: flex; gap: var(--sp-2); margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--fg-subtle); }
+.tk-meta { grid-row: 3; display: flex; gap: var(--sp-2); margin-top: var(--sp-1); font-size: var(--fs-xs); color: var(--fg-subtle); }
 .tk-bot { color: var(--st-ended); }
 /* Pulse via opacity only: animating box-shadow once hung the whole system. */
 .tk-busy { color: var(--st-working); animation: tk-pulse 1.6s var(--ease) infinite; }
@@ -517,7 +523,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   outline: none; box-shadow: var(--focus-ring);
 }
 
-.tk-acts { display: flex; gap: var(--sp-1); margin-top: var(--sp-2); }
+.tk-acts { grid-row: 4; display: flex; gap: var(--sp-1); margin-top: var(--sp-2); }
 .tk-acts button, .tk-new, .tk-configure {
   font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);
   background: var(--bg-raised); border: 1px solid var(--border);

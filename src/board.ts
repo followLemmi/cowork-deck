@@ -11,10 +11,6 @@ export interface BoardState {
   /** Optional so the pre-existing render tests keep compiling; absent means
    *  there is nothing to move. */
   migration?: MigrationOffer | null;
-  /** Optional for the same reason `migration` is: every render call that
-   *  predates this field, in tests and in main.ts alike, omits it. Absent
-   *  means board.json was fine, so there is nothing to report. */
-  boardError?: string | null;
 }
 
 export interface BoardHandlers {
@@ -85,10 +81,13 @@ export class BoardView {
 
     // The fallback board still draws underneath this: silently keeping a
     // renamed terminal step open would be a worse lie than a banner that says so.
-    if (state.boardError) {
+    // Read off `caps.boardError` directly rather than a second field on `state`:
+    // `caps` is already non-null here (the early return above caught the other
+    // case), so a separate channel for the same value could only disagree with it.
+    if (caps.boardError) {
       this.mount.append(el(
         "p", "tk-board-error",
-        `board.json could not be used: ${state.boardError}. The default two-step board is shown instead, ` +
+        `board.json could not be used: ${caps.boardError}. The default two-step board is shown instead, ` +
         "so cards may appear in the wrong column. The file was left alone.",
       ));
     }
@@ -97,8 +96,10 @@ export class BoardView {
     const wrap = el("div", "tk-cols");
     for (const c of cols.columns) wrap.append(this.column(c, state, caps));
     if (cols.unknown.length > 0) {
+      // `id: ""` on purpose: it is not a configured step, and column() only
+      // sets `data-step` for a non-empty id — see the comment there.
       const unknownCol = this.column(
-        { step: { id: "unknown", label: "unknown step" }, tasks: cols.unknown, hidden: 0 }, state, caps,
+        { step: { id: "", label: "unknown step" }, tasks: cols.unknown, hidden: 0 }, state, caps,
       );
       unknownCol.classList.add("tk-col-unknown");
       wrap.append(unknownCol);
@@ -164,10 +165,15 @@ export class BoardView {
   }
 
   /** `col.step.id` lands on `data-step`: task 8 reads it as the drop target,
-   *  even though nothing consumes it yet. */
+   *  even though nothing consumes it yet. Never set for the synthetic unknown
+   *  column (`id: ""`): it is not a configured step, so a drop there would
+   *  write `status: unknown` and leave the card in the same column, corrupt in
+   *  a second way — and a real step legitimately named `unknown` would collide
+   *  with it. Leaving `data-step` off lets Task 8's `[data-step]` selector
+   *  exclude this column without knowing any magic string. */
   private column(col: BoardColumn, state: BoardState, caps: ProviderCapabilities) {
     const node = el("div", "tk-col");
-    node.dataset.step = col.step.id;
+    if (col.step.id) node.dataset.step = col.step.id;
     const heading = col.hidden > 0
       ? `${col.step.label} (${col.tasks.length}+${col.hidden})`
       : `${col.step.label} (${col.tasks.length})`;
@@ -191,11 +197,16 @@ export class BoardView {
     if (t.damaged || t.conflict) {
       const reasons: string[] = [];
       if (t.damaged) reasons.push(`damaged: ${t.damaged} · id ${t.id} · ${t.path}`);
-      if (t.conflict) reasons.push(`more than one file carries id ${t.id} — fix it by hand`);
+      // Names the path too: a conflict is resolved by hand, in a file the
+      // person has to be able to find.
+      if (t.conflict) reasons.push(`more than one file carries id ${t.id} — fix it by hand · ${t.path}`);
       const warn = el("span", "tk-warn-glyph", "⚠");
       const message = reasons.join(" — ");
       warn.title = message;
       warn.setAttribute("aria-label", message);
+      // An aria-label on a bare span is not reliably announced; role="img"
+      // makes it so. A damaged card's only remaining signal is this glyph.
+      warn.setAttribute("role", "img");
       meta.append(warn);
     }
     if (isStale(t, state.links, caps.board)) {
