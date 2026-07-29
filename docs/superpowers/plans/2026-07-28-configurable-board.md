@@ -2968,7 +2968,15 @@ Three rules the editor enforces in the dialog rather than at save time:
 
 - Changing an `id` on a row whose original id has cards records a rewrite in `BoardEditorResult.rewrites` and shows inline: `n card(s) will be updated to say "<new id>"`.
 - Removing a step whose id has cards demands a destination: a `select` of the remaining steps appears in the row, and Save stays disabled until one is chosen. That choice becomes a rewrite entry. There is no plain remove, because it would deliberately manufacture the unknown-step column.
+
+  **A chosen destination has to stay valid, not merely have been valid once.** Capturing the select's value and never re-checking it lets the rule be walked around in three moves: choose `done` as the destination, then remove `done` (which has no cards, so it goes silently), or rename `done`, or point a second removal at a step that is itself being removed. Save is then reachable with a rewrite aimed at a step the saved configuration does not contain — and the backend will not save you, because it *refuses the card write* and reports the cards as `skipped`, which is not an error, so the configuration saves and the cards are orphaned in exactly the column this rule exists to refuse to manufacture. The person was asked where the cards go, answered, and they did not go there.
+
+  So: check every pending removal's destination against the configuration as it currently stands, in the same place the awaiting-destination flags are checked, and disable Save with a message naming the broken one. Refusing to immediately remove a step that some pending removal points at is the friendlier half of the same check; do both.
+
+- **Two rewrites whose ids cross must not pass silently.** Rewrites run in order, and nothing notices that one entry's `to` is another entry's `from`. Swapping `todo` and `done` — which `validateDraft` accepts and which produces no duplicate id — moves the `todo` cards into `done`, then moves *everything now in `done`*, arrivals included, into `todo`. Both sets land in one column, and because every id exists in the draft, `update` accepts every write and `skipped` is empty: there is no alert at all. The same mechanism mangles any chain, `a→b` alongside `b→c`. Detect that one rewrite's `to` is another's `from` and refuse Save with a message. A correct two-phase rewrite through a scratch id is more than this task should take on; passing silently is the only unacceptable outcome.
 - `validateDraft` runs on every change; its message shows above the buttons and disables Save.
+- **Editing an id must not rebuild the row that owns the caret.** Recomputing the whole section on every keystroke detaches the focused input on the first character, so typing `in-progress` into an id field takes eleven clicks. The label input already avoids this by doing a targeted update instead of a full re-render; the id input, the working checkbox and the `↑`/`↓` buttons must do the same. No test can catch it — assigning `.value` and dispatching a synthetic `input` event is indifferent to focus — and it is the central interaction of a feature whose entire premise is the id/label split.
+- Kind rows get `↑`/`↓` as well. "The same for kinds without the flags" means without `terminal` and `working`, not without reordering: the kind list's order is the order of the buttons on the new-card form.
 
 - [ ] **Step 5: Wire it in `main.ts`**
 
@@ -2989,9 +2997,16 @@ async function editBoard() {
     try {
       const report = await boardStepRewrite(ws.id, r.from, r.to);
       if (report.skipped.length) {
-        await alertModal(
+        // Ask, rather than falling through. A skipped card is not an error, so
+        // saving anyway would leave it sitting in a step the configuration is
+        // about to stop listing — and the person would learn that from an alert
+        // they had already dismissed. It may well be the right choice for a
+        // damaged card, which needs hand repair either way; it is theirs to make.
+        const go = await confirmModal(
           `Moved ${report.rewritten} card(s) to "${r.to}". ${report.skipped.length} could not be moved:\n` +
-          report.skipped.map((s) => `${s.fileName}: ${s.reason}`).join("\n"));
+          report.skipped.map((s) => `${s.fileName}: ${s.reason}`).join("\n") +
+          `\n\nSave the new configuration anyway? Those cards will show in the unknown-step column until they are fixed.`);
+        if (!go) return;
       }
     } catch (e) {
       await alertModal(`Could not update the cards in "${r.from}": ${String(e)}`);
