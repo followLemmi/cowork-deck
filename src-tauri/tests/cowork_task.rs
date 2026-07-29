@@ -8,9 +8,9 @@ const DEFAULT_BOARD: &str = r#"{"steps":[{"id":"open","label":"open"},
     {"id":"done","label":"done","terminal":true}],
     "kinds":[{"id":"bug","label":"bug"},{"id":"task","label":"task"},{"id":"idea","label":"idea"}]}"#;
 
-/// A fresh tempdir with `board.json` already written. Returned together with
-/// its `TempDir` guard — bind it in the caller (`let (_dir, dir) = …`), or the
-/// directory is deleted before the test ever touches it.
+/// A fresh tempdir with `board.json` already written. Returns the `TempDir`
+/// guard itself — bind it in the caller (`let dir = tempdir_with_board(…)`),
+/// or the directory is deleted before the test ever touches it.
 fn tempdir_with_board(json: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join(cowork_deck::tasks::board::BOARD_FILE), json).unwrap();
@@ -32,7 +32,10 @@ fn run(dir: &tempfile::TempDir, args: &[&str]) -> Result<String, String> {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(b"body").unwrap();
+    // Best effort: only `new` reads stdin. For `status`/`steps`/a parse error
+    // the child can exit (closing its read end) before this write lands, and
+    // that BrokenPipe is not this test's failure to report.
+    let _ = child.stdin.take().unwrap().write_all(b"body");
     let out = child.wait_with_output().unwrap();
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -46,7 +49,14 @@ fn run(dir: &tempfile::TempDir, args: &[&str]) -> Result<String, String> {
 /// an id back unless `new` prints one, which it does.
 fn create_card(dir: &tempfile::TempDir, kind: &str, title: &str) -> String {
     let out = run(dir, &["new", "--kind", kind, "--title", title]).expect("card creation");
-    out.trim_start_matches("created card ").split(" — ").next().unwrap().to_string()
+    // `strip_prefix` + `expect`, not `trim_start_matches` + `.split(_).next().unwrap()`:
+    // the latter's `unwrap()` can never fire (`split(_).next()` always returns
+    // `Some`), so a changed success message would silently no-op the prefix
+    // strip and hand back a wrong id, surfacing later as a confusing
+    // `card not found: …` somewhere else entirely.
+    let rest = out.strip_prefix("created card ").expect("new's message format changed");
+    // `split(_).next()` always returns `Some`, so this one is genuinely infallible.
+    rest.split(" — ").next().unwrap().to_string()
 }
 
 /// The text of the card whose filename carries `id` — cards are named
@@ -58,6 +68,25 @@ fn card_text(dir: &tempfile::TempDir, id: &str) -> String {
         .find(|e| e.file_name().to_string_lossy().starts_with(id))
         .unwrap_or_else(|| panic!("no card file starts with {id}"));
     std::fs::read_to_string(entry.path()).unwrap()
+}
+
+/// Like `run`, but hands back stderr regardless of exit status. Needed for
+/// the `board_error()` warning: it is printed on an otherwise *successful*
+/// call, and `run` alone cannot see it — `run` discards stderr on success.
+fn stderr_of(dir: &tempfile::TempDir, args: &[&str]) -> String {
+    let bin = env!("CARGO_BIN_EXE_cowork_task");
+    let mut child = Command::new(bin)
+        .args(args)
+        .env("COWORK_TASKS_DIR", dir.path())
+        .env("COWORK_PROJECT", "deck")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _ = child.stdin.take().unwrap().write_all(b"body");
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 /// `cowork_task new --kind …` in `dir`, with the environment a session gets.
@@ -179,4 +208,21 @@ fn status_needs_both_an_id_and_a_step() {
     let dir = tempdir_with_board(DEFAULT_BOARD);
     assert!(run(&dir, &["status"]).is_err());
     assert!(run(&dir, &["status", "01ABC"]).is_err());
+}
+
+/// A corrupt `board.json` falls back to `default_config()` — the same
+/// fallback the UI shows — but the agent driving this CLI cannot see the
+/// UI's error banner. `steps` still lists the fallback (staying coherent with
+/// what the app itself would write), but it must say on stderr that this is
+/// a fallback, not the project's real configuration.
+#[test]
+fn steps_warns_on_stderr_when_board_json_is_unusable_but_still_lists_the_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(cowork_deck::tasks::board::BOARD_FILE), "not json").unwrap();
+
+    let out = run(&dir, &["steps"]).expect("still lists the fallback board");
+    assert_eq!(out.lines().collect::<Vec<_>>(), vec!["open", "done (terminal)"]);
+
+    let err = stderr_of(&dir, &["steps"]);
+    assert!(err.contains("board.json could not be used"), "{err}");
 }

@@ -386,4 +386,18 @@ describe("Deck.launchFromTask", () => {
 
     expect(updateTaskMock).not.toHaveBeenCalled();
   });
+
+  // The work matters more than the bookkeeping: a rejected updateTask must
+  // not stop the session from launching.
+  it("still launches when moving the card to the working step fails", async () => {
+    updateTaskMock.mockRejectedValueOnce(new Error("boom"));
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    const outcome = await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_WITH_WORKING, "prompt");
+
+    expect(outcome).toBe("launched");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+  });
 });

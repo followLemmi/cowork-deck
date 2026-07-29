@@ -95,6 +95,13 @@ fn run() -> Result<String, String> {
     // The in-project root is created by the app on first use; the CLI never
     // creates a root, so a stale env var cannot scatter empty folders.
     let provider = FsTaskProvider::new(std::path::PathBuf::from(&dir), FsRootCreation::Never);
+    // A corrupt board.json falls back to `default_config()` silently as far as
+    // `--kind`/`status`/`steps` are concerned — the UI shows its own error
+    // banner for this, but an agent driving this CLI cannot see that banner,
+    // and `steps` exists precisely so it does not have to guess.
+    if let Some(e) = provider.board_error() {
+        eprintln!("cowork_task: warning: board.json could not be used, showing the default board: {e}");
+    }
 
     match cmd {
         Cmd::New { kind, title } => {

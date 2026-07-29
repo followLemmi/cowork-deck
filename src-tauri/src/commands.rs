@@ -51,7 +51,10 @@ pub fn build_claude_args(
 /// Environment a session needs to file its own tickets. When the workspace has
 /// no tracker, the tracker vars are omitted entirely rather than set to an
 /// empty string — the CLI then fails loudly instead of writing somewhere
-/// arbitrary, and the agent has no empty path to misread.
+/// arbitrary, and the agent has no empty path to misread. `COWORK_TASK_ID` is
+/// the exception: it is pushed unconditionally, same as `COWORK_SESSION`,
+/// because the hooks that key off it need to know a card is linked even when
+/// the workspace's tracker is unreachable.
 pub fn session_env(
     root: Option<&std::path::Path>,
     project: &str,
