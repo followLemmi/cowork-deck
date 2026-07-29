@@ -11,7 +11,7 @@ const CFG: BoardConfig = {
 
 const handlers = {
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
-  onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(),
+  onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove: vi.fn(),
 };
 
 function card(over: Partial<Task> = {}): Task {

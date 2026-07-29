@@ -9,7 +9,7 @@ import {
   listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
   taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
 } from "./ipc";
-import type { MigrationOffer, Task } from "./ipc";
+import type { MigrationOffer, StepId, Task } from "./ipc";
 import { alertModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -56,6 +56,7 @@ const board = new BoardView({
   onMigrate: () => void migrateCards(),
   onDismissMigration: () => void dismissMigration(),
   onOpen: (t) => void openCard(t),
+  onMove: (t, step) => void moveTask(t, step),
 });
 boardEl.append(board.mount);
 
@@ -216,6 +217,21 @@ async function closeTask(t: Task) {
   if (!ws) return;
   try { await resolveTask(ws.id, t.id); }
   catch (e) { await alertModal(`Could not close the task: ${String(e)}`); }
+  await refreshBoard();
+  await refreshCounts();
+}
+
+/** A drag or an arrow click both land here: a step-only patch, exactly like
+ *  the modal's own step-only move (card-modal.ts's computePatch). */
+async function moveTask(t: Task, step: StepId) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  try { await updateTask(ws.id, t.id, { status: step }); }
+  catch (e) {
+    // The optimistic move has to be explained: without this the card just
+    // springs back on the next poll and the board looks broken.
+    await alertModal(`Could not move the card: ${String(e)}`);
+  }
   await refreshBoard();
   await refreshCounts();
 }

@@ -1,5 +1,5 @@
-import type { MigrationOffer, ProviderCapabilities, Task } from "./ipc";
-import { isTerminal } from "./board-config";
+import type { MigrationOffer, ProviderCapabilities, StepId, Task } from "./ipc";
+import { isTerminal, stepAfter, stepBefore } from "./board-config";
 import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
 
 export interface BoardState {
@@ -21,6 +21,7 @@ export interface BoardHandlers {
   onMigrate: () => void;
   onDismissMigration: () => void;
   onOpen: (task: Task) => void;
+  onMove: (task: Task, step: StepId) => void;
 }
 
 /** `caps === null` means no tracker is configured — a legal state, not a failure. */
@@ -174,7 +175,10 @@ export class BoardView {
    *  exclude this column without knowing any magic string. */
   private column(col: BoardColumn, state: BoardState, caps: ProviderCapabilities) {
     const node = el("div", "tk-col");
-    if (col.step.id) node.dataset.step = col.step.id;
+    if (col.step.id) {
+      node.dataset.step = col.step.id;
+      this.makeDropTarget(node, col.step.id, state);
+    }
     const heading = col.hidden > 0
       ? `${col.step.label} (${col.tasks.length}+${col.hidden})`
       : `${col.step.label} (${col.tasks.length})`;
@@ -183,10 +187,39 @@ export class BoardView {
     return node;
   }
 
+  /** Only called for a column carrying `data-step` — see the comment above
+   *  `column()` for why the unknown column never reaches here. */
+  private makeDropTarget(node: HTMLElement, step: StepId, state: BoardState) {
+    node.ondragover = (e) => {
+      // Without this a drop never fires at all — it is the browser's default.
+      e.preventDefault();
+      node.classList.add("tk-col-over");
+    };
+    node.ondragleave = () => node.classList.remove("tk-col-over");
+    node.ondrop = (e) => {
+      e.preventDefault();
+      node.classList.remove("tk-col-over");
+      const id = e.dataTransfer?.getData("text/plain");
+      const task = id ? state.tasks.find((t) => t.id === id) : undefined;
+      // A drop into the card's own column is not a move: no write, no refresh.
+      if (task && task.status !== step) this.h.onMove(task, step);
+    };
+  }
+
   private card(t: Task, state: BoardState, caps: ProviderCapabilities) {
     const status = derivedStatus(t, state.links, caps.board);
     const box = el("div", `tk-card ${status}`);
     if (t.damaged) box.classList.add("damaged");
+
+    // Native drag needs the id on the wire, and a visual cue while it's in
+    // flight; `dragend` fires whether the drop was accepted or not, so it is
+    // the one place to take `tk-dragging` back off.
+    box.draggable = true;
+    box.ondragstart = (e) => {
+      e.dataTransfer?.setData("text/plain", t.id);
+      box.classList.add("tk-dragging");
+    };
+    box.ondragend = () => box.classList.remove("tk-dragging");
 
     // The grid child Task 6 placed, not a child of it: `.tk-card-title` carries
     // `grid-row: 1` and the two-line clamp, so it becomes the button itself —
@@ -226,6 +259,20 @@ export class BoardView {
     box.append(meta);
 
     const acts = el("div", "tk-acts");
+    // The keyboard equivalent of a drag, and not a fallback for it: xterm eats
+    // Tab inside a tile, and every other action here already carries an
+    // aria-label. `null` (first step, last step, or a step board.json does not
+    // know) means no neighbour, so the arrow is simply not rendered — no
+    // separate check for the unknown step, `stepBefore`/`stepAfter` already
+    // say "no neighbour" for it.
+    const prevStep = stepBefore(caps.board, t.status);
+    if (prevStep !== null) {
+      const prev = el("button", "tk-prev", "‹");
+      prev.title = "Move to the previous step";
+      prev.setAttribute("aria-label", "Move to the previous step");
+      prev.onclick = () => this.h.onMove(t, prevStep);
+      acts.append(prev);
+    }
     // ▶ is hidden while the card reads as "in progress" (a working/waitingInput
     // session). An idle session still linked to the card slips through here —
     // that's fine: the launch guard in Deck.launchFromTask catches it and
@@ -252,6 +299,14 @@ export class BoardView {
       done.setAttribute("aria-label", "Close this task");
       done.onclick = () => this.h.onResolve(t);
       acts.append(done);
+    }
+    const nextStep = stepAfter(caps.board, t.status);
+    if (nextStep !== null) {
+      const next = el("button", "tk-next", "›");
+      next.title = "Move to the next step";
+      next.setAttribute("aria-label", "Move to the next step");
+      next.onclick = () => this.h.onMove(t, nextStep);
+      acts.append(next);
     }
     // Always present, even empty: this is what makes the fixed card height
     // (styles.css .tk-card) hold — the meta and action rows sit at the same

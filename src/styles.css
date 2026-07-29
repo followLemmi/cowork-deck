@@ -466,6 +466,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tk-card.working { border-color: var(--st-working); }
 .tk-card.done { opacity: 0.6; }
 .tk-card.damaged { border-color: var(--st-error); }
+.tk-card.tk-dragging { opacity: 0.5; }
+.tk-col-over { outline: 1px dashed var(--accent); outline-offset: var(--sp-1); }
 /* Placed explicitly, not auto-placed. The card appends three children, so
    auto-placement would drop them into rows 1-2-3 and the `1fr` would land on
    the meta row, stretching it and pulling its text up under the title — which
