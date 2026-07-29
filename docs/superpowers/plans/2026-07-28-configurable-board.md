@@ -1974,8 +1974,33 @@ git commit -m "feat(update): write only the fields a caller names, and refuse th
 **Files:**
 - Modify: `src/tasks.ts` (`boardColumns` and `BoardColumns`)
 - Modify: `src/board.ts` (`BoardView.render`, `column`, `card`)
-- Modify: `src/styles.css:429-447`
+- Modify: `src/styles.css` — the `.tk-cols` rule and the `.tk-card` rule. Find them
+  by selector, not by line number.
 - Test: `tests/tasks.test.ts`, `tests/board.test.ts`
+
+**Both test files already have a module-level `CFG` and `card`,** two-step
+(`open`/`done`) and shared with the `taskPrompt`, `derivedStatus` and `kindLabel`
+blocks. Do not re-declare either and do not change `CFG` — those blocks assert
+`"open"`/`"done"` and would break. Add a second config beside it for the new
+blocks:
+
+```ts
+const CFG4: BoardConfig = {
+  v: 1,
+  steps: [
+    { id: "backlog", label: "Backlog" },
+    { id: "todo", label: "To do" },
+    { id: "doing", label: "Doing", working: true },
+    { id: "done", label: "Done", terminal: true },
+  ],
+  kinds: [{ id: "bug", label: "Bug" }, { id: "task", label: "Task" }],
+};
+```
+
+and reuse the existing `card` helper. It defaults `project: "deck"`, so the new
+tests pass `"deck"` as `boardColumns`' project argument; it also defaults
+`status: "open"`, which `CFG4` does not define, so every card needs an explicit
+`status` unless the test is about a foreign or unknown-step card.
 
 **Interfaces:**
 - Consumes: `BoardConfig`, `isTerminal`, `isKnownStep`, `stepLabel`, `kindLabel`, `workingStep` (Task 4).
@@ -1994,26 +2019,11 @@ export function isStale(task: Task, links: TaskSessionLink[], cfg: BoardConfig):
 
 - [ ] **Step 1: Write the failing tests**
 
-Replace the `boardColumns` describe block in `tests/tasks.test.ts` with:
+Replace the `boardColumns` describe block in `tests/tasks.test.ts` with the
+following. `CFG4` and `card` come from the file as described above — declare
+`CFG4`, do not re-declare `card`, and read `"deck"` wherever a project is named:
 
 ```ts
-const CFG: BoardConfig = {
-  v: 1,
-  steps: [
-    { id: "backlog", label: "Backlog" },
-    { id: "todo", label: "To do" },
-    { id: "doing", label: "Doing", working: true },
-    { id: "done", label: "Done", terminal: true },
-  ],
-  kinds: [{ id: "bug", label: "Bug" }, { id: "task", label: "Task" }],
-};
-
-const card = (over: Partial<Task>): Task => ({
-  id: "1", title: "T", kind: "task", status: "todo", project: "p",
-  created: "2026-07-01T00:00:00Z", resolved: null, origin: "human", session: null,
-  body: "", path: "/t/1.md", damaged: null, conflict: false, ...over,
-});
-
 describe("boardColumns", () => {
   it("returns one column per configured step, in configuration order", () => {
     const cols = boardColumns([], "p", CFG);
@@ -2050,6 +2060,16 @@ describe("boardColumns", () => {
     // A card in `todo` hidden behind a limit is a lost task.
     expect(todo.tasks).toHaveLength(25);
     expect(todo.hidden).toBe(0);
+  });
+
+  it("sorts a card with no timestamp last instead of throwing", () => {
+    // Carried over from the block this one replaces: `byTimeDesc` survives the
+    // rewrite, and so must its empty-timestamp case.
+    const cols = boardColumns(
+      [card({ id: "a", status: "todo", created: "" }),
+       card({ id: "b", status: "todo", created: "2026-07-05T00:00:00Z" })], "deck", CFG4);
+    expect(cols.columns.find((c) => c.step.id === "todo")!.tasks.map((t) => t.id))
+      .toEqual(["b", "a"]);
   });
 
   it("sorts a terminal column by resolved and the others by created, newest first", () => {
@@ -2096,7 +2116,13 @@ describe("isStale", () => {
 });
 ```
 
-Add to `tests/board.test.ts`:
+**Mechanical adaptation for both blocks below, since the code is written against
+a fixture the files do not have:** every `CFG` inside the new tests means `CFG4`,
+and every `"p"` naming a project means `"deck"` — including `project: "p"` inside
+a `card({…})`. The existing two-step `CFG` stays untouched for the older blocks.
+
+Add to `tests/board.test.ts` — which needs its own `CFG4`, declared the same way,
+because these cases assert four columns:
 
 ```ts
   it("renders one column per step plus the unknown column only when it has cards", () => {
@@ -2278,8 +2304,11 @@ offered on it, and the sidebar counts them all as open.** The board looks entire
 plausible and is wrong, with the only signal sitting in a field no code consumes.
 Left in Task 9, that state ships through three tasks.
 
-`BoardState` gains `boardError: string | null`, filled from `caps.boardError` in
-`refreshBoard`. `BoardView.render` shows it above the columns as
+`BoardState` gains `boardError?: string | null` — **optional**, exactly like
+`migration?` beside it and for the same reason: every `render` call in this task's
+own tests, and every pre-existing one, omits it, and a required field would fail to
+compile against all of them. Absent means there is nothing wrong to report. Filled
+from `caps.boardError` in `refreshBoard` (`src/main.ts:182`). `BoardView.render` shows it above the columns as
 `p.tk-board-error`: `board.json could not be used: <error>. The default two-step
 board is shown instead, so cards may appear in the wrong column. The file was left
 alone.` The board still draws underneath it.
@@ -2293,7 +2322,11 @@ the columns still render alongside it.
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `npx vitest run`
-Expected: 34 files, all passing (the `boardColumns` block replaces its predecessor, so the count moves rather than only growing).
+Expected: 35 files, all passing. No absolute test total is given, because the
+`boardColumns` block replaces its predecessor: the gate is an accounted delta —
+everything passes, and every test that disappeared is named with the case that
+replaced it. The five old `boardColumns` cases map onto the new ones; say so
+explicitly rather than reporting a number.
 
 Run: `npx tsc --noEmit` — no errors.
 
