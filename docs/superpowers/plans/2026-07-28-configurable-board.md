@@ -2392,8 +2392,8 @@ Create `tests/card-modal.test.ts`:
 ```ts
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { computePatch, type CardFormValues } from "../src/card-modal";
-import type { Task } from "../src/ipc";
+import { computePatch, openCardModal, type CardFormValues } from "../src/card-modal";
+import type { BoardConfig, Task } from "../src/ipc";
 
 const original: Task = {
   id: "1", title: "Original", kind: "task", status: "todo", project: "p",
@@ -2402,6 +2402,17 @@ const original: Task = {
 };
 const same = (): CardFormValues =>
   ({ title: "Original", kind: "task", status: "todo", body: "Body.\n" });
+
+// Used by the DOM tests in step 7. This file is new, so it declares its own.
+const CFG: BoardConfig = {
+  v: 1,
+  steps: [
+    { id: "todo", label: "To do" },
+    { id: "doing", label: "Doing", working: true },
+    { id: "done", label: "Done", terminal: true },
+  ],
+  kinds: [{ id: "bug", label: "Bug" }, { id: "task", label: "Task" }],
+};
 
 describe("computePatch", () => {
   it("is empty when nothing was touched", () => {
@@ -2478,7 +2489,22 @@ Resolve with the form's values on Save and `null` on Cancel or Escape.
 
 - [ ] **Step 5: Wire it up**
 
-In `src/board.ts`, the card's title becomes a `button.tk-card-open` spanning the title area so it is reachable by keyboard, with `aria-label` `Open card: <title>`. It calls a new handler `onOpen(task)` added to `BoardHandlers`. Clicks on the action buttons must not also open the card — call `stopPropagation` in the action handlers, or keep the actions outside the opening button's subtree, which the fixed-height grid already does.
+In `src/board.ts`, the card's title becomes a button so it is reachable by keyboard, with `aria-label` `Open card: <title>`. It calls a new handler `onOpen(task)` added to `BoardHandlers`.
+
+**The button must be the grid child that Task 6 placed, not a child of it.** `.tk-card-title` carries `grid-row: 1` and the two-line clamp; wrapping a button inside that div would put the clamp on the div and the click target on something else. So the element becomes `button.tk-card-title.tk-card-open` — same grid child, same clamp — and `.tk-card-open` adds the button reset it now needs:
+
+```css
+.tk-card-open {
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+  width: 100%;
+}
+.tk-card-open:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+```
+
+Clicks on the action buttons must not also open the card. No `stopPropagation` is needed: Task 6 put `.tk-acts` in its own grid row as a sibling, so the actions are already outside the button's subtree. Keep it that way.
+
+**`tests/board.test.ts`'s `handlers` mock gains `onOpen: vi.fn()`.** Every existing case builds `new BoardView({ ...handlers })`, so a required new field on `BoardHandlers` fails `tsc` against all of them until the mock has it.
 
 In `src/main.ts`:
 
@@ -2514,7 +2540,7 @@ Reuse the form styling already in `styles.css` for `.tk-f-*`; add `.tk-c-facts {
     const step = document.querySelector<HTMLSelectElement>(".tk-c-step")!;
     expect(step.value).toBe("legacy");
     expect(step.options[0].textContent).toContain("not in board.json");
-    document.querySelector<HTMLButtonElement>(".dialog-cancel")!.click();
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
     return expect(p).resolves.toBeNull();
   });
 
@@ -2522,13 +2548,18 @@ Reuse the form styling already in `styles.css` for `.tk-f-*`; add `.tk-c-facts {
     const p = openCardModal({ ...original, damaged: "no created field" }, CFG, false);
     expect(document.querySelector<HTMLInputElement>(".tk-c-title")!.disabled).toBe(true);
     expect(document.querySelector(".tk-c-broken")!.textContent).toContain("no created field");
-    expect(document.querySelector(".dialog-accept")).toBeNull();
-    document.querySelector<HTMLButtonElement>(".dialog-cancel")!.click();
+    expect(document.querySelector(".modal-ok")).toBeNull();
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
     return expect(p).resolves.toBeNull();
   });
 ```
 
-Use the cancel and accept button selectors `dialog-shell.ts` actually produces; check it before writing these two tests and adjust the selectors rather than adding classes to the shell.
+**`openDialog` builds no buttons.** It returns `{ overlay, box, close }` and owns only
+the overlay, Escape, Enter, Tab trapping and focus restoration; each caller appends its
+own footer. The convention every existing dialog follows is `button.modal-cancel` and
+`button.modal-ok` (`src/modal.ts:18,22`, `src/forms.ts:66,68`), and
+`tests/task-form.test.ts` drives them through exactly those selectors. Follow it — the
+two selectors above are already corrected to it. Do not add classes to the shell.
 
 - [ ] **Step 8: Verify and commit**
 
