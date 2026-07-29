@@ -2821,7 +2821,7 @@ git commit -m "feat(board): drag a card between steps, and move it with the keyb
 
 ```rust
 #[tauri::command] pub fn board_config_save(state: State<AppState>, workspace_id: String, config: BoardConfig) -> Result<(), String>
-#[tauri::command] pub fn board_step_rewrite(state: State<AppState>, workspace_id: String, from: StepId, to: StepId) -> Result<RewriteReport, String>
+#[tauri::command] pub fn board_step_rewrite(state: State<AppState>, workspace_id: String, from: StepId, to: StepId, config: BoardConfig) -> Result<RewriteReport, String>
 pub struct RewriteReport { pub rewritten: usize, pub skipped: Vec<RewriteSkip> }
 pub struct RewriteSkip { pub file_name: String, pub reason: String }
 #[tauri::command] pub fn board_step_usage(state: State<AppState>, workspace_id: String) -> Result<Vec<StepUsage>, String>
@@ -2913,9 +2913,19 @@ Expected: FAIL to compile.
 
 `rewrite_step` walks `FsTaskProvider::scan`, keeps the cards that are **ours and in the step being renamed**, and calls `provider.update(&card.id, TaskPatch { status: Some(to.clone()), ..Default::default() })` on each, collecting failures into `skipped` with the file name and the error's `to_string()`.
 
+**It takes the draft configuration, and builds its provider with `FsTaskProvider::with_board` rather than `provider_for`.** This is not optional plumbing: `update` refuses a status the provider's board does not list, `provider_for` loads the board off *disk*, and rewrites deliberately run **before** the configuration is saved. So a rename to a genuinely new id — the case this helper exists for — would otherwise refuse every single card with `no step named <to> in board.json`, report `rewritten: 0`, and leave every card pointing at a step the about-to-be-saved configuration no longer lists. That is the unknown-step column this task exists to prevent, produced by the code meant to prevent it. Validating against the configuration that is *about to* be saved is the correct authority. Do not fix it by saving first instead — that reopens the window the ordering closes.
+
+At least one test must use a `to` that the on-disk `board.json` does **not** contain. The fixture configuration lists both `todo` and `next`, so a test that renames between them cannot see this.
+
+**The rewrite must not touch `resolved`.** A rewrite is a relabelling, not a state change — but `update` restamps `resolved` on any status patch, so renaming a terminal step would reset every affected card's resolution date to the moment of the rename. Fix it in `update`, where the rule belongs, by keying on the *transition* rather than the destination alone: stamp when a card enters a terminal step from a non-terminal one, clear when it leaves a terminal step for a non-terminal one, and **leave `resolved` exactly as it is when both the old and the new step are terminal** (or both non-terminal). That is the right rule for the card modal too — moving a card from `done` to `shipped` is not a re-resolution. Add a test that a terminal-to-terminal move preserves `resolved` unchanged.
+
+**`save_config` refuses to write over a configuration it could not parse.** `load_or_create` goes to deliberate lengths never to rewrite a `board.json` it cannot use, so the person can fix their own typo. Without a guard here the opposite happens: a typo means `tasks_capabilities` hands the editor `default_config()`, the person opens `⚙`, sees a plausible default board, presses Save — and their real configuration is replaced by the default. `FsTaskProvider::board_error()` is the signal; refuse with a message naming the file and saying it must be fixed by hand.
+
 "Ours" is `card.damaged.is_some() || card.project == workspace_name` — the same damaged-or-ours rule `FsTaskProvider::list` and `boardColumns` already apply, because a card may be damaged *precisely* because its `project` field is missing. So a damaged card is **not** filtered out of the candidates: it is attempted, `update` refuses it, and the refusal becomes a `skipped` entry naming the file. That is the point. Filtering damaged cards out earlier would be quieter and worse — a card stuck in the step being renamed would go unmentioned, and the person would discover it later in the unknown-step column with no idea why. Conflicting cards reach `skipped` the same way, through `update`'s own refusal rather than a second copy of the rule here.
 
-`step_usage` counts by `status` over the same project-matched set, including steps the configuration no longer lists — the editor needs to know a step is occupied even when it is about to disappear.
+`step_usage` counts by `status` over the same project-matched set, including steps the configuration no longer lists — the editor needs to know a step is occupied even when it is about to disappear. Return it in the configuration's own step order, with any steps it does not list after them, rather than in `HashMap` iteration order: the value crossing IPC should be the same twice running. Drop the entry for an empty step id — a damaged card with no `status:` parses as one, and it matches no row the editor can show.
+
+It is an *attempt* count, not a success count: damaged and duplicate-id cards are counted and will then be refused. That is the right way round — never understated — and each refusal is named afterwards in the rewrite report.
 
 `save_config` validates before writing and returns the `BoardConfigError`'s `Display` on failure, so an invalid configuration never reaches the file.
 
