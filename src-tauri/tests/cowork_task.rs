@@ -357,6 +357,28 @@ fn guard_prints_the_card_and_its_step_on_a_user_prompt() {
     );
 }
 
+/// `DEFAULT_BOARD`'s only non-terminal step happens to be *named* `open`, so
+/// the test above cannot tell "the message reports the card's real step"
+/// apart from "the message always says the word open" — a `guard()` that
+/// hardcoded the literal text `step "open"` instead of interpolating
+/// `card.status.as_str()` would still pass it. This board's non-terminal step
+/// is named `todo`, so the assertion can only be satisfied by actually
+/// reading the card's status.
+#[test]
+fn guard_reports_the_cards_real_step_not_a_hardcoded_one() {
+    let dir = tempdir_with_board(
+        r#"{"steps":[{"id":"todo","label":"To do"},
+        {"id":"done","label":"Done","terminal":true}],"kinds":[{"id":"task","label":"Task"}]}"#,
+    );
+    let id = create_card(&dir, "task", "A title");
+    let (code, out, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"UserPromptSubmit"}"#);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("a hook reply");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().expect("context");
+    assert!(ctx.contains("step \"todo\""), "must name the card's real step: {ctx}");
+    assert!(!ctx.contains("\"open\""), "must not name a step this board doesn't have: {ctx}");
+}
+
 /// Task 10 pushes `COWORK_TASK_ID` unconditionally, so a session can carry a
 /// card id into a workspace whose tracker directory has since gone missing
 /// from the environment. Every other subcommand resolves `COWORK_TASKS_DIR`
