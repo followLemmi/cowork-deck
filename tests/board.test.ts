@@ -11,7 +11,7 @@ const CFG: BoardConfig = {
 
 const handlers = {
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
-  onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove: vi.fn(),
+  onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove: vi.fn(), onEditBoard: vi.fn(),
 };
 
 function card(over: Partial<Task> = {}): Task {
@@ -151,6 +151,22 @@ describe("BoardView", () => {
     v.render({ project: "deck", caps, error: null, links: [], tasks: [card()] });
     v.mount.querySelector<HTMLButtonElement>(".tk-run")!.click();
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("offers ⚙ only once a tracker is configured — there is nothing to edit before then", () => {
+    const v = new BoardView({ ...handlers });
+    v.render({ project: "deck", caps: null, error: null, tasks: [], links: [] });
+    expect(v.mount.querySelector(".tk-board-edit")).toBeNull();
+  });
+
+  it("wires ⚙ to onEditBoard, named by aria-label since its glyph is not one", () => {
+    const onEditBoard = vi.fn();
+    const v = new BoardView({ ...handlers, onEditBoard });
+    v.render({ project: "deck", caps, error: null, links: [], tasks: [] });
+    const btn = v.mount.querySelector<HTMLButtonElement>(".tk-board-edit")!;
+    expect(btn.getAttribute("aria-label")).toBe("Configure the board");
+    btn.click();
+    expect(onEditBoard).toHaveBeenCalledTimes(1);
   });
 });
 

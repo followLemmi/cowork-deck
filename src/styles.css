@@ -534,14 +534,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 
 .tk-acts { grid-row: 4; display: flex; gap: var(--sp-1); margin-top: var(--sp-2); }
-.tk-acts button, .tk-new, .tk-configure {
+.tk-acts button, .tk-new, .tk-configure, .tk-board-edit {
   font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);
   background: var(--bg-raised); border: 1px solid var(--border);
   border-radius: var(--r-sm); min-width: 24px; min-height: 24px; cursor: pointer;
   transition: color var(--dur-1) var(--ease);
 }
-.tk-acts button:hover, .tk-new:hover, .tk-configure:hover { color: var(--fg); }
-.tk-acts button:focus-visible, .tk-new:focus-visible, .tk-configure:focus-visible {
+.tk-acts button:hover, .tk-new:hover, .tk-configure:hover, .tk-board-edit:hover { color: var(--fg); }
+.tk-acts button:focus-visible, .tk-new:focus-visible, .tk-configure:focus-visible,
+.tk-board-edit:focus-visible {
   outline: none; box-shadow: var(--focus-ring);
 }
 
@@ -562,3 +563,51 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tk-c-body { min-height: 12rem; width: 100%; }
 .tk-c-facts { color: var(--fg-subtle); font-size: var(--fs-xs); display: flex; flex-direction: column; gap: 2px; }
 .tk-c-broken { color: var(--st-error); font-size: var(--fs-xs); }
+
+/* --- The ⚙ board editor (board-editor.ts) -------------------------------- */
+
+/* A row of small fields and glyph buttons is wider than the ordinary
+   single-column form, so the editor gets its own width rather than fighting
+   .modal-box--form's 560px cap. */
+.modal-box--wide { width: min(720px, 94vw); max-height: 84vh; overflow-y: auto; }
+
+.tk-e-section-head {
+  color: var(--fg-muted); font-family: var(--font-ui); font-size: var(--fs-xs);
+  text-transform: uppercase; letter-spacing: 0.04em; margin: var(--sp-2) 0 var(--sp-1);
+}
+.tk-e-steps, .tk-e-kinds { display: flex; flex-direction: column; gap: var(--sp-2); }
+.tk-e-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2);
+  padding: var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-sm);
+}
+/* The label/id fields carry the row's own .form-row wrapper (see `labeled()`
+   in board-editor.ts), so they need their own width rather than the app-wide
+   full-bleed one that wrapper otherwise gets in a single-column form. */
+.tk-e-field { flex: 1 1 120px; min-width: 0; }
+.tk-e-field .modal-input, .tk-e-step-label, .tk-e-step-id, .tk-e-kind-label, .tk-e-kind-id {
+  background: var(--bg-app); border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 6px 8px; width: 100%;
+}
+.tk-e-check {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--fs-xs); color: var(--fg-muted); white-space: nowrap; cursor: pointer;
+}
+.tk-e-check input { accent-color: var(--accent); cursor: pointer; }
+.tk-e-step-up, .tk-e-step-down, .tk-e-step-remove, .tk-e-kind-remove {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--r-sm); min-width: 24px; min-height: 24px; cursor: pointer;
+}
+.tk-e-step-up:hover, .tk-e-step-down:hover, .tk-e-step-remove:hover, .tk-e-kind-remove:hover { color: var(--fg); }
+.tk-e-step-dest { background: var(--bg-app); border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 6px 8px; }
+/* A rename's effect, or a pending removal's headcount — informational, not an
+   error, so it reads quieter than .form-error. */
+.tk-e-note { flex-basis: 100%; color: var(--fg-muted); font-size: var(--fs-xs); }
+.tk-e-add-step, .tk-e-add-kind {
+  align-self: flex-start; margin-top: var(--sp-2);
+  font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);
+  background: none; border: 1px dashed var(--border); border-radius: var(--r-sm);
+  padding: 6px 10px; cursor: pointer;
+}
+.tk-e-add-step:hover, .tk-e-add-kind:hover { border-color: var(--accent); color: var(--accent); }

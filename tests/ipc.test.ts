@@ -3,7 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/api/event");
 
-import { listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck, updateTask } from "../src/ipc";
+import {
+  listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck, updateTask,
+  boardConfigSave, boardStepRewrite, boardStepUsage,
+} from "../src/ipc";
+import type { BoardConfig } from "../src/ipc";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -54,6 +58,35 @@ describe("ipc", () => {
     expect(invoke).toHaveBeenCalledWith("tasks_update", {
       workspaceId: "w1", id: "01K1", patch: { title: "Renamed" },
     });
+  });
+
+  it("boardConfigSave sends the workspace and the draft configuration", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    const cfg: BoardConfig = {
+      v: 1, steps: [{ id: "todo", label: "To do", terminal: true }], kinds: [{ id: "bug", label: "Bug" }],
+    };
+    await boardConfigSave("w1", cfg);
+    expect(invoke).toHaveBeenCalledWith("board_config_save", { workspaceId: "w1", config: cfg });
+  });
+
+  // The fourth argument matters: task 9a's rewrite_step validates `to` against
+  // this draft configuration, not the one still on disk, since a rename's
+  // target id is not written until after the rewrite runs.
+  it("boardStepRewrite sends the draft config alongside from/to", async () => {
+    vi.mocked(invoke).mockResolvedValue({ rewritten: 2, skipped: [] });
+    const cfg: BoardConfig = {
+      v: 1, steps: [{ id: "todo", label: "To do", terminal: true }], kinds: [{ id: "bug", label: "Bug" }],
+    };
+    const res = await boardStepRewrite("w1", "todo", "doing", cfg);
+    expect(invoke).toHaveBeenCalledWith("board_step_rewrite", { workspaceId: "w1", from: "todo", to: "doing", config: cfg });
+    expect(res.rewritten).toBe(2);
+  });
+
+  it("boardStepUsage calls the right command", async () => {
+    vi.mocked(invoke).mockResolvedValue([{ step: "todo", count: 3 }]);
+    const res = await boardStepUsage("w1");
+    expect(invoke).toHaveBeenCalledWith("board_step_usage", { workspaceId: "w1" });
+    expect(res[0].count).toBe(3);
   });
 
   it("decodeB64 round-trips utf8", () => {

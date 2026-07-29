@@ -8,6 +8,7 @@ import { BoardView } from "./board";
 import {
   listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
   taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
+  boardConfigSave, boardStepRewrite, boardStepUsage,
 } from "./ipc";
 import type { MigrationOffer, StepId, Task } from "./ipc";
 import { alertModal } from "./modal";
@@ -21,6 +22,7 @@ import { taskPrompt } from "./tasks";
 import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
+import { openBoardEditor } from "./board-editor";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -57,6 +59,7 @@ const board = new BoardView({
   onDismissMigration: () => void dismissMigration(),
   onOpen: (t) => void openCard(t),
   onMove: (t, step) => void moveTask(t, step),
+  onEditBoard: () => void editBoard(),
 });
 boardEl.append(board.mount);
 
@@ -252,6 +255,47 @@ async function openCard(t: Task) {
   if (Object.keys(patch).length === 0) return;
   try { await updateTask(ws.id, t.id, patch); }
   catch (e) { await alertModal(`Could not save the card: ${String(e)}`); }
+  await refreshBoard();
+  await refreshCounts();
+}
+
+/** ⚙: edit the board's steps and kinds, rewriting any cards a rename or a
+ *  removal leaves pointing at a step the saved configuration no longer has. */
+async function editBoard() {
+  const ws = workspaces.active;
+  if (!ws) return;
+  const caps = await taskCapabilities(ws.id).catch(() => null);
+  if (!caps) return;
+  // The board shown right now is the default two-step fallback, not what is
+  // on disk — see board.ts's own `caps.boardError` banner. Saving it would ask
+  // the backend to replace a board.json it could not even read; the backend
+  // refuses that (tasks_cmd::save_config), but the person has to be told
+  // before filling in a form, not after submitting it.
+  if (caps.boardError) {
+    await alertModal(
+      `board.json could not be used: ${caps.boardError}. Fix the file by hand before configuring the board here.`);
+    return;
+  }
+  const usage = await boardStepUsage(ws.id).catch(() => []);
+  const result = await openBoardEditor(caps.board, usage);
+  if (!result) return;
+  // Rewrites first: a card must never point at a step the saved configuration
+  // no longer has, and saving first would leave exactly that window open.
+  for (const r of result.rewrites) {
+    try {
+      const report = await boardStepRewrite(ws.id, r.from, r.to, result.config);
+      if (report.skipped.length) {
+        await alertModal(
+          `Moved ${report.rewritten} card(s) to "${r.to}". ${report.skipped.length} could not be moved:\n` +
+          report.skipped.map((s) => `${s.fileName}: ${s.reason}`).join("\n"));
+      }
+    } catch (e) {
+      await alertModal(`Could not update the cards in "${r.from}": ${String(e)}`);
+      return; // Leave the configuration alone: it still matches what is on disk.
+    }
+  }
+  try { await boardConfigSave(ws.id, result.config); }
+  catch (e) { await alertModal(`Could not save the board configuration: ${String(e)}`); }
   await refreshBoard();
   await refreshCounts();
 }

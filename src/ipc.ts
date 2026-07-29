@@ -187,3 +187,24 @@ export const trackerRootPreview = (workspaceName: string, pickedPath: string) =>
 
 export const onTasksChanged = (cb: (workspaceId: string) => void): Promise<UnlistenFn> =>
   listen<{ workspaceId: string }>("tasks://changed", (e) => cb(e.payload.workspaceId));
+
+/** How many of this project's cards currently sit in one step — including a
+ *  step the configuration no longer lists, since the ⚙ editor needs to know a
+ *  step is occupied precisely when it is about to disappear. */
+export interface StepUsage { step: StepId; count: number }
+/** A card that could not be moved by a step rewrite, and why. */
+export interface RewriteSkip { fileName: string; reason: string }
+/** What a step rename or removal left behind: how many cards moved, and which
+ *  ones could not be. */
+export interface RewriteReport { rewritten: number; skipped: RewriteSkip[] }
+
+export const boardConfigSave = (workspaceId: string, config: BoardConfig) =>
+  invoke<void>("board_config_save", { workspaceId, config });
+/** `config` is the draft the ⚙ editor is about to save, not whatever
+ *  board.json currently holds: a rename's target id is not yet on disk, and
+ *  validating `to` against the on-disk file would refuse every card of it —
+ *  see tasks_cmd::rewrite_step's docstring on the Rust side. */
+export const boardStepRewrite = (workspaceId: string, from: StepId, to: StepId, config: BoardConfig) =>
+  invoke<RewriteReport>("board_step_rewrite", { workspaceId, from, to, config });
+export const boardStepUsage = (workspaceId: string) =>
+  invoke<StepUsage[]>("board_step_usage", { workspaceId });

@@ -32,7 +32,7 @@ function card(over: Partial<Task> = {}): Task {
 const onMove = vi.fn();
 const handlers = {
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
-  onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove,
+  onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove, onEditBoard: vi.fn(),
 };
 
 let view: BoardView;

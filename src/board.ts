@@ -22,6 +22,7 @@ export interface BoardHandlers {
   onDismissMigration: () => void;
   onOpen: (task: Task) => void;
   onMove: (task: Task, step: StepId) => void;
+  onEditBoard: () => void;
 }
 
 /** `caps === null` means no tracker is configured — a legal state, not a failure. */
@@ -61,6 +62,15 @@ export class BoardView {
       const add = el("button", "tk-new", "+ task");
       add.onclick = () => this.h.onNew();
       head.append(add);
+    }
+    // Shown whenever a tracker is configured, even while `caps.boardError` is
+    // set: main.ts::editBoard tells the person about that before opening the
+    // form, rather than hiding the only way to fix it.
+    if (caps) {
+      const edit = el("button", "tk-board-edit", "⚙");
+      edit.setAttribute("aria-label", "Configure the board");
+      edit.onclick = () => this.h.onEditBoard();
+      head.append(edit);
     }
     this.mount.append(head);
 
