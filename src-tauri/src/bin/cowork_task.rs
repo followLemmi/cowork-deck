@@ -8,7 +8,7 @@
 //! listener — so filing a ticket works even when the app window is busy.
 use cowork_deck::tasks::fs::{FsTaskProvider, RootCreation as FsRootCreation};
 use cowork_deck::tasks::board::{KindId, StepId};
-use cowork_deck::tasks::model::{TaskDraft, TaskOrigin};
+use cowork_deck::tasks::model::{Task, TaskDraft, TaskOrigin};
 use cowork_deck::tasks::provider::{TaskPatch, TaskProvider};
 use std::io::Read;
 
@@ -18,6 +18,7 @@ pub enum Cmd {
     Done { id: String },
     Status { id: String, step: String },
     Steps,
+    Guard,
 }
 
 pub fn parse_args(argv: &[String]) -> Result<Cmd, String> {
@@ -56,6 +57,7 @@ pub fn parse_args(argv: &[String]) -> Result<Cmd, String> {
             Ok(Cmd::Status { id, step })
         }
         "steps" => Ok(Cmd::Steps),
+        "guard" => Ok(Cmd::Guard),
         "" => Err("a subcommand is required: new | done | status | steps".into()),
         other => Err(format!("unknown subcommand: {other}")),
     }
@@ -159,10 +161,109 @@ fn run() -> Result<String, String> {
             .map(|s| if s.terminal { format!("{} (terminal)", s.id.as_str()) } else { s.id.0.clone() })
             .collect::<Vec<_>>()
             .join("\n")),
+        // `main` dispatches `guard` before `run` is ever called — see `guard()`
+        // and its doc comment for why it cannot share this function's
+        // environment contract. This arm exists only so the match stays
+        // exhaustive; nothing in `main`'s dispatch can reach it.
+        Cmd::Guard => Err("internal error: guard bypasses run()".into()),
+    }
+}
+
+/// Reads a hook payload on stdin and prints what that hook expects.
+///
+/// Every failure path allows. A tracker problem — unreadable board.json, a
+/// missing card, a failing disk — must not hold a session hostage, the same way
+/// a failing watcher degrades into a delay rather than a breakage.
+///
+/// Unlike every other subcommand, `guard` does not go through `run`'s shared
+/// environment resolution: `COWORK_TASK_ID` is pushed onto a session
+/// unconditionally (Task 10), so a session resumed into a workspace whose
+/// tracker directory has since gone missing carries a card id with nothing to
+/// resolve it against. Every other subcommand fails when `COWORK_TASKS_DIR` is
+/// unset, deliberately, so a session never writes somewhere arbitrary — but a
+/// non-zero `Stop` hook blocks the session, so `guard` must not inherit that
+/// refusal. It resolves what it can and allows on anything missing.
+fn guard() -> i32 {
+    let Ok(id) = std::env::var("COWORK_TASK_ID") else { return 0 };
+    if id.trim().is_empty() {
+        return 0;
+    }
+    let Ok(dir) = std::env::var("COWORK_TASKS_DIR") else { return 0 };
+
+    let mut payload = String::new();
+    let _ = std::io::stdin().read_to_string(&mut payload);
+    let event = serde_json::from_str::<serde_json::Value>(&payload).ok();
+    let event_name = event
+        .as_ref()
+        .and_then(|v| v["hook_event_name"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let already_blocked = event
+        .as_ref()
+        .and_then(|v| v["stop_hook_active"].as_bool())
+        .unwrap_or(false);
+
+    // `RootCreation::Never`: a guard must not create a tracker root as a side
+    // effect of reading one.
+    let provider = FsTaskProvider::new(std::path::PathBuf::from(&dir), FsRootCreation::Never);
+    if provider.board_error().is_some() {
+        return 0;
+    }
+    let Ok(cards) = provider.scan() else { return 0 };
+    let mine: Vec<&Task> = cards.iter().filter(|c| c.id == id).collect();
+    // Not exactly one, or one we would not write into: nothing to demand.
+    if mine.len() != 1 {
+        return 0;
+    }
+    let card = mine[0];
+    if card.damaged.is_some() {
+        return 0;
+    }
+    let open = !provider.board().is_terminal(&card.status);
+
+    match event_name.as_str() {
+        "UserPromptSubmit" => {
+            let ctx = format!(
+                "Tracker card {} (\"{}\") is in step \"{}\". Move it with the cowork_task CLI: \
+                 \"$COWORK_TASK_BIN\" status {} <step>; \"$COWORK_TASK_BIN\" steps lists them.",
+                card.id,
+                card.title,
+                card.status.as_str(),
+                card.id,
+            );
+            println!(
+                "{}",
+                serde_json::json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "UserPromptSubmit",
+                        "additionalContext": ctx,
+                    }
+                })
+            );
+            0
+        }
+        "Stop" if open && !already_blocked => {
+            println!(
+                "Card {} is still in step \"{}\". Move it with the cowork_task CLI before \
+                 finishing: \"$COWORK_TASK_BIN\" status {} <step> — or \"$COWORK_TASK_BIN\" done {} \
+                 if it is finished. If it should stay where it is, say so and stop again.",
+                card.id,
+                card.status.as_str(),
+                card.id,
+                card.id,
+            );
+            2
+        }
+        _ => 0,
     }
 }
 
 fn main() {
+    // `guard` reads its own environment and never fails, so it is dispatched
+    // before the ordinary path — see `guard`'s doc comment for why.
+    if std::env::args().nth(1).as_deref() == Some("guard") {
+        std::process::exit(guard());
+    }
     match run() {
         Ok(msg) => println!("{msg}"),
         Err(e) => {

@@ -226,3 +226,143 @@ fn steps_warns_on_stderr_when_board_json_is_unusable_but_still_lists_the_fallbac
     let err = stderr_of(&dir, &["steps"]);
     assert!(err.contains("board.json could not be used"), "{err}");
 }
+
+/// Runs `cowork_task guard` with `payload` on stdin and the environment a
+/// hook receives. `card` becomes `COWORK_TASK_ID` when given, and is left
+/// unset otherwise — the no-card row. Returns `(exit code, stdout)`
+/// regardless of status: a blocking `Stop` is a deliberate non-zero exit, not
+/// a failure the way `run`'s callers mean it.
+fn guard(dir: &tempfile::TempDir, card: Option<&str>, payload: &str) -> (i32, String) {
+    let bin = env!("CARGO_BIN_EXE_cowork_task");
+    let mut cmd = Command::new(bin);
+    cmd.arg("guard")
+        .env("COWORK_TASKS_DIR", dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match card {
+        Some(id) => {
+            cmd.env("COWORK_TASK_ID", id);
+        }
+        None => {
+            cmd.env_remove("COWORK_TASK_ID");
+        }
+    }
+    let mut child = cmd.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[test]
+fn guard_allows_and_says_nothing_without_a_card_id() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let (code, out) = guard(&dir, None, r#"{"hook_event_name":"Stop"}"#);
+    assert_eq!(code, 0);
+    assert_eq!(out.trim(), "");
+}
+
+#[test]
+fn guard_blocks_the_first_stop_while_the_card_is_open() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let id = create_card(&dir, "task", "A title");
+    let (code, out) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
+    assert_ne!(code, 0, "a blocking Stop hook has to exit non-zero");
+    assert!(out.contains(&id), "the reason must name the card: {out}");
+    assert!(out.contains("cowork_task"), "and the command that moves it: {out}");
+}
+
+#[test]
+fn guard_allows_the_second_stop() {
+    // stop_hook_active means we already blocked once. Blocking again is a loop
+    // the session cannot leave.
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let id = create_card(&dir, "task", "A title");
+    let (code, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":true}"#);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn guard_allows_a_stop_once_the_card_is_in_a_terminal_step() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let id = create_card(&dir, "task", "A title");
+    run(&dir, &["done", &id]).unwrap();
+    let (code, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn guard_allows_when_the_card_is_gone() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let (code, _) = guard(&dir, Some("01NOSUCHCARD"), r#"{"hook_event_name":"Stop"}"#);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn guard_allows_when_the_card_is_damaged() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    std::fs::write(dir.path().join("note.md"), "---\nid: 01NOTE\n---\nA note.\n").unwrap();
+    let (code, _) = guard(&dir, Some("01NOTE"), r#"{"hook_event_name":"Stop"}"#);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn guard_allows_when_board_json_is_unusable() {
+    let dir = tempdir_with_board("{ broken");
+    let id = create_card(&dir, "task", "A title");
+    // A tracker problem must not take the work hostage — the same principle by
+    // which a failing watcher degrades into a delay.
+    let (code, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn guard_allows_on_a_malformed_payload() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let id = create_card(&dir, "task", "A title");
+    let (code, _) = guard(&dir, Some(&id), "not json at all");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn guard_prints_the_card_and_its_step_on_a_user_prompt() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let id = create_card(&dir, "task", "A title");
+    let (code, out) = guard(&dir, Some(&id), r#"{"hook_event_name":"UserPromptSubmit"}"#);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("a hook reply");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().expect("context");
+    assert!(ctx.contains(&id) && ctx.contains("open") && ctx.contains("cowork_task"), "{ctx}");
+}
+
+/// Task 10 pushes `COWORK_TASK_ID` unconditionally, so a session can carry a
+/// card id into a workspace whose tracker directory has since gone missing
+/// from the environment. Every other subcommand resolves `COWORK_TASKS_DIR`
+/// first and fails loudly when it is absent, by design — but `guard` must not
+/// inherit that refusal, or the one row required never to block would block
+/// hardest, on a workspace with no tracker at all. Not part of the brief's
+/// listed cases; added because the decision table names this row explicitly
+/// and no other test exercises a wholly unset `COWORK_TASKS_DIR`.
+#[test]
+fn guard_allows_when_the_tracker_directory_is_unset() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let id = create_card(&dir, "task", "A title");
+    let bin = env!("CARGO_BIN_EXE_cowork_task");
+    let mut child = Command::new(bin)
+        .arg("guard")
+        .env("COWORK_TASK_ID", &id)
+        .env_remove("COWORK_TASKS_DIR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"hook_event_name":"Stop","stop_hook_active":false}"#)
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "a missing tracker directory must never block a Stop");
+}

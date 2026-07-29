@@ -224,7 +224,7 @@ pub fn start_session(
     resume: bool,
 ) -> Result<(), String> {
     let program = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
-    let settings = build_settings_json(&state.reporter_path, state.listener_port, &session);
+    let settings = build_settings_json(&state.reporter_path, state.listener_port, &session, &state.task_bin_path);
     let args = build_claude_args(&settings, &initial_prompt, &session, resume);
 
     // Tracker env, resolved from the workspace's config. A missing or
