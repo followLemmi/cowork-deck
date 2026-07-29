@@ -3526,15 +3526,27 @@ In `src/tasks.ts`, `taskPrompt(task, cfg)` gains, before the closing line:
       "",
       `This card is in step "${task.status}". The board's steps are: ${steps}.`,
       `Move it as the work progresses: "$COWORK_TASK_BIN" status ${task.id} <step>`,
+      // The snapshot above ages the moment anyone edits the board, and the
+      // prompt has no way to say so later. Naming the live source here is what
+      // keeps the sentence from becoming a stale authority.
+      `The board can change while you work; "$COWORK_TASK_BIN" steps lists it as it is now.`,
     );
   }
 ```
+
+**The prompt must be built *after* the working-step move, not before it.** `launchFromTask` writes the working step, and `main.ts` currently computes `taskPrompt(t, cfg)` at the call site — before that write. So on any board with a `working` step, which is the headline configuration for this whole feature, `▶` on a `todo` card hands the agent `This card is in step "todo"` while the card on disk is already in `doing`. Worse, 11a's `UserPromptSubmit` hook reports the card's **real** step, so the agent's first turn contains two disagreeing statements about the same card — and 11a's own re-review added a test specifically to stop the guard lying about exactly this. The default board has no `working` step, so this is invisible on `open`/`done` and appears the moment someone configures the workflow the feature exists to support.
+
+So `launchFromTask` builds the prompt itself, from the card as it stands **after** the attempted move. Do not predict the move instead: the move is deliberately best-effort and a failure must not block the launch, so a predicted step would simply lie in the other direction when the write fails. Building afterwards is true in both cases.
 
 Keep the existing closing `done` line — it still works and now means the first terminal step.
 
 Add tests to `tests/tasks.test.ts`: one asserting the prompt names the card's current step, lists the configured ids, and still carries the `done` line; and **one asserting a configuration with no steps produces no steps line at all** — not an empty one. The second is the guard on Task 4's ruling, and without it the ruling survives only as a comment.
 
 In `.claude/skills/file-a-task/SKILL.md`, add a section documenting `status` and `steps`, saying explicitly that the steps differ per project and must be read with `cowork_task steps` rather than assumed. Do not list `open`/`done` as though they were universal.
+
+**And fix the `--kind` line already in that file.** It names `bug`, `task`, `idea` as fact, one screen above the section that correctly refuses to do that for steps. Kinds are per project on exactly the same footing — `cowork_task new` validates `--kind` against `board().has_kind` and rejects anything else, and `board.json` carries `kinds` beside `steps`. An agent on a board configured with `defect`/`chore` will file nothing until it fails once, and there is no `cowork_task kinds` to look them up in advance, so that line is the only source it has. One clause settles it: `--kind` must be one of the kinds this project's `board.json` configures; the default board has `bug`, `task`, `idea`.
+
+In `README.md`, do not write that a session "never gets a fixed list of steps" — the launch prompt now hands it exactly that. Say what is true: the session gets a snapshot of the steps in its opening prompt, and the live list from `cowork_task steps`, which is the authority when the two disagree.
 
 In `README.md`, extend the tracker section with `board.json`: where it lives, the two flags, that a broken one falls back without being rewritten, and that the steps reach a session through `cowork_task steps`.
 
