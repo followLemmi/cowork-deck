@@ -2,6 +2,10 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   clearScreen: false,
+  // Vitest stubs CSS imports by default, which makes `?raw` on a stylesheet
+  // resolve to an empty string. tests/view-switch.test.ts asserts a computed
+  // `display` against the real stylesheet, so it needs the actual bytes.
+  test: { css: true },
   server: {
     port: 1420,
     strictPort: true,

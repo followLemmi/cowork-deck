@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml --bin cowork_report && npm run dev",
-    "beforeBuildCommand": "npm run build && npm run stage:reporter"
+    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml --bin cowork_report --bin cowork_task && npm run dev",
+    "beforeBuildCommand": "npm run build && npm run stage:reporter && npm run stage:task"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -30,6 +30,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/cowork_report"]
+    "externalBin": ["binaries/cowork_report", "binaries/cowork_task"]
   }
 }

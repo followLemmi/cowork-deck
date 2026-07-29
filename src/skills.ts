@@ -105,13 +105,13 @@ export class SkillsPanel {
   }
 
   private async del(id: string) {
-    if (!(await confirmModal("Удалить сценарий?"))) return;
+    if (!(await confirmModal("Delete scenario?"))) return;
     this.items = await removeSkill(id);
     this.render();
   }
 
   private render() {
-    this.mount.innerHTML = "<h3>Сценарии</h3>";
+    this.mount.innerHTML = "<h3>Scenarios</h3>";
     for (const s of this.visible()) {
       const row = document.createElement("div");
       row.className = "sk-row";
@@ -121,7 +121,7 @@ export class SkillsPanel {
       run.className = "sk-run";
       run.append(scenarioMark(s.icon), document.createTextNode(` ${s.name}`));
       run.title = orphan
-        ? "Пространство этого сценария удалено — запустить нельзя. Откройте изменение и выберите пространство."
+        ? "This scenario\u2019s workspace was deleted — it cannot run. Open it for editing and pick a workspace."
         : s.prompt;
       run.disabled = orphan;
       run.onclick = () => this.onLaunch(s);
@@ -132,13 +132,13 @@ export class SkillsPanel {
       const sched = s.schedule;
       let now: HTMLButtonElement | null = null;
       if (sched?.enabled && !orphan) {
-        now = iconButton("clock-play", `Прогнать сейчас: ${s.name}`, "sk-now");
+        now = iconButton("clock-play", `Run now: ${s.name}`, "sk-now");
         now.onclick = () => this.onRunScheduled(s);
       }
 
-      const edit = iconButton("pencil", `Изменить сценарий: ${s.name}`, "sk-edit");
+      const edit = iconButton("pencil", `Edit scenario: ${s.name}`, "sk-edit");
       edit.onclick = () => this.edit(s.id);
-      const x = iconButton("trash", `Удалить сценарий: ${s.name}`, "sk-del btn--icon--danger");
+      const x = iconButton("trash", `Delete scenario: ${s.name}`, "sk-del btn--icon--danger");
       x.onclick = () => this.del(s.id);
       row.append(run, ...(now ? [now] : []), edit, x);
       this.mount.appendChild(row);
@@ -155,12 +155,12 @@ export class SkillsPanel {
         // just looks broken.
         const note = document.createElement("div");
         note.className = "sk-orphan-note";
-        note.textContent = "пространство удалено — перепривяжите или удалите";
+        note.textContent = "workspace deleted — repoint it or delete it";
         this.mount.appendChild(note);
       }
     }
     const addBtn = document.createElement("button");
-    addBtn.className = "sk-add"; addBtn.textContent = "+ сценарий";
+    addBtn.className = "sk-add"; addBtn.textContent = "+ scenario";
     addBtn.onclick = () => this.add();
     this.mount.appendChild(addBtn);
   }

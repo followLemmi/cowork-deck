@@ -7,9 +7,11 @@
 // `RE.exec(...)` or `RE.test(...)` directly on this shared instance — that
 // would leak `lastIndex` state across calls; use a fresh regex literal for
 // those instead.
-// `\w` is ASCII-only in JavaScript, so {{ветка}} matched nothing: no field was
-// offered and the braces went to claude verbatim. The interface is Russian —
-// Russian placeholder names are the normal case, not an edge one.
+// `\w` is ASCII-only in JavaScript, so a non-ASCII name like {{ветка}} matched
+// nothing: no field was offered and the braces went to claude verbatim. A
+// prompt is written in whatever language its author thinks in — which the UI's
+// own language does not constrain — so non-ASCII names are a normal case, not
+// an edge one. Hence \p{L} and the `u` flag.
 const RE = /\{\{\s*([\p{L}\p{N}_-]+)\s*\}\}/gu;
 
 export function parsePlaceholders(prompt: string): string[] {

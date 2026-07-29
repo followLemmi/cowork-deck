@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, saveLayout, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth } from "./ipc";
+import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
 import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -11,6 +11,8 @@ import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
 import { icon, iconButton } from "./icons";
+import { liveSessionForTask, taskPrompt } from "./tasks";
+import { workingStep } from "./board-config";
 
 /** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
  *  команды (установка gh, `gh auth login`): без хуков состояния, без
@@ -30,15 +32,17 @@ interface Tile {
   /** Привязка воркспейса изменилась после старта — окружение устарело. */
   authStale?: boolean;
   kind?: TileKind;
+  /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
+  taskId?: string;
 }
 
 const LABEL: Record<SessionState, string> = {
-  idle: "готов", working: "работает", waitingInput: "ждёт ввода", done: "доделал",
-  ended: "завершён", error: "ошибка",
+  idle: "idle", working: "working", waitingInput: "needs input", done: "done",
+  ended: "exited", error: "error",
 };
-// `done` здесь, потому что «агент доделал задание» — это ровно то, ради чего
-// запускают сессию без надзора. В пилюлю оно при этом не идёт: пилюля
-// отвечает на вопрос «сколько сессий заблокировано на мне».
+// `done` is here because "the agent finished the job" is exactly what an
+// unsupervised session is started for. It stays out of the pill, though: the
+// pill answers "how many sessions are blocked on me".
 const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
 
 export class Deck {
@@ -71,7 +75,7 @@ export class Deck {
     try {
       const tiles = [...this.tiles.values()];
       if (tiles.length === 0) { this.stopPolling(); return; }
-      // git: один вызов на уникальный cwd; изоляция ошибок — одна упавшая IPC не должна ронять весь тик
+      // git: one call per unique cwd; errors are isolated — a single failed IPC must not bring down the whole tick
       const cwds = uniqueCwds(tiles.map((t) => ({ cwd: t.workspacePath })));
       const gitByCwd = new Map<string, { branch: string | null; dirty: boolean }>();
       await Promise.all(cwds.map(async (cwd) => {
@@ -94,14 +98,14 @@ export class Deck {
           t.gitBadge.classList.add("hidden");
         }
       }
-      // tokens: по сессии; изоляция ошибок + защита от гонки с удалением тайла
+      // tokens: per session; errors isolated, plus a guard against racing with tile removal
       await Promise.all(tiles.map(async (t) => {
         try {
           const u = await sessionTokens(t.session);
           if (!this.tiles.has(t.session)) return;
           this.usage.set(t.session, u);
           t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
-          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} прочитано`;
+          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} read`;
           t.tokenBadge.classList.remove("hidden");
         } catch (e) {
           console.debug("sessionTokens failed", t.session, e);
@@ -126,7 +130,7 @@ export class Deck {
   }
 
   async launch(workspace: Workspace, skill: Skill | null) {
-    const titleText = skill ? `${skill.icon} ${skill.name}` : `сессия · ${workspace.name}`;
+    const titleText = skill ? `${skill.icon} ${skill.name}` : `session · ${workspace.name}`;
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
@@ -211,7 +215,7 @@ export class Deck {
       cwd: workspace.path,
       workspaceId: workspace.id,
       titleText: catchUpFor
-        ? `${skill.icon} ${skill.name} · догоняет ${catchUpFor}`
+        ? `${skill.icon} ${skill.name} · catching up ${catchUpFor}`
         : `${skill.icon} ${skill.name}`,
       scheduled: true,
       prompt: filledPrompt,
@@ -220,6 +224,42 @@ export class Deck {
       grabAttention: false,
     });
     return true;
+  }
+
+  /** Launch a session from a tracker card. If the card already has a live
+   *  session, focus it rather than raise a second one — the same call a
+   *  scheduled scenario makes when it skips an overlapping run. */
+  async launchFromTask(
+    workspace: Workspace, task: Task, cfg: BoardConfig,
+  ): Promise<"launched" | "focused"> {
+    const alive = liveSessionForTask(task.id, this.taskLinks());
+    if (alive) { this.focusTile(alive); return "focused"; }
+    // ▶ writes the step itself, so the card moves whether or not the agent
+    // remembers to. A failure must not block the launch: the work matters more
+    // than the bookkeeping, and the board's stale marker will show the mismatch.
+    let current = task;
+    const step = workingStep(cfg);
+    if (step !== null && task.status !== step) {
+      // The prompt is built from `current` below, so it must reflect what the
+      // move actually did, not what it was meant to do: on a failed write
+      // `current` stays the unmoved card, which is the true state the session
+      // is starting from. Predicting the destination here would tell the
+      // agent a step it never reached whenever the write fails.
+      current = await updateTask(workspace.id, task.id, { status: step }).catch((e) => {
+        console.warn("could not move the card to the working step:", e);
+        return task;
+      });
+    }
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd: workspace.path,
+      workspaceId: workspace.id,
+      titleText: `☑ ${task.title}`,
+      prompt: taskPrompt(current, cfg),
+      resume: false,
+      taskId: task.id,
+    });
+    return "launched";
   }
 
   setActiveWorkspace(id: string | null) {
@@ -248,6 +288,8 @@ export class Deck {
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
     scheduledSkillId?: string;
+    /** Tracker card this tile is working on. */
+    taskId?: string;
     /** Marks the tile as started by a schedule. Shown as its own icon rather
      *  than glued to the title, which gets clipped by text-overflow. */
     scheduled?: boolean;
@@ -273,7 +315,7 @@ export class Deck {
       schedMark.classList.add("tile-sched-mark");
       schedMark.setAttribute("aria-hidden", "false");
       schedMark.setAttribute("role", "img");
-      schedMark.setAttribute("aria-label", "запущено по расписанию");
+      schedMark.setAttribute("aria-label", "started on a schedule");
     }
     const gitBadge = document.createElement("span");
     gitBadge.className = "tile-git hidden";
@@ -281,9 +323,9 @@ export class Deck {
     tokenBadge.className = "tile-tokens hidden";
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
-    const clearBtn = iconButton("eraser", "Очистить терминал", "tile-close");
+    const clearBtn = iconButton("eraser", "Clear terminal", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
-    const close = iconButton("x", "Закрыть сессию", "tile-close btn--icon--danger");
+    const close = iconButton("x", "Close session", "tile-close btn--icon--danger");
     // Same question Cmd+W asks. Without it the mouse was the more dangerous
     // of the two ways to do the same thing: one stray click killed a live
     // session outright, while the keyboard asked first.
@@ -298,13 +340,15 @@ export class Deck {
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
     head.insertBefore(bcastCheck, title);
-    const restart = iconButton("rotate", "Перезапустить сессию", "tile-close");
+    const restart = iconButton("rotate", "Restart session", "tile-close");
     restart.style.display = "none";
     restart.onclick = async () => {
       restart.style.display = "none";
-      tile.panel.write("\r\n[перезапуск сессии...]\r\n");
+      tile.panel.write("\r\n[restarting session...]\r\n");
       try {
-        tile.auth = await tile.panel.start(tile.workspacePath, null, true, tile.workspaceId ?? null);
+        tile.auth = await tile.panel.start(
+          tile.workspacePath, tile.workspaceId ?? null, null, tile.taskId ?? null, true,
+        );
         tile.authStale = false;
         this.renderAuthBadge(tile);
         this.setState(session, "idle");
@@ -313,9 +357,9 @@ export class Deck {
         this.setState(session, "error");
         const raw = String((e as { message?: string })?.message ?? e);
         const readable = raw.includes("claude-not-found")
-          ? "claude не найден — укажите путь и перезапустите"
+          ? "claude not found — set its path and restart"
           : raw;
-        tile.panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+        tile.panel.write(`\r\n[launch failed: ${readable}]\r\n`);
         restart.style.display = "inline";
       }
     };
@@ -328,10 +372,10 @@ export class Deck {
     mount.className = "tile-body";
     const searchBar = document.createElement("div");
     searchBar.className = "tile-search hidden";
-    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "поиск…";
-    const sNext = iconButton("chevron", "Следующее совпадение", "tile-search-btn icon--down");
-    const sPrev = iconButton("chevron", "Предыдущее совпадение", "tile-search-btn icon--up");
-    const sClose = iconButton("x", "Закрыть поиск", "tile-search-btn");
+    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "search…";
+    const sNext = iconButton("chevron", "Next match", "tile-search-btn icon--down");
+    const sPrev = iconButton("chevron", "Previous match", "tile-search-btn icon--up");
+    const sClose = iconButton("x", "Close search", "tile-search-btn");
     searchBar.append(sInput, sPrev, sNext, sClose);
     sInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); tile.panel.search(sInput.value); }
@@ -348,7 +392,8 @@ export class Deck {
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId, kind: opts.kind,
+      gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
+      kind: opts.kind, taskId: opts.taskId,
     };
     this.tiles.set(session, tile);
     if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
@@ -359,7 +404,7 @@ export class Deck {
         await panel.startCommand(cwd, opts.command ?? "");
         // Командный тайл в layout не попадает — persistLayout не зовём.
       } else {
-        tile.auth = await panel.start(cwd, prompt, resume, workspaceId ?? null);
+        tile.auth = await panel.start(cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume);
         this.renderAuthBadge(tile);
         void this.persistLayout();
       }
@@ -367,9 +412,9 @@ export class Deck {
       this.setState(session, "error");
       const raw = String((e as { message?: string })?.message ?? e);
       const readable = raw.includes("claude-not-found")
-        ? "claude не найден — укажите путь и перезапустите"
+        ? "claude not found — set its path and restart"
         : raw;
-      panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+      panel.write(`\r\n[launch failed: ${readable}]\r\n`);
     }
     if (grabAttention) this.focusTile(session);
     else {
@@ -402,13 +447,18 @@ export class Deck {
         await this.spawnTile({
           session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
           titleText: e.name, prompt: null, resume: true,
-          scheduledSkillId: e.scheduledSkillId,
+          scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
         });
       }
     } finally {
       this.restoring = false;
     }
     void this.persistLayout();
+  }
+
+  /** Live tiles in the shape the board needs. */
+  taskLinks(): { session: string; taskId?: string; state: SessionState }[] {
+    return [...this.tiles.values()].map((t) => ({ session: t.session, taskId: t.taskId, state: t.state }));
   }
 
   get activeSession(): string | null {
@@ -440,7 +490,7 @@ export class Deck {
   private async requestClose(session: string) {
     const t = this.tiles.get(session);
     const alive = t && (t.state === "working" || t.state === "waitingInput" || t.state === "done");
-    if (alive && !(await confirmModal(`Закрыть сессию «${t.name}»? Она ещё живёт.`))) return;
+    if (alive && !(await confirmModal(`Close session “${t.name}”? It is still alive.`))) return;
     this.remove(session);
   }
   searchActive() {
@@ -468,7 +518,7 @@ export class Deck {
       panel.className = "bcast-panel";
       const input = document.createElement("input");
       input.className = "bcast-input"; input.type = "text";
-      input.placeholder = "broadcast: ввод во все отмеченные сессии, Enter — отправить";
+      input.placeholder = "broadcast: type into every ticked session, Enter to send";
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -679,6 +729,7 @@ export class Deck {
       session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
       kind: t.kind,
       scheduledSkillId: t.scheduledSkillId,
+      taskId: t.taskId,
     })));
     return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
   }
@@ -695,14 +746,14 @@ export class Deck {
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
     void emit("pill://count", { n: waiting });
-    const header = waiting > 0 ? `Сессии · ${waiting} ${waitingVerb(waiting)} ввода` : "Сессии";
+    const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
     const total = sumUsage([...this.usage.values()]);
     if (this.usage.size > 0) {
       const sum = document.createElement("div");
       sum.className = "sess-tokens-sum";
-      sum.textContent = `Всего токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      sum.textContent = `Total tokens · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
@@ -716,7 +767,7 @@ export class Deck {
     for (const g of groups) {
       const wsId = g.workspace?.id ?? ORPHAN_KEY;
       const color = g.workspace?.color ?? "var(--fg-subtle)";
-      const name = g.workspace?.name ?? "Другие";
+      const name = g.workspace?.name ?? "Other";
       const collapsed = this.collapsed.has(wsId);
       const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
 
@@ -739,7 +790,7 @@ export class Deck {
       if (groupWaiting > 0) {
         const badge = document.createElement("span");
         badge.className = "sess-group-badge";
-        badge.textContent = `${groupWaiting} ${waitingVerb(groupWaiting)}`;
+        badge.textContent = `${groupWaiting} waiting`;
         head.append(badge);
       }
       head.onclick = () => {
@@ -776,10 +827,6 @@ export function waitingCount(states: SessionState[]): number {
   return states.filter((s) => s === "waitingInput").length;
 }
 
-export function waitingVerb(n: number): string {
-  return n % 10 === 1 && n % 100 !== 11 ? "ждёт" : "ждут";
-}
-
 export function nextWaitingAcross(
   tiles: { session: string; workspaceId?: string; state: SessionState }[],
   currentSession: string | null,
@@ -799,7 +846,7 @@ export function nextWaitingAcross(
 export function serializeTiles(
   tiles: {
     session: string; workspacePath: string; name: string; workspaceId?: string;
-    scheduledSkillId?: string;
+    scheduledSkillId?: string; taskId?: string;
     kind?: TileKind;
   }[],
 ): SessionEntry[] {
@@ -812,6 +859,7 @@ export function serializeTiles(
       sessionId: t.session, cwd: t.workspacePath, name: t.name,
       ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
       ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
+      ...(t.taskId ? { taskId: t.taskId } : {}),
     }));
 }
 

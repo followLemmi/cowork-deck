@@ -9,12 +9,19 @@ import { iconButton } from "./icons";
  *  not in a surprise afterwards. */
 export function describeDeleteImpact(workspaceId: string, skills: Skill[]): string {
   const pinned = skills.filter((s) => s.workspaceId === workspaceId);
-  if (pinned.length === 0) return "Удалить пространство?";
+  if (pinned.length === 0) return "Delete workspace?";
   const scheduled = pinned.filter((s) => s.schedule?.enabled).length;
-  const noun = pinned.length === 1 ? "сценарий" : pinned.length < 5 ? "сценария" : "сценариев";
-  const tail = scheduled > 0 ? `, ${scheduled} из них по расписанию` : "";
-  return `Удалить пространство? К нему привязан${pinned.length === 1 ? "" : "ы"} `
-    + `${pinned.length} ${noun}${tail} — они перестанут запускаться.`;
+  const noun = pinned.length === 1 ? "scenario is" : "scenarios are";
+  const tail = scheduled > 0 ? `, ${scheduled} of them scheduled` : "";
+  return `Delete workspace? ${pinned.length} ${noun} pinned to it${tail}`
+    + " — they will stop running.";
+}
+
+/** Tooltip for the open-task badge. English needs one distinction rather than
+ *  the three the Russian original agreed with, but it still needs that one:
+ *  "1 open tasks" reads as a bug in the code, not as a count. */
+export function openTaskCountLabel(n: number): string {
+  return `${n} open task${n === 1 ? "" : "s"}`;
 }
 
 export class WorkspacesPanel {
@@ -24,13 +31,21 @@ export class WorkspacesPanel {
   setSkillsSource(get: () => Skill[]) { this.getSkills = get; }
   private items: Workspace[] = [];
   private activeId: string | null = null;
+  /** Open tasks per workspace; filled in by main.ts. */
+  private counts = new Map<string, number>();
   constructor(
     private mount: HTMLElement,
     private onSelect: (ws: Workspace) => void,
+    private onChanged?: () => void,
     /** Привязка воркспейса к GitHub-аккаунту изменилась: живые сессии этого
      *  воркспейса работают на устаревшем окружении до перезапуска. */
     private onGithubChanged: (workspaceId: string) => void = () => {},
   ) {}
+
+  setCounts(counts: Record<string, number>) {
+    this.counts = new Map(Object.entries(counts));
+    this.render();
+  }
 
   get active(): Workspace | null {
     return this.items.find((w) => w.id === this.activeId) ?? null;
@@ -61,6 +76,7 @@ export class WorkspacesPanel {
     if (!res) return;
     const ws: Workspace = { id: crypto.randomUUID(), ...res };
     this.items = await saveWorkspace(ws);
+    this.onChanged?.();
     this.select(ws.id);
   }
 
@@ -68,12 +84,14 @@ export class WorkspacesPanel {
     const cur = this.items.find((w) => w.id === id);
     if (!cur) return;
     const res = await workspaceForm({
-      name: cur.name, path: cur.path, color: cur.color, github: cur.github ?? null,
+      name: cur.name, path: cur.path, color: cur.color,
+      github: cur.github ?? null, tracker: cur.tracker ?? null,
     });
     if (!res) return;
     const before = JSON.stringify(cur.github ?? null);
     this.items = await saveWorkspace({ ...cur, ...res });
     if (JSON.stringify(res.github ?? null) !== before) this.onGithubChanged(id);
+    this.onChanged?.();
     this.render();
   }
 
@@ -95,7 +113,7 @@ export class WorkspacesPanel {
   }
 
   private render() {
-    this.mount.innerHTML = "<h3>Пространства</h3>";
+    this.mount.innerHTML = "<h3>Workspaces</h3>";
     for (const w of this.items) {
       const row = document.createElement("div");
       row.className = "ws-row" + (w.id === this.activeId ? " active" : "");
@@ -104,6 +122,10 @@ export class WorkspacesPanel {
       const label = document.createElement("button");
       label.className = "ws-label"; label.textContent = w.name;
       label.onclick = () => this.select(w.id);
+      const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
+      edit.onclick = () => this.edit(w.id);
+      const x = iconButton("trash", `Delete workspace: ${w.name}`, "ws-del btn--icon--danger");
+      x.onclick = () => this.del(w.id);
       row.append(dot, label);
       if (w.github) {
         const acc = document.createElement("span");
@@ -112,15 +134,19 @@ export class WorkspacesPanel {
         acc.title = `GitHub: ${w.github.login}`;
         row.append(acc);
       }
-      const edit = iconButton("pencil", `Изменить пространство: ${w.name}`, "ws-edit");
-      edit.onclick = () => this.edit(w.id);
-      const x = iconButton("trash", `Удалить пространство: ${w.name}`, "ws-del btn--icon--danger");
-      x.onclick = () => this.del(w.id);
+      const n = this.counts.get(w.id) ?? 0;
+      if (n > 0) {
+        const count = document.createElement("span");
+        count.className = "ws-count";
+        count.textContent = String(n);
+        count.title = openTaskCountLabel(n);
+        row.append(count);
+      }
       row.append(edit, x);
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");
-    addBtn.className = "ws-add"; addBtn.textContent = "+ пространство";
+    addBtn.className = "ws-add"; addBtn.textContent = "+ workspace";
     addBtn.onclick = () => this.add();
     this.mount.appendChild(addBtn);
   }

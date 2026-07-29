@@ -10,8 +10,8 @@ export function isMacPlatform(): boolean {
  *
  *  Matches on `e.code` (the physical key), not `e.key` (the character
  *  produced): with a Cyrillic layout active, Cmd+K arrives as "л" and the old
- *  key-based matching matched nothing at all — in an app whose interface is
- *  Russian.
+ *  key-based matching matched nothing at all. An English interface does not
+ *  imply a Latin keyboard layout, so this stays keyed to the physical key.
  *
  *  On Windows and Linux the app modifier is Ctrl, which is also readline
  *  inside claude: Ctrl+W deletes the last word, Ctrl+B moves back a character,
@@ -34,6 +34,8 @@ export function matchHotkey(
 
   if (e.code === "Enter" && letterOk) return "zoom";
   if (e.code === "BracketRight" && e.shiftKey) return "next-waiting";
+  // Shift on both platforms: the plain letter belongs to the terminal.
+  if (e.code === "KeyT" && e.shiftKey) return "new-task";
 
   const letters: Record<string, string> = {
     KeyK: "palette", KeyN: "new-session", KeyW: "close-active",

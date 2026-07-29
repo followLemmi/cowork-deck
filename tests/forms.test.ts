@@ -3,8 +3,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { pickFolderMock } = vi.hoisted(() => ({ pickFolderMock: vi.fn() }));
 vi.mock("../src/dialog", () => ({ pickFolder: pickFolderMock }));
+vi.mock("@tauri-apps/api/core");
 
 import { workspaceForm, skillForm, placeholderForm } from "../src/forms";
+import { invoke } from "@tauri-apps/api/core";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -58,6 +60,255 @@ describe("workspaceForm", () => {
     const res = await p;
     expect(res!.color).not.toBe("#61afef"); // not reset to the first swatch
   });
+
+  /** The form debounces nothing, but it does await IPC — let the microtasks run. */
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  const fillTracker = (path: string, wsName = "deck") => {
+    (document.querySelector(".form-name") as HTMLInputElement).value = wsName;
+    document.querySelector<HTMLInputElement>(".tk-f-on")!.checked = true;
+    const pathRadio = document.querySelector<HTMLInputElement>("input[value='path']")!;
+    pathRadio.checked = true;
+    pathRadio.dispatchEvent(new Event("change"));
+    const tp = document.querySelector(".tk-f-path") as HTMLInputElement;
+    tp.value = path;
+    tp.dispatchEvent(new Event("input"));
+  };
+
+  it("names the folders it will create before the save", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      root: "/vault/cowork-deck-tasks/deck",
+      creating: ["cowork-deck-tasks", "deck"],
+      baseMissing: false,
+    });
+    void workspaceForm();
+    fillTracker("/vault");
+    await settle();
+    expect(document.querySelector(".tk-f-preview-path")!.textContent)
+      .toBe("/vault/cowork-deck-tasks/deck");
+    const made = document.querySelector(".tk-f-preview-creating")!.textContent!;
+    expect(made).toContain("cowork-deck-tasks/");
+    expect(made).toContain("deck/");
+  });
+
+  it("says nothing about creating when both folders are already there", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      root: "/vault/cowork-deck-tasks/deck", creating: [], baseMissing: false,
+    });
+    void workspaceForm();
+    fillTracker("/vault");
+    await settle();
+    expect(document.querySelector(".tk-f-preview-path")).not.toBeNull();
+    expect(document.querySelector(".tk-f-preview-creating")).toBeNull();
+  });
+
+  it("warns instead of promising folders when the picked path does not exist", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      root: "/vualt/cowork-deck-tasks/deck", creating: [], baseMissing: true,
+    });
+    void workspaceForm();
+    fillTracker("/vualt");
+    await settle();
+    expect(document.querySelector(".tk-f-preview-warn")).not.toBeNull();
+    expect(document.querySelector(".tk-f-preview-creating")).toBeNull();
+  });
+
+  it("asks nothing while the workspace name is blank", async () => {
+    // slugify("") is "task", so a preview here would promise a folder that will
+    // never exist.
+    void workspaceForm();
+    fillTracker("/vault", "");
+    await settle();
+    // Не «ни одного вызова»: форма спрашивает `gh_status` при открытии, чтобы
+    // заполнить список аккаунтов. Молчать должен именно предпросмотр.
+    expect(invoke).not.toHaveBeenCalledWith("tracker_root_preview", expect.anything());
+    expect(document.querySelector(".tk-f-preview-path")).toBeNull();
+  });
+
+  it("recomputes when the name changes, because the folder is named after it", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      root: "/vault/cowork-deck-tasks/deck", creating: [], baseMissing: false,
+    });
+    void workspaceForm();
+    fillTracker("/vault");
+    await settle();
+    const before = vi.mocked(invoke).mock.calls.length;
+    const nameInput = document.querySelector(".form-name") as HTMLInputElement;
+    nameInput.value = "renamed";
+    nameInput.dispatchEvent(new Event("input"));
+    await settle();
+    expect(vi.mocked(invoke).mock.calls.length).toBeGreaterThan(before);
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith(
+      "tracker_root_preview", { workspaceName: "renamed", pickedPath: "/vault" },
+    );
+  });
+
+  it("clears a preview already on screen when the next call fails", async () => {
+    // What the failure path actually has to do is retract a path it has already
+    // promised: a stale root left standing after the call that would have
+    // corrected it failed is worse than no line at all. Starting from an empty
+    // form would assert nothing, because nothing is rendered either way.
+    vi.mocked(invoke).mockResolvedValueOnce({
+      root: "/vault/cowork-deck-tasks/deck", creating: [], baseMissing: false,
+    });
+    void workspaceForm();
+    fillTracker("/vault");
+    await settle();
+    expect(document.querySelector(".tk-f-preview-path")).not.toBeNull();
+
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("nope"));
+    const tp = document.querySelector(".tk-f-path") as HTMLInputElement;
+    tp.value = "/other";
+    tp.dispatchEvent(new Event("input"));
+    await settle();
+
+    expect(document.querySelector(".tk-f-preview-path")).toBeNull();
+    // And an explanatory line is still not worth failing a form over.
+    expect(document.querySelector(".modal-ok")).not.toBeNull();
+  });
+
+  it("a stale success cannot resurrect the preview after a guard clears it", async () => {
+    let release: (v: unknown) => void = () => {};
+    vi.mocked(invoke).mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    void workspaceForm();
+    fillTracker("/vault");
+    // The request fired by fillTracker's path input is still in flight.
+    // Blanking the name now must clear the preview immediately, and that
+    // clear must not be undone once the earlier request finally answers.
+    const nameInput = document.querySelector(".form-name") as HTMLInputElement;
+    nameInput.value = "";
+    nameInput.dispatchEvent(new Event("input"));
+    release({ root: "/vault/cowork-deck-tasks/deck", creating: [], baseMissing: false });
+    await settle();
+    expect(document.querySelector(".tk-f-preview-path")).toBeNull();
+  });
+});
+
+describe("workspaceForm — tracker", () => {
+  const ov = () => document.querySelector(".modal-overlay")!;
+  const fill = () => {
+    ov().querySelector<HTMLInputElement>(".form-name")!.value = "deck";
+    ov().querySelector<HTMLInputElement>(".form-path")!.value = "/p";
+  };
+
+  it("off by default for a new workspace", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.tracker ?? null).toBeNull();
+  });
+
+  it("in-project root produces a project provider", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=project]")!.click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.tracker).toEqual({ providers: [{ type: "fs", root: { kind: "project" } }] });
+  });
+
+  it("external root carries the path the user typed", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-path")!.value = "/home/u/vault/Tasks";
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.tracker).toEqual({
+      providers: [{ type: "fs", root: { kind: "path", path: "/home/u/vault/Tasks" } }],
+    });
+  });
+
+  it("an external root with an empty path keeps the modal open", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    // An empty path is a typo, not "off": the form stays open.
+    expect(document.querySelector(".modal-overlay")).not.toBeNull();
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
+  });
+
+  it("fills the tracker root via its own pickFolder button", async () => {
+    pickFolderMock.mockResolvedValueOnce("/home/u/vault/Tasks");
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    ov().querySelector<HTMLButtonElement>(".tk-f-pick")!.click();
+    await Promise.resolve();
+    expect(ov().querySelector<HTMLInputElement>(".tk-f-path")!.value).toBe("/home/u/vault/Tasks");
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.tracker).toEqual({
+      providers: [{ type: "fs", root: { kind: "path", path: "/home/u/vault/Tasks" } }],
+    });
+  });
+
+  // The pick button sits beside the field inside one row. Toggling visibility on
+  // the field alone left the button stranded on an otherwise empty line.
+  it("hides the pick button together with the tracker path field", () => {
+    workspaceForm();
+    const row = () => ov().querySelector<HTMLElement>(".tk-f-path")!.closest(".form-pathrow")!;
+    expect(row().classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    expect(row().classList.contains("tk-hidden")).toBe(false);
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=project]")!.click();
+    expect(row().classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+  });
+
+  // The preview explains the path field, so it belongs to that block's
+  // visibility. Emptying it in the guard happens to have the same effect today;
+  // only hiding it with the row makes the structure say so.
+  it("hides the preview together with the tracker path block", () => {
+    workspaceForm();
+    const preview = () => ov().querySelector<HTMLElement>(".tk-f-preview")!;
+    expect(preview().classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=path]")!.click();
+    expect(preview().classList.contains("tk-hidden")).toBe(false);
+    ov().querySelector<HTMLInputElement>(".tk-f-root[value=project]")!.click();
+    expect(preview().classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+  });
+
+  // A path that changes while you type is exactly the kind of update a screen
+  // reader has to be told about, and exactly the kind it must not be
+  // interrupted for.
+  it("announces the preview politely rather than assertively", () => {
+    workspaceForm();
+    const preview = ov().querySelector<HTMLElement>(".tk-f-preview")!;
+    expect(preview.getAttribute("aria-live")).toBe("polite");
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+  });
+
+  it("pre-fills from an existing workspace so editing does not wipe the config", async () => {
+    const p = workspaceForm({
+      name: "deck", path: "/p", color: "#61afef",
+      tracker: { providers: [{ type: "fs", root: { kind: "path", path: "/v/T" } }] },
+    });
+    expect(ov().querySelector<HTMLInputElement>(".tk-f-on")!.checked).toBe(true);
+    expect(ov().querySelector<HTMLInputElement>(".tk-f-path")!.value).toBe("/v/T");
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await p;
+  });
+
+  it("still returns name/path/color unchanged", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.name).toBe("deck");
+    expect(res?.path).toBe("/p");
+    expect(typeof res?.color).toBe("string");
+  });
 });
 
 describe("skillForm", () => {
@@ -73,7 +324,7 @@ describe("skillForm", () => {
   expect(res!.icon).toBe("play");
   });
 
-  it("returns schedule: null when «по расписанию» is off", async () => {
+  it("returns schedule: null when “on a schedule” is off", async () => {
     const p = skillForm("ws-1");
     (document.querySelector(".form-name") as HTMLInputElement).value = "Fix";
     (document.querySelector(".form-prompt") as HTMLTextAreaElement).value = "go";
@@ -83,9 +334,9 @@ describe("skillForm", () => {
 
   it("collects a weekly schedule with placeholder defaults", async () => {
     const p = skillForm("ws-1");
-    (document.querySelector(".form-name") as HTMLInputElement).value = "Отчёт";
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
     const prompt = document.querySelector(".form-prompt") as HTMLTextAreaElement;
-    prompt.value = "статус по {{branch}}";
+    prompt.value = "status for {{branch}}";
     prompt.dispatchEvent(new Event("input")); // rebuilds the defaults sub-form
     (document.querySelector(".form-sched-enabled") as HTMLInputElement).checked = true;
     (document.querySelector(".form-sched-kind") as HTMLSelectElement).value = "weekly";
@@ -104,9 +355,9 @@ describe("skillForm", () => {
 
   it("blocks OK when an enabled schedule has a placeholder without a default", async () => {
     const p = skillForm("ws-1");
-    (document.querySelector(".form-name") as HTMLInputElement).value = "Отчёт";
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
     const prompt = document.querySelector(".form-prompt") as HTMLTextAreaElement;
-    prompt.value = "статус по {{branch}}";
+    prompt.value = "status for {{branch}}";
     prompt.dispatchEvent(new Event("input"));
     (document.querySelector(".form-sched-enabled") as HTMLInputElement).checked = true;
     document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
@@ -121,7 +372,7 @@ describe("skillForm", () => {
 
   it("prefills the schedule section when editing", async () => {
     const p = skillForm("ws-1", {
-      name: "Отчёт", icon: "▶", prompt: "go", workspaceId: "ws-1",
+      name: "Report", icon: "▶", prompt: "go", workspaceId: "ws-1",
       schedule: { preset: { kind: "daily", hour: 7, minute: 15 }, defaults: {}, enabled: true },
     });
     expect((document.querySelector(".form-sched-enabled") as HTMLInputElement).checked).toBe(true);

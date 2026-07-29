@@ -39,7 +39,8 @@ describe("matchHotkey", () => {
   });
 
   // e.key is the produced character, so on a Cyrillic layout Cmd+K arrives as
-  // "л" and nothing matched at all — in an app whose UI is Russian.
+  // "л" and nothing matched at all. The UI's language says nothing about
+  // which layout the user types in.
   it("matches by physical key, not by the character produced", () => {
     expect(matchHotkey({ ...base, code: "KeyK", key: "л", metaKey: true }, true)).toBe("palette");
   });
@@ -53,6 +54,14 @@ describe("matchHotkey", () => {
   it("maps F6 to region cycling without any modifier", () => {
     expect(matchHotkey({ ...base, code: "F6" }, true)).toBe("next-region");
     expect(matchHotkey({ ...base, code: "F6", shiftKey: true }, true)).toBe("prev-region");
+  });
+  it("maps the capture hotkey without shadowing readline", () => {
+    const ev = { ...base, code: "KeyT", metaKey: true, shiftKey: true };
+    expect(matchHotkey(ev, true)).toBe("new-task");
+    // Without Shift it is not our hotkey — the bare letter belongs to the terminal.
+    expect(matchHotkey({ ...ev, shiftKey: false }, true)).toBeNull();
+    // Linux/Windows: ctrl+shift only, so readline keeps Ctrl+T.
+    expect(matchHotkey({ ...base, code: "KeyT", ctrlKey: true, shiftKey: true }, false)).toBe("new-task");
   });
 });
 

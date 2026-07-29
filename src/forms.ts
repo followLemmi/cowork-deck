@@ -4,7 +4,8 @@
 // their own DOM here rather than extending modal.ts's single-field helpers.
 
 import { pickFolder } from "./dialog";
-import { ghStatus, type Schedule, type SchedulePreset, type WorkspaceGithub } from "./ipc";
+import { ghStatus, trackerRootPreview } from "./ipc";
+import type { BoardConfig, KindId, Schedule, SchedulePreset, TaskDraft, TrackerConfig, TrackerRootPreview, WorkspaceGithub } from "./ipc";
 import { accountChoices } from "./github";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule, schedulePreview } from "./schedule";
@@ -63,7 +64,7 @@ function actions(): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButto
   const row = document.createElement("div");
   row.className = "modal-actions";
   const cancel = document.createElement("button");
-  cancel.className = "modal-cancel"; cancel.textContent = "Отмена";
+  cancel.className = "modal-cancel"; cancel.textContent = "Cancel";
   const ok = document.createElement("button");
   ok.className = "modal-ok"; ok.textContent = "OK";
   row.append(cancel, ok);
@@ -73,9 +74,17 @@ function actions(): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButto
 /** Create/edit form for a workspace: name, native folder-pick path field, and
  *  a color swatch picker. Resolves the collected values on OK, or null on
  *  Cancel/backdrop click. */
+type WorkspaceFormResult = {
+  name: string; path: string; color: string;
+  github: WorkspaceGithub | null; tracker: TrackerConfig | null;
+};
+
 export function workspaceForm(
-  initial?: { name: string; path: string; color: string; github?: WorkspaceGithub | null },
-): Promise<{ name: string; path: string; color: string; github: WorkspaceGithub | null } | null> {
+  initial?: {
+    name: string; path: string; color: string;
+    github?: WorkspaceGithub | null; tracker?: TrackerConfig | null;
+  },
+): Promise<WorkspaceFormResult | null> {
   return new Promise((resolve) => {
     const { box, close: closeDialog } = openDialog({
       onCancel: () => close(null),
@@ -84,7 +93,7 @@ export function workspaceForm(
     box.classList.add("modal-box--form");
     const title = document.createElement("div");
     title.className = "modal-title";
-    title.textContent = initial ? "Изменить пространство" : "Новое пространство";
+    title.textContent = initial ? "Edit workspace" : "New workspace";
 
     const name = document.createElement("input");
     name.className = "modal-input form-name"; name.type = "text";
@@ -92,14 +101,15 @@ export function workspaceForm(
 
     const path = document.createElement("input");
     path.className = "modal-input form-path"; path.type = "text";
-    path.value = initial?.path ?? ""; path.placeholder = "путь к папке проекта";
+    path.value = initial?.path ?? ""; path.placeholder = "path to the project folder";
     const pick = document.createElement("button");
-    pick.className = "form-pick"; pick.type = "button"; pick.textContent = "Выбрать папку…";
+    pick.className = "form-pick"; pick.type = "button"; pick.textContent = "Choose folder…";
     pick.onclick = async () => {
       const p = await pickFolder();
       if (p) {
         path.value = p;
         if (!name.value.trim()) name.value = p.split("/").filter(Boolean).pop() ?? "";
+        void refreshPreview();
       }
     };
     const pathRow = document.createElement("div");
@@ -125,14 +135,18 @@ export function workspaceForm(
     colorRow.className = "form-row";
     const colorLabel = document.createElement("span");
     colorLabel.className = "form-label";
-    colorLabel.textContent = "Цвет";
+    colorLabel.textContent = "Colour";
     colorRow.append(colorLabel, swatches);
 
     // --- GitHub: аккаунт и идентичность коммитов ---
     const account = document.createElement("select");
     account.className = "modal-input form-gh-account";
     // gh может отсутствовать — тогда останется единственный пункт «не привязан».
-    void ghStatus()
+    // Promise.resolve оборачивает вызов: падение самого IPC (а не его промиса)
+    // иначе роняет построение формы целиком, и пользователь не видит ни одного
+    // поля из-за недоступного gh.
+    void Promise.resolve()
+      .then(() => ghStatus())
       .then((st) => {
         for (const c of accountChoices(st, initial?.github?.login ?? null)) {
           const opt = document.createElement("option");
@@ -171,26 +185,160 @@ export function workspaceForm(
     ghHint.textContent =
       "Применится к новым и перезапущенным сессиям — у живых окружение уже зафиксировано.";
 
+    // --- Task tracker ---
+    // The checkbox is a single control, so `labeledCheck` fits. Each radio
+    // lives in its own <label> — one control per label there too.
+    const onInput = document.createElement("input");
+    onInput.type = "checkbox";
+    onInput.className = "tk-f-on";
+    const onRow = labeledCheck("Task tracker", onInput,
+      "Keep a backlog of markdown cards for this workspace.");
+
+    const rootRow = document.createElement("div");
+    rootRow.className = "form-row";
+    const mkRadio = (value: "project" | "path", text: string) => {
+      const l = document.createElement("label");
+      const i = document.createElement("input");
+      i.type = "radio";
+      i.className = "tk-f-root";
+      i.name = "trackerRoot";
+      i.value = value;
+      l.append(i, document.createTextNode(` ${text}`));
+      rootRow.append(l);
+      return i;
+    };
+    const projectRadio = mkRadio("project", "in the project (.cowork/tasks)");
+    const pathRadio = mkRadio("path", "a folder of my own");
+
+    const trackerPath = document.createElement("input");
+    trackerPath.className = "modal-input tk-f-path";
+    trackerPath.type = "text";
+    trackerPath.placeholder = "/home/…/vault/Tasks";
+    // Same native picker as the project folder above. Typing an absolute path
+    // by hand is the one thing a desktop app should not ask for, and this field
+    // is the more likely of the two to point somewhere far from the project.
+    const trackerPick = document.createElement("button");
+    trackerPick.className = "form-pick tk-f-pick";
+    trackerPick.type = "button";
+    trackerPick.textContent = "Choose folder…";
+    trackerPick.onclick = async () => {
+      const p = await pickFolder();
+      if (p) { trackerPath.value = p; void refreshPreview(); }
+    };
+    const trackerPathRow = document.createElement("div");
+    trackerPathRow.className = "form-pathrow";
+    trackerPathRow.append(trackerPath, trackerPick);
+
+    // Cards land in folders the app creates, so the form names them before the
+    // save rather than leaving the person to find them afterwards.
+    const trackerPreview = document.createElement("div");
+    trackerPreview.className = "tk-f-preview";
+    // Polite, never assertive: this redraws on every keystroke of the name and
+    // the path, and an assertive region would interrupt the person mid-word to
+    // read out a path they are still typing. Announcing the whole region at once
+    // keeps "Cards will live in: <path>" from arriving as two unrelated updates.
+    trackerPreview.setAttribute("aria-live", "polite");
+    trackerPreview.setAttribute("aria-atomic", "true");
+
+    const renderPreview = (p: TrackerRootPreview | null) => {
+      trackerPreview.replaceChildren();
+      if (!p) return;
+      const head = document.createElement("p");
+      head.className = "tk-f-preview-head";
+      head.textContent = "Cards will live in:";
+      const where = document.createElement("p");
+      where.className = "tk-f-preview-path";
+      where.textContent = p.root;
+      trackerPreview.append(head, where);
+      if (p.baseMissing) {
+        const warn = document.createElement("p");
+        warn.className = "tk-f-preview-warn";
+        warn.textContent = "That folder does not exist, so nothing will be created.";
+        trackerPreview.append(warn);
+        return;
+      }
+      // Absent when there is nothing to create: an "already exists" line would
+      // be noise on every later edit of the same workspace.
+      if (p.creating.length) {
+        const made = document.createElement("p");
+        made.className = "tk-f-preview-creating";
+        made.textContent =
+          `${p.creating.map((n) => `${n}/`).join(" and ")} will be created for you.`;
+        trackerPreview.append(made);
+      }
+    };
+
+    // A newer request must win even if an older one replies later. The token
+    // is consumed before the guard, not after: a guard failure (tracker
+    // turned off, root switched back to project, name blanked mid-flight) has
+    // to invalidate an in-flight request too, or a stale success can redraw
+    // the very preview the guard just cleared.
+    let previewToken = 0;
+    const refreshPreview = async () => {
+      const token = ++previewToken;
+      const picked = trackerPath.value.trim();
+      // The project folder is a slug of the name, so a blank name would resolve
+      // to slugify("") — "task" — and promise a folder that will never exist.
+      const wsName = name.value.trim();
+      if (!onInput.checked || !pathRadio.checked || !picked || !wsName) {
+        renderPreview(null);
+        return;
+      }
+      try {
+        const p = await trackerRootPreview(wsName, picked);
+        if (token === previewToken) renderPreview(p);
+      } catch {
+        // An explanatory line in a form is not worth a visible failure.
+        if (token === previewToken) renderPreview(null);
+      }
+    };
+
+    trackerPath.oninput = () => void refreshPreview();
+    name.oninput = () => void refreshPreview();
+
+    const syncTracker = () => {
+      rootRow.classList.toggle("tk-hidden", !onInput.checked);
+      // Hide the row, not just the input: the pick button lives beside it and
+      // would otherwise stay behind on its own.
+      trackerPathRow.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
+      // Hidden with the block it explains, not merely emptied by the guard
+      // below. Both are true today; only this one is structural, and an
+      // aria-live region left in the tree is a region a reader can still reach.
+      trackerPreview.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
+      void refreshPreview();
+    };
+    onInput.onchange = syncTracker;
+    projectRadio.onchange = syncTracker;
+    pathRadio.onchange = syncTracker;
+
+    // Prefill: editing a workspace's name must not silently wipe its tracker
+    // configuration.
+    const initialRoot = initial?.tracker?.providers[0]?.root ?? null;
+    if (initialRoot) {
+      onInput.checked = true;
+      if (initialRoot.kind === "path") { pathRadio.checked = true; trackerPath.value = initialRoot.path; }
+      else projectRadio.checked = true;
+    } else {
+      projectRadio.checked = true;
+    }
+    syncTracker();
+
     const error = document.createElement("div");
     error.className = "form-error"; error.style.display = "none";
     const { row, ok, cancel } = actions();
-    box.append(
-      title, labeled("Имя", name), labeled("Папка", pathRow), colorRow,
+    box.append(title, labeled("Name", name), labeled("Folder", pathRow), colorRow,
       labeled("Аккаунт GitHub", account),
       labeled("Имя в коммитах", gitName),
       labeled("Почта в коммитах", gitEmail),
       labeled("SSH-ключ", sshKey),
       ghHint,
-      error, row,
-    );
+      onRow, rootRow, trackerPathRow, trackerPreview, error, row);
 
-    const close = (
-      v: { name: string; path: string; color: string; github: WorkspaceGithub | null } | null,
-    ) => { closeDialog(); resolve(v); };
+    const close = (v: WorkspaceFormResult | null) => { closeDialog(); resolve(v); };
     const submit = () => {
       const n = name.value.trim(); const p = path.value.trim();
-      if (!n) return showError(error, "Укажите имя пространства.");
-      if (!p) return showError(error, "Выберите папку проекта.");
+      if (!n) return showError(error, "Enter a workspace name.");
+      if (!p) return showError(error, "Choose a project folder.");
       const login = account.value.trim();
       const opt = (el: HTMLInputElement) => { const v = el.value.trim(); return v ? v : undefined; };
       // Пустой логин снимает привязку целиком: git-идентичность без аккаунта —
@@ -204,7 +352,18 @@ export function workspaceForm(
             sshKey: opt(sshKey),
           }
         : null;
-      close({ name: n, path: p, color, github });
+      let tracker: TrackerConfig | null = null;
+      if (onInput.checked) {
+        if (pathRadio.checked) {
+          const tp = trackerPath.value.trim();
+          // An empty path is not "off", it is a typo: keep the form open.
+          if (!tp) { trackerPath.focus(); return showError(error, "Enter the tracker folder."); }
+          tracker = { providers: [{ type: "fs", root: { kind: "path", path: tp } }] };
+        } else {
+          tracker = { providers: [{ type: "fs", root: { kind: "project" } }] };
+        }
+      }
+      close({ name: n, path: p, color, github, tracker });
     };
     ok.onclick = submit;
     cancel.onclick = () => close(null);
@@ -230,7 +389,7 @@ export function skillForm(
     box.classList.add("modal-box--form");
     const title = document.createElement("div");
     title.className = "modal-title";
-    title.textContent = initial ? "Изменить сценарий" : "Новый сценарий";
+    title.textContent = initial ? "Edit scenario" : "New scenario";
 
     const name = document.createElement("input");
     name.className = "modal-input form-name"; name.type = "text";
@@ -244,7 +403,7 @@ export function skillForm(
     const iconPicker = document.createElement("div");
     iconPicker.className = "form-swatches";
     iconPicker.setAttribute("role", "radiogroup");
-    iconPicker.setAttribute("aria-label", "Значок сценария");
+    iconPicker.setAttribute("aria-label", "Scenario mark");
     for (const n of SCENARIO_ICONS) {
       const b = document.createElement("button");
       b.type = "button"; b.className = "form-swatch form-icon-swatch";
@@ -273,34 +432,34 @@ export function skillForm(
     scope.className = "form-scope"; scope.type = "checkbox";
     scope.checked = initial ? initial.workspaceId != null : false;
 
-    // --- schedule section: hidden until «По расписанию» is ticked ---
+    // --- schedule section: hidden until "On a schedule" is ticked ---
     const schedEnabled = document.createElement("input");
     schedEnabled.type = "checkbox"; schedEnabled.className = "form-sched-enabled";
     schedEnabled.checked = !!initial?.schedule?.enabled;
 
     const kind = document.createElement("select");
     kind.className = "form-sched-kind";
-    for (const [v, t] of [["hourly", "каждый час"], ["daily", "ежедневно"], ["weekly", "еженедельно"]] as const) {
+    for (const [v, t] of [["hourly", "hourly"], ["daily", "daily"], ["weekly", "weekly"]] as const) {
       const o = document.createElement("option"); o.value = v; o.textContent = t; kind.append(o);
     }
     const weekday = document.createElement("select");
     weekday.className = "form-sched-weekday";
-    ["вс", "пн", "вт", "ср", "чт", "пт", "сб"].forEach((w, i) => {
+    ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach((w, i) => {
       const o = document.createElement("option"); o.value = String(i); o.textContent = w; weekday.append(o);
     });
     const hour = document.createElement("input");
     hour.type = "number"; hour.min = "0"; hour.max = "23"; hour.className = "form-sched-hour"; hour.value = "9";
-    hour.setAttribute("aria-label", "часы");
+    hour.setAttribute("aria-label", "hours");
     const minute = document.createElement("input");
     minute.type = "number"; minute.min = "0"; minute.max = "59"; minute.className = "form-sched-minute"; minute.value = "0";
-    minute.setAttribute("aria-label", "минуты");
+    minute.setAttribute("aria-label", "minutes");
     // Visible, not just a tooltip: two bare number boxes gave no clue which
     // was which, and for the hourly preset the single remaining box did not
     // say whether "30" meant "at :30" or "every 30 minutes".
     const hourLabel = document.createElement("span");
-    hourLabel.className = "form-sched-unit"; hourLabel.textContent = "ч";
+    hourLabel.className = "form-sched-unit"; hourLabel.textContent = "h";
     const minuteLabel = document.createElement("span");
-    minuteLabel.className = "form-sched-unit"; minuteLabel.textContent = "мин";
+    minuteLabel.className = "form-sched-unit"; minuteLabel.textContent = "min";
 
     // Daily, not the first <option>. Hourly as a silent default means someone
     // who ticks the box, types a time into the one visible number field and
@@ -325,7 +484,7 @@ export function skillForm(
       weekdayWrap.style.display = weekly ? "" : "none";
       hour.style.display = hourly ? "none" : "";
       hourLabel.style.display = hourly ? "none" : "";
-      minuteLabel.textContent = hourly ? "минута часа" : "мин";
+      minuteLabel.textContent = hourly ? "minute of the hour" : "min";
     };
     kind.addEventListener("change", syncTimeRow);
     timeRow.append(selectWrap(kind), weekdayWrap, hour, hourLabel, minute, minuteLabel);
@@ -336,10 +495,10 @@ export function skillForm(
     defWrap.className = "form-sched-defaults";
     const defHead = document.createElement("div");
     defHead.className = "form-sched-defhead";
-    defHead.textContent = "Значения параметров по умолчанию";
+    defHead.textContent = "Default parameter values";
     const defHint = document.createElement("div");
     defHint.className = "form-sched-hint";
-    defHint.textContent = "запуск по расписанию некому спросить, поэтому значения нужны заранее";
+    defHint.textContent = "a scheduled run has nobody to ask, so the values are needed up front";
     const defInputs = new Map<string, HTMLInputElement>();
     const renderDefaults = () => {
       const names = parsePlaceholders(promptField.value);
@@ -349,7 +508,7 @@ export function skillForm(
       if (names.length) defWrap.append(defHead, defHint);
       for (const n of names) {
         const inp = document.createElement("input");
-        inp.className = "modal-input form-sched-def"; inp.type = "text"; inp.placeholder = `значение {{${n}}}`;
+        inp.className = "modal-input form-sched-def"; inp.type = "text"; inp.placeholder = `value for {{${n}}}`;
         inp.value = kept.get(n)?.value ?? initial?.schedule?.defaults?.[n] ?? "";
         defInputs.set(n, inp);
         defWrap.append(labeled(n, inp));
@@ -381,7 +540,7 @@ export function skillForm(
     const caveat = document.createElement("div");
     caveat.className = "form-sched-hint";
     caveat.textContent =
-      "Срабатывает, только пока cowork-deck открыт. Пропущенные запуски выполняются один раз при следующем старте.";
+      "Only fires while cowork-deck is open. Missed runs happen once, at the next start.";
 
     const schedBody = document.createElement("div");
     schedBody.className = "form-sched-body";
@@ -401,20 +560,20 @@ export function skillForm(
 
     const { row, ok, cancel } = actions();
     box.append(
-      title, labeled("Имя", name), labeled("Значок", iconPicker),
-      labeled("Задание", promptField),
-      labeledCheck("Только для текущего пространства", scope,
-        "иначе сценарий виден и запускается в любом"),
-      labeledCheck("По расписанию", schedEnabled,
-        "запускать без участия человека"),
+      title, labeled("Name", name), labeled("Mark", iconPicker),
+      labeled("Task", promptField),
+      labeledCheck("Only for the current workspace", scope,
+        "otherwise the scenario is visible and runs in any"),
+      labeledCheck("On a schedule", schedEnabled,
+        "run it without a human present"),
       schedBody, schedError, row,
     );
 
     const close = (v: { name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null) => { closeDialog(); resolve(v); };
     const submit = () => {
       const n = name.value.trim(); const pr = promptField.value.trim();
-      if (!n) return showError(schedError, "Укажите имя сценария.");
-      if (!pr) return showError(schedError, "Опишите задание для Claude.");
+      if (!n) return showError(schedError, "Enter a scenario name.");
+      if (!pr) return showError(schedError, "Describe the task for Claude.");
       const defaults = readDefaults();
       const preset = readPreset();
       const v = validateSchedule(schedEnabled.checked, preset, pr, defaults);
@@ -446,7 +605,7 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
     });
     const title = document.createElement("div");
     title.className = "modal-title";
-    title.textContent = "Параметры запуска";
+    title.textContent = "Launch parameters";
 
     const inputs = new Map<string, HTMLInputElement>();
     const rows: HTMLElement[] = [];
@@ -470,5 +629,77 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
     ok.onclick = submit;
     cancel.onclick = () => close(null);
     inputs.get(names[0])?.focus();
+  });
+}
+
+/** Quick capture of a card. The title is required: a nameless card is useless
+ *  in a backlog, so an empty input does not close the dialog. */
+export function taskForm(cfg: BoardConfig): Promise<TaskDraft | null> {
+  return new Promise((resolve) => {
+    const { box, close: closeDialog } = openDialog({
+      onCancel: () => close(null),
+      onAccept: () => submit(),
+    });
+    box.classList.add("modal-box--form");
+    const title = document.createElement("div");
+    title.className = "modal-title";
+    title.textContent = "New task";
+
+    const titleInput = document.createElement("input");
+    titleInput.className = "modal-input tk-f-title";
+    titleInput.type = "text";
+    titleInput.placeholder = "what happened, or what to do";
+
+    // The kind row is built like colorRow in workspaceForm: a span label plus
+    // the controls in a <div>, NOT labeled() — a click on a <label>'s text is
+    // forwarded to the first control inside it and would silently change the
+    // selection.
+    // One button per configured kind, the first selected: `validate` refuses a
+    // configuration with no kinds, so there is always one to preselect.
+    let kind: KindId = cfg.kinds[0]?.id ?? "";
+    const kindRow = document.createElement("div");
+    kindRow.className = "form-row";
+    const kindLabelEl = document.createElement("span");
+    kindLabelEl.className = "form-label";
+    kindLabelEl.textContent = "Kind";
+    const kindBox = document.createElement("div");
+    kindBox.className = "tk-f-kinds";
+    for (const k of cfg.kinds) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset.kind = k.id;
+      b.textContent = k.label;
+      b.className = "tk-f-kind";
+      b.classList.toggle("selected", k.id === kind);
+      b.onclick = () => {
+        kind = k.id;
+        kindBox.querySelectorAll(".tk-f-kind").forEach((o) => o.classList.remove("selected"));
+        b.classList.add("selected");
+      };
+      kindBox.append(b);
+    }
+    kindRow.append(kindLabelEl, kindBox);
+
+    const bodyInput = document.createElement("textarea");
+    bodyInput.className = "modal-input tk-f-body";
+    bodyInput.rows = 5;
+    bodyInput.placeholder = "repro, links to files — anything";
+
+    const error = document.createElement("div");
+    error.className = "form-error"; error.style.display = "none";
+    const { row, ok, cancel } = actions();
+    box.append(title, labeled("Title", titleInput), kindRow,
+      labeled("Description", bodyInput), error, row);
+
+    const close = (v: TaskDraft | null) => { closeDialog(); resolve(v); };
+    const submit = () => {
+      const t = titleInput.value.trim();
+      // No nameless cards: say so instead of an OK button that does nothing.
+      if (!t) { titleInput.focus(); return showError(error, "Enter a task title."); }
+      close({ title: t, kind, body: bodyInput.value });
+    };
+    ok.onclick = submit;
+    cancel.onclick = () => close(null);
+    titleInput.focus();
   });
 }

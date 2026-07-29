@@ -37,18 +37,18 @@ describe("iconButton", () => {
   // The whole point of the helper: a label is impossible to forget because the
   // parameter is required. Emoji buttons had no accessible name at all.
   it("carries the label as both accessible name and tooltip", () => {
-    const b = iconButton("trash", "Удалить сценарий Ночной обзор");
-    expect(b.getAttribute("aria-label")).toBe("Удалить сценарий Ночной обзор");
-    expect(b.title).toBe("Удалить сценарий Ночной обзор");
+    const b = iconButton("trash", "Delete scenario Nightly review");
+    expect(b.getAttribute("aria-label")).toBe("Delete scenario Nightly review");
+    expect(b.title).toBe("Delete scenario Nightly review");
   });
 
   // Tests used to find buttons by their glyph text, which an SVG has none of.
   it("exposes a stable hook that does not depend on glyph text", () => {
-    expect(iconButton("x", "Закрыть").dataset.action).toBe("x");
+    expect(iconButton("x", "Close").dataset.action).toBe("x");
   });
 
   it("is a real button with the shared icon-button class", () => {
-    const b = iconButton("rotate", "Перезапустить");
+    const b = iconButton("rotate", "Restart");
     expect(b.tagName).toBe("BUTTON");
     expect(b.className).toContain("btn--icon");
   });

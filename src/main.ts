@@ -1,9 +1,17 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
+import { applyView } from "./view";
 import { claudeAvailable, loadLayout, onScheduledFire, onSchedulerBroken, scheduleAck, schedulerReady } from "./ipc";
 import type { Skill, Workspace } from "./ipc";
-import { alertModal } from "./modal";
+import { BoardView } from "./board";
+import {
+  listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
+  taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
+  boardConfigSave, boardStepRewrite, boardStepUsage,
+} from "./ipc";
+import type { MigrationOffer, StepId, Task } from "./ipc";
+import { alertModal, confirmModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
@@ -12,7 +20,9 @@ import { installSprite } from "./icons";
 import { openGithubScreen } from "./github-screen";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
-import { placeholderForm } from "./forms";
+import { placeholderForm, taskForm } from "./forms";
+import { computePatch, openCardModal } from "./card-modal";
+import { applyBoardEdit, openBoardEditor } from "./board-editor";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -23,8 +33,61 @@ const wsMount = document.createElement("div");
 const skMount = document.createElement("div");
 const listMount = document.createElement("div");
 const newBtn = document.createElement("button");
-newBtn.textContent = "+ сессия"; newBtn.className = "btn-primary";
+newBtn.textContent = "+ session"; newBtn.className = "btn-primary";
 sidebar.append(wsMount, skMount, newBtn, listMount);
+
+const boardEl = document.querySelector<HTMLElement>("#board")!;
+
+// The "Terminals | Board" switch. The board takes the full width because
+// GitHub and Jira boards land here later, and those need room rather than a strip.
+const views = document.createElement("div");
+views.className = "tk-views";
+const termBtn = document.createElement("button");
+termBtn.textContent = "Terminals"; termBtn.className = "active";
+const boardBtn = document.createElement("button");
+boardBtn.textContent = "Board";
+views.append(termBtn, boardBtn);
+sidebar.prepend(views);
+
+const board = new BoardView({
+  onLaunch: (t) => void launchFromTask(t),
+  onResolve: (t) => void closeTask(t),
+  onNew: () => void captureTask(),
+  onConfigure: () => void alertModal(
+    "Configure the tracker in the workspace settings (✎): a folder in the project, or one of your own."),
+  onMigrate: () => void migrateCards(),
+  onDismissMigration: () => void dismissMigration(),
+  onOpen: (t) => void openCard(t),
+  onMove: (t, step) => void moveTask(t, step),
+  onEditBoard: () => void editBoard(),
+});
+boardEl.append(board.mount);
+
+let boardVisible = false;
+let boardTimer: ReturnType<typeof setInterval> | null = null;
+
+function setView(showBoard: boolean) {
+  boardVisible = showBoard;
+  applyView({ deck: deckEl, board: boardEl, termBtn, boardBtn,
+              terminalsOnly: [skMount, newBtn, listMount] }, showBoard);
+  if (showBoard) {
+    void refreshBoard();
+    // Polling is the primary refresh path; the watcher only makes it faster, so
+    // a watcher failure degrades into a delay and needs no detection. The
+    // sidebar counts degrade the same way (see the spec), which is why this tick
+    // refreshes them too — otherwise on a workspace without a watcher (an SMB
+    // volume, say) the badge stays stuck at whatever it was at load. Each call
+    // has its own try/catch inside refreshBoard/refreshCounts: one failing
+    // handle must not take the other down.
+    if (boardTimer === null) {
+      boardTimer = setInterval(() => { void refreshBoard(); void refreshCounts(); }, 5000);
+    }
+  } else if (boardTimer !== null) {
+    clearInterval(boardTimer); boardTimer = null;
+  }
+}
+termBtn.onclick = () => setView(false);
+boardBtn.onclick = () => setView(true);
 
 const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
@@ -49,6 +112,12 @@ const boot = () => runBoot({
     () => onSchedulerBroken((message) => { void alertModal(message); }).then(() => {}),
     () => workspaces.load(),
     () => skills.load(),
+    () => onTasksChanged((workspaceId) => {
+      if (boardVisible && workspaces.active?.id === workspaceId) void refreshBoard();
+      void refreshCounts();
+    }).then(() => {}),
+    () => taskWatchSync(),
+    () => refreshCounts(),
     async () => {
       const entries = await loadLayout();
       if (entries.length) await deck.restore(entries);
@@ -62,11 +131,202 @@ const boot = () => runBoot({
   onError: (e) => {
     console.error("boot failed:", e);
     void alertModal(
-      "Приложение запустилось не полностью — часть сессий или настроек могла не загрузиться. " +
-      "Перезапустите приложение; если повторится, посмотрите консоль разработчика.",
+      "The app did not start completely — some sessions or settings may not have loaded. " +
+      "Restart it; if this repeats, check the developer console.",
     );
   },
 });
+
+/** Quick capture: a modal, a card in the active workspace, and the board and
+ *  counts refreshed straight away rather than waiting on the watcher. */
+async function captureTask() {
+  const ws = workspaces.active;
+  if (!ws) { await alertModal("Pick a workspace first."); return; }
+  const caps = await taskCapabilities(ws.id).catch(() => null);
+  if (!caps?.canCreate) {
+    await alertModal("No task tracker is configured for this workspace. Set one up in its settings (✎).");
+    return;
+  }
+  const draft = await taskForm(caps.board);
+  if (!draft) return;
+  try {
+    await createTask(ws.id, draft);
+  } catch (e) {
+    await alertModal(`Could not create the task: ${String(e)}`);
+    return;
+  }
+  if (boardVisible) await refreshBoard();
+  await refreshCounts();
+}
+/** ▶ on a card. The workspace comes from the card's `project:` field, not from
+ *  whichever one is active: on a shared root (a vault folder covering three
+ *  projects, say) the active workspace would drop the work in the wrong
+ *  directory. */
+async function launchFromTask(t: Task) {
+  const target = workspaces.all.find((w) => w.name === t.project);
+  if (!target) {
+    await alertModal(
+      `No workspace named “${t.project}” — that is the card's project: field. ` +
+      `Was the workspace renamed? The launch was cancelled rather than start work in the wrong directory.`);
+    return;
+  }
+  // The *target* workspace's configuration, not the active board's: on a shared
+  // root the card may belong to another project with another board.json, and the
+  // kind's label comes from whichever one owns the card.
+  const caps = await taskCapabilities(target.id).catch(() => null);
+  // No tracker configured there: the kind's own id is the best label available,
+  // which is what an empty configuration makes `kindLabel` fall back to.
+  const cfg = caps?.board ?? { v: 1, steps: [], kinds: [] };
+  // The prompt is built inside `launchFromTask`, from the card as it stands
+  // after the working-step move it attempts — not here, before that move has
+  // happened. Building it here would tell the agent a step the card had
+  // already left on any board with a `working` step.
+  await deck.launchFromTask(target, t, cfg);
+  // Both "launched" and "focused" leave a session worth looking at — staying on
+  // the board would look like the button did nothing.
+  setView(false);
+}
+
+/** Redraw the active workspace's board. Every IPC call is isolated: one failing
+ *  handle must not take the whole tick down. */
+async function refreshBoard() {
+  const ws = workspaces.active;
+  if (!ws) {
+    board.render({ project: "", caps: null, error: null, tasks: [], links: [] });
+    return;
+  }
+  const wsId = ws.id;
+  let caps = null;
+  try { caps = await taskCapabilities(wsId); } catch (e) { console.debug("caps failed", e); }
+  let tasks: Task[] = [];
+  let error: string | null = null;
+  if (caps) {
+    try { tasks = await listTasks(wsId); }
+    catch (e) { error = String(e); }
+  }
+  let migration: MigrationOffer | null = null;
+  try { migration = await taskMigrationStatus(wsId); }
+  catch (e) { console.debug("migration status failed", e); }
+  // The workspace may have been switched while we waited on IPC: a late reply
+  // must not repaint the board with another workspace's data over the current one.
+  if (workspaces.active?.id !== wsId) return;
+  board.render({ project: ws.name, caps, error, tasks, links: deck.taskLinks(), migration });
+}
+
+/** The sidebar counts — one handle covering every workspace. */
+async function refreshCounts() {
+  try { workspaces.setCounts(await taskOpenCounts()); }
+  catch (e) { console.debug("taskOpenCounts failed", e); }
+}
+
+async function closeTask(t: Task) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  try { await resolveTask(ws.id, t.id); }
+  catch (e) { await alertModal(`Could not close the task: ${String(e)}`); }
+  await refreshBoard();
+  await refreshCounts();
+}
+
+/** A drag or an arrow click both land here: a step-only patch, exactly like
+ *  the modal's own step-only move (card-modal.ts's computePatch). */
+async function moveTask(t: Task, step: StepId) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  try { await updateTask(ws.id, t.id, { status: step }); }
+  catch (e) {
+    // Nothing here is optimistic — a native drag never moves the node, and this
+    // awaits the write before re-reading the board. So a refusal has to be said
+    // out loud: without the alert the drag or the arrow would simply appear to
+    // do nothing at all.
+    await alertModal(`Could not move the card: ${String(e)}`);
+  }
+  await refreshBoard();
+  await refreshCounts();
+}
+
+/** Open a card, edit it, and save only what changed — see card-modal.ts for
+ *  why a full-field patch would be unsafe here. */
+async function openCard(t: Task) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  const caps = await taskCapabilities(ws.id).catch(() => null);
+  if (!caps) return;
+  const canWrite = !t.damaged && !t.conflict;
+  const edited = await openCardModal(t, caps.board, canWrite);
+  if (!edited) return;
+  const patch = computePatch(t, edited);
+  if (Object.keys(patch).length === 0) return;
+  try { await updateTask(ws.id, t.id, patch); }
+  catch (e) { await alertModal(`Could not save the card: ${String(e)}`); }
+  await refreshBoard();
+  await refreshCounts();
+}
+
+/** ⚙: edit the board's steps and kinds, rewriting any cards a rename or a
+ *  removal leaves pointing at a step the saved configuration no longer has. */
+async function editBoard() {
+  const ws = workspaces.active;
+  if (!ws) return;
+  const caps = await taskCapabilities(ws.id).catch(() => null);
+  if (!caps) return;
+  // The board shown right now is the default two-step fallback, not what is
+  // on disk — see board.ts's own `caps.boardError` banner. Saving it would ask
+  // the backend to replace a board.json it could not even read; the backend
+  // refuses that (tasks_cmd::save_config), but the person has to be told
+  // before filling in a form, not after submitting it.
+  if (caps.boardError) {
+    await alertModal(
+      `board.json could not be used: ${caps.boardError}. Fix the file by hand before configuring the board here.`);
+    return;
+  }
+  const usage = await boardStepUsage(ws.id).catch(() => []);
+  const result = await openBoardEditor(caps.board, usage);
+  if (!result) return;
+  // The rewrite-then-save sequence lives in board-editor.ts, taking what it
+  // needs as arguments: the decision it makes when cards are skipped is worth a
+  // test, and main.ts is not reachable from one.
+  const written = await applyBoardEdit(result, {
+    rewrite: (from, to, config) => boardStepRewrite(ws.id, from, to, config),
+    save: (config) => boardConfigSave(ws.id, config),
+    alert: alertModal,
+    confirm: confirmModal,
+  });
+  if (!written) return;
+  await refreshBoard();
+  await refreshCounts();
+}
+
+/** Move the cards left at a previous root. The watcher has to be re-pointed
+ *  afterwards: the destination may have been created moments ago, and without
+ *  the re-sync the board would only update on the five-second poll. */
+async function migrateCards() {
+  const ws = workspaces.active;
+  if (!ws) return;
+  try {
+    const report = await taskMigrate(ws.id);
+    const failed = report.skipped.filter((s) => s.reason.kind === "failed");
+    if (failed.length) {
+      await alertModal(
+        `Moved ${report.moved}. ${failed.length} could not be moved:\n` +
+        failed.map((s) => `${s.fileName}: ${s.reason.kind === "failed" ? s.reason.detail : ""}`).join("\n"),
+      );
+    }
+  } catch (e) {
+    await alertModal(`Could not move the cards: ${String(e)}`);
+  }
+  await taskWatchSync().catch((e) => console.debug("watch sync failed", e));
+  await refreshBoard();
+  await refreshCounts();
+}
+
+async function dismissMigration() {
+  const ws = workspaces.active;
+  if (!ws) return;
+  try { await taskMigrationDismiss(ws.id); }
+  catch (e) { await alertModal(`Could not dismiss: ${String(e)}`); }
+  await refreshBoard();
+}
 
 /** Why a scheduled fire did or did not produce a run. The backend-driven path
  *  only logs it; a user-initiated run surfaces it in a modal. */
@@ -92,9 +352,9 @@ async function handleScheduledFire(skillId: string, catchUpFor?: string): Promis
 async function runScheduledNow(skill: Skill) {
   const outcome = await handleScheduledFire(skill.id);
   if (outcome === "skipped-overlap") {
-    await alertModal("Прогон пропущен: предыдущий ещё активен.");
+    await alertModal("Run skipped: the previous one is still active.");
   } else if (outcome === "no-workspace") {
-    await alertModal("У сценария нет доступного пространства: привяжите его или выберите пространство.");
+    await alertModal("This scenario has no workspace available: pin it to one or pick a workspace.");
   }
 }
 
@@ -111,19 +371,23 @@ void listen("pill://focus-next", async () => {
 
 // Selecting a workspace (click, startup restore of the active one, or after a
 // deletion re-selects the next one) switches the deck to that workspace's tiles.
-const workspaces = new WorkspacesPanel(
-  wsMount,
-  (ws) => deck.setActiveWorkspace(ws.id),
-  (workspaceId) => deck.markAuthStale(workspaceId),
-);
+const workspaces = new WorkspacesPanel(wsMount, (ws) => {
+  deck.setActiveWorkspace(ws.id);
+  if (boardVisible) void refreshBoard();
+}, () => {
+  // A workspace was added, edited or deleted: its tracker root may have moved,
+  // so re-point the watcher and re-read the sidebar counts.
+  void taskWatchSync();
+  void refreshCounts();
+}, (workspaceId) => deck.markAuthStale(workspaceId));
 /** Every launch path needs an active workspace. Saying so beats a button that
  *  looks broken — the old behaviour was a bare `return`. */
 async function requireWorkspace(): Promise<Workspace | null> {
   const ws = workspaces.active;
   if (ws) return ws;
   await alertModal(
-    "Сначала выберите пространство — это папка проекта, в которой запускаются сессии. "
-    + "Если пространств ещё нет, создайте его кнопкой «+ пространство».",
+    "Pick a workspace first — it is the project folder that sessions run in. "
+    + "If there are none yet, create one with the “+ workspace” button.",
   );
   return null;
 }
@@ -155,16 +419,18 @@ function hotkeyLabel(letter: string): string {
 
 function paletteCommands(): Command[] {
   return [
-    { id: "new-session", title: "Новая сессия", hotkey: hotkeyLabel("N"), run: () => { void newSession(); } },
-    { id: "close-active", title: "Закрыть активную сессию", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
-    { id: "next-waiting", title: "К следующей ждущей вводу", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
-    { id: "zoom", title: "Развернуть активную сессию", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
-    { id: "search", title: "Поиск в терминале", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
-    { id: "clear", title: "Очистить терминал", run: () => deck.clearActive() },
-    { id: "broadcast", title: "Режим broadcast (ввод в несколько сессий)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
-    { id: "next-region", title: "Перейти к следующей области (F6)", hotkey: "F6", run: () => cycleRegion(1) },
-    { id: "scenarios", title: "Сценарии: к списку в боковой панели", run: () => focusRegion("sidebar") },
-    { id: "github", title: "GitHub: аккаунты и установка gh", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
+    { id: "new-session", title: "New session", hotkey: hotkeyLabel("N"), run: () => { void newSession(); } },
+    { id: "close-active", title: "Close active session", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
+    { id: "next-waiting", title: "Go to next session waiting for input", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
+    { id: "zoom", title: "Zoom active session", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
+    { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
+    { id: "clear", title: "Clear terminal", run: () => deck.clearActive() },
+    { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
+    { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
+    { id: "scenarios", title: "Scenarios: focus the sidebar list", run: () => focusRegion("sidebar") },
+    { id: "board", title: "Open the task board", run: () => setView(true) },
+    { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
+    { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
   ];
 }
 
@@ -209,11 +475,13 @@ const COMMANDS: Record<string, () => void> = {
   "zoom": () => deck.toggleZoomActive(),
   "next-region": () => cycleRegion(1),
   "prev-region": () => cycleRegion(-1),
+  "board": () => setView(true),
+  "new-task": () => { void captureTask(); },
   "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
 };
 
 window.addEventListener("keydown", (e) => {
-  if (document.querySelector(".modal-overlay")) return; // не перехватываем, пока открыта модалка/палитра/форма
+  if (document.querySelector(".modal-overlay")) return; // do not intercept while a modal, the palette or a form is open
   if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
   const id = matchHotkey(e, isMacPlatform());
   if (!id) return;
@@ -227,7 +495,7 @@ window.addEventListener("keydown", (e) => {
 });
 
 claudeAvailable().then((ok) => {
-  if (!ok) alertModal("Не найден исполняемый файл claude. Укажите путь через переменную окружения COWORK_CLAUDE_PATH и перезапустите приложение.");
+  if (!ok) alertModal("The claude executable was not found. Set its path via the COWORK_CLAUDE_PATH environment variable and restart the app.");
 });
 
 void boot();

@@ -46,8 +46,8 @@ export class TerminalPanel {
     // the mocked terminal in unit tests, which lacks it, doesn't throw.
     if (this.term.unicode) this.term.unicode.activeVersion = "11";
     this.term.open(mount);
-    // Перехватываем ТОЛЬКО распознанные хоткеи приложения; всё остальное
-    // (в т.ч. Ctrl+C/D/L, обычный ввод) отдаём терминалу.
+    // Intercept ONLY recognised app hotkeys; everything else (Ctrl+C/D/L and
+    // ordinary typing included) goes to the terminal.
     this.term.attachCustomKeyEventHandler((e) => {
       if (e.type === "keydown" && matchHotkey(e, isMacPlatform())) return false;
       return true;
@@ -67,10 +67,13 @@ export class TerminalPanel {
   /** Возвращает исход привязки GitHub-аккаунта: вызывающий решает, вешать ли
    *  бейдж на тайл. Окружение фиксируется здесь, при рождении процесса. */
   async start(
-    cwd: string, initialPrompt: string | null, resume = false, workspaceId?: string | null,
+    cwd: string, workspaceId: string | null, initialPrompt: string | null,
+    taskId: string | null = null, resume = false,
   ): Promise<SessionAuth> {
     const { cols, rows } = this.term;
-    return await startSession(this.session, cwd, initialPrompt, cols, rows, resume, workspaceId);
+    return await startSession(
+      this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
+    );
   }
   /** Разовый запуск пользовательской команды. Не сессия агента: ни хуков
    *  состояния, ни привязки к аккаунту — окружение наследуется как есть. */

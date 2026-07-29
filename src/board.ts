@@ -1,0 +1,347 @@
+import type { MigrationOffer, ProviderCapabilities, StepId, Task } from "./ipc";
+import { isTerminal, stepAfter, stepBefore } from "./board-config";
+import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
+
+export interface BoardState {
+  project: string;
+  caps: ProviderCapabilities | null;
+  error: string | null;
+  tasks: Task[];
+  links: TaskSessionLink[];
+  /** Optional so the pre-existing render tests keep compiling; absent means
+   *  there is nothing to move. */
+  migration?: MigrationOffer | null;
+}
+
+export interface BoardHandlers {
+  onLaunch: (task: Task) => void;
+  onResolve: (task: Task) => void;
+  onNew: () => void;
+  onConfigure: () => void;
+  onMigrate: () => void;
+  onDismissMigration: () => void;
+  onOpen: (task: Task) => void;
+  onMove: (task: Task, step: StepId) => void;
+  onEditBoard: () => void;
+}
+
+/** `caps === null` means no tracker is configured — a legal state, not a failure. */
+export function emptyStateMessage(
+  caps: ProviderCapabilities | null,
+  error: string | null,
+): { text: string; canConfigure: boolean } {
+  if (caps === null) {
+    return { text: "No task tracker is configured for this workspace.", canConfigure: true };
+  }
+  if (error) return { text: error, canConfigure: true };
+  return { text: "No tasks.", canConfigure: false };
+}
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K, cls?: string, text?: string,
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  // Always textContent: titles and bodies come from files written by the user
+  // or by an agent, and must never be parsed as markup.
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+export class BoardView {
+  readonly mount = el("div", "tk-board");
+  constructor(private h: BoardHandlers) {}
+
+  render(state: BoardState) {
+    this.mount.replaceChildren();
+    const { caps, error } = state;
+
+    const head = el("div", "tk-head");
+    head.append(el("h3", "tk-title", "Tasks"));
+    if (caps?.canCreate) {
+      const add = el("button", "tk-new", "+ task");
+      add.onclick = () => this.h.onNew();
+      head.append(add);
+    }
+    // Shown whenever a tracker is configured, even while `caps.boardError` is
+    // set: main.ts::editBoard tells the person about that before opening the
+    // form, rather than hiding the only way to fix it.
+    if (caps) {
+      const edit = el("button", "tk-board-edit", "⚙");
+      edit.setAttribute("aria-label", "Configure the board");
+      edit.onclick = () => this.h.onEditBoard();
+      head.append(edit);
+    }
+    this.mount.append(head);
+
+    // Before the early return on purpose: when the destination's parent is
+    // missing, the error and this banner explain each other.
+    if (state.migration) this.mount.append(this.migrationBanner(state.migration));
+
+    if (caps === null || error) {
+      const msg = emptyStateMessage(caps, error);
+      const box = el("div", "tk-empty");
+      box.append(el("p", undefined, msg.text));
+      if (msg.canConfigure) {
+        const btn = el("button", "tk-configure", "Configure");
+        btn.onclick = () => this.h.onConfigure();
+        box.append(btn);
+      }
+      this.mount.append(box);
+      return;
+    }
+
+    // The fallback board still draws underneath this: silently keeping a
+    // renamed terminal step open would be a worse lie than a banner that says so.
+    // Read off `caps.boardError` directly rather than a second field on `state`:
+    // `caps` is already non-null here (the early return above caught the other
+    // case), so a separate channel for the same value could only disagree with it.
+    if (caps.boardError) {
+      this.mount.append(el(
+        "p", "tk-board-error",
+        `board.json could not be used: ${caps.boardError}. The default two-step board is shown instead, ` +
+        "so cards may appear in the wrong column. The file was left alone.",
+      ));
+    }
+
+    const cols = boardColumns(state.tasks, state.project, caps.board);
+    const wrap = el("div", "tk-cols");
+    for (const c of cols.columns) wrap.append(this.column(c, state, caps));
+    if (cols.unknown.length > 0) {
+      // `id: ""` on purpose: it is not a configured step, and column() only
+      // sets `data-step` for a non-empty id — see the comment there.
+      const unknownCol = this.column(
+        { step: { id: "", label: "unknown step" }, tasks: cols.unknown, hidden: 0 }, state, caps,
+      );
+      unknownCol.classList.add("tk-col-unknown");
+      wrap.append(unknownCol);
+    }
+    this.mount.append(wrap);
+
+    if (cols.columns.every((c) => c.tasks.length === 0) && cols.unknown.length === 0) {
+      this.mount.append(el("div", "tk-empty", emptyStateMessage(caps, null).text));
+    }
+
+    for (const f of cols.foreign) {
+      this.mount.append(el(
+        "p", "tk-foreign",
+        `${f.count} card(s) name a different project: ${f.project} — was the workspace renamed?`,
+      ));
+    }
+  }
+
+  /** Cards left at a previous root. Rendered as a banner rather than a modal so
+   *  it survives an app restart and does not demand a decision at save time. */
+  private migrationBanner(m: MigrationOffer): HTMLElement {
+    const box = el("div", "tk-migrate");
+    box.append(el(
+      "p", "tk-migrate-count",
+      `${m.moving} card${m.moving === 1 ? "" : "s"} ${m.moving === 1 ? "is" : "are"} still in the previous location:`,
+    ));
+    box.append(el("p", "tk-migrate-from", m.from));
+    if (m.leavingForeign > 0) {
+      box.append(el(
+        "p", "tk-migrate-foreign",
+        `${m.leavingForeign} card${m.leavingForeign === 1 ? "" : "s"} there belong${m.leavingForeign === 1 ? "s" : ""} to other projects and stay.`,
+      ));
+    }
+    if (m.leavingDamaged > 0) {
+      box.append(el(
+        "p", "tk-migrate-foreign",
+        `${m.leavingDamaged} damaged card${m.leavingDamaged === 1 ? "" : "s"} there stay too — a damaged card in a shared folder may not be ours.`,
+      ));
+    }
+
+    const acts = el("div", "tk-migrate-acts");
+    const go = el("button", "tk-migrate-go", "Move them here");
+    go.onclick = () => this.h.onMigrate();
+    const skip = el("button", "tk-migrate-skip", "Leave them there");
+    skip.onclick = () => this.h.onDismissMigration();
+    acts.append(go, skip);
+    box.append(acts);
+
+    // Not decoration: after this the cards are outside the effective root and
+    // the board will not show them again. Recoverable by hand, but it reads as
+    // disappearance, so the button cannot just say "Leave them" and stop.
+    box.append(el(
+      "p", "tk-migrate-consequence",
+      "Left there, they stay on disk but this board will not show them.",
+    ));
+    if (m.renamingProject) {
+      box.append(el(
+        "p", "tk-migrate-consequence",
+        "Moving them also updates the project name inside each card.",
+      ));
+    }
+    return box;
+  }
+
+  /** `col.step.id` lands on `data-step`: task 8 reads it as the drop target,
+   *  even though nothing consumes it yet. Never set for the synthetic unknown
+   *  column (`id: ""`): it is not a configured step, so a drop there would
+   *  write `status: unknown` and leave the card in the same column, corrupt in
+   *  a second way — and a real step legitimately named `unknown` would collide
+   *  with it. Leaving `data-step` off lets Task 8's `[data-step]` selector
+   *  exclude this column without knowing any magic string. */
+  private column(col: BoardColumn, state: BoardState, caps: ProviderCapabilities) {
+    const node = el("div", "tk-col");
+    if (col.step.id) {
+      node.dataset.step = col.step.id;
+      this.makeDropTarget(node, col.step.id, state);
+    }
+    const heading = col.hidden > 0
+      ? `${col.step.label} (${col.tasks.length}+${col.hidden})`
+      : `${col.step.label} (${col.tasks.length})`;
+    node.append(el("div", "tk-col-head", heading));
+    for (const t of col.tasks) node.append(this.card(t, state, caps));
+    return node;
+  }
+
+  /** Only called for a column carrying `data-step` — see the comment above
+   *  `column()` for why the unknown column never reaches here. */
+  private makeDropTarget(node: HTMLElement, step: StepId, state: BoardState) {
+    node.ondragover = (e) => {
+      // Without this a drop never fires at all — it is the browser's default.
+      e.preventDefault();
+      // The cursor otherwise shows the browser's default badge — a copy `+` —
+      // on what is a move.
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      node.classList.add("tk-col-over");
+    };
+    node.ondragleave = () => node.classList.remove("tk-col-over");
+    node.ondrop = (e) => {
+      e.preventDefault();
+      node.classList.remove("tk-col-over");
+      const id = e.dataTransfer?.getData("text/plain");
+      const task = id ? state.tasks.find((t) => t.id === id) : undefined;
+      // Not redundant with `draggable` above: that is decided when the card is
+      // rendered, but this looks the task up in the freshest `state.tasks` —
+      // deliberately, so a drop acts on the card as it is now. On a board that
+      // re-polls every five seconds those two moments can differ: a card
+      // writable at `dragstart` can be damaged or conflicting by the time the
+      // drop lands, and only this check sees that. A drop into the card's own
+      // column is likewise not a move: no write, no refresh.
+      if (task && !task.damaged && !task.conflict && task.status !== step) this.h.onMove(task, step);
+    };
+  }
+
+  private card(t: Task, state: BoardState, caps: ProviderCapabilities) {
+    const status = derivedStatus(t, state.links, caps.board);
+    const box = el("div", `tk-card ${status}`);
+    if (t.damaged) box.classList.add("damaged");
+
+    // The same condition card-modal.ts's `canWrite` applies to the whole
+    // modal, and `▶`/`✓` apply below: a damaged card's fields may be
+    // unreadable and a conflicting card's file is ambiguous, so a step write
+    // is refused server-side either way (see fs.rs's update guards). Offering
+    // a control that can only ever error is worse than not offering it.
+    const canWrite = !t.damaged && !t.conflict;
+
+    // Native drag needs the id on the wire, and a visual cue while it's in
+    // flight; `dragend` fires whether the drop was accepted or not, so it is
+    // the one place to take `tk-dragging` back off.
+    box.draggable = canWrite;
+    box.ondragstart = (e) => {
+      e.dataTransfer?.setData("text/plain", t.id);
+      // Paired with `makeDropTarget`'s `dropEffect` above: same reason, same badge.
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      box.classList.add("tk-dragging");
+    };
+    box.ondragend = () => box.classList.remove("tk-dragging");
+
+    // The grid child Task 6 placed, not a child of it: `.tk-card-title` carries
+    // `grid-row: 1` and the two-line clamp, so it becomes the button itself —
+    // wrapping a button inside it would put the clamp on the div and the click
+    // target on something else.
+    const openBtn = el("button", "tk-card-title tk-card-open", t.title);
+    openBtn.type = "button";
+    openBtn.setAttribute("aria-label", `Open card: ${t.title}`);
+    openBtn.onclick = () => this.h.onOpen(t);
+    box.append(openBtn);
+
+    const meta = el("div", "tk-meta");
+    const kind = kindLabel(caps.board, t.kind);
+    if (kind) meta.append(el("span", "tk-kind", kind));
+    if (t.origin === "session") meta.append(el("span", "tk-bot", "session"));
+    if (status === "working") meta.append(el("span", "tk-busy", "in progress"));
+    if (t.damaged || t.conflict) {
+      const reasons: string[] = [];
+      if (t.damaged) reasons.push(`damaged: ${t.damaged} · id ${t.id} · ${t.path}`);
+      // Names the path too: a conflict is resolved by hand, in a file the
+      // person has to be able to find.
+      if (t.conflict) reasons.push(`more than one file carries id ${t.id} — fix it by hand · ${t.path}`);
+      const warn = el("span", "tk-warn-glyph", "⚠");
+      const message = reasons.join(" — ");
+      warn.title = message;
+      warn.setAttribute("aria-label", message);
+      // An aria-label on a bare span is not reliably announced; role="img"
+      // makes it so. A damaged card's only remaining signal is this glyph.
+      warn.setAttribute("role", "img");
+      meta.append(warn);
+    }
+    if (isStale(t, state.links, caps.board)) {
+      const stale = el("span", "tk-stale", "no live session");
+      stale.title = "This card sits in the working step, but no session is running on it.";
+      meta.append(stale);
+    }
+    box.append(meta);
+
+    const acts = el("div", "tk-acts");
+    // The keyboard equivalent of a drag, and not a fallback for it: xterm eats
+    // Tab inside a tile, and every other action here already carries an
+    // aria-label. `null` (first step, last step, or a step board.json does not
+    // know) means no neighbour, so the arrow is simply not rendered — no
+    // separate check for the unknown step, `stepBefore`/`stepAfter` already
+    // say "no neighbour" for it. Withheld from a damaged or conflicting card
+    // for the same reason `draggable` is above: the write would only ever be
+    // refused.
+    const prevStep = stepBefore(caps.board, t.status);
+    if (prevStep !== null && canWrite) {
+      const prev = el("button", "tk-prev", "‹");
+      prev.title = "Move to the previous step";
+      prev.setAttribute("aria-label", "Move to the previous step");
+      prev.onclick = () => this.h.onMove(t, prevStep);
+      acts.append(prev);
+    }
+    // ▶ is hidden while the card reads as "in progress" (a working/waitingInput
+    // session). An idle session still linked to the card slips through here —
+    // that's fine: the launch guard in Deck.launchFromTask catches it and
+    // focuses the existing session instead of starting a second one.
+    // A damaged card's `project:` may be missing or wrong (that can be *why*
+    // it's damaged), so launching from it either fails or lands in the wrong
+    // workspace — hide ▶ the same way ✓ is hidden below.
+    if (status === "open" && !t.damaged) {
+      const run = el("button", "tk-run", "▶");
+      run.title = "Start a session from this task";
+      run.setAttribute("aria-label", "Start a session from this task");
+      run.onclick = () => this.h.onLaunch(t);
+      acts.append(run);
+    }
+    // A conflicting card is never closed automatically: we will not guess which
+    // of two files to write into. A damaged card is never closed either: it may
+    // be an ordinary Obsidian note that merely has an `id:` field, and
+    // resolving it would rewrite a file we do not own (see fs.rs::resolve).
+    // Already in a terminal step: there is nothing for ✓ to do. Asked of the
+    // configuration, because which steps those are is board.json's decision.
+    if (caps.canResolve && !isTerminal(caps.board, t.status) && !t.conflict && !t.damaged) {
+      const done = el("button", "tk-done", "✓");
+      done.title = "Close this task";
+      done.setAttribute("aria-label", "Close this task");
+      done.onclick = () => this.h.onResolve(t);
+      acts.append(done);
+    }
+    const nextStep = stepAfter(caps.board, t.status);
+    if (nextStep !== null && canWrite) {
+      const next = el("button", "tk-next", "›");
+      next.title = "Move to the next step";
+      next.setAttribute("aria-label", "Move to the next step");
+      next.onclick = () => this.h.onMove(t, nextStep);
+      acts.append(next);
+    }
+    // Always present, even empty: this is what makes the fixed card height
+    // (styles.css .tk-card) hold — the meta and action rows sit at the same
+    // offset whatever the card's own content.
+    box.append(acts);
+    return box;
+  }
+}

@@ -3,7 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/api/event");
 
-import { listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck } from "../src/ipc";
+import {
+  listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck, updateTask,
+  boardConfigSave, boardStepRewrite, boardStepUsage,
+} from "../src/ipc";
+import type { BoardConfig } from "../src/ipc";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -21,19 +25,19 @@ describe("ipc", () => {
 
   it("startSession passes all params incl. resume", async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
-    await startSession("s1", "/proj", "do the thing", 80, 24, false);
+    await startSession("s1", "/proj", "w1", "do the thing", "01AAA", 80, 24, false);
     expect(invoke).toHaveBeenCalledWith("start_session", {
-      session: "s1", cwd: "/proj", initialPrompt: "do the thing", cols: 80, rows: 24, resume: false,
-      workspaceId: null,
+      session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing",
+      taskId: "01AAA", cols: 80, rows: 24, resume: false,
     });
   });
 
   it("startSession forwards the workspace id so the backend can resolve its account", async () => {
     vi.mocked(invoke).mockResolvedValue({ account: "followLemmi", degraded: null });
-    const auth = await startSession("s1", "/proj", null, 80, 24, false, "w1");
+    const auth = await startSession("s1", "/proj", "w1", null, null, 80, 24, false);
     expect(invoke).toHaveBeenCalledWith("start_session", {
-      session: "s1", cwd: "/proj", initialPrompt: null, cols: 80, rows: 24, resume: false,
-      workspaceId: "w1",
+      session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: null,
+      taskId: null, cols: 80, rows: 24, resume: false,
     });
     expect(auth).toEqual({ account: "followLemmi", degraded: null });
   });
@@ -57,6 +61,43 @@ describe("ipc", () => {
     expect(invoke).toHaveBeenCalledWith("schedule_ack", {
       skillId: "s1", occurrenceMs: 1_700_000_000_000, outcome: "no-workspace",
     });
+  });
+
+  it("updateTask sends only the fields named in the patch", async () => {
+    vi.mocked(invoke).mockResolvedValue({});
+    await updateTask("w1", "01K1", { title: "Renamed" });
+    expect(invoke).toHaveBeenCalledWith("tasks_update", {
+      workspaceId: "w1", id: "01K1", patch: { title: "Renamed" },
+    });
+  });
+
+  it("boardConfigSave sends the workspace and the draft configuration", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    const cfg: BoardConfig = {
+      v: 1, steps: [{ id: "todo", label: "To do", terminal: true }], kinds: [{ id: "bug", label: "Bug" }],
+    };
+    await boardConfigSave("w1", cfg);
+    expect(invoke).toHaveBeenCalledWith("board_config_save", { workspaceId: "w1", config: cfg });
+  });
+
+  // The fourth argument matters: task 9a's rewrite_step validates `to` against
+  // this draft configuration, not the one still on disk, since a rename's
+  // target id is not written until after the rewrite runs.
+  it("boardStepRewrite sends the draft config alongside from/to", async () => {
+    vi.mocked(invoke).mockResolvedValue({ rewritten: 2, skipped: [] });
+    const cfg: BoardConfig = {
+      v: 1, steps: [{ id: "todo", label: "To do", terminal: true }], kinds: [{ id: "bug", label: "Bug" }],
+    };
+    const res = await boardStepRewrite("w1", "todo", "doing", cfg);
+    expect(invoke).toHaveBeenCalledWith("board_step_rewrite", { workspaceId: "w1", from: "todo", to: "doing", config: cfg });
+    expect(res.rewritten).toBe(2);
+  });
+
+  it("boardStepUsage calls the right command", async () => {
+    vi.mocked(invoke).mockResolvedValue([{ step: "todo", count: 3 }]);
+    const res = await boardStepUsage("w1");
+    expect(invoke).toHaveBeenCalledWith("board_step_usage", { workspaceId: "w1" });
+    expect(res[0].count).toBe(3);
   });
 
   it("decodeB64 round-trips utf8", () => {

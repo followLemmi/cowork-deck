@@ -1,0 +1,1692 @@
+//! IPC surface of the tracker. Resolves a workspace id to a provider and keeps
+//! every path/config decision on this side, so the frontend never learns that
+//! cards are files.
+use crate::commands::AppState;
+use crate::model::{
+    PreviousLocation, TrackerProvider, TrackerRoot, Workspace, TRACKER_CONFIG_VERSION,
+};
+use crate::tasks::frontmatter::slugify;
+use crate::tasks::fs::{FsTaskProvider, RootCreation};
+use crate::tasks::migrate::{apply, plan, MigrationPlan, MigrationReport};
+use crate::tasks::board::{BoardConfig, KindId, StepId};
+use crate::tasks::model::{Task, TaskDraft, TaskOrigin};
+use crate::tasks::provider::{ProviderCapabilities, TaskPatch, TaskProvider};
+use serde::Deserialize;
+use std::path::PathBuf;
+use tauri::State;
+
+/// What the frontend is allowed to supply when creating a card. Deliberately
+/// narrower than `tasks::model::TaskDraft`: `project` is always this
+/// workspace's name (the caller does not get to pick it), and `origin`/
+/// `session` are set by the backend to `Human`/`None` — every card created
+/// through IPC is human-created by definition, so this type has no field
+/// through which a caller could claim otherwise. `deny_unknown_fields` turns
+/// an attempt to smuggle e.g. `"origin":"session"` into a hard deserialize
+/// error instead of a silently ignored key.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskDraftInput {
+    pub title: String,
+    pub kind: KindId,
+    pub body: String,
+}
+
+/// The one folder cowork-deck creates inside a picked tracker path. Every
+/// project's cards live in a subfolder of it, so pointing three workspaces at
+/// one vault grows one directory there instead of three interleaved with
+/// whatever the person keeps in it.
+pub const TRACKER_CONTAINER: &str = "cowork-deck-tasks";
+
+/// Where the cards go inside the folder the human picked, and the folder that
+/// has to exist for the rest of it to be ours.
+struct RootLayout {
+    /// The effective root: where the cards live.
+    root: PathBuf,
+    /// An ancestor of `root` that must already exist. Everything below it is
+    /// ours to create, so it is what a typo'd path is caught by.
+    base: PathBuf,
+}
+
+/// Where the cards go inside the folder the human picked.
+///
+/// Returns the base as well as the root because they are one decision: which
+/// recognition case applies fixes both, and the root is only *below* the picked
+/// folder in the ordinary case. Whenever the pick is already part of our layout
+/// the base is the container, since that is the ancestor the root actually
+/// hangs off — pairing the root with the picked folder instead made the
+/// creation of a sibling depend on a folder with no authority over it.
+///
+/// Recognition is name-based on purpose. `resolve_root` runs on every list,
+/// count and watcher sync, and asking the filesystem "does this folder look
+/// like one of ours" would make all of them depend on a directory read that can
+/// fail. A folder the person happens to have named `cowork-deck-tasks` is
+/// treated as ours, which is the answer we would want anyway.
+fn append_layout(picked: &std::path::Path, slug: &str) -> RootLayout {
+    // Already a project folder inside our container: the root is this project's
+    // folder beside it, and the container is the base. Keyed on the *parent*
+    // rather than on the leaf matching the slug, because the slug follows the
+    // workspace name and the name can be renamed. Matching the leaf would
+    // resolve a renamed workspace to `<container>/<old>/<container>/<new>` — a
+    // container nested inside a project folder, the exact doubling this layout
+    // exists to prevent. It subsumes the leaf rule: when the leaf already is
+    // the slug, `parent.join(slug)` is the picked folder itself.
+    if let Some(parent) = picked.parent() {
+        if parent.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
+            return RootLayout { root: parent.join(slug), base: parent.to_path_buf() };
+        }
+    }
+    // Already the container: only the project folder is missing.
+    if picked.file_name().and_then(|s| s.to_str()) == Some(TRACKER_CONTAINER) {
+        return RootLayout { root: picked.join(slug), base: picked.to_path_buf() };
+    }
+    RootLayout {
+        root: picked.join(TRACKER_CONTAINER).join(slug),
+        base: picked.to_path_buf(),
+    }
+}
+
+/// What the workspace form shows under the folder picker.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackerRootPreview {
+    /// The resolved effective root, in full: the person picked the folder and
+    /// needs to recognise where the cards will land.
+    pub root: String,
+    /// Single folder names, outermost first, that do not exist yet — never full
+    /// paths. Empty when `base_missing`, because then nothing is created.
+    pub creating: Vec<String>,
+    /// The folder the root would be created inside is absent — the picked folder
+    /// itself, or the container it already sits in — so nothing will be created.
+    /// Either way the picked folder is gone too, which is what the form says.
+    pub base_missing: bool,
+}
+
+/// Describe what configuring `picked_path` for a workspace called
+/// `workspace_name` would resolve to, and which folders that would create.
+///
+/// Shares `append_layout` and `slugify` with `resolve_root` rather than
+/// recomputing them. Two implementations of the layout would agree on the day
+/// they were written and disagree after the next change to either — and one of
+/// them would be in a language that cannot call the other.
+pub fn root_preview(workspace_name: &str, picked_path: &str) -> TrackerRootPreview {
+    let layout = append_layout(std::path::Path::new(picked_path), &slugify(workspace_name));
+    let root_str = layout.root.to_string_lossy().to_string();
+
+    if !layout.base.is_dir() {
+        return TrackerRootPreview { root: root_str, creating: Vec::new(), base_missing: true };
+    }
+
+    // Every absent folder on the way to the root, innermost first while walking
+    // up and reversed at the end. Not a walk down from the picked folder:
+    // recognising the container by its parent means the root can be a *sibling*
+    // of the pick (a renamed workspace), and a downward walk would then describe
+    // nothing at all. Climbing stops at the first directory that exists, and the
+    // base is both an ancestor of the root and known to exist here, so the walk
+    // stops at the base at the latest and never names it or anything above it.
+    let mut creating = Vec::new();
+    let mut walk: &std::path::Path = &layout.root;
+    while !walk.is_dir() {
+        match (walk.file_name(), walk.parent()) {
+            (Some(name), Some(parent)) => {
+                creating.push(name.to_string_lossy().to_string());
+                walk = parent;
+            }
+            _ => break,
+        }
+    }
+    creating.reverse();
+    TrackerRootPreview { root: root_str, creating, base_missing: false }
+}
+
+/// `async` because it stats the filesystem on every keystroke in the form, and
+/// the picked path can be an unmounted network volume where a single `is_dir`
+/// blocks for seconds. On the main thread that would freeze the modal mid-typing;
+/// on the thread pool a slow answer is only a late one, and the frontend's token
+/// guard already discards replies that arrive out of order. Safe to move off the
+/// main thread because the body touches no `AppState` and returns owned data.
+#[tauri::command(async)]
+pub fn tracker_root_preview(workspace_name: String, picked_path: String) -> TrackerRootPreview {
+    root_preview(&workspace_name, &picked_path)
+}
+
+/// The provider root for a workspace, plus how much of it we may create.
+/// `None` means "no tracker configured" — a legal, non-error state.
+pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
+    let cfg = ws.tracker.as_ref()?;
+    let first = cfg.providers.first()?;
+    match first {
+        TrackerProvider::Fs { root: TrackerRoot::Project } => Some((
+            PathBuf::from(&ws.path).join(".cowork").join("tasks"),
+            RootCreation::Always,
+        )),
+        TrackerProvider::Fs { root: TrackerRoot::Path { path } } => {
+            // Slugified, not joined verbatim: a workspace name is free text,
+            // and `join("../..")` would put the cards outside the picked
+            // folder entirely. `slugify` yields exactly one component and never
+            // returns empty.
+            //
+            // The base comes from the same call as the root, so the two cannot
+            // disagree about which folder the root hangs off.
+            let layout = append_layout(std::path::Path::new(path), &slugify(&ws.name));
+            Some((layout.root, RootCreation::InsideExisting { base: layout.base }))
+        }
+    }
+}
+
+/// Create as much of `root` as `creation` allows. An `InsideExisting` root whose
+/// base is missing is left alone here rather than reported:
+/// `FsTaskProvider::ensure_root` surfaces the same `RootMissing` loudly the
+/// moment a card is actually read or written, and this function's callers
+/// (`tasks_watch_sync`, `start_session`) are best-effort by design.
+pub fn ensure_root_if_ours(
+    root: &std::path::Path,
+    creation: &RootCreation,
+) -> std::io::Result<()> {
+    // `RootCreation::may_create` is the single statement of the policy; this
+    // function is only the silent half of the reaction to it.
+    if root.is_dir() || !creation.may_create() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(root)
+}
+
+/// A workspace's effective root as a string, or `None` with no tracker.
+fn effective_root(ws: &Workspace) -> Option<String> {
+    resolve_root(ws).map(|(root, _)| root.to_string_lossy().to_string())
+}
+
+/// Whether this workspace's cards live in the in-project root, where every card
+/// is ours by construction.
+fn is_project_root(ws: &Workspace) -> bool {
+    matches!(
+        ws.tracker.as_ref().and_then(|c| c.providers.first()),
+        Some(TrackerProvider::Fs { root: TrackerRoot::Project })
+    )
+}
+
+/// Stamp the config version and, when saving `new` moves the effective root,
+/// record where the cards were so the board can offer to bring them along.
+///
+/// Pure: no filesystem and no store access. Whether any cards are actually at
+/// the old root is the banner's question — asking it here would make saving a
+/// workspace depend on a directory read that can fail.
+pub fn with_previous_location(old: Option<&Workspace>, mut new: Workspace) -> Workspace {
+    if let Some(cfg) = new.tracker.as_mut() {
+        cfg.version = TRACKER_CONFIG_VERSION;
+    }
+
+    // Creating a workspace: there is no old root, and seeding one from a
+    // freshly picked folder would offer to move cards nobody has filed yet.
+    let Some(old) = old else { return new };
+
+    // Turning the tracker off: nowhere to move cards to, so nothing to record.
+    let Some(new_root) = effective_root(&new) else { return new };
+
+    // An un-acted-on pointer wins over the old effective root. A seeded v1
+    // config, or an earlier move nobody confirmed, still names where the cards
+    // physically are; nothing was ever written to a root that was configured
+    // and then left behind.
+    let previous = match old.tracker.as_ref().and_then(|c| c.previous_location.clone()) {
+        Some(pending) => pending,
+        None => match effective_root(old) {
+            Some(root) => PreviousLocation {
+                root,
+                project: old.name.clone(),
+                was_project_root: is_project_root(old),
+            },
+            None => return new,
+        },
+    };
+
+    // Configured back to where the cards already are: nothing to migrate.
+    if previous.root == new_root {
+        return new;
+    }
+    if let Some(cfg) = new.tracker.as_mut() {
+        cfg.previous_location = Some(previous);
+    }
+    new
+}
+
+/// An older config resolved a picked path to a different folder than this
+/// version does, so its cards are not where the board is about to look. Seed
+/// that folder as the previous location, or updating the app would empty the
+/// board with no explanation.
+pub fn seed_previous_location(mut ws: Workspace) -> Workspace {
+    let name = ws.name.clone();
+    // Computed before the mutable borrow below, and needed for the guard at the
+    // end: some picks resolve to the same folder under both layouts.
+    let current_root = effective_root(&ws);
+    let Some(cfg) = ws.tracker.as_mut() else { return ws };
+    if cfg.version >= TRACKER_CONFIG_VERSION || cfg.previous_location.is_some() {
+        return ws;
+    }
+    let picked = match cfg.providers.first() {
+        Some(TrackerProvider::Fs { root: TrackerRoot::Path { path } }) => PathBuf::from(path),
+        // A project root never moved: `<ws.path>/.cowork/tasks` is what every
+        // version resolved to.
+        _ => return ws,
+    };
+    // Where that version's resolution actually put the files.
+    let was = if cfg.version <= 1 {
+        // Version 1 used the picked folder verbatim.
+        picked
+    } else {
+        // Version 2 appended the project folder and nothing else.
+        picked.join(slugify(&name))
+    };
+    let was = was.to_string_lossy().to_string();
+    // Picking the container itself resolves to the same folder under both
+    // layouts. Seeding here would offer to move cards from a folder into
+    // itself, and the banner could never be satisfied.
+    if current_root.as_deref() == Some(was.as_str()) {
+        return ws;
+    }
+    cfg.previous_location = Some(PreviousLocation {
+        root: was,
+        project: name,
+        was_project_root: false,
+    });
+    ws
+}
+
+/// Workspaces as the tracker sees them: a config written before
+/// `TRACKER_CONFIG_VERSION` gets its previous location seeded. Normalizing here
+/// rather than in `Store` keeps storage free of tracker semantics — and the
+/// seed needs `ws.name`, which is not on `TrackerConfig` at all.
+fn tracker_workspaces(state: &State<AppState>) -> Result<Vec<Workspace>, String> {
+    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    Ok(store.workspaces().into_iter().map(seed_previous_location).collect())
+}
+
+fn workspace(state: &State<AppState>, id: &str) -> Result<Workspace, String> {
+    tracker_workspaces(state)?
+        .into_iter()
+        .find(|w| w.id == id)
+        .ok_or_else(|| format!("workspace not found: {id}"))
+}
+
+fn provider_for(ws: &Workspace) -> Result<FsTaskProvider, String> {
+    let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
+    Ok(FsTaskProvider::new(root, creation))
+}
+
+/// Capabilities plus the board configuration, flattened into one object: the
+/// board, the card modal and the ⚙ editor all read the same thing, so there is
+/// no second channel to fall out of step with the first.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardCapabilities {
+    #[serde(flatten)]
+    pub caps: ProviderCapabilities,
+    pub board: BoardConfig,
+    /// Why `board.json` could not be used, when it could not. The board draws
+    /// either way; the person has to be told which they are looking at.
+    pub board_error: Option<String>,
+}
+
+#[tauri::command]
+pub fn tasks_capabilities(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<Option<BoardCapabilities>, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    // `None` still means "no tracker configured for this workspace" and nothing
+    // else — a configured root that cannot be read yields real capabilities plus
+    // an error from `tasks_list`. The board treats the two differently.
+    match provider_for(&ws) {
+        Ok(p) => Ok(Some(BoardCapabilities {
+            caps: p.capabilities(),
+            board: p.board().clone(),
+            board_error: p.board_error().map(str::to_string),
+        })),
+        Err(_) => Ok(None),
+    }
+}
+
+#[tauri::command]
+pub fn tasks_list(state: State<AppState>, workspace_id: String) -> Result<Vec<Task>, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    let p = provider_for(&ws)?;
+    p.list(&ws.name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn tasks_create(
+    state: State<AppState>,
+    workspace_id: String,
+    draft: TaskDraftInput,
+) -> Result<Task, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    let p = provider_for(&ws)?;
+    // project/origin/session are never taken from the caller: project is
+    // always this workspace's name, and every card created through IPC is
+    // human-created by definition (the `cowork_task` CLI is the only path
+    // that produces `origin: Session`, and it writes files directly).
+    let draft = TaskDraft {
+        title: draft.title,
+        kind: draft.kind,
+        body: draft.body,
+        project: ws.name.clone(),
+        origin: TaskOrigin::Human,
+        session: None,
+    };
+    p.create(draft).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn tasks_resolve(
+    state: State<AppState>,
+    workspace_id: String,
+    id: String,
+) -> Result<Task, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    let p = provider_for(&ws)?;
+    p.resolve(&id).map_err(|e| e.to_string())
+}
+
+/// One command for four callers: the card modal's Save, a drag-and-drop, the
+/// `‹`/`›` arrows, and `cowork_task status` all write only the fields the
+/// caller names — see `TaskPatch`'s doc comment for why every field is
+/// optional.
+#[tauri::command]
+pub fn tasks_update(
+    state: State<AppState>,
+    workspace_id: String,
+    id: String,
+    patch: TaskPatch,
+) -> Result<Task, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    let p = provider_for(&ws)?;
+    p.update(&id, patch).map_err(|e| e.to_string())
+}
+
+/// Open-card count per workspace id, for the sidebar badges. One call instead of
+/// one per workspace, and a workspace whose root is broken contributes 0 rather
+/// than failing the whole map.
+#[tauri::command]
+pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::HashMap<String, usize>, String> {
+    let all = tracker_workspaces(&state)?;
+    let mut out = std::collections::HashMap::new();
+    for ws in all {
+        let Ok(p) = provider_for(&ws) else { continue };
+        let n = match p.list(&ws.name) {
+            Ok(cards) => cards
+                .iter()
+                // "Open" is "not closed": which steps count as closed is
+                // board.json's business, and a board with `backlog`/`todo`/
+                // `doing` has three of them.
+                .filter(|c| !p.board().is_terminal(&c.status))
+                .count(),
+            Err(_) => continue,
+        };
+        out.insert(ws.id.clone(), n);
+    }
+    Ok(out)
+}
+
+/// Point the watcher set at every configured tracker root. Called by the
+/// frontend at boot and after any workspace change, because a root can appear,
+/// move, or disappear at runtime.
+#[tauri::command]
+pub fn tasks_watch_sync(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
+    let all = tracker_workspaces(&state)?;
+    let wanted: Vec<(String, PathBuf)> = all
+        .iter()
+        .filter_map(|ws| {
+            let (root, creation) = resolve_root(ws)?;
+            // Best-effort: a create failure here does not stop the sync for
+            // other workspaces. `FsTaskProvider::ensure_root` surfaces the
+            // same failure loudly the moment a card is actually read/written.
+            let _ = ensure_root_if_ours(&root, &creation);
+            Some((ws.id.clone(), root))
+        })
+        .collect();
+
+    let handle = app.clone();
+    state.watchers.sync(&wanted, move |workspace_id| {
+        use tauri::Emitter;
+        let _ = handle.emit("tasks://changed", TasksChanged { workspace_id });
+    });
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TasksChanged {
+    workspace_id: String,
+}
+
+/// What the board needs to describe a pending move.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationOffer {
+    /// Both paths in full: the person picked them and needs to recognise them.
+    pub from: String,
+    pub to: String,
+    pub moving: usize,
+    pub leaving_foreign: usize,
+    pub leaving_damaged: usize,
+    /// Whether `project:` inside the moved cards will be rewritten, which is
+    /// true exactly when the workspace has been renamed since the cards were
+    /// written.
+    pub renaming_project: bool,
+}
+
+/// Read the old root and describe what a move would do, or `None` when there is
+/// nothing to offer.
+///
+/// `None` covers three different situations, and only one of them means the
+/// pointer can be forgotten — see `clear_previous_location`'s caller.
+pub fn offer_for(ws: &Workspace) -> Result<Option<(MigrationOffer, MigrationPlan)>, String> {
+    let Some(previous) = ws.tracker.as_ref().and_then(|c| c.previous_location.clone()) else {
+        return Ok(None);
+    };
+    let Some((to, _)) = resolve_root(ws) else { return Ok(None) };
+    let from = PathBuf::from(&previous.root);
+
+    // A missing old root is an unmounted volume as often as a deleted folder,
+    // so it is not an error and not a resolved migration either: no offer now,
+    // and the caller leaves the pointer alone so the banner returns with the
+    // volume.
+    if !from.is_dir() {
+        return Ok(None);
+    }
+
+    // `Never`: reading the old root must not create it, least of all when it is
+    // a mount point that happens to be empty right now.
+    let old = FsTaskProvider::new(from.clone(), RootCreation::Never);
+    let cards = old.scan().map_err(|e| e.to_string())?;
+    let p = plan(&cards, &previous.project, previous.was_project_root);
+    if p.moves.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some((
+        MigrationOffer {
+            from: previous.root.clone(),
+            to: to.to_string_lossy().to_string(),
+            moving: p.moves.len(),
+            leaving_foreign: p.left_foreign,
+            leaving_damaged: p.left_damaged,
+            renaming_project: previous.project != ws.name,
+        },
+        p,
+    )))
+}
+
+/// Forget where the cards were. Stamps the version too, or the next read would
+/// re-seed a version 1 config and the banner would come back.
+fn clear_previous_location(state: &State<AppState>, workspace_id: &str) -> Result<(), String> {
+    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    let mut all = store.workspaces();
+    let Some(w) = all.iter_mut().find(|w| w.id == workspace_id) else {
+        return Ok(());
+    };
+    if let Some(cfg) = w.tracker.as_mut() {
+        cfg.previous_location = None;
+        cfg.version = TRACKER_CONFIG_VERSION;
+    }
+    store.save_workspaces(&all).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn tasks_migration_status(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<Option<MigrationOffer>, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    let Some((offer, _)) = offer_for(&ws)? else {
+        // Nothing of ours is at the old root any more, so the pointer has done
+        // its job — but only when the folder is actually readable. A missing
+        // root keeps its pointer: see `offer_for`.
+        let has_pointer = ws
+            .tracker
+            .as_ref()
+            .and_then(|c| c.previous_location.as_ref())
+            .map(|p| PathBuf::from(&p.root).is_dir())
+            .unwrap_or(false);
+        if has_pointer {
+            clear_previous_location(&state, &workspace_id)?;
+        }
+        return Ok(None);
+    };
+    Ok(Some(offer))
+}
+
+#[tauri::command]
+pub fn tasks_migrate(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<MigrationReport, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    let (root, creation) = resolve_root(&ws).ok_or_else(|| "not-configured".to_string())?;
+
+    // Before planning anything: moving some cards and then discovering there is
+    // nowhere to put the rest is worse than refusing up front.
+    ensure_root_if_ours(&root, &creation).map_err(|e| e.to_string())?;
+    if !root.is_dir() {
+        return Err(crate::tasks::model::TaskError::RootMissing(
+            root.to_string_lossy().to_string(),
+        )
+        .to_string());
+    }
+
+    let Some((_, p)) = offer_for(&ws)? else {
+        return Ok(MigrationReport::default());
+    };
+    let previous_project = ws
+        .tracker
+        .as_ref()
+        .and_then(|c| c.previous_location.as_ref())
+        .map(|prev| prev.project.clone())
+        .unwrap_or_default();
+    let rename = (previous_project != ws.name).then_some(ws.name.as_str());
+
+    let report = apply(&p, &root, rename);
+    if report.is_complete() {
+        clear_previous_location(&state, &workspace_id)?;
+    }
+    Ok(report)
+}
+
+#[tauri::command]
+pub fn tasks_migration_dismiss(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<(), String> {
+    clear_previous_location(&state, &workspace_id)
+}
+
+/// What a step rename or removal leaves behind: how many cards moved, and which
+/// ones could not be. A card is never guessed at silently — the person who
+/// asked for the rewrite has to see exactly what happened.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteReport {
+    pub rewritten: usize,
+    pub skipped: Vec<RewriteSkip>,
+}
+
+/// A card that could not be moved, and why: the file name so a person knows
+/// which file to open, and the underlying error's own words rather than a
+/// generic "failed".
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteSkip {
+    pub file_name: String,
+    pub reason: String,
+}
+
+/// How many of this project's cards currently sit in one step.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepUsage {
+    pub step: StepId,
+    pub count: usize,
+}
+
+/// Whether a scanned card belongs to this project for the ⚙ editor's purposes.
+/// Same rule as `FsTaskProvider::list`: a damaged card may be ours with its
+/// `project` field missing entirely, and excluding it here would make it
+/// disappear from the report instead of being counted or flagged.
+fn is_ours(card: &Task, workspace_name: &str) -> bool {
+    card.damaged.is_some() || card.project == workspace_name
+}
+
+/// The board to validate a rewrite against: the draft the editor is about to
+/// save, plus the `from` step exactly as the on-disk configuration still
+/// defines it, when the draft no longer lists it.
+///
+/// `from` is, by the nature of a rename or removal, usually absent from the
+/// draft — that is the id being renamed or retired. But `update` asks the
+/// board two different questions for one status patch: whether `to` is a
+/// legal id to write (correctly the draft — see `rewrite_step`'s docstring),
+/// and whether the card's *old* step was terminal, to decide whether
+/// `resolved` should stamp, clear, or stay put. A board built from the draft
+/// alone answers the second question wrong for every card: an id guaranteed
+/// missing from it is never terminal, whatever it actually was, so a rename
+/// out of a terminal step always looked non-terminal and restamped or failed
+/// to clear regardless of the real transition. Unioning the on-disk
+/// definition of `from` back in — its `terminal` flag, not the draft's
+/// absence of one — answers both questions from the right configuration. If
+/// the on-disk board does not list `from` either (a step already retired, or
+/// the unknown-step column), `false` is then the correct answer and falls out
+/// naturally: there is nothing to union in.
+fn board_for_rewrite(root: &std::path::Path, from: &StepId, draft: &BoardConfig) -> BoardConfig {
+    if draft.has_step(from) {
+        return draft.clone();
+    }
+    let mut board = draft.clone();
+    if let Some(step) = crate::tasks::board::load_or_create(root)
+        .config
+        .steps
+        .into_iter()
+        .find(|s| &s.id == from)
+    {
+        board.steps.push(step);
+    }
+    board
+}
+
+/// Move every one of this project's cards sitting in `from` to `to`. Called
+/// when the ⚙ editor renames or removes a step: the cards already there have
+/// to move with the configuration, or they would silently fall into the
+/// unknown-step column that used to be their real column.
+///
+/// Takes `config` — the draft the editor is about to save, not whatever
+/// `board.json` currently holds — and builds its provider on `config` plus
+/// `from`'s on-disk definition when the draft has dropped it (see
+/// `board_for_rewrite`). Rewrites run *before* the save, so a rename's target
+/// id is never yet in the on-disk file; validating `to` against it would
+/// refuse every card with "no step named `to` in board.json" and still let the
+/// save through, parking every one of them on a step the saved configuration
+/// no longer lists — exactly the unknown-step column this function exists to
+/// prevent.
+///
+/// A card that cannot be safely rewritten — damaged, or its id conflicts with
+/// another file — is skipped and reported rather than written; `update` already
+/// refuses both; the refusal is not duplicated here, only reported. Every
+/// `skipped` entry therefore means that file's bytes are unchanged: `update`
+/// either refuses before touching the file or fails inside `write_atomic`,
+/// which never leaves a partial write behind. A rewrite that moves some cards
+/// and skips others is consequently a supported, ordinary outcome — not a
+/// bug — and the caller can see by name exactly which files still need
+/// attention.
+fn rewrite_step(
+    ws: &Workspace,
+    from: &StepId,
+    to: &StepId,
+    config: &BoardConfig,
+) -> Result<RewriteReport, String> {
+    let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
+    let board = board_for_rewrite(&root, from, config);
+    let p = FsTaskProvider::with_board(root, creation, board);
+    let cards = p.scan().map_err(|e| e.to_string())?;
+    let mut rewritten = 0;
+    let mut skipped = Vec::new();
+    for card in cards {
+        if !is_ours(&card, &ws.name) || card.status != *from {
+            continue;
+        }
+        let file_name = crate::tasks::frontmatter::file_name(&card.path);
+        match p.update(&card.id, TaskPatch { status: Some(to.clone()), ..Default::default() }) {
+            Ok(_) => rewritten += 1,
+            Err(e) => skipped.push(RewriteSkip { file_name, reason: e.to_string() }),
+        }
+    }
+    Ok(RewriteReport { rewritten, skipped })
+}
+
+/// How many of this project's cards sit in each step, including a step the
+/// configuration no longer lists — the editor needs to know a step is occupied
+/// precisely when it is about to disappear.
+///
+/// Returned in the configuration's own step order, with any step it no longer
+/// lists trailing in scan order, rather than `HashMap` order — the value
+/// crossing IPC should not depend on hashing run to run. A card with no
+/// `status:` field at all (damaged) parses to an empty step id, which matches
+/// no row the editor can show, so it is dropped rather than counted.
+fn step_usage(ws: &Workspace) -> Result<Vec<StepUsage>, String> {
+    let p = provider_for(ws)?;
+    let cards = p.scan().map_err(|e| e.to_string())?;
+
+    let mut counts: Vec<(StepId, usize)> = Vec::new();
+    for card in cards {
+        if !is_ours(&card, &ws.name) || card.status.as_str().is_empty() {
+            continue;
+        }
+        match counts.iter_mut().find(|(id, _)| *id == card.status) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((card.status.clone(), 1)),
+        }
+    }
+
+    let mut ordered: Vec<StepUsage> = Vec::new();
+    for id in p.board().step_ids() {
+        if let Some(pos) = counts.iter().position(|(s, _)| s.as_str() == id) {
+            let (step, count) = counts.remove(pos);
+            ordered.push(StepUsage { step, count });
+        }
+    }
+    // Whatever is left names a step the configuration no longer lists; kept in
+    // scan order rather than dropped, since occupancy there is the whole point.
+    ordered.extend(counts.into_iter().map(|(step, count)| StepUsage { step, count }));
+    Ok(ordered)
+}
+
+/// Save a new board configuration, refusing one that would leave `board.json`
+/// invalid or would silently replace one the program could not read. Both
+/// checks run before anything touches the filesystem, so neither an invalid
+/// configuration nor a hand-written file with a typo in it is ever lost — the
+/// same guarantee `load_or_create` already gives the read side.
+fn save_config(ws: &Workspace, config: BoardConfig) -> Result<(), String> {
+    config.validate().map_err(|e| e.to_string())?;
+    let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
+    let existing = FsTaskProvider::new(root.clone(), creation);
+    if let Some(err) = existing.board_error() {
+        return Err(format!(
+            "{} could not be read and must be fixed by hand before it can be replaced: {err}",
+            crate::tasks::board::BOARD_FILE
+        ));
+    }
+    crate::tasks::board::save(&root, &config).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn board_config_save(
+    state: State<AppState>,
+    workspace_id: String,
+    config: BoardConfig,
+) -> Result<(), String> {
+    let ws = workspace(&state, &workspace_id)?;
+    save_config(&ws, config)
+}
+
+#[tauri::command]
+pub fn board_step_rewrite(
+    state: State<AppState>,
+    workspace_id: String,
+    from: StepId,
+    to: StepId,
+    config: BoardConfig,
+) -> Result<RewriteReport, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    rewrite_step(&ws, &from, &to, &config)
+}
+
+#[tauri::command]
+pub fn board_step_usage(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<Vec<StepUsage>, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    step_usage(&ws)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{TrackerConfig, TrackerProvider, TrackerRoot, Workspace};
+    use crate::tasks::fs::{FsTaskProvider, RootCreation};
+
+    fn ws(tracker: Option<TrackerConfig>) -> Workspace {
+        Workspace {
+            id: "w1".into(),
+            name: "cowork-deck".into(),
+            path: "/home/u/proj".into(),
+            color: "#61afef".into(),
+            github: None,
+            tracker,
+        }
+    }
+
+    fn tracker(root: TrackerRoot) -> TrackerConfig {
+        TrackerConfig {
+            providers: vec![TrackerProvider::Fs { root }],
+            previous_location: None,
+            version: crate::model::TRACKER_CONFIG_VERSION,
+        }
+    }
+
+    #[test]
+    fn project_root_lives_inside_the_workspace_and_is_ours_to_create() {
+        let w = ws(Some(tracker(TrackerRoot::Project)));
+        let (root, creation) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/proj/.cowork/tasks"));
+        assert_eq!(creation, RootCreation::Always);
+    }
+
+    #[test]
+    fn an_external_root_gets_a_container_and_a_project_folder() {
+        let w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let (root, creation) = resolve_root(&w).expect("configured");
+        // One folder of ours in the person's space, not one per project.
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/cowork-deck"));
+        assert_eq!(creation, RootCreation::InsideExisting { base: "/home/u/vault".into() });
+    }
+
+    #[test]
+    fn picking_the_container_itself_does_not_nest_a_second_one() {
+        // The case that matters in practice: after the first migration the
+        // container exists, so it is what the picker shows and what a person
+        // naturally chooses. A rule that only appended would hand them
+        // cowork-deck-tasks/cowork-deck-tasks/cowork-deck.
+        let w = ws(Some(tracker(TrackerRoot::Path {
+            path: "/home/u/vault/cowork-deck-tasks".into(),
+        })));
+        let (root, creation) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/cowork-deck"));
+        // The base is still the picked folder, so only the project level is ours.
+        assert_eq!(
+            creation,
+            RootCreation::InsideExisting { base: "/home/u/vault/cowork-deck-tasks".into() },
+        );
+    }
+
+    #[test]
+    fn picking_the_project_folder_itself_resolves_to_it_unchanged() {
+        // Re-pointing the tracker at the folder the board already reads must be
+        // a no-op, not another doubling.
+        let w = ws(Some(tracker(TrackerRoot::Path {
+            path: "/home/u/vault/cowork-deck-tasks/cowork-deck".into(),
+        })));
+        let (root, _) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/cowork-deck"));
+    }
+
+    #[test]
+    fn renaming_a_workspace_keeps_its_folder_beside_the_others_in_the_container() {
+        // The pick is a project folder of ours, but the name has changed since,
+        // so the slug no longer matches the folder it was named after. The root
+        // must move to the renamed sibling inside the same container. Recognising
+        // the leaf instead would give
+        // `<container>/deck/cowork-deck-tasks/board` — a container nested in a
+        // project folder, which is what this layout exists to prevent.
+        let mut w = ws(Some(tracker(TrackerRoot::Path {
+            path: "/home/u/vault/cowork-deck-tasks/deck".into(),
+        })));
+        w.name = "board".into();
+        let (root, creation) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/board"));
+        // The base is the container, not the picked folder: the root is a sibling
+        // of the pick, so the pick has no authority over it, and gating creation
+        // on it would refuse a path inside a container that is entirely ours. A
+        // vanished *container* still surfaces as RootMissing.
+        assert_eq!(
+            creation,
+            RootCreation::InsideExisting { base: "/home/u/vault/cowork-deck-tasks".into() },
+        );
+    }
+
+    #[test]
+    fn a_folder_merely_sharing_the_project_name_is_an_ordinary_pick() {
+        // Only a folder whose parent is the container counts as already ours.
+        // Without the parent check, any folder named after the project would be
+        // mistaken for one of ours and never get a container.
+        let w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/cowork-deck".into() })));
+        let (root, _) = resolve_root(&w).expect("configured");
+        assert_eq!(
+            root,
+            std::path::Path::new("/home/u/cowork-deck/cowork-deck-tasks/cowork-deck"),
+        );
+    }
+
+    #[test]
+    fn the_subfolder_is_a_slug_so_a_workspace_name_cannot_escape_the_picked_folder() {
+        // A workspace name is free text from a form. Joined verbatim, "../.."
+        // would put the cards outside the folder the person picked.
+        let mut w = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        w.name = "../../etc".into();
+        let (root, _) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/etc"));
+
+        w.name = "My Project".into();
+        let (root, _) = resolve_root(&w).expect("configured");
+        assert_eq!(root, std::path::Path::new("/home/u/vault/cowork-deck-tasks/my-project"));
+    }
+
+    #[test]
+    fn no_tracker_is_a_legal_state_not_an_error() {
+        assert!(resolve_root(&ws(None)).is_none());
+        assert!(resolve_root(&ws(Some(TrackerConfig {
+            providers: vec![],
+            previous_location: None,
+            version: crate::model::TRACKER_CONFIG_VERSION,
+        })))
+        .is_none());
+    }
+
+    #[test]
+    fn ensure_root_if_ours_creates_a_project_root_and_a_subtree_inside_a_picked_folder() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let project_root = dir.path().join("proj").join(".cowork").join("tasks");
+        ensure_root_if_ours(&project_root, &RootCreation::Always).unwrap();
+        assert!(project_root.is_dir(), "the in-project root is ours to create");
+
+        // The picked folder exists, so everything below it is ours — one level
+        // today, two once the container lands, and this must not care which.
+        let picked = dir.path().join("vault");
+        std::fs::create_dir(&picked).unwrap();
+        let deep = picked.join("container").join("deck");
+        ensure_root_if_ours(&deep, &RootCreation::InsideExisting { base: picked.clone() }).unwrap();
+        assert!(deep.is_dir(), "a subtree inside an existing base is ours to make");
+    }
+
+    #[test]
+    fn ensure_root_if_ours_creates_nothing_when_the_picked_folder_is_a_typo() {
+        let dir = tempfile::tempdir().unwrap();
+        // The typo guarantee, now stated once for any depth. If anyone drops the
+        // base check and calls create_dir_all unconditionally, this is what
+        // fails.
+        let base = dir.path().join("vualt");
+        let leaf = base.join("cowork-deck-tasks").join("deck");
+        ensure_root_if_ours(&leaf, &RootCreation::InsideExisting { base: base.clone() }).unwrap();
+        assert!(!leaf.exists(), "a typo'd base must not be created");
+        assert!(!base.exists(), "nor the base itself");
+
+        let never = dir.path().join("cli-root");
+        ensure_root_if_ours(&never, &RootCreation::Never).unwrap();
+        assert!(!never.exists(), "the CLI creates nothing");
+    }
+
+    #[test]
+    fn a_provider_refuses_to_read_a_root_whose_base_is_missing() {
+        // ensure_root_if_ours is best-effort and silent; FsTaskProvider is the
+        // half that has to be loud, and it is what the board surfaces.
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("vualt");
+        let root = base.join("deck");
+        let p = FsTaskProvider::new(root, RootCreation::InsideExisting { base });
+        let err = p.scan().expect_err("a missing base is not an empty list");
+        // The kind, not merely the failure: `RootMissing` is what the board turns
+        // into "that folder is gone", where an `Io` would read as a bug in us.
+        assert!(
+            matches!(err, crate::tasks::model::TaskError::RootMissing(_)),
+            "a missing base is RootMissing, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn a_root_inside_our_container_survives_the_loss_of_the_configured_folder() {
+        // Four ordinary steps get here: point a workspace at `<container>/deck`,
+        // rename it to "board" so the banner moves the cards to
+        // `<container>/board`, delete the emptied `<container>/deck` that `apply`
+        // leaves behind, then rename again to "chart". The path in the config now
+        // names a folder that is gone, but the root is its sibling inside a
+        // container that is entirely ours — so the base has to be the container,
+        // and the board has to open. Pairing the root with the picked folder made
+        // this `RootMissing` on a path we had every right to create.
+        let dir = tempfile::tempdir().unwrap();
+        let container = dir.path().join(TRACKER_CONTAINER);
+        std::fs::create_dir(&container).unwrap();
+        let configured = container.join("deck");
+        assert!(!configured.exists(), "the folder the config still names is gone");
+
+        let mut w = ws(Some(tracker(TrackerRoot::Path {
+            path: configured.to_string_lossy().to_string(),
+        })));
+        w.name = "chart".into();
+        let (root, creation) = resolve_root(&w).expect("configured");
+        assert_eq!(root, container.join("chart"));
+        assert_eq!(creation, RootCreation::InsideExisting { base: container.clone() });
+
+        // The loud half, because `RootMissing` is what the board showed: reading
+        // this root creates it and yields an empty list.
+        let p = FsTaskProvider::new(root.clone(), creation);
+        let cards = p.scan().expect("a sibling inside our own container is readable");
+        assert!(cards.is_empty());
+        assert!(root.is_dir(), "and it is ours to bring into existence");
+    }
+
+    #[test]
+    fn a_typo_above_the_container_creates_nothing_even_though_the_base_moved_up() {
+        // Making the base the container moved it *up* the path in the recognition
+        // cases, so the typo guarantee has to be re-earned there. A mistyped vault
+        // carrying a correct-looking layout below it now yields the container as
+        // the base — and that container is inside the typo, so it is missing too
+        // and nothing is created. Same for a mistyped container name, which is not
+        // recognised at all and leaves the base at the picked folder.
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir(&vault).unwrap();
+        let typo = dir.path().join("vualt");
+
+        for picked in [
+            // The vault is mistyped and the layout below it looks right, so the
+            // base is the container named inside the typo — absent with it.
+            typo.join(TRACKER_CONTAINER).join("deck"),
+            // The vault is real but the container is mistyped, so nothing is
+            // recognised and the base stays at the picked folder.
+            vault.join("cowork-deck-taksk").join("deck"),
+        ] {
+            let w = ws(Some(tracker(TrackerRoot::Path {
+                path: picked.to_string_lossy().to_string(),
+            })));
+            let (root, creation) = resolve_root(&w).expect("configured");
+            assert!(!creation.may_create(), "a typo'd path is nobody's to create: {picked:?}");
+            ensure_root_if_ours(&root, &creation).unwrap();
+            assert!(!root.exists(), "nothing created for {picked:?}");
+            assert!(!picked.exists(), "nor the picked folder: {picked:?}");
+            assert!(!typo.exists(), "nor the mistyped vault");
+            // Not even one level inside the vault that does exist.
+            assert_eq!(std::fs::read_dir(&vault).unwrap().count(), 0);
+        }
+    }
+
+    fn v1_external(path: &str) -> TrackerConfig {
+        TrackerConfig {
+            providers: vec![TrackerProvider::Fs { root: TrackerRoot::Path { path: path.into() } }],
+            previous_location: None,
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn a_v1_external_config_is_seeded_with_the_picked_folder_itself() {
+        // Version 1 resolved the picked folder verbatim, so that is where the
+        // cards physically are. Without seeding, the board would silently go
+        // empty the first time someone updated the app.
+        let out = seed_previous_location(ws(Some(v1_external("/home/u/vault/Tasks"))));
+        let prev = out.tracker.unwrap().previous_location.expect("seeded");
+        assert_eq!(prev.root, "/home/u/vault/Tasks");
+        assert_eq!(prev.project, "cowork-deck");
+        assert!(!prev.was_project_root);
+    }
+
+    #[test]
+    fn a_v1_project_config_is_not_seeded_because_its_path_did_not_move() {
+        let mut cfg = tracker(TrackerRoot::Project);
+        cfg.version = 1;
+        let out = seed_previous_location(ws(Some(cfg)));
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    fn v2_external(path: &str) -> TrackerConfig {
+        TrackerConfig {
+            providers: vec![TrackerProvider::Fs { root: TrackerRoot::Path { path: path.into() } }],
+            previous_location: None,
+            version: 2,
+        }
+    }
+
+    #[test]
+    fn a_v2_config_is_seeded_with_the_project_folder_it_used_to_resolve_to() {
+        // Version 2 added the project folder but no container, so that is where
+        // the cards physically are.
+        let out = seed_previous_location(ws(Some(v2_external("/home/u/vault"))));
+        let prev = out.tracker.unwrap().previous_location.expect("seeded");
+        assert_eq!(prev.root, "/home/u/vault/cowork-deck");
+        assert_eq!(prev.project, "cowork-deck");
+        assert!(!prev.was_project_root);
+    }
+
+    #[test]
+    fn a_v2_config_pointing_at_the_container_is_not_seeded() {
+        // Its v2 root and its v3 root are the same folder: v2 appended the slug
+        // to the container, and v3 recognises the container and does the same.
+        // A pointer here would offer to move cards from a folder into itself.
+        let out = seed_previous_location(ws(Some(v2_external("/home/u/vault/cowork-deck-tasks"))));
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn a_v3_config_is_left_alone_by_seeding() {
+        let out = seed_previous_location(ws(Some(tracker(
+            TrackerRoot::Path { path: "/home/u/vault".into() },
+        ))));
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn an_unanswered_v1_pointer_survives_the_upgrade_to_v3() {
+        // Someone who never answered the v1 banner still has a pointer at the
+        // picked folder, which is where the cards are. Recomputing it for v3
+        // would send the migration into an empty directory.
+        let mut seeded = seed_previous_location(ws(Some(v1_external("/home/u/vault/Tasks"))));
+        // Simulate the config being read again by a newer build.
+        seeded.tracker.as_mut().unwrap().version = 2;
+        let out = seed_previous_location(seeded);
+        let prev = out.tracker.unwrap().previous_location.expect("kept");
+        assert_eq!(prev.root, "/home/u/vault/Tasks");
+    }
+
+    #[test]
+    fn moving_the_root_records_where_the_cards_were() {
+        let old = ws(Some(tracker(TrackerRoot::Project)));
+        let new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let out = with_previous_location(Some(&old), new);
+        let prev = out.tracker.unwrap().previous_location.expect("recorded");
+        assert_eq!(prev.root, "/home/u/proj/.cowork/tasks");
+        assert_eq!(prev.project, "cowork-deck");
+        assert!(prev.was_project_root, "damaged cards come along from our own folder");
+    }
+
+    #[test]
+    fn renaming_the_workspace_records_the_old_name_and_the_old_root() {
+        let old = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let mut new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        new.name = "deck".into();
+        let out = with_previous_location(Some(&old), new);
+        let prev = out.tracker.unwrap().previous_location.expect("recorded");
+        // The folder is named for the project, so a rename moves the root too.
+        assert_eq!(prev.root, "/home/u/vault/cowork-deck-tasks/cowork-deck");
+        assert_eq!(prev.project, "cowork-deck");
+    }
+
+    #[test]
+    fn saving_without_moving_the_root_records_nothing() {
+        let old = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let mut new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        new.color = "#98c379".into();
+        let out = with_previous_location(Some(&old), new);
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn creating_a_workspace_records_nothing() {
+        let new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let out = with_previous_location(None, new);
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn an_unmoved_pending_pointer_wins_over_the_old_effective_root() {
+        // The cards are at the seeded location, not at the root the old config
+        // resolved to — nothing was ever written to a root that was configured
+        // and then left behind. Overwriting the pointer here would send the
+        // migration looking in an empty folder.
+        let old = seed_previous_location(ws(Some(v1_external("/home/u/vault/Tasks"))));
+        let new = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/other".into() })));
+        let out = with_previous_location(Some(&old), new);
+        let prev = out.tracker.unwrap().previous_location.expect("carried forward");
+        assert_eq!(prev.root, "/home/u/vault/Tasks");
+    }
+
+    #[test]
+    fn moving_back_to_where_the_cards_are_clears_the_pointer() {
+        // The cards are at /home/u/vault/cowork-deck-tasks/tasks, and pointing
+        // the tracker straight at that folder resolves to it unchanged — the
+        // third recognition case. There is nothing to migrate.
+        let old = seed_previous_location(ws(Some(v1_external(
+            "/home/u/vault/cowork-deck-tasks/tasks",
+        ))));
+        let mut new = ws(Some(tracker(TrackerRoot::Path {
+            path: "/home/u/vault/cowork-deck-tasks/tasks".into(),
+        })));
+        new.name = "Tasks".into();
+        let out = with_previous_location(Some(&old), new);
+        assert!(out.tracker.unwrap().previous_location.is_none());
+    }
+
+    #[test]
+    fn every_save_stamps_the_current_config_version() {
+        // A dismissed banner must not come back on the next read, which is only
+        // true while every persisting path leaves v at the current value.
+        let out = with_previous_location(None, ws(Some(v1_external("/home/u/vault/Tasks"))));
+        assert_eq!(out.tracker.unwrap().version, TRACKER_CONFIG_VERSION);
+    }
+
+    /// A workspace whose external root is `dir`, with `previous_location`
+    /// pointing at `old` as a folder the cards were never moved out of.
+    fn ws_with_previous(dir: &std::path::Path, name: &str, old: &std::path::Path) -> Workspace {
+        Workspace {
+            id: "w1".into(),
+            name: name.into(),
+            path: "/home/u/proj".into(),
+            color: "#61afef".into(),
+            github: None,
+            tracker: Some(TrackerConfig {
+                providers: vec![TrackerProvider::Fs {
+                    root: TrackerRoot::Path { path: dir.to_string_lossy().to_string() },
+                }],
+                previous_location: Some(PreviousLocation {
+                    root: old.to_string_lossy().to_string(),
+                    project: "cowork-deck".into(),
+                    was_project_root: false,
+                }),
+                version: TRACKER_CONFIG_VERSION,
+            }),
+        }
+    }
+
+    /// Renamed from the original `write_card` to make room for the board-editor
+    /// fixture below of the same short name but a different shape (filename and
+    /// status are both caller-chosen there); the two are not interchangeable.
+    fn write_offer_card(dir: &std::path::Path, id: &str, project: &str) {
+        std::fs::write(
+            dir.join(format!("{id}-t.md")),
+            format!("---\nid: {id}\ntitle: t\nkind: task\nstatus: open\nproject: {project}\ncreated: c\norigin: human\n---\nbody\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn offer_counts_what_moves_and_what_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("Tasks");
+        std::fs::create_dir_all(&old).unwrap();
+        write_offer_card(&old, "01A", "cowork-deck");
+        write_offer_card(&old, "01B", "cowork-deck");
+        write_offer_card(&old, "01C", "other-project");
+
+        let ws = ws_with_previous(dir.path(), "cowork-deck", &old);
+        let (offer, _) = offer_for(&ws).expect("readable").expect("an offer");
+
+        assert_eq!(offer.moving, 2);
+        assert_eq!(offer.leaving_foreign, 1);
+        assert_eq!(offer.from, old.to_string_lossy());
+        assert_eq!(
+            offer.to,
+            dir.path().join("cowork-deck-tasks").join("cowork-deck").to_string_lossy(),
+        );
+        assert!(!offer.renaming_project);
+    }
+
+    #[test]
+    fn offer_says_project_gets_rewritten_after_a_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("cowork-deck");
+        std::fs::create_dir_all(&old).unwrap();
+        write_offer_card(&old, "01A", "cowork-deck");
+
+        // previous_location.project is "cowork-deck", the workspace is now "deck".
+        let ws = ws_with_previous(dir.path(), "deck", &old);
+        let (offer, _) = offer_for(&ws).expect("readable").expect("an offer");
+
+        assert!(offer.renaming_project, "cards still name the old project");
+        assert_eq!(offer.moving, 1);
+    }
+
+    #[test]
+    fn there_is_no_offer_when_the_old_root_holds_nothing_of_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("Tasks");
+        std::fs::create_dir_all(&old).unwrap();
+        write_offer_card(&old, "01C", "other-project");
+
+        let ws = ws_with_previous(dir.path(), "cowork-deck", &old);
+        assert!(offer_for(&ws).expect("readable").is_none());
+    }
+
+    #[test]
+    fn a_missing_old_root_yields_no_offer_but_is_not_an_error() {
+        // An unmounted volume, not a resolved migration. The caller must not
+        // clear the pointer on this — the folder can come back.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = ws_with_previous(dir.path(), "cowork-deck", &dir.path().join("gone"));
+        assert!(offer_for(&ws).expect("not an error").is_none());
+    }
+
+    #[test]
+    fn there_is_no_offer_without_a_previous_location() {
+        let ws = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        assert!(offer_for(&ws).expect("readable").is_none());
+    }
+
+    #[test]
+    fn turning_the_tracker_off_records_nothing() {
+        // There is nowhere to move cards to, so a pointer would describe a
+        // migration that can never be offered.
+        let old = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let out = with_previous_location(Some(&old), ws(None));
+        assert!(out.tracker.is_none());
+    }
+
+    #[test]
+    fn a_broken_board_file_yields_the_default_steps_and_an_error_the_board_can_show() {
+        // Both halves matter: the board has to draw something, and the person has
+        // to be told they are not looking at the workflow they wrote.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = ws(Some(tracker(TrackerRoot::Path { path: dir.path().to_string_lossy().to_string() })));
+        let (root, _) = resolve_root(&ws).expect("configured");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(crate::tasks::board::BOARD_FILE), "{ \"steps\": [ oops").unwrap();
+
+        let p = provider_for(&ws).expect("configured");
+        assert_eq!(p.board().step_ids(), BoardConfig::default_config().step_ids());
+        let err = p.board_error().expect("the reason has to reach the board");
+        assert!(err.contains(crate::tasks::board::BOARD_FILE), "{err}");
+    }
+
+    #[test]
+    fn task_draft_input_deserializes_from_exactly_what_the_frontend_sends() {
+        let json = r#"{"title":"Fix the thing","kind":"bug","body":"details here"}"#;
+        let draft: TaskDraftInput = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(draft.title, "Fix the thing");
+        assert_eq!(draft.kind.as_str(), "bug");
+        assert_eq!(draft.body, "details here");
+    }
+
+    #[test]
+    fn task_draft_input_rejects_a_smuggled_origin_field() {
+        // deny_unknown_fields: a payload that tries to claim `origin: session`
+        // must fail to deserialize rather than silently drop the key — the
+        // guarantee is that IPC cannot forge a card's origin at all.
+        let json = r#"{"title":"t","kind":"bug","body":"b","origin":"session"}"#;
+        let result: Result<TaskDraftInput, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "smuggled `origin` must be rejected, got {result:?}");
+    }
+
+    #[test]
+    fn preview_names_both_folders_when_neither_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = root_preview("cowork-deck", &dir.path().to_string_lossy());
+        // Outermost first, so the form can read them out in the order they
+        // appear in the path.
+        assert_eq!(p.creating, vec!["cowork-deck-tasks", "cowork-deck"]);
+        assert!(!p.base_missing);
+        assert_eq!(
+            p.root,
+            dir.path().join("cowork-deck-tasks").join("cowork-deck").to_string_lossy(),
+        );
+    }
+
+    #[test]
+    fn preview_names_only_the_project_folder_when_the_container_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("cowork-deck-tasks")).unwrap();
+        let p = root_preview("cowork-deck", &dir.path().to_string_lossy());
+        assert_eq!(p.creating, vec!["cowork-deck"]);
+        assert!(!p.base_missing);
+    }
+
+    #[test]
+    fn preview_promises_nothing_when_everything_is_already_there() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("cowork-deck-tasks").join("cowork-deck")).unwrap();
+        let p = root_preview("cowork-deck", &dir.path().to_string_lossy());
+        // Silence means there is nothing to create. An "already exists" line
+        // would be noise on every later edit of the same workspace.
+        assert!(p.creating.is_empty());
+        assert!(!p.base_missing);
+    }
+
+    #[test]
+    fn preview_promises_nothing_when_the_picked_folder_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = root_preview("cowork-deck", &dir.path().join("vualt").to_string_lossy());
+        assert!(p.base_missing);
+        assert!(p.creating.is_empty(), "nothing is created when the base is absent");
+    }
+
+    #[test]
+    fn preview_resolves_a_picked_container_the_same_way_resolve_root_does() {
+        // Both sides are asked, and their answers compared. Sharing
+        // `append_layout` is how they agree, but a second implementation that
+        // happened to agree on the day it was written would pass a test that only
+        // asserted the preview's own output.
+        let dir = tempfile::tempdir().unwrap();
+        let container = dir.path().join("cowork-deck-tasks");
+        std::fs::create_dir(&container).unwrap();
+        let picked = container.to_string_lossy().to_string();
+
+        let w = ws(Some(tracker(TrackerRoot::Path { path: picked.clone() })));
+        let (resolved, _) = resolve_root(&w).expect("configured");
+        let p = root_preview(&w.name, &picked);
+
+        assert_eq!(p.root, resolved.to_string_lossy());
+        assert_eq!(p.root, container.join("cowork-deck").to_string_lossy());
+        assert_eq!(p.creating, vec!["cowork-deck"]);
+    }
+
+    #[test]
+    fn preview_names_the_renamed_sibling_it_would_create_in_the_container() {
+        // The resolved root is not below the picked folder here but beside it, so
+        // a walk down from the base would describe nothing while a folder was
+        // about to be created behind the person's back.
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("cowork-deck-tasks").join("deck");
+        std::fs::create_dir_all(&old).unwrap();
+        let p = root_preview("board", &old.to_string_lossy());
+        assert_eq!(p.root, old.with_file_name("board").to_string_lossy());
+        assert_eq!(p.creating, vec!["board"]);
+        assert!(!p.base_missing);
+    }
+
+    #[test]
+    fn preview_promises_nothing_when_the_picked_folder_is_already_the_project_root() {
+        // The third recognition case: the picked folder is already
+        // `<container>/<slug>`, i.e. already the effective root. The base is the
+        // container above it, so the climb has one level to consider and must
+        // find it already there.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("cowork-deck-tasks").join("cowork-deck");
+        std::fs::create_dir_all(&root).unwrap();
+        let p = root_preview("cowork-deck", &root.to_string_lossy());
+        assert_eq!(p.root, root.to_string_lossy());
+        assert!(p.creating.is_empty());
+        assert!(!p.base_missing);
+    }
+
+    // --- board editor: rewrite_step / step_usage / save_config ---
+    //
+    // A shared vault root holds other projects' cards, so every fixture below
+    // matches cards against a workspace named "proj" the same way `rewrite_step`
+    // and `step_usage` do.
+    use crate::tasks::board::{Kind, Step, BOARD_FILE};
+
+    /// The configuration `workspace_with_root` writes to disk: `todo` and `next`
+    /// so a rewrite has somewhere to land, `done` so it has a terminal step, and
+    /// `task` so a written card's `kind:` is one the configuration recognises.
+    /// Shared with `base_config` below rather than duplicated, so a test that
+    /// passes "the configuration about to be saved" to `rewrite_step` is
+    /// passing the same shape that is actually on disk, by construction.
+    const TEST_BOARD_JSON: &str = r#"{"steps":[{"id":"todo","label":"To do"},
+                     {"id":"next","label":"Next"},
+                     {"id":"done","label":"Done","terminal":true}],
+        "kinds":[{"id":"task","label":"Task"}]}"#;
+
+    fn base_config() -> BoardConfig {
+        crate::tasks::board::parse(TEST_BOARD_JSON).expect("valid")
+    }
+
+    /// A workspace named "proj" whose tracker root actually exists on disk, with
+    /// `TEST_BOARD_JSON` already written beside it.
+    ///
+    /// Returns the `TempDir` guard alongside `root` rather than leaking it with
+    /// `TempDir::keep`: every other fixture in this file keeps its own inline
+    /// `tempfile::tempdir()` in scope for the whole test body, and a returned
+    /// guard does exactly that for its caller — bind it (`let (_dir, root, ws)
+    /// = …`) and it cleans up when the test ends, unlike one that is dropped
+    /// before the caller ever sees `root`.
+    fn workspace_with_root() -> (tempfile::TempDir, PathBuf, Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = ws(Some(tracker(TrackerRoot::Path {
+            path: dir.path().to_string_lossy().to_string(),
+        })));
+        w.name = "proj".into();
+        let (root, _) = resolve_root(&w).expect("configured");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(BOARD_FILE), TEST_BOARD_JSON).unwrap();
+        (dir, root, w)
+    }
+
+    fn write_card(dir: &std::path::Path, filename: &str, id: &str, project: &str, status: &str) {
+        std::fs::write(
+            dir.join(filename),
+            format!(
+                "---\nid: {id}\ntitle: t\nkind: task\nstatus: {status}\nproject: {project}\ncreated: c\norigin: human\n---\nbody\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_card_with_extra(
+        dir: &std::path::Path,
+        filename: &str,
+        id: &str,
+        project: &str,
+        status: &str,
+        extra: &str,
+    ) {
+        std::fs::write(
+            dir.join(filename),
+            format!(
+                "---\nid: {id}\ntitle: t\nkind: task\nstatus: {status}\nproject: {project}\ncreated: c\norigin: human\n{extra}\n---\nbody\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rewriting_a_step_touches_only_this_project_s_cards() {
+        // A shared vault root holds other projects' cards, and fs.rs::resolve
+        // already refuses to write those.
+        let (_dir, root, ws) = workspace_with_root();
+        write_card(&root, "mine.md", "01A", "proj", "todo");
+        write_card(&root, "theirs.md", "01B", "other-proj", "todo");
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
+        assert_eq!(report.rewritten, 1);
+        assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("status: next"));
+        assert!(std::fs::read_to_string(root.join("theirs.md")).unwrap().contains("status: todo"));
+    }
+
+    #[test]
+    fn rewriting_a_step_validates_against_the_configuration_about_to_be_saved_not_the_one_on_disk() {
+        // Review round 1, Critical #1: `rewrite_step` runs before the new
+        // configuration is saved, so a rename's target id is not yet in the
+        // on-disk board.json — only in the draft the caller is about to save.
+        // "in-progress" is nowhere in `TEST_BOARD_JSON`, so this fails unless
+        // `rewrite_step` validates against `draft`, not the file.
+        let (_dir, root, ws) = workspace_with_root();
+        write_card(&root, "mine.md", "01A", "proj", "todo");
+        let draft = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"todo","label":"To do"},
+                         {"id":"in-progress","label":"In progress"},
+                         {"id":"done","label":"Done","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        ).unwrap();
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("in-progress".into()), &draft).unwrap();
+        assert_eq!(report.rewritten, 1, "{:?}", report.skipped);
+        assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("status: in-progress"));
+    }
+
+    #[test]
+    fn rewriting_a_terminal_step_to_another_terminal_step_preserves_resolved_byte_for_byte() {
+        // Re-review round 1: `rewrite_step` validates against the draft (Critical
+        // #1's fix), but the draft never lists `from` — that id is exactly what
+        // is being renamed away — so `is_terminal(&card.status)` inside `update`
+        // looked up an id guaranteed absent from that board and always got
+        // `false`, restamping every card in this exact "done -> shipped" case
+        // instead of preserving `resolved`.
+        let (_dir, root, ws) = workspace_with_root();
+        write_card_with_extra(&root, "mine.md", "01A", "proj", "done", "resolved: 2020-01-01T00:00:00Z");
+        let draft = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"todo","label":"To do"},
+                         {"id":"next","label":"Next"},
+                         {"id":"shipped","label":"Shipped","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        ).unwrap();
+        let report = rewrite_step(&ws, &StepId("done".into()), &StepId("shipped".into()), &draft).unwrap();
+        assert_eq!(report.rewritten, 1, "{:?}", report.skipped);
+        let text = std::fs::read_to_string(root.join("mine.md")).unwrap();
+        let reread = crate::tasks::frontmatter::parse_card(&text, "mine.md").expect("still a card");
+        assert_eq!(reread.status.as_str(), "shipped");
+        assert_eq!(
+            reread.resolved.as_deref(), Some("2020-01-01T00:00:00Z"),
+            "terminal-to-terminal must not restamp: {text}",
+        );
+    }
+
+    #[test]
+    fn retiring_a_terminal_step_to_a_non_terminal_destination_clears_resolved() {
+        // The other half of the same collision: `from`'s true terminality has to
+        // come from somewhere other than the draft when the draft drops it.
+        let (_dir, root, ws) = workspace_with_root();
+        write_card_with_extra(&root, "mine.md", "01A", "proj", "done", "resolved: 2020-01-01T00:00:00Z");
+        let draft = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"todo","label":"To do"},
+                         {"id":"next","label":"Next"},
+                         {"id":"archived","label":"Archived","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        ).unwrap();
+        // Retiring "done" (terminal on disk) and sending its cards to "next"
+        // (non-terminal).
+        let report = rewrite_step(&ws, &StepId("done".into()), &StepId("next".into()), &draft).unwrap();
+        assert_eq!(report.rewritten, 1, "{:?}", report.skipped);
+        let text = std::fs::read_to_string(root.join("mine.md")).unwrap();
+        let reread = crate::tasks::frontmatter::parse_card(&text, "mine.md").expect("still a card");
+        assert_eq!(reread.status.as_str(), "next");
+        assert_eq!(reread.resolved, None, "leaving a terminal step for a non-terminal one must clear resolved: {text}");
+    }
+
+    #[test]
+    fn rewriting_a_step_skips_a_damaged_card_and_says_which() {
+        let (_dir, root, ws) = workspace_with_root();
+        std::fs::write(root.join("note.md"), "---\nid: 01C\nstatus: todo\n---\nA note.\n").unwrap();
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
+        assert_eq!(report.rewritten, 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].file_name, "note.md");
+    }
+
+    #[test]
+    fn rewriting_preserves_unknown_frontmatter_keys() {
+        let (_dir, root, ws) = workspace_with_root();
+        write_card_with_extra(&root, "mine.md", "01A", "proj", "todo", "tags: [inbox]");
+        rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
+        assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("tags: [inbox]"));
+    }
+
+    #[test]
+    fn step_usage_counts_this_project_s_cards_per_step() {
+        let (_dir, root, ws) = workspace_with_root();
+        write_card(&root, "a.md", "01A", "proj", "todo");
+        write_card(&root, "b.md", "01B", "proj", "todo");
+        write_card(&root, "c.md", "01C", "proj", "done");
+        let usage = step_usage(&ws).unwrap();
+        let count = |id: &str| usage.iter().find(|u| u.step.as_str() == id).map(|u| u.count);
+        assert_eq!(count("todo"), Some(2));
+        assert_eq!(count("done"), Some(1));
+    }
+
+    #[test]
+    fn saving_a_configuration_refuses_an_invalid_one_and_leaves_the_file_alone() {
+        let (_dir, root, ws) = workspace_with_root();
+        let before = std::fs::read(root.join(BOARD_FILE)).unwrap();
+        let bad = BoardConfig { v: 1,
+            steps: vec![Step { id: StepId("a".into()), label: "A".into(), terminal: false, working: false }],
+            kinds: vec![Kind { id: KindId("k".into()), label: "K".into() }] };
+        assert!(save_config(&ws, bad).is_err());
+        assert_eq!(std::fs::read(root.join(BOARD_FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn saving_refuses_to_overwrite_a_board_file_the_program_could_not_parse() {
+        // Review round 1, Important #3: a valid *new* configuration must not
+        // silently replace a hand-written board.json the program could not
+        // read — the person has to fix their own typo, not lose it.
+        let (_dir, root, ws) = workspace_with_root();
+        std::fs::write(root.join(BOARD_FILE), "{ not json").unwrap();
+        let before = std::fs::read(root.join(BOARD_FILE)).unwrap();
+        let good = BoardConfig {
+            v: 1,
+            steps: vec![Step { id: StepId("a".into()), label: "A".into(), terminal: true, working: false }],
+            kinds: vec![Kind { id: KindId("k".into()), label: "K".into() }],
+        };
+        assert!(save_config(&ws, good).is_err(), "an unparsable board.json must not be silently replaced");
+        assert_eq!(std::fs::read(root.join(BOARD_FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn saving_a_valid_configuration_writes_it_and_it_reads_back() {
+        let (_dir, root, ws) = workspace_with_root();
+        let cfg = BoardConfig {
+            v: 1,
+            steps: vec![
+                Step { id: StepId("todo".into()), label: "To do".into(), terminal: false, working: false },
+                Step { id: StepId("done".into()), label: "Done".into(), terminal: true, working: false },
+            ],
+            kinds: vec![Kind { id: KindId("task".into()), label: "Task".into() }],
+        };
+        save_config(&ws, cfg).expect("a valid configuration must save");
+        let on_disk = std::fs::read_to_string(root.join(BOARD_FILE)).unwrap();
+        assert_eq!(crate::tasks::board::parse(&on_disk).unwrap().step_ids(), vec!["todo", "done"]);
+    }
+
+    #[test]
+    fn rewriting_a_step_leaves_cards_in_other_steps_alone() {
+        let (_dir, root, ws) = workspace_with_root();
+        write_card(&root, "mine.md", "01A", "proj", "todo");
+        write_card(&root, "other.md", "01B", "proj", "done");
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
+        assert_eq!(report.rewritten, 1);
+        assert!(
+            std::fs::read_to_string(root.join("other.md")).unwrap().contains("status: done"),
+            "a card in a different step must not be touched"
+        );
+    }
+
+    #[test]
+    fn step_usage_ignores_a_damaged_card_with_no_status_field() {
+        let (_dir, root, ws) = workspace_with_root();
+        write_card(&root, "a.md", "01A", "proj", "todo");
+        std::fs::write(root.join("broken.md"), "---\nid: 01Z\nproject: proj\n---\nx\n").unwrap();
+        let usage = step_usage(&ws).unwrap();
+        assert!(usage.iter().all(|u| !u.step.as_str().is_empty()), "{usage:?}");
+        let count = |id: &str| usage.iter().find(|u| u.step.as_str() == id).map(|u| u.count);
+        assert_eq!(count("todo"), Some(1));
+    }
+}

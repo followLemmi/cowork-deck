@@ -25,9 +25,9 @@ impl PtyManager {
         program: &str,
         args: &[String],
         cwd: &str,
-        env: &[(String, String)],
         cols: u16,
         rows: u16,
+        env: &[(String, String)],
         on_output: F,
         on_exit: impl Fn(bool) + Send + 'static,
     ) -> std::io::Result<()>
@@ -159,7 +159,7 @@ mod tests {
         let (prog, args) = ("/bin/sh", vec!["-c".to_string(), "printf COWORK_OK".to_string()]);
 
         mgr.spawn(
-            "s1", prog, &args, ".", &[], 80, 24,
+            "s1", prog, &args, ".", 80, 24, &[],
             move |bytes| { let _ = tx.send(bytes); },
             move |ok| { let _ = etx.send(ok); },
         ).unwrap();
@@ -193,9 +193,9 @@ mod tests {
             prog,
             &args,
             ".",
-            &[("COWORK_TEST_VAR".to_string(), "injected-value".to_string())],
             80,
             24,
+            &[("COWORK_TEST_VAR".to_string(), "injected-value".to_string())],
             move |bytes| { let _ = tx.send(bytes); },
             move |ok| { let _ = etx.send(ok); },
         )
