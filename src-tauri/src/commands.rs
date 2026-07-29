@@ -57,12 +57,18 @@ pub fn session_env(
     project: &str,
     task_bin: &str,
     session: &str,
+    task_id: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut env = vec![("COWORK_SESSION".to_string(), session.to_string())];
     if let Some(root) = root {
         env.push(("COWORK_TASKS_DIR".to_string(), root.to_string_lossy().to_string()));
         env.push(("COWORK_PROJECT".to_string(), project.to_string()));
         env.push(("COWORK_TASK_BIN".to_string(), task_bin.to_string()));
+    }
+    // The hooks in hooks.rs find the card through this. Set on resume too:
+    // a restored session that lost it would silently stop being reminded.
+    if let Some(id) = task_id {
+        env.push(("COWORK_TASK_ID".to_string(), id.to_string()));
     }
     env
 }
@@ -207,6 +213,9 @@ pub fn start_session(
     cwd: String,
     workspace_id: Option<String>,
     initial_prompt: Option<String>,
+    // Set when the session is launched from (or restored with) a tracker
+    // card — see `session_env`.
+    task_id: Option<String>,
     cols: u16,
     rows: u16,
     resume: bool,
@@ -242,7 +251,9 @@ pub fn start_session(
         }
         None => (None, String::new()),
     };
-    let env = session_env(root.as_deref(), &project, &state.task_bin_path, &session);
+    let env = session_env(
+        root.as_deref(), &project, &state.task_bin_path, &session, task_id.as_deref(),
+    );
 
     let app_out = app.clone();
     let sess_out = session.clone();
@@ -374,7 +385,7 @@ mod tests {
     #[test]
     fn session_env_carries_tracker_paths_when_configured() {
         let root = std::path::PathBuf::from("/home/u/vault/Tasks");
-        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9");
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", None);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("COWORK_TASKS_DIR"), Some("/home/u/vault/Tasks"));
         assert_eq!(get("COWORK_PROJECT"), Some("cowork-deck"));
@@ -385,9 +396,25 @@ mod tests {
     #[test]
     fn session_env_omits_tracker_vars_when_not_configured() {
         // Otherwise the agent would see an empty path and start guessing.
-        let env = session_env(None, "cowork-deck", "/opt/cowork_task", "sess-9");
+        let env = session_env(None, "cowork-deck", "/opt/cowork_task", "sess-9", None);
         assert!(env.iter().all(|(n, _)| n != "COWORK_TASKS_DIR"));
         assert!(env.iter().all(|(n, _)| n != "COWORK_TASK_BIN"));
+    }
+
+    #[test]
+    fn a_session_launched_from_a_card_carries_its_id() {
+        let root = std::path::PathBuf::from("/home/u/vault/Tasks");
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", Some("01K1CARD"));
+        let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("COWORK_TASK_ID"), Some("01K1CARD"));
+    }
+
+    #[test]
+    fn a_session_launched_without_a_card_carries_no_card_id() {
+        // The guard reads its absence as "nothing to demand" and allows.
+        let root = std::path::PathBuf::from("/home/u/vault/Tasks");
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", None);
+        assert!(env.iter().all(|(n, _)| n != "COWORK_TASK_ID"));
     }
 
     #[test]

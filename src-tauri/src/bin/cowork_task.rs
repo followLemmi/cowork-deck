@@ -7,15 +7,17 @@
 //! implementation of the card format. It writes the file directly — no TCP, no
 //! listener — so filing a ticket works even when the app window is busy.
 use cowork_deck::tasks::fs::{FsTaskProvider, RootCreation as FsRootCreation};
-use cowork_deck::tasks::board::KindId;
+use cowork_deck::tasks::board::{KindId, StepId};
 use cowork_deck::tasks::model::{TaskDraft, TaskOrigin};
-use cowork_deck::tasks::provider::TaskProvider;
+use cowork_deck::tasks::provider::{TaskPatch, TaskProvider};
 use std::io::Read;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Cmd {
     New { kind: String, title: String },
     Done { id: String },
+    Status { id: String, step: String },
+    Steps,
 }
 
 pub fn parse_args(argv: &[String]) -> Result<Cmd, String> {
@@ -48,7 +50,13 @@ pub fn parse_args(argv: &[String]) -> Result<Cmd, String> {
             let id = argv.get(2).ok_or("a card id is required")?.clone();
             Ok(Cmd::Done { id })
         }
-        "" => Err("a subcommand is required: new | done".into()),
+        "status" => {
+            let id = argv.get(2).ok_or("a card id is required")?.clone();
+            let step = argv.get(3).ok_or("a step is required")?.clone();
+            Ok(Cmd::Status { id, step })
+        }
+        "steps" => Ok(Cmd::Steps),
+        "" => Err("a subcommand is required: new | done | status | steps".into()),
         other => Err(format!("unknown subcommand: {other}")),
     }
 }
@@ -57,7 +65,9 @@ const USAGE: &str = "\
 cowork_task — file a card in the cowork-deck tracker.
 
   cowork_task new --kind <kind> --title \"…\"   (the body is read from stdin)
-  cowork_task done <id>
+  cowork_task done <id>                        (moves the card to the first terminal step)
+  cowork_task status <id> <step>               (moves the card to a configured step)
+  cowork_task steps                            (lists the configured steps, one per line)
 
 Requires the environment variables the deck sets on a session:
   COWORK_TASKS_DIR  folder the cards live in
@@ -118,6 +128,30 @@ fn run() -> Result<String, String> {
             let card = provider.resolve(&id).map_err(|e| e.to_string())?;
             Ok(format!("closed card {}", card.id))
         }
+        Cmd::Status { id, step } => {
+            // Same reasoning as `New`'s `--kind` check: the configuration is
+            // the only authority on which steps exist, and listing them here
+            // is what lets an agent correct itself instead of guessing.
+            let step = StepId(step);
+            if !provider.board().has_step(&step) {
+                return Err(format!(
+                    "unknown step: {} (configured: {})",
+                    step.as_str(),
+                    provider.board().step_ids().join(", ")
+                ));
+            }
+            let card = provider
+                .update(&id, TaskPatch { status: Some(step), ..Default::default() })
+                .map_err(|e| e.to_string())?;
+            Ok(format!("card {} is now in {}", card.id, card.status.as_str()))
+        }
+        Cmd::Steps => Ok(provider
+            .board()
+            .steps
+            .iter()
+            .map(|s| if s.terminal { format!("{} (terminal)", s.id.as_str()) } else { s.id.0.clone() })
+            .collect::<Vec<_>>()
+            .join("\n")),
     }
 }
 

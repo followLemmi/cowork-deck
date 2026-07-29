@@ -25,9 +25,10 @@ describe("ipc", () => {
 
   it("startSession passes all params incl. resume", async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
-    await startSession("s1", "/proj", "w1", "do the thing", 80, 24, false);
+    await startSession("s1", "/proj", "w1", "do the thing", "01AAA", 80, 24, false);
     expect(invoke).toHaveBeenCalledWith("start_session", {
-      session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing", cols: 80, rows: 24, resume: false,
+      session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing",
+      taskId: "01AAA", cols: 80, rows: 24, resume: false,
     });
   });
 

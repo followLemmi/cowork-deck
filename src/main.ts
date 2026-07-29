@@ -177,7 +177,7 @@ async function launchFromTask(t: Task) {
   // No tracker configured there: the kind's own id is the best label available,
   // which is what an empty configuration makes `kindLabel` fall back to.
   const cfg = caps?.board ?? { v: 1, steps: [], kinds: [] };
-  await deck.launchFromTask(target, t, taskPrompt(t, cfg));
+  await deck.launchFromTask(target, t, cfg, taskPrompt(t, cfg));
   // Both "launched" and "focused" leave a session worth looking at — staying on
   // the board would look like the button did nothing.
   setView(false);

@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, saveLayout, type SessionState, type Skill, type Workspace, type SessionEntry } from "./ipc";
+import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type Task, type BoardConfig } from "./ipc";
 import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -12,6 +12,7 @@ import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
 import { icon, iconButton } from "./icons";
 import { liveSessionForTask } from "./tasks";
+import { workingStep } from "./board-config";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
@@ -172,10 +173,18 @@ export class Deck {
    *  session, focus it rather than raise a second one — the same call a
    *  scheduled scenario makes when it skips an overlapping run. */
   async launchFromTask(
-    workspace: Workspace, task: { id: string; title: string }, prompt: string,
+    workspace: Workspace, task: Task, cfg: BoardConfig, prompt: string,
   ): Promise<"launched" | "focused"> {
     const alive = liveSessionForTask(task.id, this.taskLinks());
     if (alive) { this.focusTile(alive); return "focused"; }
+    // ▶ writes the step itself, so the card moves whether or not the agent
+    // remembers to. A failure must not block the launch: the work matters more
+    // than the bookkeeping, and the board's stale marker will show the mismatch.
+    const step = workingStep(cfg);
+    if (step !== null && task.status !== step) {
+      await updateTask(workspace.id, task.id, { status: step }).catch((e) =>
+        console.warn("could not move the card to the working step:", e));
+    }
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
@@ -263,7 +272,7 @@ export class Deck {
       restart.style.display = "none";
       tile.panel.write("\r\n[restarting session...]\r\n");
       try {
-        await tile.panel.start(tile.workspacePath, tile.workspaceId ?? null, null, true);
+        await tile.panel.start(tile.workspacePath, tile.workspaceId ?? null, null, tile.taskId ?? null, true);
         this.setState(session, "idle");
         void this.persistLayout();
       } catch (e) {
@@ -312,7 +321,7 @@ export class Deck {
     this.startPolling();
     this.renderList();
     try {
-      await panel.start(cwd, workspaceId ?? null, prompt, resume);
+      await panel.start(cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume);
       void this.persistLayout();
     } catch (e) {
       this.setState(session, "error");

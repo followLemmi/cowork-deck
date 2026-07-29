@@ -3,6 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const writeSpy = vi.fn();
 const startMock = vi.fn();
+// `vi.mock` factories are hoisted above ordinary top-level `const`s, so a
+// variable a factory reaches into has to be hoisted the same way — unlike
+// `writeSpy`/`startMock` above, this one is read from the "../src/ipc" mock,
+// which loads before this file's own top-level statements run.
+const { updateTaskMock } = vi.hoisted(() => ({ updateTaskMock: vi.fn() }));
 
 vi.mock("../src/terminal", () => ({
   TerminalPanel: class {
@@ -28,6 +33,7 @@ vi.mock("../src/ipc", () => ({
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
   sessionTokens: vi.fn().mockResolvedValue({ input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }),
+  updateTask: updateTaskMock,
 }));
 
 vi.mock("@tauri-apps/plugin-notification", () => ({
@@ -41,6 +47,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { Deck, serializeTiles } from "../src/sessions";
+import type { Task, BoardConfig } from "../src/ipc";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
 
@@ -288,11 +295,38 @@ describe("serializeTiles + taskId", () => {
   });
 });
 
+function card(over: Partial<Task> = {}): Task {
+  return {
+    id: "01AAA", title: "Fix", kind: "bug", status: "open", project: "P",
+    created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
+    body: "", path: "/p/01AAA-fix.md", damaged: null, conflict: false,
+    ...over,
+  };
+}
+
+// No `working: true` step — ▶ has nowhere it is told to move a card to.
+const CFG_NO_WORKING: BoardConfig = {
+  v: 1,
+  steps: [{ id: "open", label: "open" }, { id: "done", label: "done", terminal: true }],
+  kinds: [{ id: "bug", label: "bug" }],
+};
+
+const CFG_WITH_WORKING: BoardConfig = {
+  v: 1,
+  steps: [
+    { id: "open", label: "open" },
+    { id: "doing", label: "doing", working: true },
+    { id: "done", label: "done", terminal: true },
+  ],
+  kinds: [{ id: "bug", label: "bug" }],
+};
+
 describe("Deck.launchFromTask", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     document.body.innerHTML = "";
     startMock.mockResolvedValue(undefined);
+    updateTaskMock.mockResolvedValue(undefined);
   });
 
   it("launches a fresh tile when no session is linked to the card", async () => {
@@ -300,7 +334,7 @@ describe("Deck.launchFromTask", () => {
     const listEl = document.createElement("div");
     const deck = new Deck(deckEl, listEl, () => [WS]);
 
-    const outcome = await deck.launchFromTask(WS as any, { id: "01AAA", title: "Fix" }, "prompt");
+    const outcome = await deck.launchFromTask(WS as any, card(), CFG_NO_WORKING, "prompt");
 
     expect(outcome).toBe("launched");
     expect(deckEl.querySelectorAll(".tile").length).toBe(1);
@@ -316,16 +350,40 @@ describe("Deck.launchFromTask", () => {
     document.body.append(deckEl, listEl);
     const deck = new Deck(deckEl, listEl, () => [WS]);
 
-    const first = await deck.launchFromTask(WS as any, { id: "01AAA", title: "Fix" }, "prompt");
+    const first = await deck.launchFromTask(WS as any, card(), CFG_NO_WORKING, "prompt");
     expect(first).toBe("launched");
     expect(deckEl.querySelectorAll(".tile").length).toBe(1);
 
-    const second = await deck.launchFromTask(WS as any, { id: "01AAA", title: "Fix" }, "prompt");
+    const second = await deck.launchFromTask(WS as any, card(), CFG_NO_WORKING, "prompt");
 
     expect(second).toBe("focused");
     // No second tile, and no second session-start IPC call: the card's
     // existing (idle) session was focused, not duplicated.
     expect(deckEl.querySelectorAll(".tile").length).toBe(1);
     expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ▶ writes the step itself, so the card moves whether or not the agent
+  // remembers to.
+  it("moves the card to the configured working step", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_WITH_WORKING, "prompt");
+
+    expect(updateTaskMock).toHaveBeenCalledWith(WS.id, "01AAA", { status: "doing" });
+  });
+
+  // No step is marked `working` — there is nothing ▶ has been told to do,
+  // so it must not guess at one.
+  it("does not move the card when the configuration has no working step", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_NO_WORKING, "prompt");
+
+    expect(updateTaskMock).not.toHaveBeenCalled();
   });
 });
