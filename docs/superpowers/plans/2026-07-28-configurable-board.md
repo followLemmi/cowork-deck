@@ -2085,9 +2085,15 @@ describe("boardColumns", () => {
   });
 
   it("counts other projects' cards instead of showing them", () => {
-    const cols = boardColumns([card({ id: "f", project: "other" })], "p", CFG);
-    expect(cols.foreign).toEqual([{ project: "other", count: 1 }]);
-    expect(cols.columns.every((c) => c.tasks.length === 0)).toBe(true);
+    // Two of one project, plus a local card: the count is the only trace a card
+    // in a shared vault leaves when it is not shown, so the aggregation has to
+    // be asserted, not just the presence of a name.
+    const cols = boardColumns([
+      card({ id: "f1", project: "other" }), card({ id: "f2", project: "other" }),
+      card({ id: "mine", status: "todo" }),
+    ], "p", CFG);
+    expect(cols.foreign).toEqual([{ project: "other", count: 2 }]);
+    expect(cols.columns.find((c) => c.step.id === "todo")!.tasks.map((t) => t.id)).toEqual(["mine"]);
   });
 
   it("keeps a damaged card whatever its project says", () => {
@@ -2095,6 +2101,9 @@ describe("boardColumns", () => {
     const cols = boardColumns(
       [card({ id: "d", project: "", status: "todo", damaged: "no project field" })], "p", CFG);
     expect(cols.columns.find((c) => c.step.id === "todo")!.tasks.map((t) => t.id)).toEqual(["d"]);
+    // And is not *also* counted as foreign: it renders, so a banner saying a card
+    // named a different project would be a second, false statement about it.
+    expect(cols.foreign).toEqual([]);
   });
 });
 
@@ -2249,7 +2258,7 @@ In `src/board.ts`:
 
 - `render` builds `cols.columns.map((c) => this.column(c, state, caps))` and appends an extra column with class `tk-col tk-col-unknown` when `cols.unknown.length > 0`, headed `unknown step (n)`.
 - A column heading is `stepLabel` plus the count, and `+n` appended when `hidden > 0` — the shape `done (3+17)` has today.
-- `column` takes a `BoardColumn` rather than a label and a list, and sets `data-step` to the step id (Task 8 reads it as the drop target).
+- `column` takes a `BoardColumn` rather than a label and a list, and sets `data-step` to the step id (Task 8 reads it as the drop target). **The synthetic unknown column must not carry `data-step`** — mark it some other way. `unknown` is not a configured step, so a drop there would write `status: unknown`, leaving the card in the same column and corrupt in a second way; and a configuration that legitimately defines a step called `unknown` would produce two columns with the same `data-step`. Leaving it off means Task 8's natural `[data-step]` selector excludes the column without knowing any magic string.
 - `card` changes three things: the kind chip is omitted when `kindLabel` returns empty; `damaged` and `conflict` become a single `span.tk-warn-glyph` with text `⚠` and an `aria-label` and `title` carrying the full message including the id and path; and `isStale` adds `span.tk-stale` reading `no live session` with a `title` of
   `This card sits in the working step, but no session is running on it.`
 - The `p.tk-warn` paragraphs are deleted.
@@ -2281,6 +2290,14 @@ In `src/styles.css`, replace the `.tk-cols` rule and add the card sizing:
   height: 108px;
   box-sizing: border-box;
 }
+/* Placed explicitly, not auto-placed. The card appends three children, so
+   auto-placement drops them into rows 1-2-3 and the `1fr` lands on the meta row,
+   stretching it and pulling its text up under the title — which moves with a one-
+   versus two-line title, the opposite of the point. The spacer has to be the row
+   nothing is placed in. */
+.tk-card-title { grid-row: 1; }
+.tk-meta { grid-row: 3; }
+.tk-acts  { grid-row: 4; }
 .tk-card-title {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -2304,11 +2321,16 @@ offered on it, and the sidebar counts them all as open.** The board looks entire
 plausible and is wrong, with the only signal sitting in a field no code consumes.
 Left in Task 9, that state ships through three tasks.
 
-`BoardState` gains `boardError?: string | null` — **optional**, exactly like
-`migration?` beside it and for the same reason: every `render` call in this task's
-own tests, and every pre-existing one, omits it, and a required field would fail to
-compile against all of them. Absent means there is nothing wrong to report. Filled
-from `caps.boardError` in `refreshBoard` (`src/main.ts:182`). `BoardView.render` shows it above the columns as
+**`BoardState` gains no field.** `render` reads `caps.boardError` directly.
+
+This was originally specified as a new `BoardState.boardError`, and that was wrong:
+`caps` is already on `BoardState`, `ProviderCapabilities.boardError` is required on
+it, and `render` reaches the banner only after its `!caps` early return — so at the
+point of use `caps` is non-null and the error is in scope. A separate field is a
+second channel for the same value, two things that can disagree, and it forces a
+line in `refreshBoard` that no test can reach. Reading it off `caps` needs no
+`src/main.ts` change at all, and every existing `caps` fixture then exercises the
+banner. `BoardView.render` shows it above the columns as
 `p.tk-board-error`: `board.json could not be used: <error>. The default two-step
 board is shown instead, so cards may appear in the wrong column. The file was left
 alone.` The board still draws underneath it.
@@ -2316,8 +2338,11 @@ alone.` The board still draws underneath it.
 The second sentence is not padding: it is the part that stops a person trusting
 the columns while the fallback is active.
 
-Add two `board.test.ts` cases: the message renders when `boardError` is set, and
-the columns still render alongside it.
+Add two `board.test.ts` cases: the message renders when `caps.boardError` is set,
+and the columns still render alongside it. The first must assert the **second**
+sentence too — `so cards may appear in the wrong column. The file was left alone.`
+Asserting only the opening words leaves the whole point of this step guarded by six
+characters of prose, and deleting the clause keeps the suite green.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
