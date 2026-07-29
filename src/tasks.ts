@@ -41,6 +41,19 @@ export function taskPrompt(task: Task, cfg: BoardConfig): string {
   ];
   const body = task.body.trim();
   if (body) lines.push("", body);
+  // Omitted entirely when the configuration has no steps: "The board's steps
+  // are: ." is worse than silence, and a prompt is the one place an agent
+  // cannot check a claim against anything else. This is Task 4's ruling —
+  // `taskPrompt` deliberately shipped without a steps line until now, and the
+  // reviewer of Task 4 flagged its absence as correct rather than missing.
+  if (cfg.steps.length > 0) {
+    const steps = cfg.steps.map((s) => s.id).join(", ");
+    lines.push(
+      "",
+      `This card is in step "${task.status}". The board's steps are: ${steps}.`,
+      `Move it as the work progresses: "$COWORK_TASK_BIN" status ${task.id} <step>`,
+    );
+  }
   lines.push(
     "",
     `When the work is finished, close the card: "$COWORK_TASK_BIN" done ${task.id}`,

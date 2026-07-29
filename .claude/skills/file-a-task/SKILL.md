@@ -35,6 +35,26 @@ optional, but a card without a repro is close to useless.
 If the environment variables are missing, no tracker is configured for this
 workspace — say so to the human rather than guessing at a path.
 
+## Moving a card through its steps
+
+The steps a card can be in are configured **per project** in that project's
+`board.json` — they are not fixed by the tool. One project might have
+`backlog / todo / doing / shipped`, another just `open / done`. Never assume a
+step name; read the real list:
+
+```bash
+"$COWORK_TASK_BIN" steps
+```
+
+That prints the configured steps in board order, marking which ones are
+terminal (closed). Move a card into one of them with:
+
+```bash
+"$COWORK_TASK_BIN" status <id> <step>
+```
+
+`<step>` must be one of the ids `steps` printed — anything else is rejected.
+
 ## Closing a card
 
 If you are working **on** a card (its id is in your first prompt) and the work
@@ -44,9 +64,11 @@ is finished:
 "$COWORK_TASK_BIN" done <id>
 ```
 
-Do not close cards you did not work on. `done` finds a card by id anywhere
-under `$COWORK_TASKS_DIR` and does not check `project:` — on a shared root (the
-same vault serving several workspaces, say) that means guessing an id can close
+`done` moves the card to the project's first terminal step, whatever that step
+is named — do not hardcode `done` as a step id, it may not exist. Do not close
+cards you did not work on. `done` finds a card by id anywhere under
+`$COWORK_TASKS_DIR` and does not check `project:` — on a shared root (the same
+vault serving several workspaces, say) that means guessing an id can close
 someone else's card. Close only the card you were given in your prompt.
 
 ## Reading the backlog

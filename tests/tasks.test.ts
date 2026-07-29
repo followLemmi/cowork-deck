@@ -47,6 +47,20 @@ describe("taskPrompt", () => {
     expect(p).not.toContain("undefined");
     expect(p.trim().endsWith(" ")).toBe(false);
   });
+
+  it("names the current step, lists the configured steps, and still closes with done", () => {
+    const p = taskPrompt(card({ status: "doing" }), CFG4);
+    expect(p).toContain('"doing"');
+    expect(p).toContain("backlog, todo, doing, done");
+    expect(p).toContain(`"$COWORK_TASK_BIN" done 01AAA`);
+  });
+
+  it("omits the steps line entirely for a configuration with no steps", () => {
+    const noSteps: BoardConfig = { v: 1, steps: [], kinds: CFG.kinds };
+    const p = taskPrompt(card(), noSteps);
+    expect(p).not.toContain("steps are");
+    expect(p).toContain(`"$COWORK_TASK_BIN" done 01AAA`);
+  });
 });
 
 describe("derivedStatus", () => {

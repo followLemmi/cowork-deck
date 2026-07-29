@@ -87,6 +87,29 @@ at most one tile.
 A run that produced nothing — no workspace, a skipped overlap, `claude` missing — is recorded rather
 than silently swallowed: the scenario's row says what happened and when it was last successful.
 
+## The board's configuration
+
+Each project's tracker root (see [Task tracker](#features) above) holds a
+`board.json` beside the cards. It lists the project's steps — a Kanban column
+each — and its card kinds. Steps and kinds are **per project**: one board might
+have `backlog / todo / doing / shipped`, another just `open / done`; nothing in
+the app or its CLI assumes either. A step can carry two flags: `terminal`
+(closed — more than one step may be terminal, and the first in configuration
+order is where ✓ and `cowork_task done` send a card) and `working` (at most
+one — where ▶ moves a card when it launches a session).
+
+If `board.json` is missing, the app creates it with today's default
+`open`/`done` configuration. If it exists but cannot be parsed or fails
+validation (no terminal step, a duplicate id, and so on), the board falls back
+to that same default **without rewriting the file** — the broken bytes stay on
+disk so you can fix your own typo, and the board shows a banner explaining
+why.
+
+A running session gets its card's id via `COWORK_TASK_ID`, but never a fixed
+list of steps — the configuration can change after the session started. It
+reads the current steps with `cowork_task steps`, and moves its card with
+`cowork_task status <id> <step>`.
+
 ## Locating the `claude` binary
 
 By default cowork-deck looks for `claude` (or `claude.cmd` on Windows) on `PATH`. If Claude Code isn't on
