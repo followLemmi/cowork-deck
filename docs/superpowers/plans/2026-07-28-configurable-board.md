@@ -2911,7 +2911,9 @@ Register all three commands in `src-tauri/src/main.rs` beside the `tasks_*` ones
 Run: `cd src-tauri && cargo test tasks_cmd::`
 Expected: FAIL to compile.
 
-`rewrite_step` walks `FsTaskProvider::scan`, keeps cards whose `project` matches the workspace name, `damaged.is_none()`, `!conflict` and `status == from`, and calls `provider.update(&card.id, TaskPatch { status: Some(to.clone()), ..Default::default() })` on each, collecting failures into `skipped` with the file name and the error's `to_string()`. Damaged and conflicting cards are skipped and reported, never written.
+`rewrite_step` walks `FsTaskProvider::scan`, keeps the cards that are **ours and in the step being renamed**, and calls `provider.update(&card.id, TaskPatch { status: Some(to.clone()), ..Default::default() })` on each, collecting failures into `skipped` with the file name and the error's `to_string()`.
+
+"Ours" is `card.damaged.is_some() || card.project == workspace_name` — the same damaged-or-ours rule `FsTaskProvider::list` and `boardColumns` already apply, because a card may be damaged *precisely* because its `project` field is missing. So a damaged card is **not** filtered out of the candidates: it is attempted, `update` refuses it, and the refusal becomes a `skipped` entry naming the file. That is the point. Filtering damaged cards out earlier would be quieter and worse — a card stuck in the step being renamed would go unmentioned, and the person would discover it later in the unknown-step column with no idea why. Conflicting cards reach `skipped` the same way, through `update`'s own refusal rather than a second copy of the rule here.
 
 `step_usage` counts by `status` over the same project-matched set, including steps the configuration no longer lists — the editor needs to know a step is occupied even when it is about to disappear.
 
