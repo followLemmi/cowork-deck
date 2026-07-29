@@ -251,9 +251,11 @@ fn guard(dir: &tempfile::TempDir, card: Option<&str>, payload: &str) -> (i32, St
         }
     }
     let mut child = cmd.spawn().unwrap();
-    // Best effort: several rows return before `guard` ever reads stdin (no
-    // card id, no tracker directory), closing the read end before this write
-    // lands — same reasoning as `run`'s helper above.
+    // Best effort: a row with no tracker directory returns before `guard` ever
+    // reads stdin, closing the read end before this write lands — same
+    // reasoning as `run`'s helper above. A row with no *card* does read it: the
+    // announcement is owed to `UserPromptSubmit` only, so the event name has to
+    // be parsed before that path can decide anything.
     let _ = child.stdin.take().unwrap().write_all(payload.as_bytes());
     let out = child.wait_with_output().unwrap();
     (
@@ -430,4 +432,88 @@ fn guard_allows_when_the_tracker_directory_is_unset() {
         .write_all(br#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(0), "a missing tracker directory must never block a Stop");
+}
+
+/// A session launched without a card gets `COWORK_TASKS_DIR`, `COWORK_PROJECT`
+/// and `COWORK_TASK_BIN` in its environment and, before this, no statement
+/// anywhere that they exist: the launch prompt is built only on the
+/// launch-from-a-card path, and every branch of `guard` returned early on a
+/// missing `COWORK_TASK_ID`. An agent does not run `env` on the off chance —
+/// it reads its prompt, its hooks and its skills — so the tracker was
+/// invisible to exactly the sessions that would file the first card.
+#[test]
+fn guard_announces_the_tracker_on_a_user_prompt_without_a_card() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let (code, out, err) = guard(&dir, None, r#"{"hook_event_name":"UserPromptSubmit"}"#);
+    assert_eq!(code, 0, "announcing is not blocking");
+    assert!(err.trim().is_empty(), "nothing belongs on stderr here: {err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("a hook reply");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().expect("context");
+    // The directory, because a card is filed into it and the agent may want to
+    // read the backlog with ordinary tools; the subcommand, because knowing a
+    // CLI exists is useless without the one call that files a card.
+    assert!(ctx.contains(dir.path().to_str().unwrap()), "must name the tracker directory: {ctx}");
+    assert!(ctx.contains("cowork_task"), "must name the CLI: {ctx}");
+    assert!(ctx.contains("new"), "must name the subcommand that files a card: {ctx}");
+    // `--kind` is rejected unless it is one the board configures, and no
+    // subcommand lists the kinds — `steps` lists steps. Naming them here is the
+    // only way an agent learns them without reading board.json itself.
+    assert!(
+        ctx.contains("bug") && ctx.contains("task") && ctx.contains("idea"),
+        "must name the configured kinds: {ctx}"
+    );
+}
+
+/// `DEFAULT_BOARD`'s kinds are the ones `default_config()` hands out, so the
+/// test above cannot tell "the message reports this board's kinds" apart from
+/// "the message hardcodes bug/task/idea". This board configures neither, so the
+/// assertion can only be satisfied by actually reading the configuration.
+#[test]
+fn guard_announces_the_kinds_the_board_actually_configures() {
+    let dir = tempdir_with_board(
+        r#"{"steps":[{"id":"open","label":"Open"},{"id":"done","label":"Done","terminal":true}],
+        "kinds":[{"id":"chore","label":"Chore"},{"id":"spike","label":"Spike"}]}"#,
+    );
+    let (code, out, _) = guard(&dir, None, r#"{"hook_event_name":"UserPromptSubmit"}"#);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("a hook reply");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().expect("context");
+    assert!(ctx.contains("chore") && ctx.contains("spike"), "must name this board's kinds: {ctx}");
+    assert!(!ctx.contains("bug"), "must not name a kind this board does not have: {ctx}");
+}
+
+/// An unusable `board.json` already allows on the card path, for the reason
+/// given there. The announcement has a second reason to stay silent: its whole
+/// content is read off the configuration, and the fallback board's kinds are
+/// not this project's — naming them would send the agent to `new --kind bug`
+/// on a board that rejects it.
+#[test]
+fn guard_announces_nothing_without_a_card_when_board_json_is_unusable() {
+    let dir = tempdir_with_board("{ broken");
+    let (code, out, _) = guard(&dir, None, r#"{"hook_event_name":"UserPromptSubmit"}"#);
+    assert_eq!(code, 0);
+    assert_eq!(out.trim(), "", "a board we cannot read cannot be described");
+}
+
+/// The row that runs in every session in every workspace with no tracker
+/// configured, on every turn. `COWORK_TASKS_DIR` unset means there is nothing
+/// to announce, and announcing anyway would put a sentence about a tracker
+/// that does not exist into every prompt the deck ever launches.
+#[test]
+fn guard_announces_nothing_when_no_tracker_is_configured() {
+    let bin = env!("CARGO_BIN_EXE_cowork_task");
+    let mut child = Command::new(bin)
+        .arg("guard")
+        .env_remove("COWORK_TASK_ID")
+        .env_remove("COWORK_TASKS_DIR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Best effort, same as the row above: this one returns before reading stdin.
+    let _ = child.stdin.take().unwrap().write_all(br#"{"hook_event_name":"UserPromptSubmit"}"#);
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "");
 }

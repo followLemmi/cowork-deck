@@ -174,24 +174,35 @@ fn run() -> Result<String, String> {
 
 /// Reads a hook payload on stdin and prints what that hook expects.
 ///
+/// Two jobs, told apart by whether the session carries a card. With one, it
+/// reports that card's step every turn and blocks the first `Stop` that leaves
+/// it open. Without one, it announces that the workspace has a tracker at all —
+/// the launch prompt is built only on the launch-from-a-card path, so a session
+/// started plainly has the CLI in its environment and, before this, nothing
+/// anywhere saying so. An agent does not run `env` on the off chance.
+///
 /// Every failure path allows. A tracker problem — unreadable board.json, a
 /// missing card, a failing disk — must not hold a session hostage, the same way
 /// a failing watcher degrades into a delay rather than a breakage.
 ///
 /// Unlike every other subcommand, `guard` does not go through `run`'s shared
-/// environment resolution: `COWORK_TASK_ID` is pushed onto a session
-/// unconditionally (Task 10), so a session resumed into a workspace whose
-/// tracker directory has since gone missing carries a card id with nothing to
+/// environment resolution: `COWORK_TASK_ID` is pushed onto a session whenever it
+/// is linked to a card (Task 10), without regard for whether that workspace's
+/// tracker is reachable, so a session resumed into a workspace whose tracker
+/// directory has since gone missing carries a card id with nothing to
 /// resolve it against. Every other subcommand fails when `COWORK_TASKS_DIR` is
 /// unset, deliberately, so a session never writes somewhere arbitrary — but a
 /// non-zero `Stop` hook blocks the session, so `guard` must not inherit that
 /// refusal. It resolves what it can and allows on anything missing.
 fn guard() -> i32 {
-    let Ok(id) = std::env::var("COWORK_TASK_ID") else { return 0 };
-    if id.trim().is_empty() {
-        return 0;
-    }
-    let Ok(dir) = std::env::var("COWORK_TASKS_DIR") else { return 0 };
+    // The tracker directory is read first, ahead of the card id, because it is
+    // the one thing both paths below need: without it there is neither a card to
+    // resolve nor a tracker to describe. Empty counts as unset — `session_env`
+    // omits these variables rather than emptying them precisely so no path
+    // misreads an empty one, and an announcement naming an empty directory
+    // would be that misreading, printed into the prompt.
+    let dir = std::env::var("COWORK_TASKS_DIR").ok().filter(|d| !d.trim().is_empty());
+    let Some(dir) = dir else { return 0 };
 
     let mut payload = String::new();
     let _ = std::io::stdin().read_to_string(&mut payload);
@@ -212,6 +223,41 @@ fn guard() -> i32 {
     if provider.board_error().is_some() {
         return 0;
     }
+
+    // No card: this session was not launched from one, which is the only state
+    // in which nothing else ever names the tracker — the launch prompt is built
+    // on the launch-from-a-card path alone. Announce it once per turn and allow;
+    // there is no card here to demand anything about, so `Stop` is untouched.
+    let id = std::env::var("COWORK_TASK_ID").ok().filter(|s| !s.trim().is_empty());
+    let Some(id) = id else {
+        if event_name != "UserPromptSubmit" {
+            return 0;
+        }
+        // Both lists are non-empty by construction: a configuration with no
+        // steps or no kinds fails validation, and `board_error` above already
+        // returned on a configuration that failed it. So this needs none of the
+        // "omit the line rather than print it empty" handling `taskPrompt` does
+        // for a board it receives unvalidated.
+        let kinds =
+            provider.board().kinds.iter().map(|k| k.id.as_str()).collect::<Vec<_>>().join(", ");
+        let ctx = format!(
+            "This workspace has a cowork-deck tracker; its cards live in {dir}. File one with \
+             the cowork_task CLI: \"$COWORK_TASK_BIN\" new --kind <kind> --title \"…\", with the \
+             body on stdin. The kinds this board configures are: {kinds} — anything else is \
+             rejected. \"$COWORK_TASK_BIN\" steps lists the steps a card can be moved to.",
+        );
+        println!(
+            "{}",
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": ctx,
+                }
+            })
+        );
+        return 0;
+    };
+
     let Ok(cards) = provider.scan() else { return 0 };
     let mine: Vec<&Task> = cards.iter().filter(|c| c.id == id).collect();
     // Not exactly one, or one we would not write into: nothing to demand.

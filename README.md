@@ -111,6 +111,13 @@ ages the moment anyone edits the board, so the live list from
 `cowork_task steps` is the authority when the two disagree. A session moves
 its card with `cowork_task status <id> <step>`.
 
+A session **not** launched from a card gets no such prompt, so the tracker
+introduces itself instead: while the workspace has one configured, each turn
+adds a line naming the card directory, the `cowork_task new` call that files a
+card, and the kinds this board accepts. Without a configured tracker, or with a
+`board.json` that cannot be read, it says nothing — there is nothing it could
+say that would be true.
+
 ## Locating the `claude` binary
 
 By default cowork-deck looks for `claude` (or `claude.cmd` on Windows) on `PATH`. If Claude Code isn't on
