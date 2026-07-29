@@ -1426,21 +1426,22 @@ mod tests {
     /// A workspace named "proj" whose tracker root actually exists on disk, with
     /// `TEST_BOARD_JSON` already written beside it.
     ///
-    /// The tempdir is leaked with `TempDir::keep` rather than returned alongside
-    /// the path: every caller only ever reads and writes through `root`, and the
-    /// tempdir being dropped at the end of this function would delete that root
-    /// out from under them.
-    fn workspace_with_root() -> (PathBuf, Workspace) {
+    /// Returns the `TempDir` guard alongside `root` rather than leaking it with
+    /// `TempDir::keep`: every other fixture in this file keeps its own inline
+    /// `tempfile::tempdir()` in scope for the whole test body, and a returned
+    /// guard does exactly that for its caller — bind it (`let (_dir, root, ws)
+    /// = …`) and it cleans up when the test ends, unlike one that is dropped
+    /// before the caller ever sees `root`.
+    fn workspace_with_root() -> (tempfile::TempDir, PathBuf, Workspace) {
         let dir = tempfile::tempdir().unwrap();
-        let picked = dir.keep();
         let mut w = ws(Some(tracker(TrackerRoot::Path {
-            path: picked.to_string_lossy().to_string(),
+            path: dir.path().to_string_lossy().to_string(),
         })));
         w.name = "proj".into();
         let (root, _) = resolve_root(&w).expect("configured");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join(BOARD_FILE), TEST_BOARD_JSON).unwrap();
-        (root, w)
+        (dir, root, w)
     }
 
     fn write_card(dir: &std::path::Path, filename: &str, id: &str, project: &str, status: &str) {
@@ -1474,7 +1475,7 @@ mod tests {
     fn rewriting_a_step_touches_only_this_project_s_cards() {
         // A shared vault root holds other projects' cards, and fs.rs::resolve
         // already refuses to write those.
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         write_card(&root, "mine.md", "01A", "proj", "todo");
         write_card(&root, "theirs.md", "01B", "other-proj", "todo");
         let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
@@ -1490,7 +1491,7 @@ mod tests {
         // on-disk board.json — only in the draft the caller is about to save.
         // "in-progress" is nowhere in `TEST_BOARD_JSON`, so this fails unless
         // `rewrite_step` validates against `draft`, not the file.
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         write_card(&root, "mine.md", "01A", "proj", "todo");
         let draft = crate::tasks::board::parse(
             r#"{"steps":[{"id":"todo","label":"To do"},
@@ -1505,7 +1506,7 @@ mod tests {
 
     #[test]
     fn rewriting_a_step_skips_a_damaged_card_and_says_which() {
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         std::fs::write(root.join("note.md"), "---\nid: 01C\nstatus: todo\n---\nA note.\n").unwrap();
         let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
         assert_eq!(report.rewritten, 0);
@@ -1515,7 +1516,7 @@ mod tests {
 
     #[test]
     fn rewriting_preserves_unknown_frontmatter_keys() {
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         write_card_with_extra(&root, "mine.md", "01A", "proj", "todo", "tags: [inbox]");
         rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
         assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("tags: [inbox]"));
@@ -1523,7 +1524,7 @@ mod tests {
 
     #[test]
     fn step_usage_counts_this_project_s_cards_per_step() {
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         write_card(&root, "a.md", "01A", "proj", "todo");
         write_card(&root, "b.md", "01B", "proj", "todo");
         write_card(&root, "c.md", "01C", "proj", "done");
@@ -1535,7 +1536,7 @@ mod tests {
 
     #[test]
     fn saving_a_configuration_refuses_an_invalid_one_and_leaves_the_file_alone() {
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         let before = std::fs::read(root.join(BOARD_FILE)).unwrap();
         let bad = BoardConfig { v: 1,
             steps: vec![Step { id: StepId("a".into()), label: "A".into(), terminal: false, working: false }],
@@ -1549,7 +1550,7 @@ mod tests {
         // Review round 1, Important #3: a valid *new* configuration must not
         // silently replace a hand-written board.json the program could not
         // read — the person has to fix their own typo, not lose it.
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         std::fs::write(root.join(BOARD_FILE), "{ not json").unwrap();
         let before = std::fs::read(root.join(BOARD_FILE)).unwrap();
         let good = BoardConfig {
@@ -1563,7 +1564,7 @@ mod tests {
 
     #[test]
     fn saving_a_valid_configuration_writes_it_and_it_reads_back() {
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         let cfg = BoardConfig {
             v: 1,
             steps: vec![
@@ -1579,7 +1580,7 @@ mod tests {
 
     #[test]
     fn rewriting_a_step_leaves_cards_in_other_steps_alone() {
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         write_card(&root, "mine.md", "01A", "proj", "todo");
         write_card(&root, "other.md", "01B", "proj", "done");
         let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
@@ -1592,7 +1593,7 @@ mod tests {
 
     #[test]
     fn step_usage_ignores_a_damaged_card_with_no_status_field() {
-        let (root, ws) = workspace_with_root();
+        let (_dir, root, ws) = workspace_with_root();
         write_card(&root, "a.md", "01A", "proj", "todo");
         std::fs::write(root.join("broken.md"), "---\nid: 01Z\nproject: proj\n---\nx\n").unwrap();
         let usage = step_usage(&ws).unwrap();

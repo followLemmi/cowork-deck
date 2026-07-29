@@ -71,9 +71,12 @@ impl std::fmt::Display for TaskError {
             TaskError::Conflict(id) => {
                 write!(f, "more than one file carries id {id} — fix it by hand")
             }
+            // Not "will not be closed automatically": `resolve` is not the only
+            // caller that reaches this refusal any more — `rewrite_step` does
+            // too, and a renamed step never asked to close anything.
             TaskError::Damaged(path) => write!(
                 f,
-                "the card is damaged and will not be closed automatically — repair it by hand: {path}"
+                "the card is damaged and must be repaired by hand: {path}"
             ),
             TaskError::UnknownStep(s) => write!(f, "no step named {s} in board.json"),
             TaskError::UnknownKind(s) => write!(f, "no kind named {s} in board.json"),
