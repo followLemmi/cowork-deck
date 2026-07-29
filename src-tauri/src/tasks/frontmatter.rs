@@ -216,7 +216,11 @@ pub fn replace_body(text: &str, body: &str) -> Option<String> {
     out.push_str("---");
     out.push_str(nl);
     if !body.is_empty() {
-        if !body.starts_with('\n') { out.push_str(nl); }
+        // No separator pushed here, same reason as `render_card`: `split_frontmatter`
+        // strips exactly the one newline that terminates the closing `---` line, so
+        // an inserted blank line would come back on the next read as a leading `\n`
+        // glued to the body. All three writers of a card — this one, `render_card`,
+        // and `set_fields` — agree with the one reader: no separator, ever.
         out.push_str(body);
         if !body.ends_with('\n') { out.push_str(nl); }
     }

@@ -710,6 +710,25 @@ The body, unchanged.\n";
     }
 
     #[test]
+    fn a_body_only_patch_round_trips_byte_for_byte_on_the_next_read() {
+        // The `Task` `update` returns is not evidence of what landed on disk:
+        // `update` assigns `card.body` from the patch directly, without re-reading
+        // the file. Only a fresh parse of the bytes on disk proves the write itself
+        // is exact — in particular, that no separator blank line was inserted
+        // between the frontmatter block and the body, which `split_frontmatter`
+        // would not strip back out on the next read.
+        let dir = tempfile::tempdir().unwrap();
+        let p = three_step_provider(dir.path());
+        let card = a_card(&p);
+        p.update(&card.id, TaskPatch { title: None, kind: None, status: None,
+            body: Some("Replaced.\n".into()) }).unwrap();
+
+        let text = std::fs::read_to_string(&card.path).unwrap();
+        let reread = crate::tasks::frontmatter::parse_card(&text, &card.path).expect("still a card");
+        assert_eq!(reread.body, "Replaced.\n", "a stray leading blank line survived: {text:?}");
+    }
+
+    #[test]
     fn update_refuses_a_damaged_card() {
         let dir = tempfile::tempdir().unwrap();
         let p = three_step_provider(dir.path());
