@@ -2714,6 +2714,42 @@ The cases:
 
 `dragCardTo(id, step)` dispatches `dragstart` on the card with a real `DataTransfer`, then `dragover` and `drop` on `.tk-col[data-step="<step>"]`. jsdom does not implement `DataTransfer`, so the helper supplies a stub object with `setData`/`getData` backed by a `Map` and passes it as `dataTransfer` on the events it constructs.
 
+**Construct the events `cancelable: true` and return `dispatchEvent`'s boolean**, which is `false` exactly when a handler called `preventDefault()`. jsdom implements this, and it is the only way the suite can see the two `preventDefault` calls that make dropping possible at all — without them a browser fires no `drop` event, so the whole pointer feature can be deleted one line at a time with every other test green. Three cases:
+
+```ts
+  it("offers a configured column as a drop target by preventing the dragover default", () => {
+    render([card({ id: "a", status: "todo" })]);
+    const col = view.mount.querySelector<HTMLElement>('.tk-col[data-step="done"]')!;
+    const dt = makeDataTransfer();
+    fireDrag("dragstart", cardEl("a"), dt);
+    expect(fireDrag("dragover", col, dt)).toBe(false); // false === default prevented
+    expect(fireDrag("drop", col, dt)).toBe(false);
+  });
+
+  it("leaves the unknown column's dragover default alone", () => {
+    render([card({ id: "a", status: "todo" }), card({ id: "x", status: "legacy" })]);
+    const unknown = view.mount.querySelector<HTMLElement>(".tk-col-unknown")!;
+    const dt = makeDataTransfer();
+    fireDrag("dragstart", cardEl("a"), dt);
+    expect(fireDrag("dragover", unknown, dt)).toBe(true); // nothing prevents it
+  });
+
+  it("rescues a card out of an unknown step by dropping it in a real column", () => {
+    render([card({ id: "x", status: "legacy" })]);
+    dragCardTo("x", "todo");
+    expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "x" }), "todo");
+  });
+```
+
+The second case upgrades the unknown-column check from a `dataset` proxy to the
+behaviour a browser actually consults. The drop-side `preventDefault` matters for its
+own reason: it is what stops the browser navigating away when someone drops a file or
+a URL onto the board.
+
+Also assert the two visual states, since a card stuck at `opacity: 0.5` is a visible
+bug with no guard: `dragstart` adds `tk-dragging` and `dragend` removes it; `dragover`
+adds `tk-col-over` and `drop` removes it.
+
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run tests/board-drag.test.ts`
@@ -2729,6 +2765,8 @@ Expected: FAIL — no `.tk-prev`, no `data-step`.
   **Check this against Task 7 in a real browser, not only in jsdom.** Task 7 turned the card's title into a `button` filling the whole title row, and a native drag does not begin on a `<button>` — so most of the card's upper area may no longer be a drag handle. The tests dispatch `dragstart` on the card element directly and cannot see this. If the card is not draggable by its visible body, say so in your report; the remedy (a drag handle, or `draggable` on an inner region) is a design decision and mine to make, not yours to improvise.
 - Each column with a `data-step` gets `dragover` calling `preventDefault` (without it there is no drop) and toggling `tk-col-over`, and `drop` reading the id, finding the task, and calling `onMove` unless the step is the one it already has.
 - Arrows: `‹` as `button.tk-prev` and `›` as `button.tk-next`, prepended and appended around `▶` and `✓` in `tk-acts`, rendered only when `stepBefore` / `stepAfter` return non-null, with `title` and `aria-label` `Move to the previous step` / `Move to the next step`.
+- **Both arrows and `draggable` are withheld from a damaged or conflicting card**, the same condition every other write surface already applies: `▶` is hidden for `damaged`, `✓` for `damaged || conflict`, and the modal disables every field and drops Save on `!(!damaged && !conflict)` with its reason written down — "rather than offering an edit that cannot be written back". The backend refuses all three cases and `moveTask` surfaces the refusal, so an unguarded arrow fails honestly rather than corrupting anything; but it is a control offered where it can only ever error, and departing from a recorded precedent silently is worse than either choice. Add a test that a damaged card has neither arrow and is not `draggable`.
+- `effectAllowed = "move"` on `dragstart` and `dropEffect = "move"` on `dragover`. Without them the cursor shows the browser's default badge — typically a copy `+` — on what is a move. jsdom will not notice; a person will.
 
 - [ ] **Step 4: Wire the write in `main.ts`**
 
@@ -2738,8 +2776,10 @@ async function moveTask(t: Task, step: StepId) {
   if (!ws) return;
   try { await updateTask(ws.id, t.id, { status: step }); }
   catch (e) {
-    // The optimistic move has to be explained: without this the card just
-    // springs back on the next poll and the board looks broken.
+    // Nothing here is optimistic — a native drag never moves the node, and this
+    // awaits the write before re-reading the board. So a refusal has to be said
+    // out loud: without the alert the drag or the arrow would simply appear to
+    // do nothing at all.
     await alertModal(`Could not move the card: ${String(e)}`);
   }
   await refreshBoard();
