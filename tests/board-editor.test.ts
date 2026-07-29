@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { applyBoardEdit, openBoardEditor, validateDraft } from "../src/board-editor";
 import type { BoardEditIo } from "../src/board-editor";
 import type { BoardConfig, RewriteReport, StepUsage } from "../src/ipc";
@@ -13,6 +13,14 @@ const CFG: BoardConfig = {
   ],
   kinds: [{ id: "bug", label: "Bug" }, { id: "task", label: "Task" }],
 };
+
+// Every case below ends by closing its dialog, but a case that *fails* before
+// reaching that line does not — and the next case then queries the stale
+// overlay, so one defect reads as half a dozen failures plus a timeout. Tear
+// down whatever is left instead, so a real regression names itself.
+afterEach(() => {
+  for (const overlay of document.querySelectorAll(".modal-overlay")) overlay.remove();
+});
 
 describe("validateDraft", () => {
   it("accepts a good draft", () => expect(validateDraft(CFG)).toBeNull());
