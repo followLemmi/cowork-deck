@@ -29,8 +29,11 @@ What is wrong, how to reproduce it, where to look.
 EOF
 ```
 
-`--kind` is `bug`, `task` or `idea`. The body is read from stdin and is
-optional, but a card without a repro is close to useless.
+`--kind` must be one of the kinds this project's `board.json` configures —
+the default board has `bug`, `task` and `idea`, but that is one project's
+configuration, not a fixed list. An unconfigured `--kind` is rejected. The
+body is read from stdin and is optional, but a card without a repro is close
+to useless.
 
 If the environment variables are missing, no tracker is configured for this
 workspace — say so to the human rather than guessing at a path.

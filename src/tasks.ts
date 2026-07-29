@@ -52,6 +52,10 @@ export function taskPrompt(task: Task, cfg: BoardConfig): string {
       "",
       `This card is in step "${task.status}". The board's steps are: ${steps}.`,
       `Move it as the work progresses: "$COWORK_TASK_BIN" status ${task.id} <step>`,
+      // The snapshot above ages the moment anyone edits the board, and the
+      // prompt has no way to say so later. Naming the live source here is what
+      // keeps the sentence from becoming a stale authority.
+      `The board can change while you work; "$COWORK_TASK_BIN" steps lists it as it is now.`,
     );
   }
   lines.push(

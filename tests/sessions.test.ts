@@ -326,7 +326,12 @@ describe("Deck.launchFromTask", () => {
     vi.clearAllMocks();
     document.body.innerHTML = "";
     startMock.mockResolvedValue(undefined);
-    updateTaskMock.mockResolvedValue(undefined);
+    // The real IPC call returns the card as the write actually left it, and
+    // `launchFromTask` now builds the prompt from that return value — so the
+    // mock has to answer with a real card, not `undefined`, or building the
+    // prompt after a successful move would throw on every test here.
+    updateTaskMock.mockImplementation((_ws: string, id: string, patch: { status?: string }) =>
+      Promise.resolve(card({ id, ...(patch.status ? { status: patch.status } : {}) })));
   });
 
   it("launches a fresh tile when no session is linked to the card", async () => {
@@ -334,7 +339,7 @@ describe("Deck.launchFromTask", () => {
     const listEl = document.createElement("div");
     const deck = new Deck(deckEl, listEl, () => [WS]);
 
-    const outcome = await deck.launchFromTask(WS as any, card(), CFG_NO_WORKING, "prompt");
+    const outcome = await deck.launchFromTask(WS as any, card(), CFG_NO_WORKING);
 
     expect(outcome).toBe("launched");
     expect(deckEl.querySelectorAll(".tile").length).toBe(1);
@@ -350,11 +355,11 @@ describe("Deck.launchFromTask", () => {
     document.body.append(deckEl, listEl);
     const deck = new Deck(deckEl, listEl, () => [WS]);
 
-    const first = await deck.launchFromTask(WS as any, card(), CFG_NO_WORKING, "prompt");
+    const first = await deck.launchFromTask(WS as any, card(), CFG_NO_WORKING);
     expect(first).toBe("launched");
     expect(deckEl.querySelectorAll(".tile").length).toBe(1);
 
-    const second = await deck.launchFromTask(WS as any, card(), CFG_NO_WORKING, "prompt");
+    const second = await deck.launchFromTask(WS as any, card(), CFG_NO_WORKING);
 
     expect(second).toBe("focused");
     // No second tile, and no second session-start IPC call: the card's
@@ -370,7 +375,7 @@ describe("Deck.launchFromTask", () => {
     const listEl = document.createElement("div");
     const deck = new Deck(deckEl, listEl, () => [WS]);
 
-    await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_WITH_WORKING, "prompt");
+    await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_WITH_WORKING);
 
     expect(updateTaskMock).toHaveBeenCalledWith(WS.id, "01AAA", { status: "doing" });
   });
@@ -382,7 +387,7 @@ describe("Deck.launchFromTask", () => {
     const listEl = document.createElement("div");
     const deck = new Deck(deckEl, listEl, () => [WS]);
 
-    await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_NO_WORKING, "prompt");
+    await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_NO_WORKING);
 
     expect(updateTaskMock).not.toHaveBeenCalled();
   });
@@ -395,9 +400,42 @@ describe("Deck.launchFromTask", () => {
     const listEl = document.createElement("div");
     const deck = new Deck(deckEl, listEl, () => [WS]);
 
-    const outcome = await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_WITH_WORKING, "prompt");
+    const outcome = await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_WITH_WORKING);
 
     expect(outcome).toBe("launched");
     expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+  });
+
+  // The prompt used to be built at the call site, before the move — true only
+  // on a board with no `working` step. Here the move succeeds, so the prompt
+  // handed to the session must name the step the card is *actually* in now,
+  // not the one it started in.
+  it("builds the prompt from the card's step after a successful move, not the step it started in", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_WITH_WORKING);
+
+    const prompt = startMock.mock.calls[0][2] as string;
+    expect(prompt).toContain('"doing"');
+    expect(prompt).not.toContain('"open"');
+  });
+
+  // The move is best-effort and must not block the launch — but the prompt it
+  // feeds the session has to stay true when the write fails, which means
+  // reporting the step the card is still actually in, not the step the move
+  // was trying to reach.
+  it("builds the prompt from the card's unmoved step when the move fails, not the step it was trying to reach", async () => {
+    updateTaskMock.mockRejectedValueOnce(new Error("boom"));
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    await deck.launchFromTask(WS as any, card({ status: "open" }), CFG_WITH_WORKING);
+
+    const prompt = startMock.mock.calls[0][2] as string;
+    expect(prompt).toContain('"open"');
+    expect(prompt).not.toContain('"doing"');
   });
 });

@@ -18,7 +18,6 @@ import { openPalette } from "./palette";
 import { runBoot } from "./boot";
 import { installSprite } from "./icons";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
-import { taskPrompt } from "./tasks";
 import { resolveScheduledWorkspace } from "./schedule";
 import { placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
@@ -177,7 +176,11 @@ async function launchFromTask(t: Task) {
   // No tracker configured there: the kind's own id is the best label available,
   // which is what an empty configuration makes `kindLabel` fall back to.
   const cfg = caps?.board ?? { v: 1, steps: [], kinds: [] };
-  await deck.launchFromTask(target, t, cfg, taskPrompt(t, cfg));
+  // The prompt is built inside `launchFromTask`, from the card as it stands
+  // after the working-step move it attempts — not here, before that move has
+  // happened. Building it here would tell the agent a step the card had
+  // already left on any board with a `working` step.
+  await deck.launchFromTask(target, t, cfg);
   // Both "launched" and "focused" leave a session worth looking at — staying on
   // the board would look like the button did nothing.
   setView(false);

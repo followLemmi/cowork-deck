@@ -105,10 +105,11 @@ to that same default **without rewriting the file** — the broken bytes stay on
 disk so you can fix your own typo, and the board shows a banner explaining
 why.
 
-A running session gets its card's id via `COWORK_TASK_ID`, but never a fixed
-list of steps — the configuration can change after the session started. It
-reads the current steps with `cowork_task steps`, and moves its card with
-`cowork_task status <id> <step>`.
+A running session gets its card's id via `COWORK_TASK_ID`, and its opening
+prompt carries a snapshot of the steps as they stood at launch. That snapshot
+ages the moment anyone edits the board, so the live list from
+`cowork_task steps` is the authority when the two disagree. A session moves
+its card with `cowork_task status <id> <step>`.
 
 ## Locating the `claude` binary
 

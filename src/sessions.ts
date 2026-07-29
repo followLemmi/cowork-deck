@@ -11,7 +11,7 @@ import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
 import { icon, iconButton } from "./icons";
-import { liveSessionForTask } from "./tasks";
+import { liveSessionForTask, taskPrompt } from "./tasks";
 import { workingStep } from "./board-config";
 
 interface Tile {
@@ -173,24 +173,32 @@ export class Deck {
    *  session, focus it rather than raise a second one — the same call a
    *  scheduled scenario makes when it skips an overlapping run. */
   async launchFromTask(
-    workspace: Workspace, task: Task, cfg: BoardConfig, prompt: string,
+    workspace: Workspace, task: Task, cfg: BoardConfig,
   ): Promise<"launched" | "focused"> {
     const alive = liveSessionForTask(task.id, this.taskLinks());
     if (alive) { this.focusTile(alive); return "focused"; }
     // ▶ writes the step itself, so the card moves whether or not the agent
     // remembers to. A failure must not block the launch: the work matters more
     // than the bookkeeping, and the board's stale marker will show the mismatch.
+    let current = task;
     const step = workingStep(cfg);
     if (step !== null && task.status !== step) {
-      await updateTask(workspace.id, task.id, { status: step }).catch((e) =>
-        console.warn("could not move the card to the working step:", e));
+      // The prompt is built from `current` below, so it must reflect what the
+      // move actually did, not what it was meant to do: on a failed write
+      // `current` stays the unmoved card, which is the true state the session
+      // is starting from. Predicting the destination here would tell the
+      // agent a step it never reached whenever the write fails.
+      current = await updateTask(workspace.id, task.id, { status: step }).catch((e) => {
+        console.warn("could not move the card to the working step:", e);
+        return task;
+      });
     }
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
       workspaceId: workspace.id,
       titleText: `☑ ${task.title}`,
-      prompt,
+      prompt: taskPrompt(current, cfg),
       resume: false,
       taskId: task.id,
     });

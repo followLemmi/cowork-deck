@@ -48,10 +48,15 @@ describe("taskPrompt", () => {
     expect(p.trim().endsWith(" ")).toBe(false);
   });
 
-  it("names the current step, lists the configured steps, and still closes with done", () => {
+  it("names the current step, lists the configured steps, points at status, names the live source, and still closes with done", () => {
     const p = taskPrompt(card({ status: "doing" }), CFG4);
     expect(p).toContain('"doing"');
     expect(p).toContain("backlog, todo, doing, done");
+    expect(p).toContain(`"$COWORK_TASK_BIN" status 01AAA <step>`);
+    // The steps line is a snapshot that ages the moment the board changes —
+    // the prompt has to point at the live source rather than let it stand
+    // unqualified.
+    expect(p).toContain(`"$COWORK_TASK_BIN" steps`);
     expect(p).toContain(`"$COWORK_TASK_BIN" done 01AAA`);
   });
 
@@ -59,6 +64,7 @@ describe("taskPrompt", () => {
     const noSteps: BoardConfig = { v: 1, steps: [], kinds: CFG.kinds };
     const p = taskPrompt(card(), noSteps);
     expect(p).not.toContain("steps are");
+    expect(p).not.toContain("steps lists it");
     expect(p).toContain(`"$COWORK_TASK_BIN" done 01AAA`);
   });
 });
