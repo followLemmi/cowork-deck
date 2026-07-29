@@ -25,7 +25,11 @@ fn field<'a>(head: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-fn file_name(path: &str) -> String {
+/// `pub`, not `pub(crate)`: `tasks_cmd` lives in the binary crate, which links
+/// this one through `use cowork_deck::tasks` (see `main.rs`), so `pub(crate)`
+/// here would not reach it. `tasks_cmd::rewrite_step` names a skipped card by
+/// this rule rather than keeping its own copy.
+pub fn file_name(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())

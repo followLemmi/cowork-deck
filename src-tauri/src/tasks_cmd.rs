@@ -626,13 +626,6 @@ pub struct StepUsage {
     pub count: usize,
 }
 
-fn file_name_of(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string())
-}
-
 /// Whether a scanned card belongs to this project for the ⚙ editor's purposes.
 /// Same rule as `FsTaskProvider::list`: a damaged card may be ours with its
 /// `project` field missing entirely, and excluding it here would make it
@@ -646,11 +639,32 @@ fn is_ours(card: &Task, workspace_name: &str) -> bool {
 /// to move with the configuration, or they would silently fall into the
 /// unknown-step column that used to be their real column.
 ///
+/// Takes `config` — the draft the editor is about to save, not whatever
+/// `board.json` currently holds — and builds its provider with
+/// `FsTaskProvider::with_board` on it. Rewrites run *before* the save, so a
+/// rename's target id is never yet in the on-disk file; validating against it
+/// would refuse every card with "no step named `to` in board.json" and still
+/// let the save through, parking every one of them on a step the saved
+/// configuration no longer lists — exactly the unknown-step column this
+/// function exists to prevent.
+///
 /// A card that cannot be safely rewritten — damaged, or its id conflicts with
 /// another file — is skipped and reported rather than written; `update` already
-/// refuses both, so the refusal is not duplicated here, only reported.
-fn rewrite_step(ws: &Workspace, from: &StepId, to: &StepId) -> Result<RewriteReport, String> {
-    let p = provider_for(ws)?;
+/// refuses both; the refusal is not duplicated here, only reported. Every
+/// `skipped` entry therefore means that file's bytes are unchanged: `update`
+/// either refuses before touching the file or fails inside `write_atomic`,
+/// which never leaves a partial write behind. A rewrite that moves some cards
+/// and skips others is consequently a supported, ordinary outcome — not a
+/// bug — and the caller can see by name exactly which files still need
+/// attention.
+fn rewrite_step(
+    ws: &Workspace,
+    from: &StepId,
+    to: &StepId,
+    config: &BoardConfig,
+) -> Result<RewriteReport, String> {
+    let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
+    let p = FsTaskProvider::with_board(root, creation, config.clone());
     let cards = p.scan().map_err(|e| e.to_string())?;
     let mut rewritten = 0;
     let mut skipped = Vec::new();
@@ -658,7 +672,7 @@ fn rewrite_step(ws: &Workspace, from: &StepId, to: &StepId) -> Result<RewriteRep
         if !is_ours(&card, &ws.name) || card.status != *from {
             continue;
         }
-        let file_name = file_name_of(&card.path);
+        let file_name = crate::tasks::frontmatter::file_name(&card.path);
         match p.update(&card.id, TaskPatch { status: Some(to.clone()), ..Default::default() }) {
             Ok(_) => rewritten += 1,
             Err(e) => skipped.push(RewriteSkip { file_name, reason: e.to_string() }),
@@ -670,25 +684,55 @@ fn rewrite_step(ws: &Workspace, from: &StepId, to: &StepId) -> Result<RewriteRep
 /// How many of this project's cards sit in each step, including a step the
 /// configuration no longer lists — the editor needs to know a step is occupied
 /// precisely when it is about to disappear.
+///
+/// Returned in the configuration's own step order, with any step it no longer
+/// lists trailing in scan order, rather than `HashMap` order — the value
+/// crossing IPC should not depend on hashing run to run. A card with no
+/// `status:` field at all (damaged) parses to an empty step id, which matches
+/// no row the editor can show, so it is dropped rather than counted.
 fn step_usage(ws: &Workspace) -> Result<Vec<StepUsage>, String> {
     let p = provider_for(ws)?;
     let cards = p.scan().map_err(|e| e.to_string())?;
-    let mut counts: std::collections::HashMap<StepId, usize> = std::collections::HashMap::new();
+
+    let mut counts: Vec<(StepId, usize)> = Vec::new();
     for card in cards {
-        if is_ours(&card, &ws.name) {
-            *counts.entry(card.status).or_insert(0) += 1;
+        if !is_ours(&card, &ws.name) || card.status.as_str().is_empty() {
+            continue;
+        }
+        match counts.iter_mut().find(|(id, _)| *id == card.status) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((card.status.clone(), 1)),
         }
     }
-    Ok(counts.into_iter().map(|(step, count)| StepUsage { step, count }).collect())
+
+    let mut ordered: Vec<StepUsage> = Vec::new();
+    for id in p.board().step_ids() {
+        if let Some(pos) = counts.iter().position(|(s, _)| s.as_str() == id) {
+            let (step, count) = counts.remove(pos);
+            ordered.push(StepUsage { step, count });
+        }
+    }
+    // Whatever is left names a step the configuration no longer lists; kept in
+    // scan order rather than dropped, since occupancy there is the whole point.
+    ordered.extend(counts.into_iter().map(|(step, count)| StepUsage { step, count }));
+    Ok(ordered)
 }
 
 /// Save a new board configuration, refusing one that would leave `board.json`
-/// invalid. Validated before anything touches the filesystem, so an invalid
-/// configuration never reaches the file and the bytes on disk stay exactly as
-/// they were.
+/// invalid or would silently replace one the program could not read. Both
+/// checks run before anything touches the filesystem, so neither an invalid
+/// configuration nor a hand-written file with a typo in it is ever lost — the
+/// same guarantee `load_or_create` already gives the read side.
 fn save_config(ws: &Workspace, config: BoardConfig) -> Result<(), String> {
     config.validate().map_err(|e| e.to_string())?;
-    let (root, _) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
+    let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
+    let existing = FsTaskProvider::new(root.clone(), creation);
+    if let Some(err) = existing.board_error() {
+        return Err(format!(
+            "{} could not be read and must be fixed by hand before it can be replaced: {err}",
+            crate::tasks::board::BOARD_FILE
+        ));
+    }
     crate::tasks::board::save(&root, &config).map_err(|e| e.to_string())
 }
 
@@ -708,9 +752,10 @@ pub fn board_step_rewrite(
     workspace_id: String,
     from: StepId,
     to: StepId,
+    config: BoardConfig,
 ) -> Result<RewriteReport, String> {
     let ws = workspace(&state, &workspace_id)?;
-    rewrite_step(&ws, &from, &to)
+    rewrite_step(&ws, &from, &to, &config)
 }
 
 #[tauri::command]
@@ -1363,10 +1408,23 @@ mod tests {
     // and `step_usage` do.
     use crate::tasks::board::{Kind, Step, BOARD_FILE};
 
-    /// A workspace named "proj" whose tracker root actually exists on disk, with
-    /// a configuration wide enough for every fixture below: `todo` and `next` so
-    /// a rewrite has somewhere to land, `done` so it has a terminal step, and
+    /// The configuration `workspace_with_root` writes to disk: `todo` and `next`
+    /// so a rewrite has somewhere to land, `done` so it has a terminal step, and
     /// `task` so a written card's `kind:` is one the configuration recognises.
+    /// Shared with `base_config` below rather than duplicated, so a test that
+    /// passes "the configuration about to be saved" to `rewrite_step` is
+    /// passing the same shape that is actually on disk, by construction.
+    const TEST_BOARD_JSON: &str = r#"{"steps":[{"id":"todo","label":"To do"},
+                     {"id":"next","label":"Next"},
+                     {"id":"done","label":"Done","terminal":true}],
+        "kinds":[{"id":"task","label":"Task"}]}"#;
+
+    fn base_config() -> BoardConfig {
+        crate::tasks::board::parse(TEST_BOARD_JSON).expect("valid")
+    }
+
+    /// A workspace named "proj" whose tracker root actually exists on disk, with
+    /// `TEST_BOARD_JSON` already written beside it.
     ///
     /// The tempdir is leaked with `TempDir::keep` rather than returned alongside
     /// the path: every caller only ever reads and writes through `root`, and the
@@ -1381,14 +1439,7 @@ mod tests {
         w.name = "proj".into();
         let (root, _) = resolve_root(&w).expect("configured");
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join(BOARD_FILE),
-            r#"{"steps":[{"id":"todo","label":"To do"},
-                         {"id":"next","label":"Next"},
-                         {"id":"done","label":"Done","terminal":true}],
-                "kinds":[{"id":"task","label":"Task"}]}"#,
-        )
-        .unwrap();
+        std::fs::write(root.join(BOARD_FILE), TEST_BOARD_JSON).unwrap();
         (root, w)
     }
 
@@ -1426,17 +1477,37 @@ mod tests {
         let (root, ws) = workspace_with_root();
         write_card(&root, "mine.md", "01A", "proj", "todo");
         write_card(&root, "theirs.md", "01B", "other-proj", "todo");
-        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into())).unwrap();
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
         assert_eq!(report.rewritten, 1);
         assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("status: next"));
         assert!(std::fs::read_to_string(root.join("theirs.md")).unwrap().contains("status: todo"));
     }
 
     #[test]
+    fn rewriting_a_step_validates_against_the_configuration_about_to_be_saved_not_the_one_on_disk() {
+        // Review round 1, Critical #1: `rewrite_step` runs before the new
+        // configuration is saved, so a rename's target id is not yet in the
+        // on-disk board.json — only in the draft the caller is about to save.
+        // "in-progress" is nowhere in `TEST_BOARD_JSON`, so this fails unless
+        // `rewrite_step` validates against `draft`, not the file.
+        let (root, ws) = workspace_with_root();
+        write_card(&root, "mine.md", "01A", "proj", "todo");
+        let draft = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"todo","label":"To do"},
+                         {"id":"in-progress","label":"In progress"},
+                         {"id":"done","label":"Done","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        ).unwrap();
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("in-progress".into()), &draft).unwrap();
+        assert_eq!(report.rewritten, 1, "{:?}", report.skipped);
+        assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("status: in-progress"));
+    }
+
+    #[test]
     fn rewriting_a_step_skips_a_damaged_card_and_says_which() {
         let (root, ws) = workspace_with_root();
         std::fs::write(root.join("note.md"), "---\nid: 01C\nstatus: todo\n---\nA note.\n").unwrap();
-        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into())).unwrap();
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
         assert_eq!(report.rewritten, 0);
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].file_name, "note.md");
@@ -1446,7 +1517,7 @@ mod tests {
     fn rewriting_preserves_unknown_frontmatter_keys() {
         let (root, ws) = workspace_with_root();
         write_card_with_extra(&root, "mine.md", "01A", "proj", "todo", "tags: [inbox]");
-        rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into())).unwrap();
+        rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
         assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("tags: [inbox]"));
     }
 
@@ -1471,5 +1542,62 @@ mod tests {
             kinds: vec![Kind { id: KindId("k".into()), label: "K".into() }] };
         assert!(save_config(&ws, bad).is_err());
         assert_eq!(std::fs::read(root.join(BOARD_FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn saving_refuses_to_overwrite_a_board_file_the_program_could_not_parse() {
+        // Review round 1, Important #3: a valid *new* configuration must not
+        // silently replace a hand-written board.json the program could not
+        // read — the person has to fix their own typo, not lose it.
+        let (root, ws) = workspace_with_root();
+        std::fs::write(root.join(BOARD_FILE), "{ not json").unwrap();
+        let before = std::fs::read(root.join(BOARD_FILE)).unwrap();
+        let good = BoardConfig {
+            v: 1,
+            steps: vec![Step { id: StepId("a".into()), label: "A".into(), terminal: true, working: false }],
+            kinds: vec![Kind { id: KindId("k".into()), label: "K".into() }],
+        };
+        assert!(save_config(&ws, good).is_err(), "an unparsable board.json must not be silently replaced");
+        assert_eq!(std::fs::read(root.join(BOARD_FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn saving_a_valid_configuration_writes_it_and_it_reads_back() {
+        let (root, ws) = workspace_with_root();
+        let cfg = BoardConfig {
+            v: 1,
+            steps: vec![
+                Step { id: StepId("todo".into()), label: "To do".into(), terminal: false, working: false },
+                Step { id: StepId("done".into()), label: "Done".into(), terminal: true, working: false },
+            ],
+            kinds: vec![Kind { id: KindId("task".into()), label: "Task".into() }],
+        };
+        save_config(&ws, cfg).expect("a valid configuration must save");
+        let on_disk = std::fs::read_to_string(root.join(BOARD_FILE)).unwrap();
+        assert_eq!(crate::tasks::board::parse(&on_disk).unwrap().step_ids(), vec!["todo", "done"]);
+    }
+
+    #[test]
+    fn rewriting_a_step_leaves_cards_in_other_steps_alone() {
+        let (root, ws) = workspace_with_root();
+        write_card(&root, "mine.md", "01A", "proj", "todo");
+        write_card(&root, "other.md", "01B", "proj", "done");
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into()), &base_config()).unwrap();
+        assert_eq!(report.rewritten, 1);
+        assert!(
+            std::fs::read_to_string(root.join("other.md")).unwrap().contains("status: done"),
+            "a card in a different step must not be touched"
+        );
+    }
+
+    #[test]
+    fn step_usage_ignores_a_damaged_card_with_no_status_field() {
+        let (root, ws) = workspace_with_root();
+        write_card(&root, "a.md", "01A", "proj", "todo");
+        std::fs::write(root.join("broken.md"), "---\nid: 01Z\nproject: proj\n---\nx\n").unwrap();
+        let usage = step_usage(&ws).unwrap();
+        assert!(usage.iter().all(|u| !u.step.as_str().is_empty()), "{usage:?}");
+        let count = |id: &str| usage.iter().find(|u| u.step.as_str() == id).map(|u| u.count);
+        assert_eq!(count("todo"), Some(1));
     }
 }

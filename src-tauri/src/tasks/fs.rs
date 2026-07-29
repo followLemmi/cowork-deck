@@ -261,7 +261,21 @@ impl TaskProvider for FsTaskProvider {
             card.kind = k.clone();
         }
         if let Some(s) = &patch.status {
-            let resolved = if self.board.is_terminal(s) { Some(Self::now_iso()) } else { None };
+            // Keyed on the *transition*, not merely the destination: entering a
+            // terminal step from a non-terminal one is a resolution and stamps;
+            // leaving one for a non-terminal step is a reopening and clears.
+            // Terminal-to-terminal or non-terminal-to-non-terminal is a plain
+            // relabelling — `done` to `shipped`, or `todo` to `doing` — and must
+            // leave `resolved` exactly as it was, or a rewrite that moves a
+            // step's cards to a same-kind destination would silently erase or
+            // refresh dates nobody asked to change.
+            let was_terminal = self.board.is_terminal(&card.status);
+            let now_terminal = self.board.is_terminal(s);
+            let resolved = match (was_terminal, now_terminal) {
+                (false, true) => Some(Self::now_iso()),
+                (true, false) => None,
+                _ => card.resolved.clone(),
+            };
             fields.push(("status", s.0.clone()));
             // Empty clears it: `field()` treats an empty value as absent, and
             // `set_fields` cannot delete a line.
@@ -765,6 +779,43 @@ The body, unchanged.\n";
         let text = std::fs::read_to_string(&card.path).unwrap();
         let reread = crate::tasks::frontmatter::parse_card(&text, &card.path).expect("still a card");
         assert_eq!(reread.body, "Replaced.\n", "a stray leading blank line survived: {text:?}");
+    }
+
+    #[test]
+    fn moving_between_two_terminal_steps_preserves_resolved_byte_for_byte() {
+        // Review round 1, Important #2: `resolved` must reflect the transition,
+        // not merely the destination — a terminal-to-terminal move is a
+        // relabelling, not a fresh resolution, and must not restamp.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"todo","label":"To do"},
+                         {"id":"done","label":"Done","terminal":true},
+                         {"id":"shipped","label":"Shipped","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        ).unwrap();
+        let p = FsTaskProvider::with_board(dir.path().to_path_buf(), RootCreation::Always, cfg);
+        let card = p.create(TaskDraft {
+            title: "T".into(), kind: KindId("task".into()), body: String::new(),
+            project: "proj".into(), origin: TaskOrigin::Human, session: None,
+        }).unwrap();
+        p.update(&card.id, TaskPatch { title: None, kind: None,
+            status: Some(StepId("done".into())), body: None }).unwrap();
+
+        // Backdate the stamp on disk so a restamp (which would use "now") is
+        // distinguishable from a preserved value, regardless of test timing.
+        let path = std::path::PathBuf::from(&card.path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let old_line = text.lines().find(|l| l.starts_with("resolved:")).expect("stamped").to_string();
+        std::fs::write(&path, text.replace(&old_line, "resolved: 2020-01-01T00:00:00Z")).unwrap();
+
+        let moved = p.update(&card.id, TaskPatch { title: None, kind: None,
+            status: Some(StepId("shipped".into())), body: None }).unwrap();
+        assert_eq!(
+            moved.resolved.as_deref(), Some("2020-01-01T00:00:00Z"),
+            "moving between two terminal steps must not restamp",
+        );
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("resolved: 2020-01-01T00:00:00Z"), "{on_disk}");
     }
 
     #[test]
