@@ -8,7 +8,7 @@ use crate::model::{
 use crate::tasks::frontmatter::slugify;
 use crate::tasks::fs::{FsTaskProvider, RootCreation};
 use crate::tasks::migrate::{apply, plan, MigrationPlan, MigrationReport};
-use crate::tasks::board::{BoardConfig, KindId};
+use crate::tasks::board::{BoardConfig, KindId, StepId};
 use crate::tasks::model::{Task, TaskDraft, TaskOrigin};
 use crate::tasks::provider::{ProviderCapabilities, TaskPatch, TaskProvider};
 use serde::Deserialize;
@@ -598,6 +598,130 @@ pub fn tasks_migration_dismiss(
     clear_previous_location(&state, &workspace_id)
 }
 
+/// What a step rename or removal leaves behind: how many cards moved, and which
+/// ones could not be. A card is never guessed at silently — the person who
+/// asked for the rewrite has to see exactly what happened.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteReport {
+    pub rewritten: usize,
+    pub skipped: Vec<RewriteSkip>,
+}
+
+/// A card that could not be moved, and why: the file name so a person knows
+/// which file to open, and the underlying error's own words rather than a
+/// generic "failed".
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RewriteSkip {
+    pub file_name: String,
+    pub reason: String,
+}
+
+/// How many of this project's cards currently sit in one step.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepUsage {
+    pub step: StepId,
+    pub count: usize,
+}
+
+fn file_name_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// Whether a scanned card belongs to this project for the ⚙ editor's purposes.
+/// Same rule as `FsTaskProvider::list`: a damaged card may be ours with its
+/// `project` field missing entirely, and excluding it here would make it
+/// disappear from the report instead of being counted or flagged.
+fn is_ours(card: &Task, workspace_name: &str) -> bool {
+    card.damaged.is_some() || card.project == workspace_name
+}
+
+/// Move every one of this project's cards sitting in `from` to `to`. Called
+/// when the ⚙ editor renames or removes a step: the cards already there have
+/// to move with the configuration, or they would silently fall into the
+/// unknown-step column that used to be their real column.
+///
+/// A card that cannot be safely rewritten — damaged, or its id conflicts with
+/// another file — is skipped and reported rather than written; `update` already
+/// refuses both, so the refusal is not duplicated here, only reported.
+fn rewrite_step(ws: &Workspace, from: &StepId, to: &StepId) -> Result<RewriteReport, String> {
+    let p = provider_for(ws)?;
+    let cards = p.scan().map_err(|e| e.to_string())?;
+    let mut rewritten = 0;
+    let mut skipped = Vec::new();
+    for card in cards {
+        if !is_ours(&card, &ws.name) || card.status != *from {
+            continue;
+        }
+        let file_name = file_name_of(&card.path);
+        match p.update(&card.id, TaskPatch { status: Some(to.clone()), ..Default::default() }) {
+            Ok(_) => rewritten += 1,
+            Err(e) => skipped.push(RewriteSkip { file_name, reason: e.to_string() }),
+        }
+    }
+    Ok(RewriteReport { rewritten, skipped })
+}
+
+/// How many of this project's cards sit in each step, including a step the
+/// configuration no longer lists — the editor needs to know a step is occupied
+/// precisely when it is about to disappear.
+fn step_usage(ws: &Workspace) -> Result<Vec<StepUsage>, String> {
+    let p = provider_for(ws)?;
+    let cards = p.scan().map_err(|e| e.to_string())?;
+    let mut counts: std::collections::HashMap<StepId, usize> = std::collections::HashMap::new();
+    for card in cards {
+        if is_ours(&card, &ws.name) {
+            *counts.entry(card.status).or_insert(0) += 1;
+        }
+    }
+    Ok(counts.into_iter().map(|(step, count)| StepUsage { step, count }).collect())
+}
+
+/// Save a new board configuration, refusing one that would leave `board.json`
+/// invalid. Validated before anything touches the filesystem, so an invalid
+/// configuration never reaches the file and the bytes on disk stay exactly as
+/// they were.
+fn save_config(ws: &Workspace, config: BoardConfig) -> Result<(), String> {
+    config.validate().map_err(|e| e.to_string())?;
+    let (root, _) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
+    crate::tasks::board::save(&root, &config).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn board_config_save(
+    state: State<AppState>,
+    workspace_id: String,
+    config: BoardConfig,
+) -> Result<(), String> {
+    let ws = workspace(&state, &workspace_id)?;
+    save_config(&ws, config)
+}
+
+#[tauri::command]
+pub fn board_step_rewrite(
+    state: State<AppState>,
+    workspace_id: String,
+    from: StepId,
+    to: StepId,
+) -> Result<RewriteReport, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    rewrite_step(&ws, &from, &to)
+}
+
+#[tauri::command]
+pub fn board_step_usage(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<Vec<StepUsage>, String> {
+    let ws = workspace(&state, &workspace_id)?;
+    step_usage(&ws)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1023,7 +1147,10 @@ mod tests {
         }
     }
 
-    fn write_card(dir: &std::path::Path, id: &str, project: &str) {
+    /// Renamed from the original `write_card` to make room for the board-editor
+    /// fixture below of the same short name but a different shape (filename and
+    /// status are both caller-chosen there); the two are not interchangeable.
+    fn write_offer_card(dir: &std::path::Path, id: &str, project: &str) {
         std::fs::write(
             dir.join(format!("{id}-t.md")),
             format!("---\nid: {id}\ntitle: t\nkind: task\nstatus: open\nproject: {project}\ncreated: c\norigin: human\n---\nbody\n"),
@@ -1036,9 +1163,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let old = dir.path().join("Tasks");
         std::fs::create_dir_all(&old).unwrap();
-        write_card(&old, "01A", "cowork-deck");
-        write_card(&old, "01B", "cowork-deck");
-        write_card(&old, "01C", "other-project");
+        write_offer_card(&old, "01A", "cowork-deck");
+        write_offer_card(&old, "01B", "cowork-deck");
+        write_offer_card(&old, "01C", "other-project");
 
         let ws = ws_with_previous(dir.path(), "cowork-deck", &old);
         let (offer, _) = offer_for(&ws).expect("readable").expect("an offer");
@@ -1058,7 +1185,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let old = dir.path().join("cowork-deck");
         std::fs::create_dir_all(&old).unwrap();
-        write_card(&old, "01A", "cowork-deck");
+        write_offer_card(&old, "01A", "cowork-deck");
 
         // previous_location.project is "cowork-deck", the workspace is now "deck".
         let ws = ws_with_previous(dir.path(), "deck", &old);
@@ -1073,7 +1200,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let old = dir.path().join("Tasks");
         std::fs::create_dir_all(&old).unwrap();
-        write_card(&old, "01C", "other-project");
+        write_offer_card(&old, "01C", "other-project");
 
         let ws = ws_with_previous(dir.path(), "cowork-deck", &old);
         assert!(offer_for(&ws).expect("readable").is_none());
@@ -1227,5 +1354,122 @@ mod tests {
         assert_eq!(p.root, root.to_string_lossy());
         assert!(p.creating.is_empty());
         assert!(!p.base_missing);
+    }
+
+    // --- board editor: rewrite_step / step_usage / save_config ---
+    //
+    // A shared vault root holds other projects' cards, so every fixture below
+    // matches cards against a workspace named "proj" the same way `rewrite_step`
+    // and `step_usage` do.
+    use crate::tasks::board::{Kind, Step, BOARD_FILE};
+
+    /// A workspace named "proj" whose tracker root actually exists on disk, with
+    /// a configuration wide enough for every fixture below: `todo` and `next` so
+    /// a rewrite has somewhere to land, `done` so it has a terminal step, and
+    /// `task` so a written card's `kind:` is one the configuration recognises.
+    ///
+    /// The tempdir is leaked with `TempDir::keep` rather than returned alongside
+    /// the path: every caller only ever reads and writes through `root`, and the
+    /// tempdir being dropped at the end of this function would delete that root
+    /// out from under them.
+    fn workspace_with_root() -> (PathBuf, Workspace) {
+        let dir = tempfile::tempdir().unwrap();
+        let picked = dir.keep();
+        let mut w = ws(Some(tracker(TrackerRoot::Path {
+            path: picked.to_string_lossy().to_string(),
+        })));
+        w.name = "proj".into();
+        let (root, _) = resolve_root(&w).expect("configured");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join(BOARD_FILE),
+            r#"{"steps":[{"id":"todo","label":"To do"},
+                         {"id":"next","label":"Next"},
+                         {"id":"done","label":"Done","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        )
+        .unwrap();
+        (root, w)
+    }
+
+    fn write_card(dir: &std::path::Path, filename: &str, id: &str, project: &str, status: &str) {
+        std::fs::write(
+            dir.join(filename),
+            format!(
+                "---\nid: {id}\ntitle: t\nkind: task\nstatus: {status}\nproject: {project}\ncreated: c\norigin: human\n---\nbody\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_card_with_extra(
+        dir: &std::path::Path,
+        filename: &str,
+        id: &str,
+        project: &str,
+        status: &str,
+        extra: &str,
+    ) {
+        std::fs::write(
+            dir.join(filename),
+            format!(
+                "---\nid: {id}\ntitle: t\nkind: task\nstatus: {status}\nproject: {project}\ncreated: c\norigin: human\n{extra}\n---\nbody\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rewriting_a_step_touches_only_this_project_s_cards() {
+        // A shared vault root holds other projects' cards, and fs.rs::resolve
+        // already refuses to write those.
+        let (root, ws) = workspace_with_root();
+        write_card(&root, "mine.md", "01A", "proj", "todo");
+        write_card(&root, "theirs.md", "01B", "other-proj", "todo");
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into())).unwrap();
+        assert_eq!(report.rewritten, 1);
+        assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("status: next"));
+        assert!(std::fs::read_to_string(root.join("theirs.md")).unwrap().contains("status: todo"));
+    }
+
+    #[test]
+    fn rewriting_a_step_skips_a_damaged_card_and_says_which() {
+        let (root, ws) = workspace_with_root();
+        std::fs::write(root.join("note.md"), "---\nid: 01C\nstatus: todo\n---\nA note.\n").unwrap();
+        let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into())).unwrap();
+        assert_eq!(report.rewritten, 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].file_name, "note.md");
+    }
+
+    #[test]
+    fn rewriting_preserves_unknown_frontmatter_keys() {
+        let (root, ws) = workspace_with_root();
+        write_card_with_extra(&root, "mine.md", "01A", "proj", "todo", "tags: [inbox]");
+        rewrite_step(&ws, &StepId("todo".into()), &StepId("next".into())).unwrap();
+        assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("tags: [inbox]"));
+    }
+
+    #[test]
+    fn step_usage_counts_this_project_s_cards_per_step() {
+        let (root, ws) = workspace_with_root();
+        write_card(&root, "a.md", "01A", "proj", "todo");
+        write_card(&root, "b.md", "01B", "proj", "todo");
+        write_card(&root, "c.md", "01C", "proj", "done");
+        let usage = step_usage(&ws).unwrap();
+        let count = |id: &str| usage.iter().find(|u| u.step.as_str() == id).map(|u| u.count);
+        assert_eq!(count("todo"), Some(2));
+        assert_eq!(count("done"), Some(1));
+    }
+
+    #[test]
+    fn saving_a_configuration_refuses_an_invalid_one_and_leaves_the_file_alone() {
+        let (root, ws) = workspace_with_root();
+        let before = std::fs::read(root.join(BOARD_FILE)).unwrap();
+        let bad = BoardConfig { v: 1,
+            steps: vec![Step { id: StepId("a".into()), label: "A".into(), terminal: false, working: false }],
+            kinds: vec![Kind { id: KindId("k".into()), label: "K".into() }] };
+        assert!(save_config(&ws, bad).is_err());
+        assert_eq!(std::fs::read(root.join(BOARD_FILE)).unwrap(), before);
     }
 }
