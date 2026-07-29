@@ -19,8 +19,11 @@ pub fn build_settings_json(reporter_path: &str, port: u16, session: &str, task_b
         // Quote the reporter path for shells; args are literal (no shell metachars).
         let report = format!("\"{}\" {} {} {}", reporter_path, kind, port, session);
         let mut commands = vec![json!({ "type": "command", "command": report })];
-        // The reporter stays first: its job is unchanged, and the guard's
-        // reply is what the hook returns, so it goes last. Attached
+        // The reporter stays first: its job is unchanged, so the guard —
+        // the newer, riskier command — is appended after it rather than
+        // inserted ahead of it. Hooks in a matcher group run independently and
+        // their outcomes are aggregated, not decided by list order: any one
+        // of them exiting 2 blocks, regardless of position. Attached
         // unconditionally — the guard reads its own environment and allows on
         // its own when there is no card, so there is no branch to forget on
         // the --resume path.
@@ -95,9 +98,14 @@ mod tests {
     #[test]
     fn the_guard_is_attached_even_without_a_card_because_it_allows_on_its_own() {
         // One branch instead of two when building the settings, and one less
-        // thing to forget on the --resume path.
+        // thing to forget on the --resume path. Checked on both events the
+        // guard is attached to — a prior version of this test asserted only
+        // on `Stop`, so a guard command missing from `UserPromptSubmit`
+        // specifically would have passed.
         let v: serde_json::Value = serde_json::from_str(&build_settings_json("/r", 1, "s", "/t")).unwrap();
-        let cmd = v["hooks"]["Stop"][0]["hooks"][1]["command"].as_str().unwrap();
-        assert!(cmd.contains("/t") && cmd.contains("guard"), "{cmd}");
+        for ev in ["UserPromptSubmit", "Stop"] {
+            let cmd = v["hooks"][ev][0]["hooks"][1]["command"].as_str().unwrap();
+            assert!(cmd.contains("/t") && cmd.contains("guard"), "{ev}: {cmd}");
+        }
     }
 }

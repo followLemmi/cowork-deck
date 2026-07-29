@@ -58,7 +58,7 @@ pub fn parse_args(argv: &[String]) -> Result<Cmd, String> {
         }
         "steps" => Ok(Cmd::Steps),
         "guard" => Ok(Cmd::Guard),
-        "" => Err("a subcommand is required: new | done | status | steps".into()),
+        "" => Err("a subcommand is required: new | done | status | steps | guard".into()),
         other => Err(format!("unknown subcommand: {other}")),
     }
 }
@@ -70,6 +70,9 @@ cowork_task — file a card in the cowork-deck tracker.
   cowork_task done <id>                        (moves the card to the first terminal step)
   cowork_task status <id> <step>               (moves the card to a configured step)
   cowork_task steps                            (lists the configured steps, one per line)
+  cowork_task guard                            (reads a Claude Code hook payload on stdin;
+                                                 wired into the Stop/UserPromptSubmit hooks,
+                                                 not meant to be run by hand)
 
 Requires the environment variables the deck sets on a session:
   COWORK_TASKS_DIR  folder the cards live in
@@ -243,7 +246,10 @@ fn guard() -> i32 {
             0
         }
         "Stop" if open && !already_blocked => {
-            println!(
+            // Claude Code feeds stderr, not stdout, back to the agent on exit
+            // 2 — stdout is only surfaced on exit 0. Printing the reason to
+            // stdout here would block the session and say nothing.
+            eprintln!(
                 "Card {} is still in step \"{}\". Move it with the cowork_task CLI before \
                  finishing: \"$COWORK_TASK_BIN\" status {} <step> — or \"$COWORK_TASK_BIN\" done {} \
                  if it is finished. If it should stay where it is, say so and stop again.",

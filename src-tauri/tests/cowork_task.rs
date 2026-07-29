@@ -229,10 +229,12 @@ fn steps_warns_on_stderr_when_board_json_is_unusable_but_still_lists_the_fallbac
 
 /// Runs `cowork_task guard` with `payload` on stdin and the environment a
 /// hook receives. `card` becomes `COWORK_TASK_ID` when given, and is left
-/// unset otherwise — the no-card row. Returns `(exit code, stdout)`
+/// unset otherwise — the no-card row. Returns `(exit code, stdout, stderr)`
 /// regardless of status: a blocking `Stop` is a deliberate non-zero exit, not
-/// a failure the way `run`'s callers mean it.
-fn guard(dir: &tempfile::TempDir, card: Option<&str>, payload: &str) -> (i32, String) {
+/// a failure the way `run`'s callers mean it. Claude Code feeds only stderr
+/// back to the agent on exit 2 — stdout is surfaced only on exit 0 — so the
+/// blocking reason has to be asserted on stderr, not stdout.
+fn guard(dir: &tempfile::TempDir, card: Option<&str>, payload: &str) -> (i32, String, String) {
     let bin = env!("CARGO_BIN_EXE_cowork_task");
     let mut cmd = Command::new(bin);
     cmd.arg("guard")
@@ -249,27 +251,41 @@ fn guard(dir: &tempfile::TempDir, card: Option<&str>, payload: &str) -> (i32, St
         }
     }
     let mut child = cmd.spawn().unwrap();
-    child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    // Best effort: several rows return before `guard` ever reads stdin (no
+    // card id, no tracker directory), closing the read end before this write
+    // lands — same reasoning as `run`'s helper above.
+    let _ = child.stdin.take().unwrap().write_all(payload.as_bytes());
     let out = child.wait_with_output().unwrap();
-    (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned())
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
 }
 
 #[test]
 fn guard_allows_and_says_nothing_without_a_card_id() {
     let dir = tempdir_with_board(DEFAULT_BOARD);
-    let (code, out) = guard(&dir, None, r#"{"hook_event_name":"Stop"}"#);
+    let (code, out, err) = guard(&dir, None, r#"{"hook_event_name":"Stop"}"#);
     assert_eq!(code, 0);
     assert_eq!(out.trim(), "");
+    assert_eq!(err.trim(), "");
 }
 
 #[test]
 fn guard_blocks_the_first_stop_while_the_card_is_open() {
     let dir = tempdir_with_board(DEFAULT_BOARD);
     let id = create_card(&dir, "task", "A title");
-    let (code, out) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
-    assert_ne!(code, 0, "a blocking Stop hook has to exit non-zero");
-    assert!(out.contains(&id), "the reason must name the card: {out}");
-    assert!(out.contains("cowork_task"), "and the command that moves it: {out}");
+    let (code, out, err) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
+    // Only exit code 2 blocks a Claude Code `Stop` hook; 1 (an ordinary
+    // error) and 101 (a panic) both do not, so `assert_ne!(code, 0)` would
+    // pass for either and miss a regression that silently stops blocking.
+    assert_eq!(code, 2, "only exit code 2 blocks a Stop hook");
+    // Exit 2 feeds stderr, not stdout, back to the agent — stdout is dead
+    // output here, so the reason must be on stderr, and stdout must be empty.
+    assert!(out.trim().is_empty(), "stdout is not read back on exit 2: {out}");
+    assert!(err.contains(&id), "the reason must name the card: {err}");
+    assert!(err.contains("cowork_task"), "and the command that moves it: {err}");
 }
 
 #[test]
@@ -278,7 +294,7 @@ fn guard_allows_the_second_stop() {
     // the session cannot leave.
     let dir = tempdir_with_board(DEFAULT_BOARD);
     let id = create_card(&dir, "task", "A title");
-    let (code, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":true}"#);
+    let (code, _, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":true}"#);
     assert_eq!(code, 0);
 }
 
@@ -287,14 +303,14 @@ fn guard_allows_a_stop_once_the_card_is_in_a_terminal_step() {
     let dir = tempdir_with_board(DEFAULT_BOARD);
     let id = create_card(&dir, "task", "A title");
     run(&dir, &["done", &id]).unwrap();
-    let (code, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
+    let (code, _, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
     assert_eq!(code, 0);
 }
 
 #[test]
 fn guard_allows_when_the_card_is_gone() {
     let dir = tempdir_with_board(DEFAULT_BOARD);
-    let (code, _) = guard(&dir, Some("01NOSUCHCARD"), r#"{"hook_event_name":"Stop"}"#);
+    let (code, _, _) = guard(&dir, Some("01NOSUCHCARD"), r#"{"hook_event_name":"Stop"}"#);
     assert_eq!(code, 0);
 }
 
@@ -302,7 +318,7 @@ fn guard_allows_when_the_card_is_gone() {
 fn guard_allows_when_the_card_is_damaged() {
     let dir = tempdir_with_board(DEFAULT_BOARD);
     std::fs::write(dir.path().join("note.md"), "---\nid: 01NOTE\n---\nA note.\n").unwrap();
-    let (code, _) = guard(&dir, Some("01NOTE"), r#"{"hook_event_name":"Stop"}"#);
+    let (code, _, _) = guard(&dir, Some("01NOTE"), r#"{"hook_event_name":"Stop"}"#);
     assert_eq!(code, 0);
 }
 
@@ -312,7 +328,7 @@ fn guard_allows_when_board_json_is_unusable() {
     let id = create_card(&dir, "task", "A title");
     // A tracker problem must not take the work hostage — the same principle by
     // which a failing watcher degrades into a delay.
-    let (code, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
+    let (code, _, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
     assert_eq!(code, 0);
 }
 
@@ -320,7 +336,7 @@ fn guard_allows_when_board_json_is_unusable() {
 fn guard_allows_on_a_malformed_payload() {
     let dir = tempdir_with_board(DEFAULT_BOARD);
     let id = create_card(&dir, "task", "A title");
-    let (code, _) = guard(&dir, Some(&id), "not json at all");
+    let (code, _, _) = guard(&dir, Some(&id), "not json at all");
     assert_eq!(code, 0);
 }
 
@@ -328,11 +344,17 @@ fn guard_allows_on_a_malformed_payload() {
 fn guard_prints_the_card_and_its_step_on_a_user_prompt() {
     let dir = tempdir_with_board(DEFAULT_BOARD);
     let id = create_card(&dir, "task", "A title");
-    let (code, out) = guard(&dir, Some(&id), r#"{"hook_event_name":"UserPromptSubmit"}"#);
+    let (code, out, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"UserPromptSubmit"}"#);
     assert_eq!(code, 0);
     let v: serde_json::Value = serde_json::from_str(&out).expect("a hook reply");
     let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().expect("context");
-    assert!(ctx.contains(&id) && ctx.contains("open") && ctx.contains("cowork_task"), "{ctx}");
+    // `contains("open")` alone would also pass if the message merely said the
+    // word "open" as an adjective rather than naming the card's actual step —
+    // pin the step name as it would actually appear, `step "open"`.
+    assert!(
+        ctx.contains(&id) && ctx.contains("step \"open\"") && ctx.contains("cowork_task"),
+        "{ctx}"
+    );
 }
 
 /// Task 10 pushes `COWORK_TASK_ID` unconditionally, so a session can carry a
@@ -357,12 +379,13 @@ fn guard_allows_when_the_tracker_directory_is_unset() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
+    // Best effort: this row returns before `guard` reads stdin at all, so the
+    // child can close its read end before this write lands.
+    let _ = child
         .stdin
         .take()
         .unwrap()
-        .write_all(br#"{"hook_event_name":"Stop","stop_hook_active":false}"#)
-        .unwrap();
+        .write_all(br#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(0), "a missing tracker directory must never block a Stop");
 }
