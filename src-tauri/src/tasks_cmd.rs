@@ -634,19 +634,55 @@ fn is_ours(card: &Task, workspace_name: &str) -> bool {
     card.damaged.is_some() || card.project == workspace_name
 }
 
+/// The board to validate a rewrite against: the draft the editor is about to
+/// save, plus the `from` step exactly as the on-disk configuration still
+/// defines it, when the draft no longer lists it.
+///
+/// `from` is, by the nature of a rename or removal, usually absent from the
+/// draft — that is the id being renamed or retired. But `update` asks the
+/// board two different questions for one status patch: whether `to` is a
+/// legal id to write (correctly the draft — see `rewrite_step`'s docstring),
+/// and whether the card's *old* step was terminal, to decide whether
+/// `resolved` should stamp, clear, or stay put. A board built from the draft
+/// alone answers the second question wrong for every card: an id guaranteed
+/// missing from it is never terminal, whatever it actually was, so a rename
+/// out of a terminal step always looked non-terminal and restamped or failed
+/// to clear regardless of the real transition. Unioning the on-disk
+/// definition of `from` back in — its `terminal` flag, not the draft's
+/// absence of one — answers both questions from the right configuration. If
+/// the on-disk board does not list `from` either (a step already retired, or
+/// the unknown-step column), `false` is then the correct answer and falls out
+/// naturally: there is nothing to union in.
+fn board_for_rewrite(root: &std::path::Path, from: &StepId, draft: &BoardConfig) -> BoardConfig {
+    if draft.has_step(from) {
+        return draft.clone();
+    }
+    let mut board = draft.clone();
+    if let Some(step) = crate::tasks::board::load_or_create(root)
+        .config
+        .steps
+        .into_iter()
+        .find(|s| &s.id == from)
+    {
+        board.steps.push(step);
+    }
+    board
+}
+
 /// Move every one of this project's cards sitting in `from` to `to`. Called
 /// when the ⚙ editor renames or removes a step: the cards already there have
 /// to move with the configuration, or they would silently fall into the
 /// unknown-step column that used to be their real column.
 ///
 /// Takes `config` — the draft the editor is about to save, not whatever
-/// `board.json` currently holds — and builds its provider with
-/// `FsTaskProvider::with_board` on it. Rewrites run *before* the save, so a
-/// rename's target id is never yet in the on-disk file; validating against it
-/// would refuse every card with "no step named `to` in board.json" and still
-/// let the save through, parking every one of them on a step the saved
-/// configuration no longer lists — exactly the unknown-step column this
-/// function exists to prevent.
+/// `board.json` currently holds — and builds its provider on `config` plus
+/// `from`'s on-disk definition when the draft has dropped it (see
+/// `board_for_rewrite`). Rewrites run *before* the save, so a rename's target
+/// id is never yet in the on-disk file; validating `to` against it would
+/// refuse every card with "no step named `to` in board.json" and still let the
+/// save through, parking every one of them on a step the saved configuration
+/// no longer lists — exactly the unknown-step column this function exists to
+/// prevent.
 ///
 /// A card that cannot be safely rewritten — damaged, or its id conflicts with
 /// another file — is skipped and reported rather than written; `update` already
@@ -664,7 +700,8 @@ fn rewrite_step(
     config: &BoardConfig,
 ) -> Result<RewriteReport, String> {
     let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
-    let p = FsTaskProvider::with_board(root, creation, config.clone());
+    let board = board_for_rewrite(&root, from, config);
+    let p = FsTaskProvider::with_board(root, creation, board);
     let cards = p.scan().map_err(|e| e.to_string())?;
     let mut rewritten = 0;
     let mut skipped = Vec::new();
@@ -1502,6 +1539,55 @@ mod tests {
         let report = rewrite_step(&ws, &StepId("todo".into()), &StepId("in-progress".into()), &draft).unwrap();
         assert_eq!(report.rewritten, 1, "{:?}", report.skipped);
         assert!(std::fs::read_to_string(root.join("mine.md")).unwrap().contains("status: in-progress"));
+    }
+
+    #[test]
+    fn rewriting_a_terminal_step_to_another_terminal_step_preserves_resolved_byte_for_byte() {
+        // Re-review round 1: `rewrite_step` validates against the draft (Critical
+        // #1's fix), but the draft never lists `from` — that id is exactly what
+        // is being renamed away — so `is_terminal(&card.status)` inside `update`
+        // looked up an id guaranteed absent from that board and always got
+        // `false`, restamping every card in this exact "done -> shipped" case
+        // instead of preserving `resolved`.
+        let (_dir, root, ws) = workspace_with_root();
+        write_card_with_extra(&root, "mine.md", "01A", "proj", "done", "resolved: 2020-01-01T00:00:00Z");
+        let draft = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"todo","label":"To do"},
+                         {"id":"next","label":"Next"},
+                         {"id":"shipped","label":"Shipped","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        ).unwrap();
+        let report = rewrite_step(&ws, &StepId("done".into()), &StepId("shipped".into()), &draft).unwrap();
+        assert_eq!(report.rewritten, 1, "{:?}", report.skipped);
+        let text = std::fs::read_to_string(root.join("mine.md")).unwrap();
+        let reread = crate::tasks::frontmatter::parse_card(&text, "mine.md").expect("still a card");
+        assert_eq!(reread.status.as_str(), "shipped");
+        assert_eq!(
+            reread.resolved.as_deref(), Some("2020-01-01T00:00:00Z"),
+            "terminal-to-terminal must not restamp: {text}",
+        );
+    }
+
+    #[test]
+    fn retiring_a_terminal_step_to_a_non_terminal_destination_clears_resolved() {
+        // The other half of the same collision: `from`'s true terminality has to
+        // come from somewhere other than the draft when the draft drops it.
+        let (_dir, root, ws) = workspace_with_root();
+        write_card_with_extra(&root, "mine.md", "01A", "proj", "done", "resolved: 2020-01-01T00:00:00Z");
+        let draft = crate::tasks::board::parse(
+            r#"{"steps":[{"id":"todo","label":"To do"},
+                         {"id":"next","label":"Next"},
+                         {"id":"archived","label":"Archived","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        ).unwrap();
+        // Retiring "done" (terminal on disk) and sending its cards to "next"
+        // (non-terminal).
+        let report = rewrite_step(&ws, &StepId("done".into()), &StepId("next".into()), &draft).unwrap();
+        assert_eq!(report.rewritten, 1, "{:?}", report.skipped);
+        let text = std::fs::read_to_string(root.join("mine.md")).unwrap();
+        let reread = crate::tasks::frontmatter::parse_card(&text, "mine.md").expect("still a card");
+        assert_eq!(reread.status.as_str(), "next");
+        assert_eq!(reread.resolved, None, "leaving a terminal step for a non-terminal one must clear resolved: {text}");
     }
 
     #[test]
