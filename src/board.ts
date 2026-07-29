@@ -204,8 +204,14 @@ export class BoardView {
       node.classList.remove("tk-col-over");
       const id = e.dataTransfer?.getData("text/plain");
       const task = id ? state.tasks.find((t) => t.id === id) : undefined;
-      // A drop into the card's own column is not a move: no write, no refresh.
-      if (task && task.status !== step) this.h.onMove(task, step);
+      // Not redundant with `draggable` above: that is decided when the card is
+      // rendered, but this looks the task up in the freshest `state.tasks` —
+      // deliberately, so a drop acts on the card as it is now. On a board that
+      // re-polls every five seconds those two moments can differ: a card
+      // writable at `dragstart` can be damaged or conflicting by the time the
+      // drop lands, and only this check sees that. A drop into the card's own
+      // column is likewise not a move: no write, no refresh.
+      if (task && !task.damaged && !task.conflict && task.status !== step) this.h.onMove(task, step);
     };
   }
 

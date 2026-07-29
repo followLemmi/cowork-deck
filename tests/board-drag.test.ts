@@ -186,4 +186,15 @@ describe("BoardView — dragging and the keyboard equivalent", () => {
     dragCardTo("x", "todo");
     expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "x" }), "todo");
   });
+
+  it("refuses the drop itself for a damaged card, not only the affordance", () => {
+    // `draggable` is withheld at render for a damaged card, but a real drag can
+    // outlive the poll that would have re-rendered it: the drop has to refuse
+    // the write on its own, not rely on the affordance never having existed.
+    // Dispatching dragstart directly works regardless of `draggable`, which is
+    // what makes that race testable at all.
+    render([card({ id: "a", status: "todo", damaged: "no status field" })]);
+    dragCardTo("a", "done");
+    expect(onMove).not.toHaveBeenCalled();
+  });
 });
