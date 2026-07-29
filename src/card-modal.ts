@@ -27,7 +27,16 @@ export function computePatch(original: Task, edited: CardFormValues): TaskPatch 
   // Still compared as *written* rather than emptiness-checked: an emptied body
   // is a change, and `!edited.body` would read it as untouched.
   const lf = (s: string) => s.replace(/\r\n/g, "\n");
-  if (lf(edited.body) !== lf(original.body)) patch.body = edited.body;
+  if (lf(edited.body) !== lf(original.body)) {
+    // Send it back in the separator the file already used. The textarea can only
+    // ever hand back LF, so writing that verbatim would leave a CRLF card with a
+    // CRLF frontmatter block and an LF body — this is the first path in the app
+    // that rewrites a body at all, and it should not be the one that quietly
+    // changes a person's line endings.
+    patch.body = original.body.includes("\r\n")
+      ? lf(edited.body).replace(/\n/g, "\r\n")
+      : edited.body;
+  }
   return patch;
 }
 

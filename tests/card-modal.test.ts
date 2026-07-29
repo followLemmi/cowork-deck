@@ -64,10 +64,27 @@ describe("computePatch", () => {
     expect(computePatch(crlf, edited)).toEqual({});
   });
 
-  it("still reports a real body edit on a CRLF card, not just the separator", () => {
+  it("sends a real edit to a CRLF card back with CRLF throughout, not mixed with the file", () => {
+    // A textarea can only ever hand back LF. Sending that verbatim on a genuine
+    // edit would leave a CRLF frontmatter block next to an LF body — this is the
+    // first path in the app that rewrites a body at all, so that mismatch would
+    // be introduced by this feature, not inherited from anywhere.
     const crlf: Task = { ...original, body: "Line one.\r\nLine two.\r\n" };
     const edited: CardFormValues = { ...same(), body: "Line one.\nChanged.\n" };
-    expect(computePatch(crlf, edited)).toEqual({ body: "Line one.\nChanged.\n" });
+    expect(computePatch(crlf, edited)).toEqual({ body: "Line one.\r\nChanged.\r\n" });
+  });
+
+  it("does not double up a stray \\r\\n already in the edited value into \\r\\r\\n", () => {
+    // Normalise first, then re-expand: if the re-expansion ran on the raw edited
+    // value instead of the normalised one, a value that already contained a
+    // \r\n (however it got there) would gain a second \r in front of its \n.
+    const crlf: Task = { ...original, body: "Line one.\r\nLine two.\r\n" };
+    const edited: CardFormValues = { ...same(), body: "Line one.\r\nChanged.\n" };
+    expect(computePatch(crlf, edited)).toEqual({ body: "Line one.\r\nChanged.\r\n" });
+  });
+
+  it("sends a real edit to an LF card as LF, unchanged", () => {
+    expect(computePatch(original, { ...same(), body: "Body two.\n" })).toEqual({ body: "Body two.\n" });
   });
 });
 
