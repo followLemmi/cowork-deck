@@ -288,6 +288,26 @@ fn guard_blocks_the_first_stop_while_the_card_is_open() {
     assert!(err.contains("cowork_task"), "and the command that moves it: {err}");
 }
 
+/// Task 10's launch moves the card to the configured working step before the
+/// session even starts, so a card sitting there at `Stop` time is exactly
+/// where the app put it — not evidence the agent forgot to move it. Paired
+/// with `guard_blocks_the_first_stop_while_the_card_is_open` above as the
+/// positive control: that board has no working step, so it must keep
+/// blocking; this one has one, and must not, on the very same shape of
+/// input (a non-terminal, unblocked `Stop`).
+#[test]
+fn guard_allows_a_stop_while_the_card_is_in_the_working_step() {
+    let board = r#"{"steps":[{"id":"todo","label":"To do"},
+        {"id":"doing","label":"Doing","working":true},
+        {"id":"done","label":"Done","terminal":true}],
+        "kinds":[{"id":"task","label":"Task"}]}"#;
+    let dir = tempdir_with_board(board);
+    let id = create_card(&dir, "task", "A title");
+    run(&dir, &["status", &id, "doing"]).unwrap();
+    let (code, _, _) = guard(&dir, Some(&id), r#"{"hook_event_name":"Stop","stop_hook_active":false}"#);
+    assert_eq!(code, 0, "the working step must not read as \"still open\"");
+}
+
 #[test]
 fn guard_allows_the_second_stop() {
     // stop_hook_active means we already blocked once. Blocking again is a loop

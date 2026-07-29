@@ -222,7 +222,14 @@ fn guard() -> i32 {
     if card.damaged.is_some() {
         return 0;
     }
-    let open = !provider.board().is_terminal(&card.status);
+    // A card sitting in the configured working step is exactly where Task 10's
+    // launch put it — it is not evidence the agent forgot to move it, so it
+    // must not read as "open" here. Excluding it drops enforcement of a state
+    // that is already correct; it does not drop the reminder, which the
+    // launch prompt and the `UserPromptSubmit` context below both still give,
+    // every turn, without repeating a block the agent can only re-stop past.
+    let open = !provider.board().is_terminal(&card.status)
+        && provider.board().working_step() != Some(&card.status);
 
     match event_name.as_str() {
         "UserPromptSubmit" => {
