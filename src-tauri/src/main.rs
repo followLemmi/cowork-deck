@@ -91,6 +91,7 @@ fn main() {
                 task_bin_path: task_bin_path(),
                 scheduler_ready: scheduler_ready.clone(),
                 watchers: std::sync::Arc::new(tasks::watch::TaskWatchers::new()),
+                gh_tokens: Mutex::new(std::collections::HashMap::new()),
             });
 
             // Scheduled scenarios: the backend decides *when* and emits
@@ -150,6 +151,8 @@ fn main() {
             commands::load_schedule_state,
             commands::start_command_session,
             commands::gh_status,
+            commands::pr_list,
+            commands::pr_merge_options,
             commands::host_platform,
             tasks_cmd::tasks_list,
             tasks_cmd::tasks_create,

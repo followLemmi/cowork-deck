@@ -23,6 +23,8 @@ pub struct AppState {
     /// Live directory watchers for configured tracker roots. Rebuilt via
     /// `tasks_watch_sync` whenever the workspace set or its config changes.
     pub watchers: std::sync::Arc<cowork_deck::tasks::watch::TaskWatchers>,
+    /// In-memory account tokens, keyed by (host, login). See `workspace_token`.
+    pub gh_tokens: Mutex<std::collections::HashMap<(String, String), String>>,
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
@@ -90,6 +92,12 @@ pub fn list_workspaces(state: State<AppState>) -> Vec<Workspace> {
 }
 #[tauri::command]
 pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Workspace>, String> {
+    // The binding may have just changed; a stale cached token would keep this
+    // workspace talking as the old account. The map holds a handful of entries,
+    // so clearing all of it costs nothing and precision buys nothing.
+    if let Ok(mut cache) = state.gh_tokens.lock() {
+        cache.clear();
+    }
     let store = state.store.lock().map_err(|_| "store lock".to_string())?;
     // Seeded the same way the tracker reads them, so a version 1 config's
     // cards are not forgotten by the very save that bumps it to version 2.
@@ -302,6 +310,106 @@ fn noauth_dir(state: &State<AppState>) -> std::path::PathBuf {
     let dir = state.store.lock().unwrap().dir.join("gh-noauth");
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// Cap on one page of pull requests. Named rather than inlined because the
+/// frontend prints "showing N of M" against it: a silently truncated list reads
+/// as a complete one.
+pub const PR_PAGE_LIMIT: usize = 50;
+
+pub fn pr_list_argv(limit: usize) -> Vec<String> {
+    vec![
+        "pr".into(),
+        "list".into(),
+        "--state".into(),
+        "open".into(),
+        "--limit".into(),
+        limit.to_string(),
+        "--json".into(),
+        crate::gh_pr::PR_LIST_FIELDS.into(),
+    ]
+}
+
+/// Resolve the workspace's account token, caching it in memory.
+///
+/// The account feature deliberately keeps tokens out of the app: one is
+/// resolved at session start and lives only in the child's memory. Polling is
+/// why this cache exists — resolving on every tick would run `gh auth token`
+/// every few seconds, and a locked keyring is exactly the case the timeout was
+/// added for. So the cache is narrow: in memory only, keyed by host and login,
+/// never logged, never persisted, dropped when a binding changes.
+fn workspace_token(state: &State<AppState>, cfg: &WorkspaceGithub) -> Option<String> {
+    let key = (cfg.host.clone(), cfg.login.clone());
+    if let Some(t) = state.gh_tokens.lock().ok()?.get(&key) {
+        return Some(t.clone());
+    }
+    let t = gh::token(&cfg.host, &cfg.login, std::time::Duration::from_secs(5)).ok()?;
+    if let Ok(mut cache) = state.gh_tokens.lock() {
+        cache.insert(key, t.clone());
+    }
+    Some(t)
+}
+
+/// Run `gh` in the workspace's folder, under the workspace's account.
+///
+/// Every path out of here is redacted: `gh` is capable of echoing a token back
+/// in an error, and this is the only place that decides what the frontend sees.
+fn run_gh_for_workspace(
+    state: &State<AppState>,
+    workspace_id: &str,
+    args: &[String],
+) -> Result<String, String> {
+    // The store lock is taken and released before the token is resolved:
+    // `gh::token` blocks for up to five seconds, and holding the shared mutex
+    // that long would stall every other operation on the store.
+    let ws = {
+        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        store.workspaces().into_iter().find(|w| w.id == workspace_id)
+    }
+    .ok_or_else(|| "no such workspace".to_string())?;
+    let cfg = ws.github.clone().ok_or_else(|| "no-account".to_string())?;
+    let path = gh::which_gh().ok_or_else(|| "gh-not-found".to_string())?;
+    let token = workspace_token(state, &cfg);
+
+    let dir = noauth_dir(state);
+    let env = gh::session_env(&cfg, token.as_deref(), &dir.to_string_lossy());
+
+    let out = std::process::Command::new(&path)
+        .args(args)
+        .current_dir(&ws.path)
+        .envs(env)
+        .output()
+        .map_err(|e| gh::redact(&e.to_string()))?;
+    if !out.status.success() {
+        return Err(gh::redact(String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+#[tauri::command]
+pub fn pr_list(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<Vec<crate::gh_pr::PullRequest>, String> {
+    let json = run_gh_for_workspace(&state, &workspace_id, &pr_list_argv(PR_PAGE_LIMIT))?;
+    crate::gh_pr::parse_pull_requests(&json)
+}
+
+#[tauri::command]
+pub fn pr_merge_options(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<crate::gh_pr::MergeOptions, String> {
+    let args: Vec<String> = vec![
+        "repo".into(),
+        "view".into(),
+        "--json".into(),
+        "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed,\
+viewerDefaultMergeMethod,deleteBranchOnMerge"
+            .into(),
+    ];
+    let json = run_gh_for_workspace(&state, &workspace_id, &args)?;
+    crate::gh_pr::parse_merge_options(&json)
 }
 
 #[tauri::command]
@@ -657,6 +765,21 @@ mod tests {
         assert_eq!(parse_os_release_id(""), None);
         // ID_LIKE не должен побеждать: strip_prefix("ID=") его не матчит.
         assert_eq!(parse_os_release_id("ID_LIKE=debian\nID=pop\n").as_deref(), Some("pop"));
+    }
+
+    /// The argv is what decides which account and which repository answer, so
+    /// it is worth pinning even though the call itself needs the network.
+    #[test]
+    fn pr_list_argv_asks_for_open_prs_with_every_field() {
+        let argv = pr_list_argv(50);
+        assert_eq!(argv[0], "pr");
+        assert_eq!(argv[1], "list");
+        assert!(argv.contains(&"--state".to_string()));
+        assert!(argv.contains(&"open".to_string()));
+        assert!(argv.contains(&"--limit".to_string()));
+        assert!(argv.contains(&"50".to_string()));
+        let json_at = argv.iter().position(|a| a == "--json").expect("--json");
+        assert_eq!(argv[json_at + 1], crate::gh_pr::PR_LIST_FIELDS);
     }
 
     #[test]
