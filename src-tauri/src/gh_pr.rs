@@ -150,6 +150,90 @@ pub fn parse_pull_requests(json: &str) -> Result<Vec<PullRequest>, String> {
         .collect())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOptions {
+    /// Only what this repository permits, in a stable order.
+    pub strategies: Vec<String>,
+    pub default: String,
+    /// When true the repository deletes the branch itself, and the dialog says
+    /// so instead of offering a checkbox that does not describe what happens.
+    pub repo_deletes_branch: bool,
+}
+
+/// Read `gh repo view --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed,\
+/// viewerDefaultMergeMethod,deleteBranchOnMerge`.
+pub fn parse_merge_options(json: &str) -> Result<MergeOptions, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("gh returned unreadable JSON: {e}"))?;
+    let flag = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+    let mut strategies = Vec::new();
+    if flag("mergeCommitAllowed") {
+        strategies.push("merge".to_string());
+    }
+    if flag("squashMergeAllowed") {
+        strategies.push("squash".to_string());
+    }
+    if flag("rebaseMergeAllowed") {
+        strategies.push("rebase".to_string());
+    }
+
+    let preferred = v
+        .get("viewerDefaultMergeMethod")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Preselecting a strategy the repository forbids would arm a button that
+    // can only fail.
+    let default = if strategies.contains(&preferred) {
+        preferred
+    } else {
+        strategies.first().cloned().unwrap_or_default()
+    };
+
+    Ok(MergeOptions { strategies, default, repo_deletes_branch: flag("deleteBranchOnMerge") })
+}
+
+/// A filesystem-safe fragment of a branch name: lowercase, single dashes, and
+/// short enough to keep the path within sane limits. Path separators and dots
+/// are stripped rather than escaped, so nothing here can climb out of the
+/// directory it is joined to.
+pub fn slug(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    let cut = trimmed.char_indices().nth(40).map_or(trimmed.len(), |(i, _)| i);
+    let cut = trimmed[..cut].trim_end_matches('-');
+    if cut.is_empty() {
+        "branch".to_string()
+    } else {
+        cut.to_string()
+    }
+}
+
+/// Where the worktree for a pull request lives: beside the workspace, never
+/// inside it.
+///
+/// Nesting is not a matter of taste. BUG-026 is the record of what it costs:
+/// `npm test` from the repository root globbed suites out of nested worktrees
+/// and ran 880 tests instead of 183. A nested worktree would equally show up in
+/// `git status` and under the task watcher.
+pub fn worktree_path(workspace_path: &str, number: u64, branch: &str) -> std::path::PathBuf {
+    let ws = std::path::Path::new(workspace_path);
+    let name = ws
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "workspace".to_string());
+    let parent = ws.parent().unwrap_or_else(|| std::path::Path::new("."));
+    parent.join(format!("{name}-pr")).join(format!("{number}-{}", slug(branch)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +408,55 @@ mod tests {
                   "mergeStateStatus", "updatedAt", "url", "labels", "statusCheckRollup"] {
             assert!(PR_LIST_FIELDS.split(',').any(|x| x == f), "{f} missing from PR_LIST_FIELDS");
         }
+    }
+
+    #[test]
+    fn merge_options_list_only_what_the_repo_allows() {
+        let json = r#"{ "mergeCommitAllowed": false, "squashMergeAllowed": true,
+                        "rebaseMergeAllowed": true, "viewerDefaultMergeMethod": "SQUASH",
+                        "deleteBranchOnMerge": true }"#;
+        let o = parse_merge_options(json).unwrap();
+        assert_eq!(o.strategies, vec!["squash".to_string(), "rebase".to_string()]);
+        assert_eq!(o.default, "squash");
+        assert!(o.repo_deletes_branch);
+    }
+
+    /// A default the repository forbids would preselect a button that fails.
+    #[test]
+    fn a_forbidden_default_falls_back_to_an_allowed_one() {
+        let json = r#"{ "mergeCommitAllowed": false, "squashMergeAllowed": true,
+                        "rebaseMergeAllowed": false, "viewerDefaultMergeMethod": "MERGE",
+                        "deleteBranchOnMerge": false }"#;
+        let o = parse_merge_options(json).unwrap();
+        assert_eq!(o.default, "squash");
+    }
+
+    #[test]
+    fn worktree_lands_beside_the_workspace_never_inside_it() {
+        let ws = "/home/u/projects/cowork-deck";
+        let p = worktree_path(ws, 42, "feat/nice-thing");
+        assert!(!p.starts_with(ws), "worktree must not nest inside the workspace: {p:?}");
+        assert_eq!(
+            p,
+            std::path::PathBuf::from("/home/u/projects/cowork-deck-pr/42-feat-nice-thing"),
+        );
+    }
+
+    /// Branch names carry slashes and worse; the directory name must not.
+    #[test]
+    fn branch_names_are_slugged_for_the_filesystem() {
+        assert_eq!(slug("feat/nice-thing"), "feat-nice-thing");
+        assert_eq!(slug("user's branch!"), "user-s-branch");
+        assert_eq!(slug("../escape"), "escape");
+        assert_eq!(slug(""), "branch");
+        assert_eq!(slug(&"x".repeat(80)).len(), 40);
+    }
+
+    /// A workspace at the filesystem root has no parent to sit beside; the
+    /// worktree must still land somewhere legal rather than panicking.
+    #[test]
+    fn a_workspace_without_a_parent_still_resolves() {
+        let p = worktree_path("/", 1, "b");
+        assert!(p.to_string_lossy().contains("1-b"));
     }
 }
