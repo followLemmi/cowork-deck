@@ -156,6 +156,8 @@ fn main() {
             commands::pr_merge,
             commands::pr_close,
             commands::pr_reopen,
+            commands::pr_worktree_add,
+            commands::pr_worktree_remove,
             commands::host_platform,
             tasks_cmd::tasks_list,
             tasks_cmd::tasks_create,

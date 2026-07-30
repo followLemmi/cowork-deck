@@ -473,6 +473,114 @@ pub fn pr_reopen(state: State<AppState>, workspace_id: String, number: u64) -> R
     run_gh_for_workspace(&state, &workspace_id, &args).map(|_| ())
 }
 
+/// Whether a worktree holds no uncommitted work.
+///
+/// An error is not "clean": if `git status` cannot answer, the only safe
+/// reading is that we do not know, and we do not delete what we cannot inspect.
+fn worktree_is_clean(path: &std::path::Path) -> Result<bool, String> {
+    let out = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().is_empty())
+}
+
+/// The path of the workspace a command names, or an error if there is no such
+/// workspace. The store lock is taken and released here and nowhere else, so no
+/// git process ever runs while it is held.
+fn workspace_path(state: &State<AppState>, workspace_id: &str) -> Result<String, String> {
+    let found = {
+        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        store.workspaces().into_iter().find(|w| w.id == workspace_id).map(|w| w.path)
+    };
+    found.ok_or_else(|| "no such workspace".to_string())
+}
+
+#[tauri::command]
+pub fn pr_worktree_add(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+    branch: String,
+) -> Result<String, String> {
+    let ws_path = workspace_path(&state, &workspace_id)?;
+
+    let path = crate::gh_pr::worktree_path(&ws_path, number, &branch);
+    // Already there from an earlier launch: hand it back rather than failing.
+    // The session that opens in it will see whatever state it was left in.
+    if path.exists() {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    std::fs::create_dir_all(path.parent().unwrap_or(&path)).map_err(|e| e.to_string())?;
+
+    // Fetch the head into a local branch first, then attach a worktree to it.
+    // `gh pr checkout` is not used: it would move the branch inside the
+    // workspace's own working copy, under every live session there.
+    let local = format!("pr-{number}");
+    let refspec = format!("pull/{number}/head:{local}");
+    let fetch: Vec<String> = vec!["fetch".into(), "origin".into(), refspec, "--force".into()];
+    let out = std::process::Command::new("git")
+        .args(&fetch)
+        .current_dir(&ws_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+
+    let out = std::process::Command::new("git")
+        .args(["worktree", "add", &path.to_string_lossy(), &local])
+        .current_dir(&ws_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn pr_worktree_remove(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+    branch: String,
+) -> Result<(), String> {
+    let ws_path = workspace_path(&state, &workspace_id)?;
+    let path = crate::gh_pr::worktree_path(&ws_path, number, &branch);
+    if !path.exists() {
+        return Ok(());
+    }
+    match worktree_is_clean(&path) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(format!(
+                "{} has uncommitted changes — nothing was removed",
+                path.to_string_lossy()
+            ))
+        }
+        Err(e) => {
+            return Err(format!(
+                "cannot tell whether {} is clean, so it was left alone: {e}",
+                path.to_string_lossy()
+            ))
+        }
+    }
+    let out = std::process::Command::new("git")
+        .args(["worktree", "remove", &path.to_string_lossy()])
+        .current_dir(&ws_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
@@ -895,5 +1003,17 @@ mod tests {
         assert!(keys.contains(&"GH_CONFIG_DIR"), "деградация обязана увести gh в пустой конфиг");
         assert!(keys.contains(&"GIT_AUTHOR_NAME"), "идентичность известна и без токена");
         assert!(!keys.contains(&"GH_TOKEN"), "без токена GH_TOKEN выставлять нельзя");
+    }
+
+    #[test]
+    fn a_dirty_worktree_is_never_removed() {
+        let dir = std::env::temp_dir().join(format!("cowork-wt-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        // Not a git repository at all: `git status` fails, which must read as
+        // "refuse", never as "clean, go ahead and delete".
+        let verdict = worktree_is_clean(&dir);
+        // Removed before the assertion so a failure cannot leak the directory.
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(verdict.is_err());
     }
 }
