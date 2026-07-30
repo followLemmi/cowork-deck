@@ -5,7 +5,7 @@
 
 import { pickFolder } from "./dialog";
 import { ghStatus, trackerRootPreview } from "./ipc";
-import type { BoardConfig, KindId, Schedule, SchedulePreset, TaskDraft, TrackerConfig, TrackerRootPreview, WorkspaceGithub } from "./ipc";
+import type { BoardConfig, KindId, MergeOptions, Schedule, SchedulePreset, TaskDraft, TrackerConfig, TrackerRootPreview, WorkspaceGithub } from "./ipc";
 import { accountChoices } from "./github";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule, schedulePreview } from "./schedule";
@@ -701,5 +701,106 @@ export function taskForm(cfg: BoardConfig): Promise<TaskDraft | null> {
     ok.onclick = submit;
     cancel.onclick = () => close(null);
     titleInput.focus();
+  });
+}
+
+/** Confirmation for the one irreversible action in the feature.
+ *
+ *  Shows what is being merged, into what, and at which commit — the same commit
+ *  the caller pins with `--match-head-commit`, so the dialog and the merge can
+ *  never disagree. Only the strategies the repository permits are offered: a
+ *  button for a forbidden one could do nothing but fail. */
+export function mergeForm(
+  pr: { number: number; title: string; headRefName: string; baseRefName: string; headRefOid: string },
+  opts: MergeOptions,
+): Promise<{ strategy: string; deleteBranch: boolean } | null> {
+  return new Promise((resolve) => {
+    const { box, close: closeDialog } = openDialog({
+      onCancel: () => close(null),
+      onAccept: () => submit(),
+    });
+    box.classList.add("modal-box--form");
+
+    const title = document.createElement("div");
+    title.className = "modal-title";
+    title.textContent = `Merge #${pr.number}`;
+
+    // Two paragraphs, not one with a newline in it: a "\n" inside a <p> renders
+    // as a space, and the pull request title would run into the branch pair.
+    const what = document.createElement("p");
+    what.className = "form-hint mg-what";
+    what.textContent = pr.title;
+
+    const at = document.createElement("p");
+    at.className = "form-hint mg-at";
+    at.textContent =
+      `${pr.headRefName} → ${pr.baseRefName}, at commit ${pr.headRefOid.slice(0, 7)}`;
+
+    // The pin is the whole reason the commit is on screen; a refusal later is
+    // easier to read as a guarantee than as a fault if it was named up front.
+    const pinNote = document.createElement("p");
+    pinNote.className = "form-hint mg-pin-note";
+    pinNote.textContent =
+      "The merge is pinned to that commit: if the branch moves first, it is refused.";
+
+    // Built like kindRow in taskForm: a span label plus the controls in a
+    // <div>, NOT labeled() — a <label> wraps one control, and a click on the
+    // text of one wrapping the whole group would change the selection.
+    const strategyRow = document.createElement("div");
+    strategyRow.className = "form-row";
+    const strategyLabel = document.createElement("span");
+    strategyLabel.className = "form-label";
+    strategyLabel.textContent = "Strategy";
+    const strategyBox = document.createElement("div");
+    strategyBox.className = "mg-strategies";
+    strategyBox.setAttribute("role", "radiogroup");
+    strategyBox.setAttribute("aria-label", "Merge strategy");
+    const radios: HTMLInputElement[] = [];
+    for (const s of opts.strategies) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio"; input.name = "mergeStrategy";
+      input.className = "mg-strategy"; input.value = s;
+      input.checked = s === opts.default;
+      label.append(input, document.createTextNode(` ${s}`));
+      strategyBox.append(label);
+      radios.push(input);
+    }
+    strategyRow.append(strategyLabel, strategyBox);
+
+    const deleteBox = document.createElement("input");
+    deleteBox.type = "checkbox";
+    deleteBox.className = "mg-delete";
+    const deleteRow = opts.repoDeletesBranch
+      ? (() => {
+          const p = document.createElement("p");
+          p.className = "form-hint mg-delete-note";
+          p.textContent = "This repository deletes merged branches itself.";
+          return p;
+        })()
+      : labeledCheck("Delete the branch after merging", deleteBox);
+
+    const { row, ok, cancel } = actions();
+    // Named, not "OK": the one button in the app that cannot be undone says
+    // what it does.
+    ok.textContent = "Merge";
+    box.append(title, what, at, pinNote, strategyRow, deleteRow, row);
+
+    const close = (v: { strategy: string; deleteBranch: boolean } | null) => {
+      closeDialog(); resolve(v);
+    };
+    const submit = () => {
+      const picked = radios.find((r) => r.checked)?.value ?? opts.default;
+      close({
+        strategy: picked,
+        // Never true when the repository does it anyway: `deleteBox` is not in
+        // the tree then, and an unticked box would be reported as a choice.
+        deleteBranch: opts.repoDeletesBranch ? false : deleteBox.checked,
+      });
+    };
+    ok.onclick = submit;
+    cancel.onclick = () => close(null);
+    // Focus lands on the choice rather than on the button that merges.
+    (radios.find((r) => r.checked) ?? radios[0])?.focus();
   });
 }

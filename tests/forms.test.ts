@@ -5,7 +5,7 @@ const { pickFolderMock } = vi.hoisted(() => ({ pickFolderMock: vi.fn() }));
 vi.mock("../src/dialog", () => ({ pickFolder: pickFolderMock }));
 vi.mock("@tauri-apps/api/core");
 
-import { workspaceForm, skillForm, placeholderForm } from "../src/forms";
+import { workspaceForm, skillForm, placeholderForm, mergeForm } from "../src/forms";
 import { invoke } from "@tauri-apps/api/core";
 
 beforeEach(() => {
@@ -398,5 +398,86 @@ describe("placeholderForm", () => {
     const p = placeholderForm(["branch"]);
     document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
     expect(await p).toBeNull();
+  });
+});
+
+describe("mergeForm", () => {
+  const pr = {
+    number: 7, title: "fix the thing", headRefName: "fix/thing",
+    baseRefName: "main", headRefOid: "abc1234def",
+  } as never;
+
+  it("offers only the strategies the repository allows", () => {
+    void mergeForm(pr, {
+      strategies: ["squash", "rebase"], default: "squash", repoDeletesBranch: false,
+    });
+    const values = [...document.querySelectorAll<HTMLInputElement>(".mg-strategy")]
+      .map((i) => i.value);
+    expect(values).toEqual(["squash", "rebase"]);
+  });
+
+  it("preselects the repository's default strategy", () => {
+    void mergeForm(pr, {
+      strategies: ["merge", "squash", "rebase"], default: "rebase", repoDeletesBranch: false,
+    });
+    const checked = [...document.querySelectorAll<HTMLInputElement>(".mg-strategy")]
+      .filter((i) => i.checked).map((i) => i.value);
+    expect(checked).toEqual(["rebase"]);
+  });
+
+  // What is being merged has to be identifiable from the dialog alone.
+  it("shows the branch pair and the pinned commit", () => {
+    void mergeForm(pr, { strategies: ["squash"], default: "squash", repoDeletesBranch: false });
+    const text = document.querySelector(".modal-box")!.textContent!;
+    expect(text).toContain("fix/thing → main");
+    expect(text).toContain("abc1234");
+  });
+
+  // The title comes off the network, so it is set as text and never parsed.
+  it("shows the title as text, not markup", () => {
+    void mergeForm(
+      { ...(pr as object), title: "<img src=x onerror=alert(1)>" } as never,
+      { strategies: ["squash"], default: "squash", repoDeletesBranch: false },
+    );
+    const box = document.querySelector(".modal-box")!;
+    expect(box.querySelector("img")).toBeNull();
+    expect(box.textContent).toContain("<img src=x onerror=alert(1)>");
+  });
+
+  it("states the repository's behaviour instead of offering a box that lies", () => {
+    void mergeForm(pr, { strategies: ["squash"], default: "squash", repoDeletesBranch: true });
+    expect(document.querySelector(".mg-delete")).toBeNull();
+    expect(document.querySelector(".mg-delete-note")!.textContent).toContain("deletes");
+  });
+
+  it("resolves the chosen strategy on OK", async () => {
+    const p = mergeForm(pr, {
+      strategies: ["merge", "squash"], default: "merge", repoDeletesBranch: false,
+    });
+    document.querySelectorAll<HTMLInputElement>(".mg-strategy")[1].checked = true;
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect(await p).toEqual({ strategy: "squash", deleteBranch: false });
+  });
+
+  it("passes the branch deletion on when the box is ticked", async () => {
+    const p = mergeForm(pr, {
+      strategies: ["squash"], default: "squash", repoDeletesBranch: false,
+    });
+    document.querySelector<HTMLInputElement>(".mg-delete")!.checked = true;
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect(await p).toEqual({ strategy: "squash", deleteBranch: true });
+  });
+
+  it("resolves null on cancel", async () => {
+    const p = mergeForm(pr, { strategies: ["squash"], default: "squash", repoDeletesBranch: false });
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    expect(await p).toBeNull();
+  });
+
+  it("resolves null on Escape, leaving nothing merged", async () => {
+    const p = mergeForm(pr, { strategies: ["squash"], default: "squash", repoDeletesBranch: false });
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(await p).toBeNull();
+    expect(document.querySelector(".modal-box")).toBeNull();
   });
 });

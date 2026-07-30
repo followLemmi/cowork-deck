@@ -12,7 +12,7 @@ import {
   boardConfigSave, boardStepRewrite, boardStepUsage,
   prList, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
 } from "./ipc";
-import type { MergeOptions, MigrationOffer, PullRequest, StepId, Task } from "./ipc";
+import type { MigrationOffer, PullRequest, StepId, Task } from "./ipc";
 import { pollIntervalMs } from "./pr";
 import { PrView } from "./pr-view";
 import type { PrState } from "./pr-view";
@@ -25,7 +25,7 @@ import { installSprite } from "./icons";
 import { openGithubScreen } from "./github-screen";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
-import { placeholderForm, taskForm } from "./forms";
+import { mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
 import { listen } from "@tauri-apps/api/event";
@@ -460,19 +460,6 @@ async function launchFromPr(pr: PullRequest) {
   } catch (e) {
     await alertModal(`Could not prepare a worktree for #${pr.number}: ${String(e)}`);
   }
-}
-
-/** The merge dialog itself is Task 12 (`mergeForm` in src/forms.ts). Until it
- *  lands the button refuses instead of merging with a strategy nobody chose:
- *  this is the one irreversible action in the feature, and it must not happen
- *  without the confirmation that names the commit. Task 12 replaces this with
- *  an import from "./forms". */
-async function mergeForm(
-  pr: PullRequest, opts: MergeOptions,
-): Promise<{ strategy: string; deleteBranch: boolean } | null> {
-  void opts;
-  await alertModal(`The merge dialog is not built yet, so #${pr.number} was not merged.`);
-  return null;
 }
 
 async function mergePr(pr: PullRequest) {
