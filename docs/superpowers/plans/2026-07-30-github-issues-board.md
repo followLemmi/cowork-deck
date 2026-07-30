@@ -1893,12 +1893,14 @@ impl TaskProvider for GhIssueProvider<'_> {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd src-tauri && cargo test gh_issues && cargo test tasks::`
-Expected: PASS. `TaskPatch`'s new field is `default`, so every existing `..Default::default()` construction still compiles.
+Expected: PASS — **but not for the reason an earlier draft gave** (corrected 2026-07-30 while executing this task). `TaskPatch`'s new field being `default` covers only the constructions that *use* `..Default::default()`, and there are two, both in production code (`tasks_cmd.rs:722`, `bin/cowork_task.rs:156`). `fs.rs`'s test module builds `TaskPatch` **exhaustively, field by field, in 15 places** with no `..Default::default()` anywhere, so adding a field is E0063 fifteen times and the lib test target does not build at all. Add `reason: None` at each; no assertion changes, and all 15 keep passing.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src-tauri/src/tasks/gh_issues.rs src-tauri/src/tasks/provider.rs
+git add src-tauri/src/tasks/gh_issues.rs src-tauri/src/tasks/provider.rs src-tauri/src/tasks/fs.rs
+# fs.rs is NOT optional (correction, 2026-07-30): its test module has 15 exhaustive
+# `TaskPatch { … }` constructions, so `reason` breaks the build without them.
 git commit -m "feat(issues): a TaskProvider over gh, testable without a process"
 ```
 
