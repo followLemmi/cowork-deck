@@ -16,6 +16,8 @@
 - **No `innerHTML` for anything that came from the network.** Titles, branch names and author logins are set with `textContent`, following `board.ts`.
 - **Pure functions carry the logic; DOM classes only render.** Anything with a truth table lives in a module with its own unit tests and no DOM.
 - **Existing tests stay green:** 367 vitest, 263 cargo, and `npx tsc --noEmit` clean.
+- **The clippy ceiling is 6 warnings**, carried over from the configurable-board plan: `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets` reports exactly 4 × `std::io::Error::other` and 2 × `too_many_arguments` (one of them `start_session`, already at 10/7). Run it **without** `-D warnings` — the ceiling is accepted debt, not a gate to fight. A task may raise the test counts; it may not raise the warning count.
+  **One sanctioned exception:** Tasks 3–5 sit two warnings above the ceiling, because `slug` and `worktree_path` land in Task 3 and nothing calls them until Task 6. Task 6 must bring the count back to exactly 6; if it does not, something it was supposed to wire up is missing.
 - **Epic:** #113 — the umbrella issue; task issues #100–#112. Each task carries its own issue number under its heading.
 
 ## File map
