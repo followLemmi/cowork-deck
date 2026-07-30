@@ -130,6 +130,16 @@ Add to `mod tests` in `src-tauri/src/store.rs`:
         let original = r##"[{"id":"w1","name":"A","path":"/a","color":"#fff"},
                             {"id":"w2","name":"B","path":"/b","color":"#fff",
                              "tracker":{"providers":[{"type":"jira"}],"v":3}}]"##;
+        // NOTE (correction, 2026-07-30, found while executing Task 2): this
+        // fixture must NOT be an unknown provider tag. Task 2 makes
+        // `{"type":"jira"}` parse by design, so this test then finds a readable
+        // file, `upsert_workspace` succeeds, and `expect_err` panics — while
+        // Task 2's own `a_workspace_with_an_unreadable_source_still_appears_in_the_list`
+        // uses the same string to assert the opposite. Use a record missing a
+        // required field instead: `{"id":"w2","name":"B","path":"/b"}` fails with
+        // `missing field \`color\`` (`Workspace.color` has no `serde(default)`) and
+        // stays unparseable through every future provider variant. Task 2's
+        // commit carries that change.
         std::fs::write(s.ws_path(), original).unwrap();
 
         let err = s
@@ -452,7 +462,7 @@ impl Serialize for TrackerProvider {
 
 Task 3 then adds `GitHub` to **both** `TrackerProvider` and `KnownTrackerProvider`. With the delegation above, forgetting the second one is *nearly* a compile error — the `match` forces an arm for the new variant — but not quite: an author could satisfy the compiler and still leave the deserialiser mapping `{"type":"github"}` to `Unknown`. **The guard for that is the `matches!(…, Some(TrackerProvider::GitHub))` line in Task 3's round-trip test, and nothing else.** In particular the `back.contains(r#"{"type":"github"}"#)` half of that test does *not* guard it: `Unknown(v)` re-emits its input verbatim, so the serialized output is identical either way and that assertion passes in exactly the scenario it looks like it is checking. Task 3's test carries a comment saying so, or the `matches!` line reads as redundant and gets trimmed, taking the guard with it.
 
-The `match` sites gain a third arm, each one line: `resolve_root` (`tasks_cmd.rs:157`) → `None`, `is_project_root` (`:201`) → `false`, `seed_previous_location` (`:264`) → returns early, already through a `_ =>`.
+**One `match` site needs an arm, not three** (correction, 2026-07-30, from executing this task — the compiler named only this one in its E0004): `resolve_root` (`tasks_cmd.rs:157`) → `None`. `is_project_root` (`:201`) is a `matches!` against `Fs { Project }` and is already `false` for anything else; `seed_previous_location` (`:264`) already routes everything else through `_ => return ws`. Adding arms to either would be dead weight.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -464,7 +474,7 @@ Expected: PASS, plus 5.
 On `worktree-workspace-github-account`, like every other task (Barrier 0):
 
 ```bash
-git add src-tauri/src/model.rs src-tauri/src/tasks_cmd.rs
+git add src-tauri/src/model.rs src-tauri/src/tasks_cmd.rs src-tauri/src/store.rs
 git commit -m "fix(store): keep a tracker source this build cannot read, verbatim (#117)"
 ```
 
