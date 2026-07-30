@@ -170,6 +170,9 @@ pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
             let layout = append_layout(std::path::Path::new(path), &slugify(&ws.name));
             Some((layout.root, RootCreation::InsideExisting { base: layout.base }))
         }
+        // A source this build cannot read has no root here — same answer as no
+        // tracker at all, and the board says which of the two it is (#117).
+        TrackerProvider::Unknown(_) => None,
     }
 }
 

@@ -322,13 +322,20 @@ mod tests {
     /// next save. `try_read_vec` returning `Ok(vec![])` for a parse error is
     /// indistinguishable from "no workspaces yet", so the upsert wrote one record
     /// over ten.
+    ///
+    /// The unreadable record is one **missing a required field**, not one with an
+    /// unknown provider tag: since #117's second half an unknown tag is legal by
+    /// design and parses as `TrackerProvider::Unknown`, so a `{"type":"jira"}`
+    /// fixture here would assert the exact opposite of
+    /// `a_workspace_with_an_unreadable_source_still_appears_in_the_list` below.
+    /// `color` has no serde default, so this stays unreadable through every
+    /// provider variant still to come.
     #[test]
     fn an_upsert_refuses_rather_than_truncating_a_file_it_could_not_parse() {
         let s = Store::new(tmp());
         std::fs::create_dir_all(&s.dir).unwrap();
         let original = r##"[{"id":"w1","name":"A","path":"/a","color":"#fff"},
-                            {"id":"w2","name":"B","path":"/b","color":"#fff",
-                             "tracker":{"providers":[{"type":"jira"}],"v":3}}]"##;
+                            {"id":"w2","name":"B","path":"/b"}]"##;
         std::fs::write(s.ws_path(), original).unwrap();
 
         let err = s
@@ -419,6 +426,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.workspaces().len(), 1);
+    }
+
+    /// Task 1 stops the truncation; this is the other half of #117 — the record
+    /// is not merely safe on disk, it is on screen.
+    #[test]
+    fn a_workspace_with_an_unreadable_source_still_appears_in_the_list() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(
+            s.ws_path(),
+            r##"[{"id":"w1","name":"A","path":"/a","color":"#fff"},
+                 {"id":"w2","name":"B","path":"/b","color":"#fff",
+                  "tracker":{"providers":[{"type":"jira"}],"v":3}}]"##,
+        )
+        .unwrap();
+        let all = s.workspaces();
+        assert_eq!(all.len(), 2, "neither record is dropped");
+        assert_eq!(all[1].name, "B");
     }
 
     /// Files written before the record existed hold a bare epoch-millis number

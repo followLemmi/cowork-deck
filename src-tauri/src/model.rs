@@ -164,10 +164,75 @@ fn tracker_v1() -> u8 { 1 }
 
 pub const TRACKER_CONFIG_VERSION: u8 = 3;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Debug, Clone)]
 pub enum TrackerProvider {
     Fs { root: TrackerRoot },
+    /// A source this build cannot read — written by a newer version, or damaged.
+    ///
+    /// Carries the original JSON and is serialized back verbatim, so opening an
+    /// older build and editing an unrelated field does not destroy a
+    /// configuration it merely does not understand (#117). A unit catch-all
+    /// variant would round-trip to `{"type":"unknown"}` and do exactly that.
+    ///
+    /// Every reader treats it as "no usable tracker": `resolve_root` yields
+    /// `None`, `is_project_root` is false, and the board says so in words rather
+    /// than showing "no tracker configured", which would be a different claim.
+    Unknown(serde_json::Value),
+}
+
+/// The on-disk shape, accepted tolerantly. The same pattern as
+/// `ScheduleRunOnDisk` above: an untagged helper that tries the known shapes and
+/// keeps the raw value rather than failing the document.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TrackerProviderOnDisk {
+    Known(KnownTrackerProvider),
+    Raw(serde_json::Value),
+}
+
+/// The tag spelling lives here and nowhere else. **Both directions are derived**,
+/// so they cannot disagree about it.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum KnownTrackerProvider {
+    Fs { root: TrackerRoot },
+}
+
+impl From<TrackerProviderOnDisk> for TrackerProvider {
+    fn from(v: TrackerProviderOnDisk) -> Self {
+        match v {
+            TrackerProviderOnDisk::Known(KnownTrackerProvider::Fs { root }) => {
+                TrackerProvider::Fs { root }
+            }
+            TrackerProviderOnDisk::Raw(v) => TrackerProvider::Unknown(v),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TrackerProvider {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(TrackerProviderOnDisk::deserialize(d)?.into())
+    }
+}
+
+impl Serialize for TrackerProvider {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            // Delegated, never hand-rolled: writing `{"type":"fs", …}` by hand
+            // here would put the tag spelling in a second place, and the one
+            // failure this whole task exists to prevent is a silent change to the
+            // wire format of every user's workspaces.json.
+            TrackerProvider::Fs { root } => {
+                KnownTrackerProvider::Fs { root: root.clone() }.serialize(s)
+            }
+            // Verbatim in *value*, not in bytes: `serde_json::Value`'s object is a
+            // BTreeMap, so keys come back alphabetised and whitespace is the
+            // writer's. Nothing anywhere compares these bytes, so this is
+            // harmless — said out loud because a re-ordered key list looks like a
+            // bug to whoever diffs the file next.
+            TrackerProvider::Unknown(v) => v.serialize(s),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -430,6 +495,57 @@ mod tests {
         let old_entry = r#"{"sessionId":"s4","cwd":"/c","name":"K"}"#;
         let e: SessionEntry = serde_json::from_str(old_entry).unwrap();
         assert_eq!(e.scheduled_skill_id, None);
+    }
+
+    /// The record stays visible: one unreadable *provider* must not cost the
+    /// workspace its name, its folder or its account.
+    #[test]
+    fn a_workspace_with_an_unknown_provider_keeps_every_other_field() {
+        let json = r##"{"id":"w1","name":"A","path":"/a","color":"#fff",
+            "github":{"host":"github.com","login":"me"},
+            "tracker":{"providers":[{"type":"jira","site":"acme.atlassian.net"}],"v":3}}"##;
+        let w: Workspace = serde_json::from_str(json).expect("the workspace survives");
+        assert_eq!(w.name, "A");
+        assert_eq!(w.github.unwrap().login, "me");
+        assert!(matches!(
+            w.tracker.unwrap().providers.first(),
+            Some(TrackerProvider::Unknown(_))
+        ));
+    }
+
+    /// And saving it does not destroy it. A unit catch-all variant would write
+    /// `{"type":"unknown"}` here and the configuration would be gone on the first
+    /// edit of an unrelated field.
+    #[test]
+    fn an_unknown_provider_is_written_back_verbatim() {
+        let json = r#"{"providers":[{"type":"jira","site":"acme.atlassian.net"}],"v":3}"#;
+        let cfg: TrackerConfig = serde_json::from_str(json).unwrap();
+        let back = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(back["providers"][0]["type"], "jira");
+        assert_eq!(back["providers"][0]["site"], "acme.atlassian.net");
+    }
+
+    /// The known shapes are unaffected, in both directions — this is the test
+    /// that would catch an untagged helper enum silently swallowing a *typo* in a
+    /// known variant's own fields, which would be the tolerance going too far.
+    #[test]
+    fn the_known_providers_still_parse_as_themselves() {
+        let cfg: TrackerConfig =
+            serde_json::from_str(r#"{"providers":[{"type":"fs","root":{"kind":"project"}}],"v":3}"#)
+                .unwrap();
+        assert!(matches!(cfg.providers.first(), Some(TrackerProvider::Fs { .. })));
+        let back = serde_json::to_string(&cfg).unwrap();
+        assert!(back.contains(r#""type":"fs""#), "{back}");
+    }
+
+    /// An `fs` provider missing its `root` is *not* an unknown source, it is a
+    /// damaged one — but it must still not cost the workspace. Kept as
+    /// `Unknown`, which is the honest reading: this build cannot use it.
+    #[test]
+    fn a_malformed_known_provider_is_kept_rather_than_fatal() {
+        let cfg: TrackerConfig =
+            serde_json::from_str(r#"{"providers":[{"type":"fs"}],"v":3}"#).unwrap();
+        assert!(matches!(cfg.providers.first(), Some(TrackerProvider::Unknown(_))));
     }
 
     #[test]
