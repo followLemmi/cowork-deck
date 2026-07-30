@@ -68,8 +68,12 @@ let boardTimer: ReturnType<typeof setInterval> | null = null;
 
 function setView(showBoard: boolean) {
   boardVisible = showBoard;
-  applyView({ deck: deckEl, board: boardEl, termBtn, boardBtn,
-              terminalsOnly: [skMount, newBtn, listMount] }, showBoard);
+  // The pull request screen has no button and no container yet; detached
+  // stand-ins keep this call honest until it is wired up.
+  applyView({ deck: deckEl, board: boardEl, pr: document.createElement("div"),
+              termBtn, boardBtn, prBtn: document.createElement("button"),
+              terminalsOnly: [skMount, newBtn, listMount] },
+             showBoard ? "board" : "deck");
   if (showBoard) {
     void refreshBoard();
     // Polling is the primary refresh path; the watcher only makes it faster, so

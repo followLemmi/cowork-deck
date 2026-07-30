@@ -446,6 +446,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    Browsers score each selector in a group on its own, so this split changes
    nothing at runtime. */
 #board.hidden { display: none; }
+/* The pull request screen hides the same way the board does. Its own rule for
+   the same reason as above. */
+#pr.hidden { display: none; }
 .tk-hidden { display: none; }
 /* `#deck` sets `display: grid` with an id selector, which outweighs a class.
    Without this rule `tk-hidden` never hid the deck, and the board opened beside

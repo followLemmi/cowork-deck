@@ -11,13 +11,16 @@ function mount(): ViewElements {
   document.body.innerHTML =
     '<div id="app"><aside id="sidebar"><div id="ws"></div><div id="sk"></div>' +
     '<button id="new"></button><div id="list"></div></aside>' +
-    '<main id="deck"></main><div id="board" class="hidden"></div></div>';
+    '<main id="deck"></main><div id="board" class="hidden"></div>' +
+    '<div id="pr" class="hidden"></div></div>';
   const pick = (sel: string) => document.querySelector<HTMLElement>(sel)!;
   return {
     deck: pick("#deck"),
     board: pick("#board"),
+    pr: pick("#pr"),
     termBtn: document.createElement("button"),
     boardBtn: document.createElement("button"),
+    prBtn: document.createElement("button"),
     terminalsOnly: [pick("#sk"), pick("#new"), pick("#list")],
   };
 }
@@ -28,8 +31,16 @@ describe("applyView", () => {
   let el: ViewElements;
   beforeEach(() => { el = mount(); });
 
+  it("shows exactly one screen at a time", () => {
+    for (const view of ["deck", "board", "pr"] as const) {
+      applyView(el, view);
+      const visible = [el.deck, el.board, el.pr].filter(shown);
+      expect(visible).toHaveLength(1);
+    }
+  });
+
   it("hides the deck on the board screen, against the real stylesheet", () => {
-    applyView(el, true);
+    applyView(el, "board");
     // The regression this test exists for: #deck { display: grid } is an id
     // selector and outweighs .tk-hidden, so asserting the class would pass
     // while the terminals stayed on screen.
@@ -37,29 +48,50 @@ describe("applyView", () => {
     expect(shown(el.board)).toBe(true);
   });
 
+  it("hides the deck on the PR screen, against the real stylesheet", () => {
+    applyView(el, "pr");
+    // Same trap as the board: #deck { display: grid } is an id selector and
+    // outweighs .tk-hidden, so asserting the class would pass while the
+    // terminals stayed on screen.
+    expect(getComputedStyle(el.deck).display).toBe("none");
+    expect(shown(el.pr)).toBe(true);
+  });
+
   it("brings the deck back on the terminals screen", () => {
-    applyView(el, true);
-    applyView(el, false);
+    applyView(el, "board");
+    applyView(el, "deck");
     expect(getComputedStyle(el.deck).display).toBe("grid");
     expect(shown(el.board)).toBe(false);
   });
 
   it("hides the terminals-only sidebar blocks on the board screen", () => {
-    applyView(el, true);
+    applyView(el, "board");
+    for (const node of el.terminalsOnly) expect(shown(node)).toBe(false);
+  });
+
+  it("hides the terminals-only sidebar blocks on the PR screen too", () => {
+    applyView(el, "pr");
     for (const node of el.terminalsOnly) expect(shown(node)).toBe(false);
   });
 
   it("restores the terminals-only sidebar blocks", () => {
-    applyView(el, true);
-    applyView(el, false);
+    applyView(el, "board");
+    applyView(el, "deck");
     for (const node of el.terminalsOnly) expect(shown(node)).toBe(true);
   });
 
   it("marks the active button", () => {
-    applyView(el, true);
+    applyView(el, "board");
     expect(el.boardBtn.classList.contains("active")).toBe(true);
     expect(el.termBtn.classList.contains("active")).toBe(false);
-    applyView(el, false);
+    applyView(el, "deck");
     expect(el.termBtn.classList.contains("active")).toBe(true);
+  });
+
+  it("marks exactly one button active", () => {
+    applyView(el, "pr");
+    expect(el.prBtn.classList.contains("active")).toBe(true);
+    expect(el.boardBtn.classList.contains("active")).toBe(false);
+    expect(el.termBtn.classList.contains("active")).toBe(false);
   });
 });
