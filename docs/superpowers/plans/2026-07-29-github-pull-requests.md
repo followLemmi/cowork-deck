@@ -16,6 +16,7 @@
 - **No `innerHTML` for anything that came from the network.** Titles, branch names and author logins are set with `textContent`, following `board.ts`.
 - **Pure functions carry the logic; DOM classes only render.** Anything with a truth table lives in a module with its own unit tests and no DOM.
 - **Existing tests stay green:** 367 vitest, 263 cargo, and `npx tsc --noEmit` clean.
+- **Epic:** #113 — the umbrella issue; task issues #100–#112. Each task carries its own issue number under its heading.
 
 ## File map
 
@@ -37,6 +38,8 @@
 ---
 
 ### Task 1: The model and the check summary
+
+**Issue:** #100
 
 The whole truth table of CI state, isolated from everything else. `statusCheckRollup` is an array of two different node shapes, and collapsing "no checks" into "passed" would put a green tick on a PR nothing has ever built.
 
@@ -249,6 +252,8 @@ git commit -m "feat(pr): summarise a pull request's checks into one honest fact"
 
 ### Task 2: Parsing the pull request list
 
+**Issue:** #101
+
 **Files:**
 - Modify: `src-tauri/src/gh_pr.rs`
 
@@ -455,6 +460,8 @@ git commit -m "feat(pr): parse the pull request list"
 
 ### Task 3: Merge options and the worktree path
 
+**Issue:** #102
+
 Two more pure functions. The worktree path is the one place where a mistake writes into a repository, so it gets an explicit test that the result lands outside the workspace.
 
 **Files:**
@@ -616,6 +623,8 @@ git commit -m "feat(pr): merge options and the worktree path"
 ---
 
 ### Task 4: Running `gh` under the workspace's account
+
+**Issue:** #103
 
 The commands that reach the network. One helper does the running, so the token cache and the redaction live in exactly one place.
 
@@ -791,6 +800,8 @@ git commit -m "feat(pr): list pull requests under the workspace account"
 
 ### Task 5: Merge, close and reopen
 
+**Issue:** #104
+
 **Files:**
 - Modify: `src-tauri/src/commands.rs`
 - Modify: `src-tauri/src/main.rs`
@@ -918,6 +929,8 @@ git commit -m "feat(pr): merge pinned to the reviewed commit, close and reopen"
 ---
 
 ### Task 6: The worktree
+
+**Issue:** #105
 
 **Files:**
 - Modify: `src-tauri/src/commands.rs`
@@ -1077,6 +1090,8 @@ git commit -m "feat(pr): a worktree per pull request, never removed while dirty"
 
 ### Task 7: Frontend types and IPC wrappers
 
+**Issue:** #106
+
 **Files:**
 - Modify: `src/ipc.ts`
 - Modify: `tests/ipc.test.ts`
@@ -1184,6 +1199,8 @@ git commit -m "feat(pr): frontend types and IPC wrappers"
 ---
 
 ### Task 8: Pure frontend logic
+
+**Issue:** #107
 
 Everything with a rule in it, away from the DOM: what may be merged and why not, how old the data is, how fast to poll.
 
@@ -1430,6 +1447,8 @@ git commit -m "feat(pr): pure logic for merge eligibility, labels, sorting and p
 
 ### Task 9: The three-way view switch
 
+**Issue:** #108
+
 **Files:**
 - Modify: `src/view.ts`
 - Modify: `tests/view-switch.test.ts`
@@ -1558,6 +1577,8 @@ git commit -m "feat(pr): a three-way view switch"
 ---
 
 ### Task 10: The pull request view
+
+**Issue:** #109
 
 **Files:**
 - Create: `src/pr-view.ts`
@@ -1930,6 +1951,8 @@ git commit -m "feat(pr): the pull request view"
 
 ### Task 11: Wiring — polling, actions and the worktree session
 
+**Issue:** #110
+
 **Files:**
 - Modify: `src/main.ts`
 - Modify: `src/sessions.ts`
@@ -2190,6 +2213,8 @@ git commit -m "feat(pr): wire the view, its polling and its actions"
 
 ### Task 12: The merge dialog
 
+**Issue:** #111
+
 Split from Task 11 because it is the one irreversible action in the feature and deserves its own review.
 
 **Files:**
@@ -2348,6 +2373,8 @@ git commit -m "feat(pr): the merge confirmation"
 ---
 
 ### Task 13: Worktree cleanup, documentation and the manual check
+
+**Issue:** #112
 
 **Files:**
 - Modify: `src/main.ts`
