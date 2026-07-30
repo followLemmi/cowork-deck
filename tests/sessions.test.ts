@@ -439,3 +439,61 @@ describe("Deck.launchFromTask", () => {
     expect(prompt).not.toContain('"doing"');
   });
 });
+
+describe("Deck.launchOnWorktree", () => {
+  const WT = "/p-pr/7-fix-thing";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.innerHTML = "";
+    startMock.mockResolvedValue(undefined);
+  });
+
+  // The session runs in the worktree, but belongs to the workspace: `cwd` and
+  // `workspaceId` are deliberately not about the same directory.
+  it("starts in the worktree while staying bound to the workspace", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+    const [cwd, workspaceId, prompt] = startMock.mock.calls[0];
+    expect(cwd).toBe(WT);
+    expect(workspaceId).toBe(WS.id);
+    expect(prompt).toBe("PR #7");
+  });
+
+  // Grouping and filtering follow `workspaceId`, not the directory — otherwise a
+  // PR session would read as an orphan and stay visible in every workspace.
+  it("is filtered with the workspace, not with its own directory", async () => {
+    const WS2 = { id: "w2", name: "Q", path: "/q", color: "#000" };
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS, WS2]);
+
+    await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+
+    deck.setActiveWorkspace(WS.id);
+    expect(deckEl.querySelector(".tile")!.classList.contains("ws-hidden")).toBe(false);
+    deck.setActiveWorkspace(WS2.id);
+    expect(deckEl.querySelector(".tile")!.classList.contains("ws-hidden")).toBe(true);
+  });
+
+  // Removing a worktree under a live session would leave it restarting in a
+  // directory that no longer exists, so removal has to be able to ask first.
+  it("reports a live session inside a worktree path", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    expect(deck.hasSessionIn(WT)).toBe(false);
+
+    await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+
+    expect(deck.hasSessionIn(WT)).toBe(true);
+    expect(deck.hasSessionIn("/p-pr/8-other")).toBe(false);
+  });
+});

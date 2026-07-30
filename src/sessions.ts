@@ -262,6 +262,32 @@ export class Deck {
     return "launched";
   }
 
+  /** A session for a pull request, in the worktree prepared for it.
+   *
+   *  `cwd` is deliberately not the workspace path: the worktree keeps the
+   *  branch out of the workspace's own working copy, where other sessions are
+   *  running. `workspaceId` still points at the workspace, so the tile groups,
+   *  filters and inherits its account exactly like any other. */
+  async launchOnWorktree(
+    cwd: string, workspaceId: string, titleText: string, prompt: string,
+  ): Promise<void> {
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd,
+      workspaceId,
+      titleText,
+      prompt,
+      resume: false,
+    });
+  }
+
+  /** Whether any live tile is running inside `path`. Removal of a worktree
+   *  asks first: a session whose directory disappears comes back on the next
+   *  restore pointing at nothing. */
+  hasSessionIn(path: string): boolean {
+    return [...this.tiles.values()].some((t) => t.workspacePath === path);
+  }
+
   setActiveWorkspace(id: string | null) {
     this.zoomedSession = null;
     this.activeWorkspaceId = id;

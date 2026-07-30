@@ -2,6 +2,7 @@ import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { applyView } from "./view";
+import type { ViewName } from "./view";
 import { claudeAvailable, loadLayout, onScheduledFire, onSchedulerBroken, scheduleAck, schedulerReady } from "./ipc";
 import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
@@ -9,8 +10,12 @@ import {
   listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
   taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage,
+  prList, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
 } from "./ipc";
-import type { MigrationOffer, StepId, Task } from "./ipc";
+import type { MergeOptions, MigrationOffer, PullRequest, StepId, Task } from "./ipc";
+import { pollIntervalMs } from "./pr";
+import { PrView } from "./pr-view";
+import type { PrState } from "./pr-view";
 import { alertModal, confirmModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -38,15 +43,18 @@ sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const boardEl = document.querySelector<HTMLElement>("#board")!;
 
-// The "Terminals | Board" switch. The board takes the full width because
-// GitHub and Jira boards land here later, and those need room rather than a strip.
+// The "Terminals | Board | Pull requests" switch. Each screen takes the full
+// width because GitHub and Jira boards land here later, and those need room
+// rather than a strip.
 const views = document.createElement("div");
 views.className = "tk-views";
 const termBtn = document.createElement("button");
 termBtn.textContent = "Terminals"; termBtn.className = "active";
 const boardBtn = document.createElement("button");
 boardBtn.textContent = "Board";
-views.append(termBtn, boardBtn);
+const prBtn = document.createElement("button");
+prBtn.textContent = "Pull requests";
+views.append(termBtn, boardBtn, prBtn);
 sidebar.prepend(views);
 
 const board = new BoardView({
@@ -63,18 +71,38 @@ const board = new BoardView({
 });
 boardEl.append(board.mount);
 
+const prView = new PrView({
+  onLaunch: (pr) => void launchFromPr(pr),
+  onMerge: (pr) => void mergePr(pr),
+  onClose: (pr) => void closePr(pr),
+  onReopen: (pr) => void reopenPr(pr),
+  onRefresh: () => void refreshPrs(),
+  onFixUnavailable: (u) => {
+    if (u === "no-gh") void openGithubScreen(deck, workspaces.active?.path ?? ".");
+    else void alertModal("Bind a GitHub account in the workspace settings (✎).");
+  },
+});
+// The pull request screen. Created here rather than in index.html because
+// nothing else refers to it, and the view's own root *is* the screen: `.pr-view`
+// carries the `flex: 1` that makes it take the full width of the app row, which
+// a wrapper around it would swallow. It answers to `#pr` as well so the switch's
+// stylesheet rule (`#pr.hidden`) applies exactly as it does to the board.
+const prEl = prView.mount;
+prEl.id = "pr";
+prEl.classList.add("hidden");
+boardEl.after(prEl);
+
 let boardVisible = false;
 let boardTimer: ReturnType<typeof setInterval> | null = null;
+let currentView: ViewName = "deck";
 
-function setView(showBoard: boolean) {
-  boardVisible = showBoard;
-  // The pull request screen has no button and no container yet; detached
-  // stand-ins keep this call honest until it is wired up.
-  applyView({ deck: deckEl, board: boardEl, pr: document.createElement("div"),
-              termBtn, boardBtn, prBtn: document.createElement("button"),
+function setView(view: ViewName) {
+  currentView = view;
+  boardVisible = view === "board";
+  applyView({ deck: deckEl, board: boardEl, pr: prEl, termBtn, boardBtn, prBtn,
               terminalsOnly: [skMount, newBtn, listMount] },
-             showBoard ? "board" : "deck");
-  if (showBoard) {
+             view);
+  if (view === "board") {
     void refreshBoard();
     // Polling is the primary refresh path; the watcher only makes it faster, so
     // a watcher failure degrades into a delay and needs no detection. The
@@ -89,9 +117,15 @@ function setView(showBoard: boolean) {
   } else if (boardTimer !== null) {
     clearInterval(boardTimer); boardTimer = null;
   }
+  // Leaving the screen stops its polling in the same breath as hiding it: a
+  // timer that outlives the view keeps talking to GitHub about a screen nobody
+  // is looking at.
+  if (view === "pr") void refreshPrs();
+  else stopPrPolling();
 }
-termBtn.onclick = () => setView(false);
-boardBtn.onclick = () => setView(true);
+termBtn.onclick = () => setView("deck");
+boardBtn.onclick = () => setView("board");
+prBtn.onclick = () => setView("pr");
 
 const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
@@ -188,7 +222,7 @@ async function launchFromTask(t: Task) {
   await deck.launchFromTask(target, t, cfg);
   // Both "launched" and "focused" leave a session worth looking at — staying on
   // the board would look like the button did nothing.
-  setView(false);
+  setView("deck");
 }
 
 /** Redraw the active workspace's board. Every IPC call is isolated: one failing
@@ -332,6 +366,156 @@ async function dismissMigration() {
   await refreshBoard();
 }
 
+/* --- Pull requests ------------------------------------------------------- */
+
+let prTimer: ReturnType<typeof setTimeout> | null = null;
+let prState: PrState = {
+  workspace: null, unavailable: null, prs: [], error: null, fetchedAt: null, total: null,
+};
+
+function stopPrPolling() {
+  if (prTimer !== null) { clearTimeout(prTimer); prTimer = null; }
+}
+
+/** Poll only while the PR view is on screen and the window is focused. Every
+ *  path that schedules a tick goes through here, so there is one place where
+ *  the two conditions are checked and one place that owns the handle. */
+function schedulePrPoll() {
+  stopPrPolling();
+  if (currentView !== "pr" || !document.hasFocus()) return;
+  prTimer = setTimeout(() => void refreshPrs(), pollIntervalMs(prState.prs));
+}
+
+/** Re-read the list. The single-timer-chain shape matters: the next tick is
+ *  scheduled only after this request has returned, so a slow network cannot
+ *  queue up `gh` processes. */
+async function refreshPrs() {
+  // The previous handle is dropped before the request, not after it: a manual ↻
+  // in the middle of a wait must not leave a tick behind.
+  stopPrPolling();
+  const ws = workspaces.active;
+  if (!ws) {
+    prState = { ...prState, workspace: null, unavailable: "no-account", prs: [] };
+    prView.render(prState, Date.now());
+    return;
+  }
+  if (!ws.github) {
+    prState = { ...prState, workspace: ws.name, unavailable: "no-account", prs: [] };
+    prView.render(prState, Date.now());
+    // Nothing will change here without a human editing the workspace, so this
+    // state does not poll — but it also must not leave the previous one polling.
+    return;
+  }
+  const wsId = ws.id;
+  try {
+    const prs = await prList(wsId);
+    // The workspace may have been switched while we waited on IPC: a late reply
+    // must not repaint the view with another workspace's pull requests.
+    if (workspaces.active?.id !== wsId) return;
+    prState = {
+      workspace: ws.name, unavailable: null, prs,
+      error: null, fetchedAt: Date.now(),
+      // What came back, and nothing more: `pr_list` asks for one page, so the
+      // number of open pull requests the repository has is not knowable from
+      // here (see #115).
+      total: prs.length,
+    };
+  } catch (e) {
+    if (workspaces.active?.id !== wsId) return;
+    const msg = String((e as { message?: string })?.message ?? e);
+    // Known unavailabilities become their own screen; everything else — a
+    // missing `repo` scope, the rate limit, an offline machine — keeps the last
+    // good list on screen beside the error, with its age.
+    if (msg.includes("gh-not-found")) prState = { ...prState, unavailable: "no-gh" };
+    else if (msg.includes("no-account")) prState = { ...prState, unavailable: "no-account" };
+    else if (msg.includes("no git remotes") || msg.includes("not a git repository")
+             || msg.includes("none of the git remotes")) {
+      prState = { ...prState, unavailable: "no-repo" };
+    } else {
+      prState = { ...prState, error: msg };
+    }
+  }
+  prView.render(prState, Date.now());
+  schedulePrPoll();
+}
+
+// Focus is the other half of "only while watched": a minimised or background
+// window polls nothing, and coming back refreshes at once rather than at the
+// next tick.
+window.addEventListener("focus", () => { if (currentView === "pr") void refreshPrs(); });
+window.addEventListener("blur", () => stopPrPolling());
+
+/** ▶ on a row: a worktree for the branch, then an ordinary session inside it. */
+async function launchFromPr(pr: PullRequest) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  try {
+    const cwd = await prWorktreeAdd(ws.id, pr.number, pr.headRefName);
+    await deck.launchOnWorktree(
+      cwd, ws.id, `⑂ #${pr.number}`,
+      `You are working on pull request #${pr.number}: ${pr.title}\n`
+      + `Branch ${pr.headRefName} → ${pr.baseRefName}, checked out in ${cwd}.`,
+    );
+    setView("deck");
+  } catch (e) {
+    await alertModal(`Could not prepare a worktree for #${pr.number}: ${String(e)}`);
+  }
+}
+
+/** The merge dialog itself is Task 12 (`mergeForm` in src/forms.ts). Until it
+ *  lands the button refuses instead of merging with a strategy nobody chose:
+ *  this is the one irreversible action in the feature, and it must not happen
+ *  without the confirmation that names the commit. Task 12 replaces this with
+ *  an import from "./forms". */
+async function mergeForm(
+  pr: PullRequest, opts: MergeOptions,
+): Promise<{ strategy: string; deleteBranch: boolean } | null> {
+  void opts;
+  await alertModal(`The merge dialog is not built yet, so #${pr.number} was not merged.`);
+  return null;
+}
+
+async function mergePr(pr: PullRequest) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  const opts = await prMergeOptions(ws.id).catch(() => null);
+  if (!opts || opts.strategies.length === 0) {
+    await alertModal("Could not read which merge strategies this repository allows.");
+    return;
+  }
+  const choice = await mergeForm(pr, opts);
+  if (!choice) return;
+  try {
+    await prMerge(ws.id, pr.number, choice.strategy, pr.headRefOid, choice.deleteBranch);
+  } catch (e) {
+    const msg = String((e as { message?: string })?.message ?? e);
+    // gh refuses when the head has moved — which is the guarantee working, not
+    // a failure to apologise for.
+    await alertModal(
+      msg.includes("match-head-commit") || msg.includes("head commit")
+        ? `#${pr.number} changed since you looked at it. Refresh and read it again.`
+        : `Could not merge #${pr.number}: ${msg}`,
+    );
+  }
+  await refreshPrs();
+}
+
+async function closePr(pr: PullRequest) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  if (!(await confirmModal(`Close #${pr.number} “${pr.title}” without merging?`))) return;
+  await prClose(ws.id, pr.number).catch((e) => void alertModal(String(e)));
+  await refreshPrs();
+}
+
+// Reopen restores the state of a moment ago, so it does not ask.
+async function reopenPr(pr: PullRequest) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  await prReopen(ws.id, pr.number).catch((e) => void alertModal(String(e)));
+  await refreshPrs();
+}
+
 /** Why a scheduled fire did or did not produce a run. The backend-driven path
  *  only logs it; a user-initiated run surfaces it in a modal. */
 type FireOutcome = "launched" | "skipped-overlap" | "no-workspace" | "not-scheduled";
@@ -378,6 +562,9 @@ void listen("pill://focus-next", async () => {
 const workspaces = new WorkspacesPanel(wsMount, (ws) => {
   deck.setActiveWorkspace(ws.id);
   if (boardVisible) void refreshBoard();
+  // The pull requests on screen belong to the workspace that was active a
+  // moment ago; re-reading also re-points the poll at the new one.
+  if (currentView === "pr") void refreshPrs();
 }, () => {
   // A workspace was added, edited or deleted: its tracker root may have moved,
   // so re-point the watcher and re-read the sidebar counts.
@@ -432,7 +619,8 @@ function paletteCommands(): Command[] {
     { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
     { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
     { id: "scenarios", title: "Scenarios: focus the sidebar list", run: () => focusRegion("sidebar") },
-    { id: "board", title: "Open the task board", run: () => setView(true) },
+    { id: "board", title: "Open the task board", run: () => setView("board") },
+    { id: "prs", title: "Open pull requests", run: () => setView("pr") },
     { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
     { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
   ];
@@ -479,7 +667,8 @@ const COMMANDS: Record<string, () => void> = {
   "zoom": () => deck.toggleZoomActive(),
   "next-region": () => cycleRegion(1),
   "prev-region": () => cycleRegion(-1),
-  "board": () => setView(true),
+  "board": () => setView("board"),
+  "prs": () => setView("pr"),
   "new-task": () => { void captureTask(); },
   "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
 };
