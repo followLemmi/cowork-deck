@@ -5,7 +5,7 @@ vi.mock("@tauri-apps/api/event");
 
 import {
   listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck, updateTask,
-  boardConfigSave, boardStepRewrite, boardStepUsage,
+  boardConfigSave, boardStepRewrite, boardStepUsage, prList, prMerge,
 } from "../src/ipc";
 import type { BoardConfig } from "../src/ipc";
 import { invoke } from "@tauri-apps/api/core";
@@ -98,6 +98,21 @@ describe("ipc", () => {
     const res = await boardStepUsage("w1");
     expect(invoke).toHaveBeenCalledWith("board_step_usage", { workspaceId: "w1" });
     expect(res[0].count).toBe(3);
+  });
+
+  it("prMerge forwards the pinned head commit", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await prMerge("w1", 7, "squash", "abc123", false);
+    expect(invoke).toHaveBeenCalledWith("pr_merge", {
+      workspaceId: "w1", number: 7, strategy: "squash",
+      headOid: "abc123", deleteBranch: false,
+    });
+  });
+
+  it("prList asks for one workspace", async () => {
+    vi.mocked(invoke).mockResolvedValue([]);
+    await prList("w1");
+    expect(invoke).toHaveBeenCalledWith("pr_list", { workspaceId: "w1" });
   });
 
   it("decodeB64 round-trips utf8", () => {

@@ -64,6 +64,64 @@ export interface HostPlatform { os: "macos" | "windows" | "linux"; distro: strin
 export const ghStatus = () => invoke<GhStatus>("gh_status");
 export const hostPlatform = () => invoke<HostPlatform>("host_platform");
 
+/** Four distinct check states. `none` is not `passed`: nothing has built this.
+ *  Mirrors `gh_pr::ChecksSummary`, tagged on `kind`. */
+export type ChecksSummary =
+  | { kind: "none" }
+  | { kind: "running"; done: number; total: number }
+  | { kind: "passed"; total: number }
+  | { kind: "failed"; failed: number; total: number };
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  /** Empty when the author's account is gone. */
+  author: string;
+  isDraft: boolean;
+  headRefName: string;
+  /** What a merge is pinned to — see `prMerge`. */
+  headRefOid: string;
+  baseRefName: string;
+  isCrossRepository: boolean;
+  reviewDecision: string | null;
+  checks: ChecksSummary;
+  mergeable: string;
+  mergeStateStatus: string;
+  updatedAt: string;
+  url: string;
+  labels: string[];
+}
+
+export interface MergeOptions {
+  /** Only what this repository permits. Can be empty — a repository may allow
+   *  no strategy at all, and then `default` carries nothing usable either. */
+  strategies: ("merge" | "squash" | "rebase")[];
+  default: "merge" | "squash" | "rebase";
+  /** The repository deletes merged branches itself; the dialog says so rather
+   *  than offering a checkbox that misdescribes what happens. */
+  repoDeletesBranch: boolean;
+}
+
+export const prList = (workspaceId: string) =>
+  invoke<PullRequest[]>("pr_list", { workspaceId });
+export const prMergeOptions = (workspaceId: string) =>
+  invoke<MergeOptions>("pr_merge_options", { workspaceId });
+/** `headOid` pins the merge to the commit that was reviewed: the backend passes
+ *  it to `gh pr merge --match-head-commit`, so a push that lands mid-review
+ *  makes this fail rather than merge something nobody looked at. */
+export const prMerge = (
+  workspaceId: string, number: number, strategy: string, headOid: string, deleteBranch: boolean,
+) => invoke<void>("pr_merge", { workspaceId, number, strategy, headOid, deleteBranch });
+export const prClose = (workspaceId: string, number: number) =>
+  invoke<void>("pr_close", { workspaceId, number });
+export const prReopen = (workspaceId: string, number: number) =>
+  invoke<void>("pr_reopen", { workspaceId, number });
+/** Resolves to the path of the worktree that now holds the PR's branch. */
+export const prWorktreeAdd = (workspaceId: string, number: number, branch: string) =>
+  invoke<string>("pr_worktree_add", { workspaceId, number, branch });
+export const prWorktreeRemove = (workspaceId: string, number: number, branch: string) =>
+  invoke<void>("pr_worktree_remove", { workspaceId, number, branch });
+
 /** Исход привязки аккаунта для стартовавшей сессии. Токена тут нет: только имя
  *  аккаунта и, если резолв не удался, причина — её показывает бейдж на тайле. */
 export interface SessionAuth { account: string | null; degraded: string | null; }
