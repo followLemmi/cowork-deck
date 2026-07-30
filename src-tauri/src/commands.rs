@@ -412,6 +412,67 @@ viewerDefaultMergeMethod,deleteBranchOnMerge"
     crate::gh_pr::parse_merge_options(&json)
 }
 
+fn merge_strategy_flag(strategy: &str) -> Option<&'static str> {
+    match strategy {
+        "merge" => Some("--merge"),
+        "squash" => Some("--squash"),
+        "rebase" => Some("--rebase"),
+        _ => None,
+    }
+}
+
+pub fn pr_merge_argv(
+    number: u64,
+    strategy: &str,
+    head_oid: &str,
+    delete_branch: bool,
+) -> Vec<String> {
+    let mut argv: Vec<String> = vec!["pr".into(), "merge".into(), number.to_string()];
+    if let Some(flag) = merge_strategy_flag(strategy) {
+        argv.push(flag.into());
+    }
+    // Pins the merge to the commit the person actually read. gh fails if the
+    // head has moved, which is the outcome we want.
+    argv.push("--match-head-commit".into());
+    argv.push(head_oid.into());
+    if delete_branch {
+        argv.push("--delete-branch".into());
+    }
+    argv
+}
+
+#[tauri::command]
+pub fn pr_merge(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+    strategy: String,
+    head_oid: String,
+    delete_branch: bool,
+) -> Result<(), String> {
+    if merge_strategy_flag(&strategy).is_none() {
+        return Err(format!("unknown merge strategy: {strategy}"));
+    }
+    run_gh_for_workspace(
+        &state,
+        &workspace_id,
+        &pr_merge_argv(number, &strategy, &head_oid, delete_branch),
+    )
+    .map(|_| ())
+}
+
+#[tauri::command]
+pub fn pr_close(state: State<AppState>, workspace_id: String, number: u64) -> Result<(), String> {
+    let args: Vec<String> = vec!["pr".into(), "close".into(), number.to_string()];
+    run_gh_for_workspace(&state, &workspace_id, &args).map(|_| ())
+}
+
+#[tauri::command]
+pub fn pr_reopen(state: State<AppState>, workspace_id: String, number: u64) -> Result<(), String> {
+    let args: Vec<String> = vec!["pr".into(), "reopen".into(), number.to_string()];
+    run_gh_for_workspace(&state, &workspace_id, &args).map(|_| ())
+}
+
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
@@ -780,6 +841,33 @@ mod tests {
         assert!(argv.contains(&"50".to_string()));
         let json_at = argv.iter().position(|a| a == "--json").expect("--json");
         assert_eq!(argv[json_at + 1], crate::gh_pr::PR_LIST_FIELDS);
+    }
+
+    /// --match-head-commit is the whole safety story of this button: without it
+    /// the merge takes whatever is at the head now, not what was on screen.
+    #[test]
+    fn merge_argv_pins_the_head_commit() {
+        let argv = pr_merge_argv(7, "squash", "abc123", false);
+        assert_eq!(argv[0], "pr");
+        assert_eq!(argv[1], "merge");
+        assert_eq!(argv[2], "7");
+        assert!(argv.contains(&"--squash".to_string()));
+        let at = argv.iter().position(|a| a == "--match-head-commit").expect("pin");
+        assert_eq!(argv[at + 1], "abc123");
+        assert!(!argv.contains(&"--delete-branch".to_string()));
+    }
+
+    #[test]
+    fn merge_argv_maps_every_strategy_and_can_delete_the_branch() {
+        assert!(pr_merge_argv(1, "merge", "a", true).contains(&"--merge".to_string()));
+        assert!(pr_merge_argv(1, "rebase", "a", true).contains(&"--rebase".to_string()));
+        assert!(pr_merge_argv(1, "merge", "a", true).contains(&"--delete-branch".to_string()));
+    }
+
+    /// An unknown strategy must not silently become a merge commit.
+    #[test]
+    fn an_unknown_strategy_is_rejected() {
+        assert!(merge_strategy_flag("cherry-pick").is_none());
     }
 
     #[test]
