@@ -1,6 +1,7 @@
 pub mod board;
 pub mod fs;
 pub mod frontmatter;
+pub mod gh_issues;
 pub mod migrate;
 pub mod model;
 pub mod provider;

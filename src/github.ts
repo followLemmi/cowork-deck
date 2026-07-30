@@ -24,6 +24,13 @@ export function installCommand(p: HostPlatform): string {
   return LINUX_DOC;
 }
 
+/** Scopes a bound account must carry.
+ *
+ *  `read:project` is deliberately absent, and the issues board depends on that:
+ *  `projectCards` and `projectItems` fail an *entire* `gh issue list` request
+ *  without it, so `ISSUE_LIST_FIELDS` (src-tauri/src/tasks/gh_issues.rs) must
+ *  never ask for them while this list stays as it is. Widening this list is the
+ *  first half of GitHub Projects support, not a free improvement. */
 const REQUIRED_SCOPES = ["repo"];
 
 /** Скоупы, без которых приватные репозитории аккаунту недоступны. */
