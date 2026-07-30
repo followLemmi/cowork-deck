@@ -194,28 +194,7 @@ pub fn parse_merge_options(json: &str) -> Result<MergeOptions, String> {
     Ok(MergeOptions { strategies, default, repo_deletes_branch: flag("deleteBranchOnMerge") })
 }
 
-/// A filesystem-safe fragment of a branch name: lowercase, single dashes, and
-/// short enough to keep the path within sane limits. Path separators and dots
-/// are stripped rather than escaped, so nothing here can climb out of the
-/// directory it is joined to.
-pub fn slug(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-        } else if !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    let trimmed = out.trim_matches('-');
-    let cut = trimmed.char_indices().nth(40).map_or(trimmed.len(), |(i, _)| i);
-    let cut = trimmed[..cut].trim_end_matches('-');
-    if cut.is_empty() {
-        "branch".to_string()
-    } else {
-        cut.to_string()
-    }
-}
+pub use cowork_deck::tasks::slug::slug;
 
 /// Where the worktree for a pull request lives: beside the workspace, never
 /// inside it.
