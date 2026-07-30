@@ -1516,6 +1516,7 @@ Add to `mod tests` in `src-tauri/src/tasks/gh_issues.rs`:
     // never teaching `parse_issue` to unwrap a one-element array, which would
     // delete the guarantee that `view` and `list` cannot be confused.
     const ONE_CLOSED_OBJECT: &str = r#"{"number":7,"title":"t","state":"CLOSED",
+        "createdAt":"c","closedAt":"d","body":"","labels":[],"url":"u"}"#;
 
     /// The closed column is fetched, not accumulated: with an open-only list a
     /// closed issue would simply vanish from the board, which for a file card it
