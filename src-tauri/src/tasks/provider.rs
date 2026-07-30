@@ -24,6 +24,18 @@ pub struct TaskPatch {
     pub kind: Option<KindId>,
     pub status: Option<StepId>,
     pub body: Option<String>,
+    /// Why a card is being closed, where closing takes a reason. GitHub's
+    /// `gh issue close -r` accepts `completed` or `not planned`, and the close
+    /// confirmation offers the choice (decision 10). `FsTaskProvider` ignores
+    /// it: a card file has no such field, and inventing one would change the
+    /// card format for a value nothing reads back.
+    ///
+    /// On the patch rather than in a command of its own because decision 3 keeps
+    /// the board's four write paths as one: the drag handler, the arrows and the
+    /// card modal all go through `tasks_update` and none of them should learn a
+    /// provider's name.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 pub trait TaskProvider {

@@ -670,7 +670,7 @@ The body, unchanged.\n";
         let p = three_step_provider(dir.path());
         let card = a_card(&p);
         let after = p.update(&card.id, TaskPatch {
-            title: Some("Renamed".into()), kind: None, status: None, body: None,
+            title: Some("Renamed".into()), kind: None, status: None, body: None, reason: None,
         }).unwrap();
         assert_eq!(after.title, "Renamed");
         assert_eq!(after.kind.as_str(), "task", "an untouched field is untouched");
@@ -691,7 +691,7 @@ The body, unchanged.\n";
         let after = p.update(&card.id, TaskPatch {
             title: Some("Bug:\nthe pill\nblinks".into()),
             kind: Some(KindId("bug".into())),
-            status: None, body: None,
+            status: None, body: None, reason: None,
         }).unwrap();
         assert_eq!(after.title, "Bug: the pill blinks");
         assert_eq!(after.kind.as_str(), "bug");
@@ -710,7 +710,7 @@ The body, unchanged.\n";
         let before = card.path.clone();
         let after = p.update(&card.id, TaskPatch {
             title: Some("A completely different title".into()),
-            kind: None, status: None, body: None,
+            kind: None, status: None, body: None, reason: None,
         }).unwrap();
         // The id is the identity. A rename would break Obsidian links and make
         // the watcher report a delete plus a create instead of an edit.
@@ -727,7 +727,7 @@ The body, unchanged.\n";
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, text.replace("---\nid:", "---\ntags: [inbox]\nid:")).unwrap();
         p.update(&card.id, TaskPatch { title: None, kind: None,
-            status: Some(StepId("doing".into())), body: None }).unwrap();
+            status: Some(StepId("doing".into())), body: None, reason: None }).unwrap();
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("tags: [inbox]"), "{after}");
         // The status write itself has to land on disk, not merely on the
@@ -747,7 +747,7 @@ The body, unchanged.\n";
         let p = three_step_provider(dir.path());
         let card = a_card(&p);
         let closed = p.update(&card.id, TaskPatch { title: None, kind: None,
-            status: Some(StepId("done".into())), body: None }).unwrap();
+            status: Some(StepId("done".into())), body: None, reason: None }).unwrap();
         assert!(closed.resolved.is_some(), "a terminal step stamps when");
         // The returned `Task` is assembled in memory regardless of whether the
         // `resolved` write actually reached the file — only a fresh read proves
@@ -756,7 +756,7 @@ The body, unchanged.\n";
         assert!(on_disk.contains("resolved: "), "{on_disk}");
 
         let back = p.update(&card.id, TaskPatch { title: None, kind: None,
-            status: Some(StepId("todo".into())), body: None }).unwrap();
+            status: Some(StepId("todo".into())), body: None, reason: None }).unwrap();
         assert_eq!(back.resolved, None, "moving back out clears it");
         let on_disk = std::fs::read_to_string(&card.path).unwrap();
         let reread = crate::tasks::frontmatter::parse_card(&on_disk, &card.path).expect("still a card");
@@ -769,7 +769,7 @@ The body, unchanged.\n";
         let p = three_step_provider(dir.path());
         let card = a_card(&p);
         let after = p.update(&card.id, TaskPatch { title: None, kind: None, status: None,
-            body: Some("Replaced.\n".into()) }).unwrap();
+            body: Some("Replaced.\n".into()), reason: None }).unwrap();
         assert_eq!(after.body, "Replaced.\n");
         let on_disk = std::fs::read_to_string(&card.path).unwrap();
         assert!(on_disk.contains("Replaced.\n"), "{on_disk}");
@@ -788,7 +788,7 @@ The body, unchanged.\n";
         let p = three_step_provider(dir.path());
         let card = a_card(&p);
         p.update(&card.id, TaskPatch { title: None, kind: None, status: None,
-            body: Some("Replaced.\n".into()) }).unwrap();
+            body: Some("Replaced.\n".into()), reason: None }).unwrap();
 
         let text = std::fs::read_to_string(&card.path).unwrap();
         let reread = crate::tasks::frontmatter::parse_card(&text, &card.path).expect("still a card");
@@ -813,7 +813,7 @@ The body, unchanged.\n";
             project: "proj".into(), origin: TaskOrigin::Human, session: None,
         }).unwrap();
         p.update(&card.id, TaskPatch { title: None, kind: None,
-            status: Some(StepId("done".into())), body: None }).unwrap();
+            status: Some(StepId("done".into())), body: None, reason: None }).unwrap();
 
         // Backdate the stamp on disk so a restamp (which would use "now") is
         // distinguishable from a preserved value, regardless of test timing.
@@ -823,7 +823,7 @@ The body, unchanged.\n";
         std::fs::write(&path, text.replace(&old_line, "resolved: 2020-01-01T00:00:00Z")).unwrap();
 
         let moved = p.update(&card.id, TaskPatch { title: None, kind: None,
-            status: Some(StepId("shipped".into())), body: None }).unwrap();
+            status: Some(StepId("shipped".into())), body: None, reason: None }).unwrap();
         assert_eq!(
             moved.resolved.as_deref(), Some("2020-01-01T00:00:00Z"),
             "moving between two terminal steps must not restamp",
@@ -839,7 +839,7 @@ The body, unchanged.\n";
         // A card with an `id` and nothing else may be an ordinary vault note.
         std::fs::write(dir.path().join("note.md"), "---\nid: 01ABC\n---\nA note.\n").unwrap();
         let e = p.update("01ABC", TaskPatch { title: Some("Mine now".into()),
-            kind: None, status: None, body: None }).unwrap_err();
+            kind: None, status: None, body: None, reason: None }).unwrap_err();
         assert!(matches!(e, TaskError::Damaged(_)), "{e}");
     }
 
@@ -851,7 +851,7 @@ The body, unchanged.\n";
         let text = std::fs::read_to_string(&card.path).unwrap();
         std::fs::write(dir.path().join("copy.md"), text).unwrap();
         let e = p.update(&card.id, TaskPatch { title: Some("X".into()),
-            kind: None, status: None, body: None }).unwrap_err();
+            kind: None, status: None, body: None, reason: None }).unwrap_err();
         assert!(matches!(e, TaskError::Conflict(_)), "{e}");
     }
 
@@ -861,7 +861,7 @@ The body, unchanged.\n";
         let p = three_step_provider(dir.path());
         let card = a_card(&p);
         let e = p.update(&card.id, TaskPatch { title: None, kind: None,
-            status: Some(StepId("invented".into())), body: None }).unwrap_err();
+            status: Some(StepId("invented".into())), body: None, reason: None }).unwrap_err();
         assert!(matches!(e, TaskError::UnknownStep(ref s) if s == "invented"), "{e}");
     }
 
@@ -871,7 +871,7 @@ The body, unchanged.\n";
         let p = three_step_provider(dir.path());
         let card = a_card(&p);
         let e = p.update(&card.id, TaskPatch { title: None, kind: Some(KindId("chore".into())),
-            status: None, body: None }).unwrap_err();
+            status: None, body: None, reason: None }).unwrap_err();
         assert!(matches!(e, TaskError::UnknownKind(ref s) if s == "chore"), "{e}");
     }
 
@@ -886,7 +886,7 @@ The body, unchanged.\n";
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, text.replace("status: todo", "status: legacy")).unwrap();
         let after = p.update(&card.id, TaskPatch { title: None, kind: None,
-            status: Some(StepId("todo".into())), body: None }).unwrap();
+            status: Some(StepId("todo".into())), body: None, reason: None }).unwrap();
         assert_eq!(after.status.as_str(), "todo");
     }
 }

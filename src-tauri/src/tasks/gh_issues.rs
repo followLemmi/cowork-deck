@@ -2,7 +2,8 @@
 //! builders, and a `TaskProvider` over an injected runner. Follows `gh_pr.rs`:
 //! nothing here runs a process, so every rule has a test with no network.
 use crate::tasks::board::{KindId, StepId};
-use crate::tasks::model::{Task, TaskOrigin};
+use crate::tasks::model::{Task, TaskDraft, TaskError, TaskOrigin};
+use crate::tasks::provider::{ProviderCapabilities, TaskPatch, TaskProvider};
 
 /// Exactly the fields the board reads, and no others.
 ///
@@ -251,6 +252,174 @@ pub fn issue_worktree_path(workspace_path: &str, number: u64, title: &str) -> st
     parent
         .join(format!("{name}-issue"))
         .join(format!("{number}-{}", crate::tasks::slug::slug(title)))
+}
+
+/// All open issues in one page. Named because the frontend prints "showing N of
+/// M" against it: a silently truncated list reads as a complete one.
+pub const OPEN_PAGE_LIMIT: usize = 50;
+/// Matches `boardColumns`'s existing `doneLimit` (`tasks.ts:93`) exactly, so the
+/// closed column caps itself the way it always has.
+pub const CLOSED_PAGE_LIMIT: usize = 20;
+
+/// Runs `gh` with an argv and, for the two write commands that carry a body, a
+/// string on stdin. Injected so the provider is testable without a process.
+///
+/// Carries a lifetime rather than being `'static`: the real runner borrows the
+/// app state it resolves an account from, and the provider never outlives the
+/// command that built it. Without the parameter this would mean `+ 'static` and
+/// `Box::new` would fail with E0521 — see Task 10.
+pub type GhRunner<'a> = Box<dyn Fn(&[String], Option<&str>) -> Result<String, String> + 'a>;
+
+/// Resolves `owner/name`, when something first needs it. Not a `String`: see
+/// `new`.
+pub type RepoSource<'a> = Box<dyn Fn() -> Result<String, String> + 'a>;
+
+/// The `'a` is what lets Task 10 hand it a runner that borrows the app state;
+/// nothing else in this task needs it.
+pub struct GhIssueProvider<'a> {
+    repo: RepoSource<'a>,
+    /// Memoized answer. `RefCell` because `TaskProvider` takes `&self` — the
+    /// provider is per-call and single-threaded, so there is nothing to lock.
+    resolved: std::cell::RefCell<Option<String>>,
+    run: GhRunner<'a>,
+}
+
+impl<'a> GhIssueProvider<'a> {
+    /// **Constructing a provider does no I/O, and that is load-bearing.**
+    ///
+    /// Resolving the repository runs `gh repo view`, which fails when `gh` is
+    /// missing, when no account is bound, and when the folder is not a GitHub
+    /// repository — the three states decision 9 exists to explain. If that ran
+    /// here, `tasks_capabilities` would fail, the frontend would see "no tracker
+    /// configured", and all three would render as the one message that is false
+    /// for all of them. So the repository is resolved on first *use* — inside
+    /// `list`, `create`, `resolve`, `update` — and the failure arrives where the
+    /// frontend can name it.
+    ///
+    /// Memoized, because two list calls a tick must not become two lookups too.
+    pub fn new(repo: RepoSource<'a>, run: GhRunner<'a>) -> Self {
+        Self { repo, resolved: std::cell::RefCell::new(None), run }
+    }
+
+    /// `owner/name`, resolved at most once.
+    fn repo(&self) -> Result<String, TaskError> {
+        if let Some(r) = self.resolved.borrow().as_ref() {
+            return Ok(r.clone());
+        }
+        let r = (self.repo)().map_err(TaskError::Io)?;
+        *self.resolved.borrow_mut() = Some(r.clone());
+        Ok(r)
+    }
+
+    /// An issue number, or a refusal. Ids stop being globally unique across
+    /// providers, which is safe because a workspace has exactly one source —
+    /// but an id that cannot be a number must never become `gh issue close 0`.
+    fn number(id: &str) -> Result<u64, TaskError> {
+        id.parse::<u64>().map_err(|_| TaskError::NotFound(id.to_string()))
+    }
+
+    fn page(&self, state: &str, limit: usize, project: &str) -> Result<Vec<Task>, TaskError> {
+        let json = (self.run)(&issue_list_argv(&self.repo()?, state, limit), None)
+            .map_err(TaskError::Io)?;
+        parse_issues(&json, project).map_err(TaskError::Io)
+    }
+}
+
+impl TaskProvider for GhIssueProvider<'_> {
+    fn capabilities(&self) -> ProviderCapabilities {
+        // `statuses` is still read by nothing (`provider.rs:13`); it is filled
+        // in honestly anyway, because Jira is where it starts to matter.
+        ProviderCapabilities {
+            can_create: true,
+            can_resolve: true,
+            statuses: vec!["open".to_string(), "closed".to_string()],
+        }
+    }
+
+    fn list(&self, project: &str) -> Result<Vec<Task>, TaskError> {
+        let mut cards = self.page("open", OPEN_PAGE_LIMIT, project)?;
+        cards.extend(self.page("closed", CLOSED_PAGE_LIMIT, project)?);
+        Ok(cards)
+    }
+
+    /// The new issue's number is not knowable: none of the write commands takes
+    /// `--json`. `create` does print the new issue's URL (observed while filing
+    /// #117), so the number is recoverable — and is deliberately not taken from
+    /// there: the refetch needs no fact about `gh`'s output and survives a change
+    /// to it, which is decision 10's ruling. The board refetches, and
+    /// the new issue arrives like any other; the card returned here carries the
+    /// draft's own fields and no id, and its only caller discards it.
+    fn create(&self, draft: TaskDraft) -> Result<Task, TaskError> {
+        (self.run)(&issue_create_argv(&self.repo()?, &draft.title), Some(&draft.body))
+            .map_err(TaskError::Io)?;
+        Ok(Task {
+            id: String::new(),
+            title: draft.title,
+            kind: KindId(String::new()),
+            status: StepId("open".to_string()),
+            project: draft.project,
+            created: String::new(),
+            resolved: None,
+            origin: TaskOrigin::Human,
+            session: None,
+            body: draft.body,
+            path: String::new(),
+            damaged: None,
+            conflict: false,
+            labels: Vec::new(),
+        })
+    }
+
+    /// One issue, addressed by number.
+    ///
+    /// `gh issue view <n> --json <ISSUE_LIST_FIELDS>` — the same field names as
+    /// the list call, verified against `gh`, so one constant and one mapping serve
+    /// both. **Not `issue list -S <n>`**, which an earlier draft used: `-S` is a
+    /// full-text search, ranked by relevance and capped at `gh`'s default 30, so
+    /// on a busy repository the issue asked for is simply not in the answer. Every
+    /// write path ends here, so that failure would have been silent in the two
+    /// places it matters most.
+    ///
+    /// `project` is empty: `resolve` answers about one issue and its caller does
+    /// not filter by project.
+    fn resolve(&self, id: &str) -> Result<Task, TaskError> {
+        let n = Self::number(id)?;
+        let mut argv = issue_argv(&self.repo()?, &["view", &n.to_string()]);
+        argv.push("--json".into());
+        argv.push(ISSUE_LIST_FIELDS.into());
+        let json = (self.run)(&argv, None).map_err(TaskError::Io)?;
+        parse_issue(&json, "").map_err(TaskError::Io)
+    }
+
+    fn update(&self, id: &str, patch: TaskPatch) -> Result<Task, TaskError> {
+        let n = Self::number(id)?;
+        if patch.kind.is_some() {
+            return Err(TaskError::UnknownKind(
+                "an issue has no kind — nothing can set one".to_string(),
+            ));
+        }
+        if let Some(step) = &patch.status {
+            let argv = match step.as_str() {
+                "closed" => issue_close_argv(&self.repo()?, n, patch.reason.as_deref()),
+                "open" => issue_reopen_argv(&self.repo()?, n),
+                other => return Err(TaskError::UnknownStep(other.to_string())),
+            };
+            (self.run)(&argv, None).map_err(TaskError::Io)?;
+        }
+        if patch.title.is_some() || patch.body.is_some() {
+            // `edit` prompts interactively for a missing title, so the current
+            // one is resent when the patch only touches the body.
+            let title = match &patch.title {
+                Some(t) => t.clone(),
+                None => self.resolve(id)?.title,
+            };
+            let body = patch.body.clone().unwrap_or_default();
+            (self.run)(&issue_edit_argv(&self.repo()?, n, &title), Some(&body))
+                .map_err(TaskError::Io)?;
+        }
+        // Read back rather than synthesized: the write's own output says nothing.
+        self.resolve(id)
+    }
 }
 
 #[cfg(test)]
@@ -607,5 +776,268 @@ mod tests {
     #[test]
     fn a_workspace_without_a_parent_still_resolves() {
         assert!(issue_worktree_path("/", 1, "t").to_string_lossy().contains("1-t"));
+    }
+
+    use crate::tasks::provider::{TaskPatch, TaskProvider};
+    use std::cell::RefCell;
+
+    /// Records every argv it is handed and replies from a script. The whole
+    /// point of the injected runner: the provider's branches are testable
+    /// without a process, exactly as `parse_issues` is without a network.
+    struct FakeGh {
+        calls: RefCell<Vec<Vec<String>>>,
+        replies: RefCell<Vec<Result<String, String>>>,
+    }
+
+    fn provider(replies: Vec<Result<String, String>>) -> (GhIssueProvider<'static>, std::rc::Rc<FakeGh>) {
+        let fake = std::rc::Rc::new(FakeGh {
+            calls: RefCell::new(Vec::new()),
+            replies: RefCell::new(replies),
+        });
+        let f = fake.clone();
+        let p = GhIssueProvider::new(
+            // A *resolver*, not a value: resolving the repository runs `gh`, and
+            // nothing that merely constructs a provider may do I/O — see the
+            // constructor's own doc comment.
+            Box::new(|| Ok("o/n".to_string())),
+            Box::new(move |argv: &[String], _stdin: Option<&str>| {
+                f.calls.borrow_mut().push(argv.to_vec());
+                if f.replies.borrow().is_empty() {
+                    return Ok("[]".to_string());
+                }
+                f.replies.borrow_mut().remove(0)
+            }),
+        );
+        (p, fake)
+    }
+
+    /// Construction does no I/O, and the resolver is called at most once.
+    ///
+    /// Both halves matter. The first is what keeps decision 9's three unavailable
+    /// states reachable: `capabilities()` must succeed for a workspace whose `gh`
+    /// is missing, so that the *list* call is what fails and the board can say
+    /// "Set up gh" instead of "no tracker is configured". The second is the
+    /// budget: two list calls a tick must not become two repository lookups too.
+    #[test]
+    fn the_repository_is_resolved_lazily_and_only_once() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let c = calls.clone();
+        let p = GhIssueProvider::new(
+            Box::new(move || { c.set(c.get() + 1); Ok("o/n".to_string()) }),
+            Box::new(|_argv: &[String], _stdin: Option<&str>| Ok(ONE_OPEN.to_string())),
+        );
+        assert!(p.capabilities().can_create);
+        assert_eq!(calls.get(), 0, "capabilities must not touch the network");
+        p.list("deck").unwrap();
+        p.list("deck").unwrap();
+        assert_eq!(calls.get(), 1, "resolved once, then remembered");
+    }
+
+    /// And when it cannot be resolved, the failure is the *list's*, with the
+    /// message intact — which is what the frontend maps onto `no-gh` /
+    /// `no-account` / `no-repo`.
+    #[test]
+    fn a_repository_that_cannot_be_resolved_fails_the_list_not_the_capabilities() {
+        let p = GhIssueProvider::new(
+            Box::new(|| Err("gh-not-found".to_string())),
+            Box::new(|_argv: &[String], _stdin: Option<&str>| Ok("[]".to_string())),
+        );
+        assert!(p.capabilities().can_create, "capabilities are static facts");
+        let err = p.list("deck").unwrap_err().to_string();
+        assert!(err.contains("gh-not-found"), "{err}");
+    }
+
+    const ONE_OPEN: &str = r#"[{"number":42,"title":"t","state":"OPEN",
+        "createdAt":"c","closedAt":null,"body":"","labels":[],"url":"u"}]"#;
+    const ONE_CLOSED: &str = r#"[{"number":7,"title":"t","state":"CLOSED",
+        "createdAt":"c","closedAt":"d","body":"","labels":[],"url":"u"}]"#;
+    /// `gh issue view` answers with a bare object, not an array of one — so the
+    /// read-back every write path ends on is scripted with these two, never with
+    /// the array fixtures above. `parse_issue` refuses an array outright
+    /// (`a_single_issue_parse_refuses_a_list`), which is exactly the mistake it
+    /// is there to catch.
+    const ONE_OPEN_OBJECT: &str = r#"{"number":42,"title":"t","state":"OPEN",
+        "createdAt":"c","closedAt":null,"body":"","labels":[],"url":"u"}"#;
+    const ONE_CLOSED_OBJECT: &str = r#"{"number":7,"title":"t","state":"CLOSED",
+        "createdAt":"c","closedAt":"d","body":"","labels":[],"url":"u"}"#;
+
+    /// The closed column is fetched, not accumulated: with an open-only list a
+    /// closed issue would simply vanish from the board, which for a file card it
+    /// does not. Two calls at one point each, and `--state all` is not an
+    /// alternative — it orders by `createdAt` and does not group by state, so
+    /// one page cannot fill a capped closed column.
+    #[test]
+    fn list_fetches_both_states_and_caps_them_separately() {
+        let (p, fake) = provider(vec![Ok(ONE_OPEN.into()), Ok(ONE_CLOSED.into())]);
+        let cards = p.list("deck").unwrap();
+        assert_eq!(cards.len(), 2);
+        let calls = fake.calls.borrow();
+        assert_eq!(calls.len(), 2, "one call per state, never `-s all`");
+        assert!(calls[0].iter().any(|a| a == "open") && calls[0].iter().any(|a| a == "50"));
+        // Twenty matches `boardColumns`'s existing doneLimit exactly, so the
+        // column caps itself the way it always has.
+        assert!(calls[1].iter().any(|a| a == "closed") && calls[1].iter().any(|a| a == "20"));
+        assert!(calls.iter().all(|c| c.iter().any(|a| a == "-R")));
+    }
+
+    /// One state failing must fail the list rather than half-render it: a board
+    /// showing open issues and silently no closed ones is a board lying about
+    /// what it knows.
+    #[test]
+    fn a_failing_page_fails_the_list() {
+        let (p, _) = provider(vec![Ok(ONE_OPEN.into()), Err("HTTP 502".into())]);
+        assert!(p.list("deck").is_err());
+    }
+
+    #[test]
+    fn capabilities_offer_create_and_close_and_the_two_steps() {
+        let (p, _) = provider(vec![]);
+        let c = p.capabilities();
+        assert!(c.can_create && c.can_resolve);
+        assert_eq!(c.statuses, vec!["open".to_string(), "closed".to_string()]);
+    }
+
+    #[test]
+    fn create_sends_the_body_on_stdin_and_never_in_argv() {
+        let (p, fake) = provider(vec![Ok("https://github.com/o/n/issues/9\n".into())]);
+        p.create(crate::tasks::model::TaskDraft {
+            title: "A title".into(),
+            kind: KindId(String::new()),
+            body: "line one\nline two".into(),
+            project: "deck".into(),
+            origin: TaskOrigin::Human,
+            session: None,
+        })
+        .unwrap();
+        let calls = fake.calls.borrow();
+        assert!(calls[0].iter().any(|a| a == "create"));
+        assert!(!calls[0].iter().any(|a| a.contains("line one")), "the body is not argv material");
+    }
+
+    /// `create` prints the new issue's URL and nothing else, exit 0 — observed
+    /// on 2026-07-30 while filing #117, so the number *is* recoverable. Nothing
+    /// parses it anyway: the refetch needs no fact about `gh`'s output and
+    /// survives a change to it, which is decision 10's ruling. The card handed
+    /// back is deliberately id-less, and its only caller
+    /// (`main.ts::captureTask`) discards the value already.
+    #[test]
+    fn create_returns_an_id_less_card_because_the_board_refetches() {
+        let (p, _) = provider(vec![Ok("anything at all".into())]);
+        let made = p
+            .create(crate::tasks::model::TaskDraft {
+                title: "A title".into(),
+                kind: KindId(String::new()),
+                body: String::new(),
+                project: "deck".into(),
+                origin: TaskOrigin::Human,
+                session: None,
+            })
+            .unwrap();
+        assert_eq!(made.id, "", "the number comes from the refetch, not from gh's output");
+        assert_eq!(made.title, "A title");
+        assert_eq!(made.status.as_str(), "open");
+    }
+
+    #[test]
+    fn a_status_patch_to_closed_closes_the_issue_with_its_reason() {
+        let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_CLOSED_OBJECT.into())]);
+        p.update(
+            "7",
+            TaskPatch {
+                status: Some(StepId("closed".into())),
+                reason: Some("not planned".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let calls = fake.calls.borrow();
+        assert!(calls[0].iter().any(|a| a == "close"));
+        assert!(calls[0].iter().any(|a| a == "not planned"));
+    }
+
+    #[test]
+    fn a_status_patch_to_open_reopens_and_asks_no_reason() {
+        let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_OPEN_OBJECT.into())]);
+        p.update("42", TaskPatch { status: Some(StepId("open".into())), ..Default::default() })
+            .unwrap();
+        assert!(fake.calls.borrow()[0].iter().any(|a| a == "reopen"));
+    }
+
+    #[test]
+    fn a_title_or_body_patch_edits_the_issue() {
+        let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_OPEN_OBJECT.into())]);
+        p.update(
+            "42",
+            TaskPatch { title: Some("New".into()), body: Some("New body".into()), ..Default::default() },
+        )
+        .unwrap();
+        assert!(fake.calls.borrow()[0].iter().any(|a| a == "edit"));
+    }
+
+    /// Nothing can set it: no issue carries a kind, and the one synthetic kind
+    /// is not a choice. Refused rather than ignored, so a caller that thinks it
+    /// wrote something is told it did not.
+    #[test]
+    fn a_kind_patch_is_refused() {
+        let (p, _) = provider(vec![]);
+        assert!(p
+            .update("42", TaskPatch { kind: Some(KindId("bug".into())), ..Default::default() })
+            .is_err());
+    }
+
+    /// The board has two steps and nothing else. A patch naming a third would
+    /// otherwise be sent to `gh` as a close or silently dropped.
+    #[test]
+    fn a_status_patch_naming_an_unknown_step_is_refused() {
+        let (p, _) = provider(vec![]);
+        assert!(p
+            .update("42", TaskPatch { status: Some(StepId("doing".into())), ..Default::default() })
+            .is_err());
+    }
+
+    /// `gh issue view <n>`, addressed by number — **never a search.**
+    ///
+    /// An earlier draft used `issue list -s all -S 42`, which is a full-text query:
+    /// measured against this repository it returns `[42, 109, 28, 17, 48]`, ranked
+    /// by relevance, under `gh`'s default limit of 30. On a busier repository the
+    /// issue asked for falls off the page entirely — and since `update` ends on
+    /// `resolve` for close, reopen and edit, and a body-only patch begins with it,
+    /// that breaks the tick, Save and both write paths silently. This test is the
+    /// only thing that can catch it: the fake returns `ONE_OPEN` whatever argv it
+    /// is handed, so *nothing else here inspects how the issue was addressed*.
+    #[test]
+    fn resolve_addresses_the_issue_by_number_and_never_searches() {
+        let (p, fake) = provider(vec![Ok(ONE_OPEN_OBJECT.into())]);
+        let t = p.resolve("42").unwrap();
+        assert_eq!(t.id, "42");
+        let argv = &fake.calls.borrow()[0];
+        assert_eq!(argv[0], "issue");
+        assert_eq!(argv[1], "view");
+        assert_eq!(argv[2], "42");
+        assert!(argv.iter().any(|a| a == "-R"));
+        assert!(!argv.iter().any(|a| a == "-S"), "a search can return the wrong issue");
+        assert!(!argv.iter().any(|a| a == "list"));
+        // The same field names as the list call, verified against `gh` — which is
+        // what lets one constant and one mapping serve both.
+        let at = argv.iter().position(|a| a == "--json").expect("--json");
+        assert_eq!(argv[at + 1], ISSUE_LIST_FIELDS);
+    }
+
+    /// `gh issue view` on a number that does not exist exits non-zero, so the
+    /// runner refuses and the error is the runner's. There is no empty-array case
+    /// to mistake for "not found" any more.
+    #[test]
+    fn resolving_an_issue_that_is_not_there_is_an_error() {
+        let (p, _) = provider(vec![Err("could not resolve to an Issue".into())]);
+        assert!(p.resolve("999").is_err());
+    }
+
+    /// An id that is not a number cannot be an issue, and must not become
+    /// `gh issue close 0`.
+    #[test]
+    fn a_non_numeric_id_is_refused_before_any_call() {
+        let (p, fake) = provider(vec![]);
+        assert!(p.resolve("01ABCDEF").is_err());
+        assert!(fake.calls.borrow().is_empty(), "nothing may be sent for an id that cannot exist");
     }
 }
