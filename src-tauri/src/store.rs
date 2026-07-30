@@ -420,6 +420,15 @@ mod tests {
         assert!(s.delete_workspace("nobody").is_ok(), "and must not be a hard stop either");
         std::fs::write(s.ws_path(), "   \n").unwrap();
         assert!(s.workspaces().is_empty(), "whitespace only, same thing");
+        // The line above cannot fail on its own: `workspaces()` reads through
+        // `read_vec`, which returns an empty Vec on *any* `Err`, so it is true
+        // whether or not `try_read_vec` trims. The save path is what actually
+        // distinguishes the two — change `s.trim().is_empty()` to
+        // `s.is_empty()` and only this assertion notices.
+        assert!(
+            s.delete_workspace("nobody").is_ok(),
+            "whitespace only must not wedge the save path either",
+        );
         std::fs::write(s.ws_path(), "[]").unwrap();
         assert!(s.workspaces().is_empty());
         std::fs::write(

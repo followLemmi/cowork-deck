@@ -57,14 +57,19 @@ pub fn parse_issue(json: &str, project: &str) -> Result<Task, String> {
 
 fn row_to_task(r: &serde_json::Value, project: &str) -> Task {
     let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let closed = r.get("state").and_then(|v| v.as_str()) == Some("CLOSED");
+    // Spec decision 4's direction: `"open"` for a literal `"OPEN"`, everything
+    // else `"closed"`. The two agree on the only values `gh issue list` emits;
+    // they differ on an absent or differently-cased `state`, and defaulting to
+    // *open* there is the worse half — it yields an open card carrying a
+    // non-null `resolved`, so ✓ gets offered on an issue already closed.
+    let open = r.get("state").and_then(|v| v.as_str()) == Some("OPEN");
     Task {
         id: r.get("number").and_then(|v| v.as_u64()).unwrap_or(0).to_string(),
         title: s("title"),
         // Nothing on an issue maps to a kind. `kindLabel` returns "" for
         // an empty id and `board.ts:264` then omits the chip.
         kind: KindId(String::new()),
-        status: StepId(if closed { "closed" } else { "open" }.to_string()),
+        status: StepId(if open { "open" } else { "closed" }.to_string()),
         project: project.to_string(),
         created: s("createdAt"),
         resolved: r.get("closedAt").and_then(|v| v.as_str()).map(str::to_string),
@@ -393,10 +398,12 @@ impl TaskProvider for GhIssueProvider<'_> {
 
     fn update(&self, id: &str, patch: TaskPatch) -> Result<Task, TaskError> {
         let n = Self::number(id)?;
-        if patch.kind.is_some() {
-            return Err(TaskError::UnknownKind(
-                "an issue has no kind — nothing can set one".to_string(),
-            ));
+        // The payload is the offending id, exactly as `fs.rs:238` passes it —
+        // `Display` wraps it in a sentence, so a sentence here renders inside
+        // another one. Why no kind is settable at all is in `a_kind_patch_is_
+        // refused`'s doc comment.
+        if let Some(k) = &patch.kind {
+            return Err(TaskError::UnknownKind(k.0.clone()));
         }
         if let Some(step) = &patch.status {
             let argv = match step.as_str() {
@@ -534,6 +541,25 @@ mod tests {
         assert_eq!(t.resolved, None);
     }
 
+    /// `state` absent entirely — the case `missing_optional_keys_do_not_panic`
+    /// does *not* cover, because it keeps `"state":"OPEN"`.
+    ///
+    /// Spec decision 4 reads `"open"` when `state == "OPEN"`, **else**
+    /// `"closed"`, and the direction is the whole point: the inverse fallback
+    /// hands the board an *open* card whose `resolved` is non-null, and the UI
+    /// then offers ✓ on an issue that is already closed. Defaulting to closed is
+    /// merely a card in the wrong column, which is visible and harmless.
+    #[test]
+    fn a_row_with_no_state_at_all_falls_back_to_closed_not_open() {
+        let json = r#"[{"number":5,"title":"t","createdAt":"c","closedAt":"d",
+            "body":"","labels":[],"url":"u"}]"#;
+        let t = &parse_issues(json, "deck").unwrap()[0];
+        assert_eq!(t.status.as_str(), "closed");
+        // And the pair stays coherent: a close time with an open step is the
+        // contradiction the fallback's direction exists to avoid.
+        assert_eq!(t.resolved.as_deref(), Some("d"));
+    }
+
     /// An empty repository is exit 0 and `[]`, which is what lets "no open
     /// issues" be a real state rather than a guess at a failure.
     #[test]
@@ -569,8 +595,12 @@ mod tests {
         assert!(parse_issues("", "deck").is_err());
     }
 
-    /// The field list and the parser have to agree, or a rename in one of them
-    /// silently empties a column. Mirrors `gh_pr.rs`'s own guard.
+    /// Pins that the constant still asks for the eight fields `row_to_task`
+    /// reads. It does **not** check that the parser reads them — it compares the
+    /// constant against a hardcoded copy of the same names, so renaming a key
+    /// inside `row_to_task` leaves this green. The parser side is covered by
+    /// `an_open_issue_maps_field_by_field`, which asserts every mapped value.
+    /// Mirrors `gh_pr.rs`'s own guard, and has the same limit.
     #[test]
     fn every_requested_field_is_read() {
         for f in ["number", "title", "state", "createdAt", "closedAt", "body", "labels", "url"] {
@@ -781,17 +811,26 @@ mod tests {
     use crate::tasks::provider::{TaskPatch, TaskProvider};
     use std::cell::RefCell;
 
-    /// Records every argv it is handed and replies from a script. The whole
-    /// point of the injected runner: the provider's branches are testable
-    /// without a process, exactly as `parse_issues` is without a network.
+    /// Records every argv it is handed **and the stdin that came with it**, and
+    /// replies from a script. The whole point of the injected runner: the
+    /// provider's branches are testable without a process, exactly as
+    /// `parse_issues` is without a network.
+    ///
+    /// `stdins` is a parallel vector rather than a field on a tuple, so the
+    /// argv assertions read as they always did; the two cannot drift because the
+    /// one closure pushes to both. Discarding the stdin here is what let the
+    /// create/edit guard pass a runner given *no* body — see
+    /// `create_sends_the_body_on_stdin_and_never_in_argv`.
     struct FakeGh {
         calls: RefCell<Vec<Vec<String>>>,
+        stdins: RefCell<Vec<Option<String>>>,
         replies: RefCell<Vec<Result<String, String>>>,
     }
 
     fn provider(replies: Vec<Result<String, String>>) -> (GhIssueProvider<'static>, std::rc::Rc<FakeGh>) {
         let fake = std::rc::Rc::new(FakeGh {
             calls: RefCell::new(Vec::new()),
+            stdins: RefCell::new(Vec::new()),
             replies: RefCell::new(replies),
         });
         let f = fake.clone();
@@ -800,8 +839,9 @@ mod tests {
             // nothing that merely constructs a provider may do I/O — see the
             // constructor's own doc comment.
             Box::new(|| Ok("o/n".to_string())),
-            Box::new(move |argv: &[String], _stdin: Option<&str>| {
+            Box::new(move |argv: &[String], stdin: Option<&str>| {
                 f.calls.borrow_mut().push(argv.to_vec());
+                f.stdins.borrow_mut().push(stdin.map(str::to_string));
                 if f.replies.borrow().is_empty() {
                     return Ok("[]".to_string());
                 }
@@ -897,6 +937,11 @@ mod tests {
         assert_eq!(c.statuses, vec!["open".to_string(), "closed".to_string()]);
     }
 
+    /// Both halves, and the positive one is the half that hangs. `issue_create_
+    /// argv` pins `--body-file -` in argv, so a `create` that handed the runner
+    /// `None` would be a `gh` told to read a body from stdin and given none —
+    /// the interactive prompt in a spawned child that the constant's comment
+    /// exists to prevent. The negative assertion alone is satisfied by `None`.
     #[test]
     fn create_sends_the_body_on_stdin_and_never_in_argv() {
         let (p, fake) = provider(vec![Ok("https://github.com/o/n/issues/9\n".into())]);
@@ -912,6 +957,13 @@ mod tests {
         let calls = fake.calls.borrow();
         assert!(calls[0].iter().any(|a| a == "create"));
         assert!(!calls[0].iter().any(|a| a.contains("line one")), "the body is not argv material");
+        // The half that actually prevents the hang: something must arrive on
+        // stdin, and it must be the body verbatim, newline included.
+        assert_eq!(
+            fake.stdins.borrow()[0].as_deref(),
+            Some("line one\nline two"),
+            "`--body-file -` with no stdin is an interactive prompt in a child process",
+        );
     }
 
     /// `create` prints the new issue's URL and nothing else, exit 0 — observed
@@ -963,6 +1015,8 @@ mod tests {
         assert!(fake.calls.borrow()[0].iter().any(|a| a == "reopen"));
     }
 
+    /// `edit` carries `--body-file -` too, so it hangs on a missing stdin the
+    /// same way `create` does, and needs the same positive assertion.
     #[test]
     fn a_title_or_body_patch_edits_the_issue() {
         let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_OPEN_OBJECT.into())]);
@@ -972,6 +1026,11 @@ mod tests {
         )
         .unwrap();
         assert!(fake.calls.borrow()[0].iter().any(|a| a == "edit"));
+        assert_eq!(
+            fake.stdins.borrow()[0].as_deref(),
+            Some("New body"),
+            "`--body-file -` with no stdin is an interactive prompt in a child process",
+        );
     }
 
     /// Nothing can set it: no issue carries a kind, and the one synthetic kind
@@ -1003,8 +1062,10 @@ mod tests {
     /// issue asked for falls off the page entirely — and since `update` ends on
     /// `resolve` for close, reopen and edit, and a body-only patch begins with it,
     /// that breaks the tick, Save and both write paths silently. This test is the
-    /// only thing that can catch it: the fake returns `ONE_OPEN` whatever argv it
-    /// is handed, so *nothing else here inspects how the issue was addressed*.
+    /// only thing that can catch it: the fake replies with **whatever the script
+    /// holds**, whatever argv it is handed, so *nothing else here inspects how the
+    /// issue was addressed*. Measured rather than assumed — rewriting `resolve` to
+    /// search makes exactly one test of the whole suite fail, this one.
     #[test]
     fn resolve_addresses_the_issue_by_number_and_never_searches() {
         let (p, fake) = provider(vec![Ok(ONE_OPEN_OBJECT.into())]);

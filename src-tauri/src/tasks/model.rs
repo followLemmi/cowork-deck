@@ -83,8 +83,12 @@ impl std::fmt::Display for TaskError {
                 f,
                 "the card is damaged and must be repaired by hand: {path}"
             ),
-            TaskError::UnknownStep(s) => write!(f, "no step named {s} in board.json"),
-            TaskError::UnknownKind(s) => write!(f, "no kind named {s} in board.json"),
+            // "in this board", not "in board.json": a GitHub board has no
+            // `board.json` at all, and naming a file the user cannot find is
+            // worse than naming none. The `boardError` banner already names the
+            // file wherever there is one to name.
+            TaskError::UnknownStep(s) => write!(f, "no step named {s} in this board"),
+            TaskError::UnknownKind(s) => write!(f, "no kind named {s} in this board"),
         }
     }
 }
