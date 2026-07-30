@@ -651,7 +651,7 @@ and the same variant in `KnownTrackerProvider`, whose `#[serde(tag = "type", ren
     pub labels: Vec<String>,
 ```
 
-Then add `labels: Vec::new()` at **all five** construction sites — three in normal code and two inside `#[cfg(test)]` modules, which `cargo test` compiles and which therefore fail the build just as loudly: `frontmatter.rs:90` (a parsed card file), `fs.rs:195` (`create`), `migrate.rs:185` (a test helper), `frontmatter.rs:529` and `fs.rs:659` (both test fixtures). An earlier draft counted three and would have sent an agent hunting a compile error it had been told did not exist. `frontmatter.rs`'s `render_card` needs no change — it writes nine named keys and `labels` is not one of them, which is correct: a file card has no labels to write.
+Then add `labels: Vec::new()` at **all four** construction sites — two in normal code and two inside `#[cfg(test)]` modules, which `cargo test` compiles and which therefore fail the build just as loudly: `frontmatter.rs:90` (a parsed card file), `fs.rs:195` (`create`), `frontmatter.rs:530` and `migrate.rs:185` (both test helpers). **Corrected twice, so trust the compiler over this sentence:** an earlier draft said three and would have sent an agent hunting a compile error it had been told did not exist; a later one said five, counting `fs.rs:660`'s `a_card`, which *returns* a `Task` but builds it through `p.create(TaskDraft { … })` and so carries no field list. `grep -n 'Task {' src-tauri/src` and `cargo check --all-targets` both say four. `frontmatter.rs`'s `render_card` needs no change — it writes nine named keys and `labels` is not one of them, which is correct: a file card has no labels to write.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -661,7 +661,10 @@ Expected: PASS, 286 + 3.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src-tauri/src/model.rs src-tauri/src/store.rs src-tauri/src/tasks/model.rs src-tauri/src/tasks/frontmatter.rs src-tauri/src/tasks/fs.rs src-tauri/src/tasks/migrate.rs
+git add src-tauri/src/model.rs src-tauri/src/store.rs src-tauri/src/tasks_cmd.rs src-tauri/src/tasks/model.rs src-tauri/src/tasks/frontmatter.rs src-tauri/src/tasks/fs.rs src-tauri/src/tasks/migrate.rs
+# tasks_cmd.rs is NOT optional here (correction, 2026-07-30, proven while executing
+# this task): reverting it alone and running `cargo check --all-targets` gives
+# E0004 twice over. Omitting it lands a commit that does not compile.
 git commit -m "feat(issues): a github tracker variant, and labels on a card"
 ```
 
