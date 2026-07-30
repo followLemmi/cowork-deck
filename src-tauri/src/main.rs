@@ -3,6 +3,7 @@
 mod model;
 mod store;
 mod gh;
+mod gh_pr;
 mod hooks;
 mod listener;
 mod pty;
