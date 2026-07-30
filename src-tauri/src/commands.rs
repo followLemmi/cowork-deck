@@ -500,6 +500,20 @@ fn workspace_path(state: &State<AppState>, workspace_id: &str) -> Result<String,
     found.ok_or_else(|| "no such workspace".to_string())
 }
 
+/// Where this pull request's worktree would live, and whether it is there.
+/// Read-only: the cleanup offer needs the path before it can name it.
+#[tauri::command]
+pub fn pr_worktree_path(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+    branch: String,
+) -> Result<Option<String>, String> {
+    let ws_path = workspace_path(&state, &workspace_id)?;
+    let path = crate::gh_pr::worktree_path(&ws_path, number, &branch);
+    Ok(path.exists().then(|| path.to_string_lossy().to_string()))
+}
+
 #[tauri::command]
 pub fn pr_worktree_add(
     state: State<AppState>,

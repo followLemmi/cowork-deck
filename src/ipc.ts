@@ -117,6 +117,8 @@ export const prClose = (workspaceId: string, number: number) =>
 export const prReopen = (workspaceId: string, number: number) =>
   invoke<void>("pr_reopen", { workspaceId, number });
 /** Resolves to the path of the worktree that now holds the PR's branch. */
+export const prWorktreePath = (workspaceId: string, number: number, branch: string) =>
+  invoke<string | null>("pr_worktree_path", { workspaceId, number, branch });
 export const prWorktreeAdd = (workspaceId: string, number: number, branch: string) =>
   invoke<string>("pr_worktree_add", { workspaceId, number, branch });
 export const prWorktreeRemove = (workspaceId: string, number: number, branch: string) =>

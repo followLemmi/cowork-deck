@@ -217,6 +217,35 @@ telling you to set `COWORK_CLAUDE_PATH` and restart.
 всё равно стартует — но с пустым `GH_CONFIG_DIR`, чтобы `gh` честно сообщил «не залогинен»
 вместо тихой работы под чужим аккаунтом. На тайле появляется значок `GitHub ✕` с причиной.
 
+## Pull requests
+
+The third view lists the open pull requests of the workspace's repository, read
+under the workspace's own GitHub account. It needs `gh` on the PATH, an account
+bound to the workspace, and a GitHub remote; each missing piece says so and
+points at the fix.
+
+Each row shows the checks, the review verdict and how long ago it moved. Four
+check states are distinguished, and "no checks" is not shown as success.
+
+**▶ opens a session on the pull request's branch in a worktree of its own**, at
+`<parent>/<workspace>-pr/<number>-<branch>` — beside the workspace, never inside
+it, so the workspace's own working copy and the sessions running in it are
+untouched. When the pull request is merged or closed, the app offers to remove
+that worktree; it never removes one that is dirty or that has a session in it.
+
+**Merge is pinned to the commit that was on screen.** If the branch moved
+between the last refresh and the click, the merge is refused and you are asked
+to look again.
+
+The list refreshes itself only while this view is open and the window is
+focused — faster while a job is running, slower once everything has settled.
+The age of the data is always on screen.
+
+Note on tokens: to avoid asking `gh` for a token on every poll — a locked
+keyring can make that slow — account tokens are held in memory while the app
+runs, keyed by host and login, and dropped whenever a workspace's binding
+changes. They are never written to disk or into a log.
+
 ## Graceful degradation
 
 State tracking (the `working`/`done`/`needs input`/`exited`/`error` labels and notifications) depends on Claude

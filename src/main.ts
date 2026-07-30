@@ -11,6 +11,7 @@ import {
   taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage,
   prList, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
+  prWorktreePath, prWorktreeRemove,
 } from "./ipc";
 import type { MigrationOffer, PullRequest, StepId, Task } from "./ipc";
 import { pollIntervalMs } from "./pr";
@@ -472,8 +473,10 @@ async function mergePr(pr: PullRequest) {
   }
   const choice = await mergeForm(pr, opts);
   if (!choice) return;
+  let merged = false;
   try {
     await prMerge(ws.id, pr.number, choice.strategy, pr.headRefOid, choice.deleteBranch);
+    merged = true;
   } catch (e) {
     const msg = String((e as { message?: string })?.message ?? e);
     // gh refuses when the head has moved — which is the guarantee working, not
@@ -484,6 +487,8 @@ async function mergePr(pr: PullRequest) {
         : `Could not merge #${pr.number}: ${msg}`,
     );
   }
+  // Only a pull request that really is done has a worktree nobody needs.
+  if (merged) await offerWorktreeCleanup(pr);
   await refreshPrs();
 }
 
@@ -491,8 +496,27 @@ async function closePr(pr: PullRequest) {
   const ws = workspaces.active;
   if (!ws) return;
   if (!(await confirmModal(`Close #${pr.number} “${pr.title}” without merging?`))) return;
-  await prClose(ws.id, pr.number).catch((e) => void alertModal(String(e)));
+  const closed = await prClose(ws.id, pr.number)
+    .then(() => true)
+    .catch((e) => { void alertModal(String(e)); return false; });
+  if (closed) await offerWorktreeCleanup(pr);
   await refreshPrs();
+}
+
+/** A merged or closed pull request leaves a worktree behind.
+ *
+ *  Three guards, because the directory may hold work nobody else has: a live
+ *  session in it stops the offer outright, the backend refuses while it is
+ *  dirty, and the person still has to say yes. */
+async function offerWorktreeCleanup(pr: PullRequest) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  const path = await prWorktreePath(ws.id, pr.number, pr.headRefName).catch(() => null);
+  if (!path) return;
+  if (deck.hasSessionIn(path)) return;
+  if (!(await confirmModal(`Remove the worktree at ${path}?`))) return;
+  await prWorktreeRemove(ws.id, pr.number, pr.headRefName)
+    .catch((e) => void alertModal(String(e)));
 }
 
 // Reopen restores the state of a moment ago, so it does not ask.
