@@ -167,6 +167,16 @@ pub const TRACKER_CONFIG_VERSION: u8 = 3;
 #[derive(Debug, Clone)]
 pub enum TrackerProvider {
     Fs { root: TrackerRoot },
+    /// The workspace's board is the GitHub issues of the repository its folder
+    /// *is*. No fields: `owner/name` comes from `gh` itself, once per app run
+    /// (decision 11), and storing it here would be a second source of truth.
+    ///
+    /// A build predating this variant reads it as `Unknown` and keeps the rest of
+    /// the workspace (#117, Task 2). A build predating *that* empties the whole
+    /// list, and its own next save makes it permanent — the write happens in
+    /// whichever binary is running, so the fix is effective from here on and
+    /// inert for anything already installed. The README warns about that half.
+    GitHub,
     /// A source this build cannot read — written by a newer version, or damaged.
     ///
     /// Carries the original JSON and is serialized back verbatim, so opening an
@@ -196,6 +206,7 @@ enum TrackerProviderOnDisk {
 #[serde(tag = "type", rename_all = "lowercase")]
 enum KnownTrackerProvider {
     Fs { root: TrackerRoot },
+    GitHub,
 }
 
 impl From<TrackerProviderOnDisk> for TrackerProvider {
@@ -204,6 +215,7 @@ impl From<TrackerProviderOnDisk> for TrackerProvider {
             TrackerProviderOnDisk::Known(KnownTrackerProvider::Fs { root }) => {
                 TrackerProvider::Fs { root }
             }
+            TrackerProviderOnDisk::Known(KnownTrackerProvider::GitHub) => TrackerProvider::GitHub,
             TrackerProviderOnDisk::Raw(v) => TrackerProvider::Unknown(v),
         }
     }
@@ -225,6 +237,7 @@ impl Serialize for TrackerProvider {
             TrackerProvider::Fs { root } => {
                 KnownTrackerProvider::Fs { root: root.clone() }.serialize(s)
             }
+            TrackerProvider::GitHub => KnownTrackerProvider::GitHub.serialize(s),
             // Verbatim in *value*, not in bytes: `serde_json::Value`'s object is a
             // BTreeMap, so keys come back alphabetised and whitespace is the
             // writer's. Nothing anywhere compares these bytes, so this is
@@ -546,6 +559,37 @@ mod tests {
         let cfg: TrackerConfig =
             serde_json::from_str(r#"{"providers":[{"type":"fs"}],"v":3}"#).unwrap();
         assert!(matches!(cfg.providers.first(), Some(TrackerProvider::Unknown(_))));
+    }
+
+    /// `{"type":"github"}` is the whole encoding: the repository is resolved
+    /// from the workspace's folder (decision 11), so a field for it here would
+    /// be a second source of truth that can disagree with the git remote.
+    #[test]
+    fn the_github_tracker_provider_carries_no_fields() {
+        let cfg: TrackerConfig =
+            serde_json::from_str(r#"{"providers":[{"type":"github"}],"v":3}"#).expect("parses");
+        // THIS is the line that guards against the variant being added to
+        // `TrackerProvider` but not to `KnownTrackerProvider` — the one mistake
+        // Task 2's two-enum shape makes possible. Do not trim it as redundant.
+        assert!(matches!(cfg.providers.first(), Some(TrackerProvider::GitHub)));
+        let back = serde_json::to_string(&cfg).unwrap();
+        // And this line guards nothing of the sort, which is worth knowing: with
+        // the variant missing from `KnownTrackerProvider` the value deserializes
+        // to `Unknown` and is re-emitted verbatim, so this assertion passes in
+        // exactly the scenario it looks like it is checking. It is here for the
+        // encoding, not for the wiring.
+        assert!(back.contains(r#"{"type":"github"}"#), "round trip: {back}");
+    }
+
+    /// A card file has no labels, and every record written before this change
+    /// has no such key. `#[serde(default)]` is what keeps them all readable.
+    #[test]
+    fn a_task_without_labels_still_deserializes() {
+        let json = r#"{"id":"01A","title":"t","kind":"bug","status":"open","project":"deck",
+            "created":"2026-01-01T00:00:00Z","resolved":null,"origin":"human","session":null,
+            "body":"","path":"/r/01A.md","damaged":null,"conflict":false}"#;
+        let t: crate::tasks::model::Task = serde_json::from_str(json).expect("parses");
+        assert!(t.labels.is_empty());
     }
 
     #[test]

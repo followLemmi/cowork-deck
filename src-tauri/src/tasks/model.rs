@@ -27,6 +27,11 @@ pub struct Task {
     pub damaged: Option<String>,
     #[serde(default)]
     pub conflict: bool,
+    /// Issue labels, as chips in the meta row. Never a `kind`: an issue can
+    /// carry two labels and `kind` is a single-valued select. `default` because
+    /// every card file ever written lacks the key, and a file card has none.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 /// What a caller supplies to create a card; everything else is derived.

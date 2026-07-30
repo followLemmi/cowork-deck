@@ -170,6 +170,12 @@ pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
             let layout = append_layout(std::path::Path::new(path), &slugify(&ws.name));
             Some((layout.root, RootCreation::InsideExisting { base: layout.base }))
         }
+        // Not a path-shaped tracker at all. `None` is the same answer as "no
+        // tracker configured", and it is correct for every path-shaped caller: no
+        // watcher, no migration offer, no step rewrite, no board editor. The one
+        // caller for which it is *not* enough is `start_session`, which asks
+        // `tracker_kind` instead (Tasks 7 and 12).
+        TrackerProvider::GitHub => None,
         // A source this build cannot read has no root here — same answer as no
         // tracker at all, and the board says which of the two it is (#117).
         TrackerProvider::Unknown(_) => None,

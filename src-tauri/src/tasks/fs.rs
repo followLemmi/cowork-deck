@@ -206,6 +206,7 @@ impl TaskProvider for FsTaskProvider {
             path: path.to_string_lossy().to_string(),
             damaged: None,
             conflict: false,
+            labels: Vec::new(),
         };
         self.write_atomic(&path, &render_card(&card))?;
         Ok(card)

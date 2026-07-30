@@ -173,7 +173,9 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{SessionEntry, UiState, Workspace, SCHEDULE_STATE_VERSION};
+    use crate::model::{
+        SessionEntry, TrackerProvider, UiState, Workspace, SCHEDULE_STATE_VERSION,
+    };
 
     fn tmp() -> std::path::PathBuf {
         // Unique per call, even under parallel test threads: SystemTime alone
@@ -444,6 +446,40 @@ mod tests {
         let all = s.workspaces();
         assert_eq!(all.len(), 2, "neither record is dropped");
         assert_eq!(all[1].name, "B");
+    }
+
+    /// Decision 2's open question, answered against the fixed store rather than
+    /// the broken one. A `{"type":"github"}` record read by a build that has the
+    /// tolerance but not the variant costs that workspace its *tracker* and
+    /// nothing else — not the workspace, and not the file.
+    ///
+    /// What remains is not a hole in the fix, it is the reach of it: a build
+    /// older than Task 1 empties the list, and its own `upsert_workspace` — not
+    /// this one — then writes that emptiness back (#117). The destructive write
+    /// always happens in whichever binary is running, which is exactly why the
+    /// tolerance works from here on and exactly why it does nothing for a version
+    /// already installed. Hence the release order in "Phases and barriers", and
+    /// hence the README's warning for the builds behind that line.
+    #[test]
+    fn a_github_source_read_by_a_build_without_it_costs_one_tracker_not_the_file() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        // What an intermediate build sees: a variant it does not know, through
+        // Task 2's tolerance. `jira` stands in for it, because this build *does*
+        // know `github` now and cannot play the older one against itself.
+        std::fs::write(
+            s.ws_path(),
+            r##"[{"id":"w1","name":"A","path":"/a","color":"#fff",
+                  "tracker":{"providers":[{"type":"jira"}],"v":3}},
+                 {"id":"w2","name":"B","path":"/b","color":"#fff"}]"##,
+        )
+        .unwrap();
+        let all = s.workspaces();
+        assert_eq!(all.len(), 2, "both records survive");
+        assert!(matches!(
+            all[0].tracker.as_ref().and_then(|c| c.providers.first()),
+            Some(TrackerProvider::Unknown(_)),
+        ));
     }
 
     /// Files written before the record existed hold a bare epoch-millis number

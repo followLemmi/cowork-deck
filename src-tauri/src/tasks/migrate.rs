@@ -196,6 +196,7 @@ mod tests {
             path: format!("/old/{id}-t.md"),
             damaged: damaged.map(str::to_string),
             conflict: false,
+            labels: Vec::new(),
         }
     }
 
