@@ -14,16 +14,31 @@ impl Store {
     fn ws_path(&self) -> PathBuf { self.dir.join("workspaces.json") }
     fn sk_path(&self) -> PathBuf { self.dir.join("skills.json") }
 
-    /// Reads and parses a JSON array file. A missing file is a normal,
-    /// expected case (first run) and yields an empty Vec. Any other read
-    /// error (permission denied, I/O error, etc.) is transient/abnormal and
-    /// is propagated as `Err` rather than silently swallowed — callers that
-    /// are about to overwrite the file (upsert/delete) must treat that as a
-    /// hard stop instead of proceeding with an empty in-memory list, which
-    /// would otherwise truncate an existing, populated file on save.
+    /// Reads and parses a JSON array file. A missing file is a normal, expected
+    /// case (first run) and yields an empty Vec. Every other outcome — an io
+    /// error *or a parse error* — is propagated, so a caller about to overwrite
+    /// the file stops instead of proceeding with an empty in-memory list.
+    ///
+    /// The parse error used to be swallowed here by `unwrap_or_default()`, which
+    /// made one unreadable record indistinguishable from an empty store and let
+    /// the next `upsert` write that emptiness back over a populated file (#117).
+    /// The doc comment below already required the hard stop; it only ever got it
+    /// for the io half.
     fn try_read_vec<T: serde::de::DeserializeOwned>(path: &PathBuf) -> std::io::Result<Vec<T>> {
         match std::fs::read_to_string(path) {
-            Ok(s) => Ok(serde_json::from_str(&s).unwrap_or_default()),
+            // An empty file is a first run, not a corrupt one: `write_vec`
+            // truncates before it writes, so this is what a crash mid-write
+            // leaves behind, and refusing it would wedge every save with no
+            // recovery inside the app. A *non-empty* file we cannot parse still
+            // refuses — half an array is evidence of records a save would
+            // destroy, and an empty one is evidence of nothing.
+            Ok(s) if s.trim().is_empty() => Ok(Vec::new()),
+            Ok(s) => serde_json::from_str(&s).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} is not readable as JSON: {e}", path.display()),
+                )
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -38,7 +53,7 @@ impl Store {
             Ok(items) => items,
             Err(e) => {
                 eprintln!(
-                    "warning: failed to read {} ({e}); treating as empty for this listing",
+                    "warning: failed to read or parse {} ({e}); treating as empty for this listing",
                     path.display()
                 );
                 Vec::new()
@@ -300,6 +315,110 @@ mod tests {
             last_outcome: Some("launched".into()), preset: None, version: SCHEDULE_STATE_VERSION });
         s.save_schedule_state(&st).unwrap();
         assert_eq!(Store::new(s.dir.clone()).schedule_state(), st);
+    }
+
+    /// The test that fails today, and the whole of #117 in one assertion: a
+    /// populated file with one unreadable record must not be overwritten by the
+    /// next save. `try_read_vec` returning `Ok(vec![])` for a parse error is
+    /// indistinguishable from "no workspaces yet", so the upsert wrote one record
+    /// over ten.
+    #[test]
+    fn an_upsert_refuses_rather_than_truncating_a_file_it_could_not_parse() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        let original = r##"[{"id":"w1","name":"A","path":"/a","color":"#fff"},
+                            {"id":"w2","name":"B","path":"/b","color":"#fff",
+                             "tracker":{"providers":[{"type":"jira"}],"v":3}}]"##;
+        std::fs::write(s.ws_path(), original).unwrap();
+
+        let err = s
+            .upsert_workspace(Workspace {
+                id: "w3".into(), name: "C".into(), path: "/c".into(), color: "#fff".into(),
+                github: None, tracker: None,
+            })
+            .expect_err("a file we could not parse must never be overwritten");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        // The bytes are what matter: not "the list still has two entries" (the
+        // read cannot produce them yet), but "nothing was lost".
+        assert_eq!(std::fs::read_to_string(s.ws_path()).unwrap(), original);
+    }
+
+    /// `delete_workspace` reads through the same function and would truncate the
+    /// same way. Both write paths, because a fix applied to one of them is a fix
+    /// somebody will assume covers the other.
+    #[test]
+    fn a_delete_refuses_on_an_unparseable_file_too() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.ws_path(), "[{ not json at all }]").unwrap();
+        assert!(s.delete_workspace("w1").is_err());
+    }
+
+    /// All four write paths, not two. `try_read_vec`'s callers are `store.rs:124`
+    /// (upsert workspace), `:134` (delete workspace), `:141` (upsert skill) and
+    /// `:151` (delete skill), and a fix applied to some of them is a fix somebody
+    /// will assume covers the rest.
+    #[test]
+    fn the_refusal_covers_both_skill_write_paths_as_well() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.sk_path(), "[{ not json }]").unwrap();
+        assert!(s
+            .upsert_skill(Skill {
+                id: "s1".into(), name: "S".into(), icon: "play".into(),
+                prompt: "p".into(), workspace_id: None, schedule: None,
+            })
+            .is_err());
+        assert!(s.delete_skill("s1").is_err());
+    }
+
+    /// A listing still degrades to empty — `list_workspaces` returns `Vec`, not
+    /// `Result` (`commands.rs:89-92`), so there is no channel to the UI and
+    /// inventing one is out of this task's scope. What changes is that it is no
+    /// longer *silent*: the warning `read_vec` already prints for an io error now
+    /// covers the parse error that was being discarded one level below it.
+    #[test]
+    fn a_listing_still_degrades_to_empty_but_no_longer_silently() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.ws_path(), "[{ not json }]").unwrap();
+        assert!(s.workspaces().is_empty());
+    }
+
+    /// The four cases that must keep working, or start working: a missing file is
+    /// a first run, an empty array is an empty list, a good file parses — and a
+    /// **zero-byte** file is a first run too.
+    ///
+    /// That last one is not pedantry. `read_to_string` gives `Ok("")`,
+    /// `from_str::<Vec<_>>("")` errors, and the refusal this task introduces would
+    /// then make every write fail permanently with no way back from inside the
+    /// app. And a zero-byte `workspaces.json` is exactly what `write_vec`'s bare
+    /// `fs::write` leaves behind if the process dies between the truncate and the
+    /// write — the crash case this task's own reasoning names.
+    ///
+    /// **A truncated-but-non-empty file keeps the refusal**, and the difference is
+    /// deliberate: empty carries no information, so treating it as "nothing yet"
+    /// loses nothing, while half a JSON array is evidence of records that a save
+    /// would destroy. Do not "simplify" this into a general parse-failure
+    /// fallback; that is the bug this task exists to fix.
+    #[test]
+    fn a_missing_or_empty_file_is_a_first_run_and_a_good_one_still_parses() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        assert!(s.workspaces().is_empty());
+        std::fs::write(s.ws_path(), "").unwrap();
+        assert!(s.workspaces().is_empty(), "a zero-byte file must not wedge every write");
+        assert!(s.delete_workspace("nobody").is_ok(), "and must not be a hard stop either");
+        std::fs::write(s.ws_path(), "   \n").unwrap();
+        assert!(s.workspaces().is_empty(), "whitespace only, same thing");
+        std::fs::write(s.ws_path(), "[]").unwrap();
+        assert!(s.workspaces().is_empty());
+        std::fs::write(
+            s.ws_path(),
+            r##"[{"id":"w1","name":"A","path":"/a","color":"#fff"}]"##,
+        )
+        .unwrap();
+        assert_eq!(s.workspaces().len(), 1);
     }
 
     /// Files written before the record existed hold a bare epoch-millis number
