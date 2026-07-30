@@ -1509,6 +1509,13 @@ Add to `mod tests` in `src-tauri/src/tasks/gh_issues.rs`:
     /// `gh issue view` answers with a bare object, not an array of one.
     const ONE_OPEN_OBJECT: &str = r#"{"number":42,"title":"t","state":"OPEN",
         "createdAt":"c","closedAt":null,"body":"","labels":[],"url":"u"}"#;
+    // A bare object, like `ONE_OPEN_OBJECT`: `update`'s read-back goes through
+    // `parse_issue`, which refuses an array on purpose (Task 4's
+    // `a_single_issue_parse_refuses_a_list`). Scripting these with `ONE_CLOSED`
+    // fails with `Io("gh did not return one issue")` — and the fix is the fixture,
+    // never teaching `parse_issue` to unwrap a one-element array, which would
+    // delete the guarantee that `view` and `list` cannot be confused.
+    const ONE_CLOSED_OBJECT: &str = r#"{"number":7,"title":"t","state":"CLOSED",
 
     /// The closed column is fetched, not accumulated: with an open-only list a
     /// closed issue would simply vanish from the board, which for a file card it
@@ -1589,7 +1596,7 @@ Add to `mod tests` in `src-tauri/src/tasks/gh_issues.rs`:
 
     #[test]
     fn a_status_patch_to_closed_closes_the_issue_with_its_reason() {
-        let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_CLOSED.into())]);
+        let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_CLOSED_OBJECT.into())]);
         p.update(
             "7",
             TaskPatch {
@@ -1606,7 +1613,7 @@ Add to `mod tests` in `src-tauri/src/tasks/gh_issues.rs`:
 
     #[test]
     fn a_status_patch_to_open_reopens_and_asks_no_reason() {
-        let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_OPEN.into())]);
+        let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_OPEN_OBJECT.into())]);
         p.update("42", TaskPatch { status: Some(StepId("open".into())), ..Default::default() })
             .unwrap();
         assert!(fake.calls.borrow()[0].iter().any(|a| a == "reopen"));
@@ -1614,7 +1621,7 @@ Add to `mod tests` in `src-tauri/src/tasks/gh_issues.rs`:
 
     #[test]
     fn a_title_or_body_patch_edits_the_issue() {
-        let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_OPEN.into())]);
+        let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_OPEN_OBJECT.into())]);
         p.update(
             "42",
             TaskPatch { title: Some("New".into()), body: Some("New body".into()), ..Default::default() },
@@ -1652,7 +1659,7 @@ Add to `mod tests` in `src-tauri/src/tasks/gh_issues.rs`:
     /// issue asked for falls off the page entirely — and since `update` ends on
     /// `resolve` for close, reopen and edit, and a body-only patch begins with it,
     /// that breaks the tick, Save and both write paths silently. This test is the
-    /// only thing that can catch it: the fake returns `ONE_OPEN` whatever argv it
+    /// only thing that can catch it: the fake returns **whatever the script holds**, whatever argv it
     /// is handed, so *nothing else here inspects how the issue was addressed*.
     #[test]
     fn resolve_addresses_the_issue_by_number_and_never_searches() {
