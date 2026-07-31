@@ -4347,6 +4347,12 @@ The three unavailable states are reused *in mechanism*, not copied in prose: `pr
 - Produces: `BoardState.fetchedAt`, `.unavailable`, `.total`, `.rateRemaining`, `.source`; `BoardHandlers.onFixUnavailable`
 - Consumes: `src/issues.ts`, `ago` from `src/pr.ts`, `GH_UNAVAILABLE` from `src/pr-view.ts`
 
+**`GH_UNAVAILABLE` no longer lives there, and is no longer a constant** (annotated 2026-07-31; the code blocks below are left exactly as this task wrote them, because they record what was written). Sharing the pull request view's constant meant sharing its *vocabulary*: its `no-gh` sentence read "…so **pull requests** cannot be read", so a person whose GitHub **issues** board could not find `gh` was told about pull requests. Found while writing Task 26's README, fixed in `a410aa3`.
+
+The three states now live in `src/gh-unavailable.ts` as `ghUnavailable(u, subject)`, where `subject` is a closed union — `"pull requests" | "issues"` — and each view passes its own. The union is closed rather than a free string so `tsc` refuses a third caller that invents a synonym, which is the failure that produced the defect: a shared constant with one view's nouns baked in and nothing stopping the next reader inheriting them. The pull request view's sentence is byte-for-byte what it shipped — the older screen was not degraded to fix the new one.
+
+Worth knowing how it survived, because it is this plan's recurring shape: the test named `explains %s and offers its next step` asserted only `.not.toBe("")`. It checked that *something* was said, not that the right thing was said, so prose written for another screen passed a test whose name claims it explains the state. Manual check 15 now asserts the **property** — the board names issues, or names neither view, and in no case names pull requests — rather than quoting either sentence.
+
 - [ ] **Step 1: Write the failing tests**
 
 Create `tests/board-github.test.ts`:
