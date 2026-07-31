@@ -350,6 +350,69 @@ fn provider_for(ws: &Workspace) -> Result<FsTaskProvider, String> {
     Ok(FsTaskProvider::new(root, creation))
 }
 
+/// The board a GitHub workspace has: two steps, synthesized, not editable.
+///
+/// One terminal step and no working step. The consequences fall out of code that
+/// already exists: `workingStep(cfg)` returns null, so the launch button's
+/// pre-launch move is skipped (`sessions.ts:241`) and `isStale` is always false
+/// (`tasks.ts:131`) — while `derivedStatus` still reports "working" from a live
+/// session, so the "in progress" chip keeps working. "In progress" was never
+/// stored, so there is nothing to store here.
+///
+/// `kinds` is non-empty only because `BoardConfig::validate` rejects `NoKinds`;
+/// nothing reads it, because no issue carries a kind.
+pub fn github_board() -> BoardConfig {
+    BoardConfig {
+        v: 1,
+        steps: vec![
+            crate::tasks::board::Step {
+                id: StepId("open".into()),
+                label: "Open".into(),
+                terminal: false,
+                working: false,
+            },
+            crate::tasks::board::Step {
+                id: StepId("closed".into()),
+                label: "Closed".into(),
+                terminal: true,
+                working: false,
+            },
+        ],
+        kinds: vec![crate::tasks::board::Kind {
+            id: KindId("issue".into()),
+            label: "Issue".into(),
+        }],
+    }
+}
+
+/// Which board a workspace has, decided in one place.
+///
+/// `FsTaskProvider::new` still reads `board.json` itself (`fs.rs:76`) and cannot
+/// stop: `cowork_task` constructs a provider from the environment alone
+/// (`cowork_task.rs:102`) with no IPC layer above it. So there are two readers
+/// of `board.json` in the codebase and they must not disagree — they will not,
+/// because both call `board::load_or_create`, but the duplication is real and is
+/// stated here rather than discovered later.
+pub fn board_for(ws: &Workspace) -> crate::tasks::board::Loaded {
+    match tracker_kind(ws) {
+        Some(TrackerKind::GitHub) => {
+            crate::tasks::board::Loaded { config: github_board(), error: None }
+        }
+        Some(TrackerKind::Fs { root, .. }) => crate::tasks::board::load_or_create(&root),
+        // Unconfigured: the caller has already decided there is no provider, and
+        // the default is what every other unconfigured read gets.
+        None => crate::tasks::board::Loaded {
+            config: BoardConfig::default_config(),
+            error: None,
+        },
+    }
+}
+
+/// Whether the ⚙ editor may be offered.
+pub fn board_editable(ws: &Workspace) -> bool {
+    matches!(tracker_kind(ws), Some(TrackerKind::Fs { .. }))
+}
+
 /// Capabilities plus the board configuration, flattened into one object: the
 /// board, the card modal and the ⚙ editor all read the same thing, so there is
 /// no second channel to fall out of step with the first.
@@ -362,6 +425,58 @@ pub struct BoardCapabilities {
     /// Why `board.json` could not be used, when it could not. The board draws
     /// either way; the person has to be told which they are looking at.
     pub board_error: Option<String>,
+    /// Whether ⚙ is offered. False for a synthesized board: there is no
+    /// `board.json` to write, and one synthetic kind is not a choice.
+    ///
+    /// `default` as insurance rather than necessity: this type is built per call
+    /// and serialized outward only (the struct is `provider.rs:10-14`, flattened
+    /// at `:320`), so it is never deserialized today. None of its other fields
+    /// carries one, and if that ever changes a missing flag should read as "not
+    /// editable".
+    #[serde(default)]
+    pub board_editable: bool,
+}
+
+fn capabilities_for(ws: &Workspace) -> Option<BoardCapabilities> {
+    // A source written by a newer build (Task 2). Not `None`: that means "no
+    // tracker configured", and this workspace has one — we simply cannot read
+    // it. Reported through the channel that already exists for "the board is not
+    // what you think it is", so no new state has to be invented for a case only a
+    // downgrade can produce.
+    if matches!(
+        ws.tracker.as_ref().and_then(|c| c.providers.first()),
+        Some(TrackerProvider::Unknown(_))
+    ) {
+        return Some(BoardCapabilities {
+            caps: ProviderCapabilities {
+                can_create: false,
+                can_resolve: false,
+                statuses: Vec::new(),
+            },
+            board: BoardConfig::default_config(),
+            board_error: Some(
+                "this workspace's task source was saved by a newer version of the app, or \
+                 is damaged, and cannot be read here. Nothing has been changed."
+                    .to_string(),
+            ),
+            board_editable: false,
+        });
+    }
+    let loaded = board_for(ws);
+    // Task 10 boxes `provider_for`, and a GitHub workspace answers here too.
+    // Until then it has no provider to ask, which is what keeps the feature
+    // unreachable through Barrier A.
+    //
+    // The `.ok()` is safe only because `provider_for` does no network I/O: if
+    // resolving the repository ever moved inside it, every unavailable state
+    // would arrive at the board as "No task tracker is configured for this
+    // workspace" — the false claim the branch above exists to prevent.
+    Some(BoardCapabilities {
+        caps: provider_for(ws).ok()?.capabilities(),
+        board: loaded.config,
+        board_error: loaded.error,
+        board_editable: board_editable(ws),
+    })
 }
 
 #[tauri::command]
@@ -373,14 +488,7 @@ pub fn tasks_capabilities(
     // `None` still means "no tracker configured for this workspace" and nothing
     // else — a configured root that cannot be read yields real capabilities plus
     // an error from `tasks_list`. The board treats the two differently.
-    match provider_for(&ws) {
-        Ok(p) => Ok(Some(BoardCapabilities {
-            caps: p.capabilities(),
-            board: p.board().clone(),
-            board_error: p.board_error().map(str::to_string),
-        })),
-        Err(_) => Ok(None),
-    }
+    Ok(capabilities_for(&ws))
 }
 
 #[tauri::command]
@@ -956,6 +1064,86 @@ mod tests {
         if let Some(cfg) = w.tracker.as_mut() { cfg.version = 1; }
         let seeded = seed_previous_location(w);
         assert!(seeded.tracker.unwrap().previous_location.is_none());
+    }
+
+    /// It has to pass the same validation a hand-written board.json does, or the
+    /// board would be drawn from a configuration the editor would refuse.
+    #[test]
+    fn the_synthesized_board_is_two_steps_and_valid() {
+        let b = github_board();
+        b.validate().expect("a synthesized board must be a legal one");
+        assert_eq!(b.step_ids(), vec!["open".to_string(), "closed".to_string()]);
+        assert!(b.is_terminal(&StepId("closed".into())));
+        // No working step: an issue has no "in progress" state to write, and
+        // `working: true` would make the launch button try to write one.
+        assert_eq!(b.working_step(), None);
+        // Non-empty only because `validate` rejects `NoKinds`; nothing reads it.
+        assert_eq!(b.kinds.len(), 1);
+    }
+
+    #[test]
+    fn board_for_synthesizes_the_github_board_and_can_never_fail_to_load_it() {
+        let loaded = board_for(&ws(Some(github_tracker())));
+        assert_eq!(loaded.config.step_ids(), vec!["open".to_string(), "closed".to_string()]);
+        // Always `None`, which is why `board.ts`'s boardError banner — whose
+        // prose names board.json — stays true and simply never draws.
+        assert!(loaded.error.is_none());
+    }
+
+    #[test]
+    fn board_for_reads_board_json_for_a_file_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(crate::tasks::board::BOARD_FILE),
+            r#"{"steps":[{"id":"todo","label":"To do"},{"id":"done","label":"Done","terminal":true}],
+                "kinds":[{"id":"task","label":"Task"}]}"#,
+        )
+        .unwrap();
+        let w = ws(Some(tracker(TrackerRoot::Path {
+            path: dir.path().to_string_lossy().to_string(),
+        })));
+        // The root resolves *below* the picked folder, so seed the file there too.
+        let (root, _) = resolve_root(&w).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::copy(
+            dir.path().join(crate::tasks::board::BOARD_FILE),
+            root.join(crate::tasks::board::BOARD_FILE),
+        )
+        .unwrap();
+        assert_eq!(board_for(&w).config.step_ids(), vec!["todo".to_string(), "done".to_string()]);
+    }
+
+    /// The ⚙ editor writes `board.json`, and there is none. `board_editable`
+    /// lives on `BoardCapabilities` rather than `ProviderCapabilities` because it
+    /// is the *board* that is not editable — and the serde flatten means the
+    /// frontend sees one object either way.
+    #[test]
+    fn only_a_file_backed_board_is_editable() {
+        assert!(board_editable(&ws(Some(tracker(TrackerRoot::Project)))));
+        assert!(!board_editable(&ws(Some(github_tracker()))));
+        assert!(!board_editable(&ws(None)));
+    }
+
+    /// The other half of Task 2's promise: the workspace is visible, so its board
+    /// has to say something true. "No task tracker is configured" would be a
+    /// different claim — one is configured, and this build cannot read it.
+    #[test]
+    fn a_source_this_build_cannot_read_says_so_rather_than_reading_as_unconfigured() {
+        let w = ws(Some(TrackerConfig {
+            providers: vec![TrackerProvider::Unknown(serde_json::json!({"type": "jira"}))],
+            previous_location: None,
+            version: crate::model::TRACKER_CONFIG_VERSION,
+        }));
+        let caps = capabilities_for(&w).expect("not None: that would read as unconfigured");
+        let err = caps.board_error.expect("an explanation");
+        // Both possibilities, because `untagged` cannot tell them apart: a source
+        // from the future and a hand-edited `{"type":"fs"}` with no `root` both
+        // arrive here, and telling the second person their file "was saved by a
+        // newer version" is false and unactionable.
+        assert!(err.contains("newer version") && err.contains("damaged"), "{err}");
+        // Nothing can be written through a source we cannot read, so no control
+        // that writes is offered.
+        assert!(!caps.caps.can_create && !caps.caps.can_resolve && !caps.board_editable);
     }
 
     #[test]
