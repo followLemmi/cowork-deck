@@ -15,6 +15,7 @@ import {
 } from "./ipc";
 import type { MigrationOffer, PullRequest, StepId, Task } from "./ipc";
 import { pollIntervalMs } from "./pr";
+import { boardPollMs, sourceOf } from "./issues";
 import { PrView } from "./pr-view";
 import type { GhUnavailable, PrState } from "./pr-view";
 import { alertModal, confirmModal } from "./modal";
@@ -102,8 +103,47 @@ prEl.classList.add("hidden");
 boardEl.after(prEl);
 
 let boardVisible = false;
-let boardTimer: ReturnType<typeof setInterval> | null = null;
+let boardTimer: ReturnType<typeof setTimeout> | null = null;
 let currentView: ViewName = "deck";
+
+function stopBoardPolling() {
+  if (boardTimer !== null) { clearTimeout(boardTimer); boardTimer = null; }
+}
+
+/** Poll only while the board is on screen and the window is focused, and only
+ *  ever one tick ahead.
+ *
+ *  Replaces a five-second `setInterval` with no focus gate. Two reasons, and the
+ *  second applies to the file board as much as to the GitHub one: a GitHub board
+ *  at five seconds would spend 14.4% of the hourly GraphQL budget on one
+ *  workspace, and `setInterval` schedules the next tick whether or not the
+ *  previous one came back — which for a slow network means queued `gh`
+ *  processes. The interval is the source's, from `boardPollMs`. */
+function scheduleBoardPoll() {
+  stopBoardPolling();
+  if (currentView !== "board" || !document.hasFocus()) return;
+  const source = sourceOf(workspaces.active?.tracker ?? null);
+  boardTimer = setTimeout(() => void boardTick(), boardPollMs(source));
+}
+
+/** One tick: both reads, then the next tick. The reschedule is at the end rather
+ *  than beside the read, so a slow `tasks_open_counts` cannot overlap the next
+ *  `tasks_list`.
+ *
+ *  Shared with the focus handler, which has to re-arm the chain and not merely
+ *  read once: blur cleared the handle, so a focus that only refreshed would leave
+ *  the board still until the view was left and re-entered — worse than the
+ *  interval this replaces. Polling is the primary refresh path; the watcher only
+ *  makes it faster, so a watcher failure degrades into a delay and needs no
+ *  detection. The sidebar counts degrade the same way, which is why a tick
+ *  refreshes them too — otherwise on a workspace without a watcher (an SMB
+ *  volume, say) the badge stays at whatever it was at load. Each call has its own
+ *  try/catch inside, so one failing handle cannot take the other down. */
+async function boardTick() {
+  await refreshBoard();
+  await refreshCounts();
+  scheduleBoardPoll();
+}
 
 function setView(view: ViewName) {
   currentView = view;
@@ -112,19 +152,13 @@ function setView(view: ViewName) {
               terminalsOnly: [skMount, newBtn, listMount] },
              view);
   if (view === "board") {
+    // The read is unconditional — opening the screen is a deliberate act — and
+    // the chain is armed separately, so an unfocused window reads once and then
+    // waits (see `scheduleBoardPoll`).
     void refreshBoard();
-    // Polling is the primary refresh path; the watcher only makes it faster, so
-    // a watcher failure degrades into a delay and needs no detection. The
-    // sidebar counts degrade the same way (see the spec), which is why this tick
-    // refreshes them too — otherwise on a workspace without a watcher (an SMB
-    // volume, say) the badge stays stuck at whatever it was at load. Each call
-    // has its own try/catch inside refreshBoard/refreshCounts: one failing
-    // handle must not take the other down.
-    if (boardTimer === null) {
-      boardTimer = setInterval(() => { void refreshBoard(); void refreshCounts(); }, 5000);
-    }
-  } else if (boardTimer !== null) {
-    clearInterval(boardTimer); boardTimer = null;
+    scheduleBoardPoll();
+  } else {
+    stopBoardPolling();
   }
   // Leaving the screen stops its polling in the same breath as hiding it: a
   // timer that outlives the view keeps talking to GitHub about a screen nobody
@@ -451,8 +485,14 @@ async function refreshPrs() {
 // Focus is the other half of "only while watched": a minimised or background
 // window polls nothing, and coming back refreshes at once rather than at the
 // next tick.
-window.addEventListener("focus", () => { if (currentView === "pr") void refreshPrs(); });
-window.addEventListener("blur", () => stopPrPolling());
+window.addEventListener("focus", () => {
+  if (currentView === "pr") void refreshPrs();
+  // Coming back refreshes at once rather than at the next tick, which is the
+  // whole point of pausing on blur — and `boardTick` re-arms the chain the blur
+  // cleared.
+  if (currentView === "board") void boardTick();
+});
+window.addEventListener("blur", () => { stopPrPolling(); stopBoardPolling(); });
 
 /** ▶ on a row: a worktree for the branch, then an ordinary session inside it. */
 async function launchFromPr(pr: PullRequest) {
