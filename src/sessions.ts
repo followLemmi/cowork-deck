@@ -232,8 +232,7 @@ export class Deck {
   async launchFromTask(
     workspace: Workspace, task: Task, cfg: BoardConfig,
   ): Promise<"launched" | "focused"> {
-    const alive = liveSessionForTask(task.id, this.taskLinks(workspace.id));
-    if (alive) { this.focusTile(alive); return "focused"; }
+    if (this.focusTaskSession(task.id, workspace.id)) return "focused";
     // ▶ writes the step itself, so the card moves whether or not the agent
     // remembers to. A failure must not block the launch: the work matters more
     // than the bookkeeping, and the board's stale marker will show the mismatch.
@@ -286,10 +285,11 @@ export class Deck {
     // repository, so a session on another workspace's #42 is a different piece of
     // work; focusing it would hand the person a terminal in the wrong repository
     // and leave the worktree just prepared here with nothing running in it.
-    if (taskId !== undefined) {
-      const alive = liveSessionForTask(taskId, this.taskLinks(workspaceId));
-      if (alive) { this.focusTile(alive); return "focused"; }
-    }
+    //
+    // Still asked here even though the board now asks it before preparing the
+    // worktree: this is the last line before a second agent lands in the same
+    // directory, and it also covers callers that never went through the board.
+    if (taskId !== undefined && this.focusTaskSession(taskId, workspaceId)) return "focused";
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd,
@@ -501,6 +501,20 @@ export class Deck {
       this.restoring = false;
     }
     void this.persistLayout();
+  }
+
+  /** Focus the session already running on this card, if there is one.
+   *
+   *  The guard `launchFromTask` and `launchOnWorktree` apply, exposed because the
+   *  board's issue path has to ask it *before* preparing a worktree: the check is
+   *  worthless behind a fallible IPC call, which is precisely the position it used
+   *  to be in. One implementation, so the three callers cannot come to disagree
+   *  about what "already running" means. */
+  focusTaskSession(taskId: string, workspaceId: string): boolean {
+    const alive = liveSessionForTask(taskId, this.taskLinks(workspaceId));
+    if (alive === null) return false;
+    this.focusTile(alive);
+    return true;
   }
 
   /** Live tiles in the shape the board needs, for one workspace.

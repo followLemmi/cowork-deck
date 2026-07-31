@@ -389,8 +389,11 @@ export class BoardView {
     }
     // ▶ is hidden while the card reads as "in progress" (a working/waitingInput
     // session). An idle session still linked to the card slips through here —
-    // that's fine: the launch guard in Deck.launchFromTask catches it and
-    // focuses the existing session instead of starting a second one.
+    // that's fine: the launch guard catches it and focuses the existing session
+    // instead of starting a second one. True of both paths now: the file path
+    // checks inside `Deck.launchFromTask`, and the issue path checks in `main.ts`
+    // *before* preparing a worktree, since a guard behind a fallible IPC call is
+    // no guard in the case that needs it.
     // A damaged card's `project:` may be missing or wrong (that can be *why*
     // it's damaged), so launching from it either fails or lands in the wrong
     // workspace — hide ▶ the same way ✓ is hidden below.

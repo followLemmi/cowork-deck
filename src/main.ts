@@ -263,6 +263,13 @@ async function launchFromTask(t: Task) {
       await alertModal(`“${t.id}” is not an issue number, so no branch could be derived from it.`);
       return;
     }
+    // Before any side effect, exactly as `Deck.launchFromTask` does it on the file
+    // path. Behind the worktree call this check was unreachable in the case that
+    // needs it: `gh` resolving the default branch offline, the directory removed by
+    // hand, a locked index — any of those and the person was told the worktree
+    // could not be prepared while a session on that very issue was running two
+    // tiles away, with the guard that would have focused it never reached.
+    if (deck.focusTaskSession(t.id, target.id)) { setView("deck"); return; }
     // A worktree of its own, on a new branch off the repository's default branch,
     // and the session linked to the issue so a second ▶ focuses it rather than
     // starting a rival session in the same directory.
