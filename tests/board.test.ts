@@ -12,6 +12,7 @@ const CFG: BoardConfig = {
 const handlers = {
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
   onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove: vi.fn(), onEditBoard: vi.fn(),
+  onFixUnavailable: vi.fn(),
 };
 
 function card(over: Partial<Task> = {}): Task {
@@ -159,6 +160,21 @@ describe("BoardView", () => {
     v.render({ project: "deck", caps, error: null, links: [], tasks: [card()] });
     v.mount.querySelector<HTMLButtonElement>(".tk-run")!.click();
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  // A regression pin, and it passes against the code as it stands: the point is
+  // that it keeps passing. A failure with nothing left to show must not become
+  // empty columns plus "No tasks." — that reads as a folder with no cards in it,
+  // and it would also drop the one button that can fix an unreachable root.
+  // Task 21 stops `error` returning early so a GitHub board can keep its last
+  // good list; a board with no list at all keeps this screen.
+  it("shows the error and the way out when a failure leaves nothing to draw", () => {
+    const v = new BoardView({ ...handlers });
+    v.render({ project: "deck", caps, error: "the task folder is unreachable: /home/u/typo",
+               links: [], tasks: [] });
+    expect(v.mount.querySelector(".tk-empty")!.textContent).toContain("/home/u/typo");
+    expect(v.mount.querySelector(".tk-configure")).not.toBeNull();
+    expect(v.mount.querySelector(".tk-cols")).toBeNull();
   });
 
   it("offers ⚙ only once a tracker is configured — there is nothing to edit before then", () => {
@@ -354,6 +370,14 @@ describe("BoardView board configuration error", () => {
     // The part that stops a person trusting the columns while the fallback is
     // active — the opening words alone would not.
     expect(banner.textContent).toContain("so cards may appear in the wrong column. The file was left alone.");
+    // The whole sentence, punctuation included. A second sender now shares this
+    // field (the GitHub source's own message, which takes no wrapper at all), so
+    // the file board's wording is only "unchanged" if something checks the join
+    // between the message and the wrapper — three `toContain`s above cannot see
+    // a lost full stop.
+    expect(banner.textContent).toBe(
+      "board.json could not be used: steps[1]: missing id. The default two-step board is shown "
+      + "instead, so cards may appear in the wrong column. The file was left alone.");
   });
 
   it("still renders the columns underneath the board-error banner", () => {

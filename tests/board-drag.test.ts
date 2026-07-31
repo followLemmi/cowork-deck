@@ -34,6 +34,7 @@ const onMove = vi.fn();
 const handlers = {
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
   onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove, onEditBoard: vi.fn(),
+  onFixUnavailable: vi.fn(),
 };
 
 let view: BoardView;
@@ -186,6 +187,19 @@ describe("BoardView — dragging and the keyboard equivalent", () => {
     render([card({ id: "x", status: "legacy" })]);
     dragCardTo("x", "todo");
     expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "x" }), "todo");
+  });
+
+  // The board hands the move up; whether it needs confirming is
+  // `needsCloseConfirmation`'s decision and main.ts's modal. The view must not
+  // grow a modal of its own — a confirmation raised inside the renderer is a
+  // confirmation no test of the rule can see. `.modal-overlay` is where every
+  // dialog in the app lands (dialog-shell.ts), so its absence is the assertion.
+  it("reports a drop onto the terminal step as an ordinary move, and raises no dialog", () => {
+    render([card({ id: "a", status: "todo" })]);
+    dragCardTo("a", "done");
+    expect(onMove).toHaveBeenCalledTimes(1);
+    expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }), "done");
+    expect(document.querySelector(".modal-overlay")).toBeNull();
   });
 
   it("refuses the drop itself for a damaged card, not only the affordance", () => {

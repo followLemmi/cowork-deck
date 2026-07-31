@@ -1,5 +1,8 @@
 import type { MigrationOffer, ProviderCapabilities, StepId, Task } from "./ipc";
 import { isTerminal, stepAfter, stepBefore } from "./board-config";
+import { countLine, rateLimitBanner, type TaskSource } from "./issues";
+import { ago } from "./pr";
+import { GH_UNAVAILABLE, type GhUnavailable } from "./pr-view";
 import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
 
 export interface BoardState {
@@ -11,6 +14,22 @@ export interface BoardState {
   /** Optional so the pre-existing render tests keep compiling; absent means
    *  there is nothing to move. */
   migration?: MigrationOffer | null;
+  /** The five below are optional for the same reason `migration` is: the file
+   *  board's own suites build `BoardState` literals in a dozen places, and a
+   *  required field would fail `tsc` in files this has no business touching.
+   *  Absent is also the honest default — a file board has none of them. */
+  source?: TaskSource;
+  /** When `tasks` was read. Null before the first successful fetch. */
+  fetchedAt?: number | null;
+  /** Non-null when the source cannot be read at all — never drawn as an empty
+   *  board, from which a broken token is indistinguishable from a quiet
+   *  repository. */
+  unavailable?: GhUnavailable | null;
+  /** Open issues in the repository, when a capped page made the number worth
+   *  asking for. */
+  total?: number | null;
+  /** GraphQL points left this hour. Null when the headers said nothing. */
+  rateRemaining?: number | null;
 }
 
 export interface BoardHandlers {
@@ -23,6 +42,9 @@ export interface BoardHandlers {
   onOpen: (task: Task) => void;
   onMove: (task: Task, step: StepId) => void;
   onEditBoard: () => void;
+  /** The one addition that cannot be optional: a box offering a button that does
+   *  nothing is worse than no box. */
+  onFixUnavailable: (u: GhUnavailable) => void;
 }
 
 /** `caps === null` means no tracker is configured — a legal state, not a failure. */
@@ -52,9 +74,12 @@ export class BoardView {
   readonly mount = el("div", "tk-board");
   constructor(private h: BoardHandlers) {}
 
-  render(state: BoardState) {
+  /** `now` is a parameter, not a `Date.now()` inside, so the age line is
+   *  assertable; defaulted for the callers that predate it. */
+  render(state: BoardState, now: number = Date.now()) {
     this.mount.replaceChildren();
     const { caps, error } = state;
+    const fetchedAt = state.fetchedAt ?? null;
 
     const head = el("div", "tk-head");
     head.append(el("h3", "tk-title", "Tasks"));
@@ -63,22 +88,49 @@ export class BoardView {
       add.onclick = () => this.h.onNew();
       head.append(add);
     }
-    // Shown whenever a tracker is configured, even while `caps.boardError` is
-    // set: main.ts::editBoard tells the person about that before opening the
-    // form, rather than hiding the only way to fix it.
-    if (caps) {
+    // Shown whenever the board is the person's to configure, even while
+    // `caps.boardError` is set: main.ts::editBoard tells them about that before
+    // opening the form, rather than hiding the only way to fix it. Withheld for
+    // a synthesized board — there is no `board.json` to write, and one synthetic
+    // kind is not a choice.
+    if (caps?.boardEditable) {
       const edit = el("button", "tk-board-edit", "⚙");
       edit.setAttribute("aria-label", "Configure the board");
       edit.onclick = () => this.h.onEditBoard();
       head.append(edit);
     }
+    // In the head, so it survives every early return below: data that can be
+    // stale has to say how stale on every render, not only on the happy one.
+    head.append(el("span", "tk-age",
+      fetchedAt === null ? "never loaded" : `updated ${ago(new Date(fetchedAt).toISOString(), now)}`));
     this.mount.append(head);
 
     // Before the early return on purpose: when the destination's parent is
     // missing, the error and this banner explain each other.
     if (state.migration) this.mount.append(this.migrationBanner(state.migration));
 
-    if (caps === null || error) {
+    // An unavailable source is not an empty board, and drawing it as one makes a
+    // broken token look like a repository with no issues.
+    if (state.unavailable) {
+      const spec = GH_UNAVAILABLE[state.unavailable];
+      const box = el("div", "tk-unavailable");
+      box.append(el("p", "tk-unavailable-text", spec.text));
+      if (spec.action) {
+        const fix = el("button", "tk-fix", spec.action);
+        const u = state.unavailable;
+        fix.onclick = () => this.h.onFixUnavailable(u);
+        box.append(fix);
+      }
+      this.mount.append(box);
+      return;
+    }
+
+    // A failure with a last good list keeps it — offline and rate-limited are not
+    // their own screens (see below). A failure with nothing to show is still this
+    // screen: empty columns under an error read as a folder with no cards in
+    // them, and this is also the only place `Configure` is offered for a root
+    // that cannot be read.
+    if (caps === null || (error !== null && state.tasks.length === 0)) {
       const msg = emptyStateMessage(caps, error);
       const box = el("div", "tk-empty");
       box.append(el("p", undefined, msg.text));
@@ -91,17 +143,26 @@ export class BoardView {
       return;
     }
 
+    // The last good list stays on screen beside the failure, with its age above
+    // it, exactly as the pull request view does.
+    if (error !== null) this.mount.append(el("p", "tk-error", error));
+
     // The fallback board still draws underneath this: silently keeping a
     // renamed terminal step open would be a worse lie than a banner that says so.
     // Read off `caps.boardError` directly rather than a second field on `state`:
     // `caps` is already non-null here (the early return above caught the other
     // case), so a separate channel for the same value could only disagree with it.
     if (caps.boardError) {
-      this.mount.append(el(
-        "p", "tk-board-error",
-        `board.json could not be used: ${caps.boardError}. The default two-step board is shown instead, ` +
-        "so cards may appear in the wrong column. The file was left alone.",
-      ));
+      // The message says what is wrong; the wrapper only says what the board did
+      // about it, and only the file-backed case has a `board.json` or a fallback
+      // board to describe. A second sender arrived with the GitHub source — an
+      // unreadable source, a full sentence of its own — and every clause of the
+      // wrapper was false for it, the interpolated full stop included.
+      const detail = state.source === "github"
+        ? caps.boardError
+        : `board.json could not be used: ${caps.boardError}. The default two-step board is shown ` +
+          "instead, so cards may appear in the wrong column. The file was left alone.";
+      this.mount.append(el("p", "tk-board-error", detail));
     }
 
     const cols = boardColumns(state.tasks, state.project, caps.board);
@@ -117,6 +178,17 @@ export class BoardView {
       wrap.append(unknownCol);
     }
     this.mount.append(wrap);
+
+    // Both from their pure rules, and both silent unless they have something to
+    // say. The count is measured against the non-terminal column rather than
+    // `state.tasks`: closed issues come down the same list and are not what
+    // "of 63 open" counts. Found by predicate, not by index — a board's first
+    // step is the open one by convention, not by construction.
+    const rate = rateLimitBanner(state.rateRemaining ?? null);
+    if (rate) this.mount.append(el("p", "tk-rate", rate));
+    const openCol = cols.columns.find((c) => c.step.terminal !== true);
+    const count = countLine(openCol?.tasks.length ?? 0, state.total ?? null);
+    if (count) this.mount.append(el("p", "tk-count", count));
 
     if (cols.columns.every((c) => c.tasks.length === 0) && cols.unknown.length === 0) {
       this.mount.append(el("div", "tk-empty", emptyStateMessage(caps, null).text));
@@ -262,6 +334,12 @@ export class BoardView {
     const meta = el("div", "tk-meta");
     const kind = kindLabel(caps.board, t.kind);
     if (kind) meta.append(el("span", "tk-kind", kind));
+    // An issue's labels, and never its kind: an issue can carry two labels where
+    // `kind` is a single value, which is why a GitHub card has no kind at all.
+    // Chips through `el`, so a label naming itself `<img src=x onerror=…>` — and
+    // anyone who can open an issue on a readable repository chooses that text —
+    // arrives as characters rather than as markup.
+    for (const l of t.labels) meta.append(el("span", "tk-label", l));
     if (t.origin === "session") meta.append(el("span", "tk-bot", "session"));
     if (status === "working") meta.append(el("span", "tk-busy", "in progress"));
     if (t.damaged || t.conflict) {

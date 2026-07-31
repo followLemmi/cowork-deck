@@ -16,7 +16,7 @@ import {
 import type { MigrationOffer, PullRequest, StepId, Task } from "./ipc";
 import { pollIntervalMs } from "./pr";
 import { PrView } from "./pr-view";
-import type { PrState } from "./pr-view";
+import type { GhUnavailable, PrState } from "./pr-view";
 import { alertModal, confirmModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -58,6 +58,16 @@ prBtn.textContent = "Pull requests";
 views.append(termBtn, boardBtn, prBtn);
 sidebar.prepend(views);
 
+/** The next step for each of the three unavailabilities, shared by both GitHub
+ *  screens: the board's source can be unavailable for exactly the same reasons as
+ *  the pull request list's, and two copies would drift apart. Never called for
+ *  `no-repo` — that state offers no button, because nothing in the app can fix
+ *  it. */
+function fixUnavailable(u: GhUnavailable) {
+  if (u === "no-gh") void openGithubScreen(deck, workspaces.active?.path ?? ".");
+  else void alertModal("Bind a GitHub account in the workspace settings (✎).");
+}
+
 const board = new BoardView({
   onLaunch: (t) => void launchFromTask(t),
   onResolve: (t) => void closeTask(t),
@@ -69,6 +79,7 @@ const board = new BoardView({
   onOpen: (t) => void openCard(t),
   onMove: (t, step) => void moveTask(t, step),
   onEditBoard: () => void editBoard(),
+  onFixUnavailable: (u) => fixUnavailable(u),
 });
 boardEl.append(board.mount);
 
@@ -78,10 +89,7 @@ const prView = new PrView({
   onClose: (pr) => void closePr(pr),
   onReopen: (pr) => void reopenPr(pr),
   onRefresh: () => void refreshPrs(),
-  onFixUnavailable: (u) => {
-    if (u === "no-gh") void openGithubScreen(deck, workspaces.active?.path ?? ".");
-    else void alertModal("Bind a GitHub account in the workspace settings (✎).");
-  },
+  onFixUnavailable: (u) => fixUnavailable(u),
 });
 // The pull request screen. Created here rather than in index.html because
 // nothing else refers to it, and the view's own root *is* the screen: `.pr-view`

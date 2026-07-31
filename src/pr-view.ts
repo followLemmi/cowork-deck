@@ -1,7 +1,12 @@
 import type { PullRequest } from "./ipc";
 import { ago, canMerge, checksLabel, reviewLabel, sortPrs } from "./pr";
 
-export type PrUnavailable = "no-gh" | "no-account" | "no-repo";
+/** The three states in which a GitHub-backed view cannot work at all. Shared with
+ *  the board, so the three sentences exist once: the board's source can be
+ *  unavailable for exactly the same three reasons, and two copies of the prose
+ *  would drift. */
+export type GhUnavailable = "no-gh" | "no-account" | "no-repo";
+export type PrUnavailable = GhUnavailable;
 
 export interface PrState {
   workspace: string | null;
@@ -25,7 +30,7 @@ export interface PrHandlers {
   onFixUnavailable: (u: PrUnavailable) => void;
 }
 
-const UNAVAILABLE: Record<PrUnavailable, { text: string; action: string | null }> = {
+export const GH_UNAVAILABLE: Record<GhUnavailable, { text: string; action: string | null }> = {
   "no-gh": {
     text: "The gh command-line tool is not installed, so pull requests cannot be read.",
     action: "Set up gh",
@@ -39,6 +44,8 @@ const UNAVAILABLE: Record<PrUnavailable, { text: string; action: string | null }
     action: null,
   },
 };
+/** The name the rest of this file has always used. Kept so nothing below moves. */
+const UNAVAILABLE = GH_UNAVAILABLE;
 
 const PAGE_LIMIT = 50;
 
