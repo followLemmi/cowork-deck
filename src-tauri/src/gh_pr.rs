@@ -213,6 +213,28 @@ pub fn worktree_path(workspace_path: &str, number: u64, branch: &str) -> std::pa
     parent.join(format!("{name}-pr")).join(format!("{number}-{}", slug(branch)))
 }
 
+/// The worktree checked out on `branch`, from `git worktree list --porcelain`.
+///
+/// The format is blank-line-separated blocks of `worktree <path>`, `HEAD <oid>`
+/// and then either `branch refs/heads/<name>` or `detached`. Matched whole
+/// rather than by prefix, and never for a detached worktree: either mistake
+/// would hand a session a directory whose HEAD has nothing to do with the pull
+/// request it asked about.
+pub fn worktree_on_branch(porcelain: &str, branch: &str) -> Option<std::path::PathBuf> {
+    let wanted = format!("refs/heads/{branch}");
+    let mut path: Option<&str> = None;
+    for line in porcelain.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            path = Some(p.trim());
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            if b.trim() == wanted {
+                return path.map(std::path::PathBuf::from);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +459,50 @@ mod tests {
     fn a_workspace_without_a_parent_still_resolves() {
         let p = worktree_path("/", 1, "b");
         assert!(p.to_string_lossy().contains("1-b"));
+    }
+
+    const PORCELAIN: &str = "worktree /home/u/projects/cowork-deck\n\
+HEAD aaaa\n\
+branch refs/heads/main\n\
+\n\
+worktree /home/u/projects/cowork-deck-issue/42-sidebar\n\
+HEAD bbbb\n\
+branch refs/heads/issue-42-sidebar\n\
+\n\
+worktree /home/u/projects/cowork-deck-pr/9-old\n\
+HEAD cccc\n\
+detached\n";
+
+    #[test]
+    fn a_worktree_already_on_the_head_branch_is_found() {
+        assert_eq!(
+            worktree_on_branch(PORCELAIN, "issue-42-sidebar"),
+            Some(std::path::PathBuf::from("/home/u/projects/cowork-deck-issue/42-sidebar")),
+        );
+    }
+
+    #[test]
+    fn a_branch_with_no_worktree_is_none() {
+        assert_eq!(worktree_on_branch(PORCELAIN, "issue-99-nope"), None);
+    }
+
+    /// A detached worktree is on no branch at all, and matching it would hand
+    /// back a directory whose HEAD has nothing to do with the pull request.
+    #[test]
+    fn a_detached_worktree_never_matches() {
+        assert_eq!(worktree_on_branch(PORCELAIN, "cccc"), None);
+    }
+
+    /// `refs/heads/issue-42-sidebar` must not be matched by `issue-4`: a prefix
+    /// match here would attach a session to somebody else's branch.
+    #[test]
+    fn a_branch_name_is_matched_whole_not_as_a_prefix() {
+        assert_eq!(worktree_on_branch(PORCELAIN, "issue-4"), None);
+        assert_eq!(worktree_on_branch(PORCELAIN, "main"), Some("/home/u/projects/cowork-deck".into()));
+    }
+
+    #[test]
+    fn empty_porcelain_output_is_none_rather_than_a_panic() {
+        assert_eq!(worktree_on_branch("", "main"), None);
     }
 }

@@ -691,20 +691,56 @@ pub fn pr_worktree_path(
     Ok(path.exists().then(|| path.to_string_lossy().to_string()))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeAdded {
+    pub path: String,
+    /// True when this is the directory an issue was already being worked in.
+    /// The tile's prompt says so: the same commits under two names would
+    /// otherwise read as two pieces of work.
+    pub reused: bool,
+}
+
 #[tauri::command]
 pub fn pr_worktree_add(
     state: State<AppState>,
     workspace_id: String,
     number: u64,
     branch: String,
-) -> Result<String, String> {
+    cross_repository: bool,
+) -> Result<WorktreeAdded, String> {
     let ws_path = workspace_path(&state, &workspace_id)?;
 
     let path = crate::gh_pr::worktree_path(&ws_path, number, &branch);
     // Already there from an earlier launch: hand it back rather than failing.
     // The session that opens in it will see whatever state it was left in.
     if path.exists() {
-        return Ok(path.to_string_lossy().to_string());
+        return Ok(WorktreeAdded { path: path.to_string_lossy().to_string(), reused: false });
+    }
+
+    // The ordinary path through the issues board produces a worktree on the
+    // issue's own branch before the pull request exists. Reuse it rather than
+    // fetching the same commits into a second directory under a second name.
+    // Never for a fork: the head is not a local branch there, and our own issue
+    // flow cannot have produced the first worktree anyway.
+    if !cross_repository {
+        let out = std::process::Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(&ws_path)
+            .output();
+        // Best effort: a failure here means "no reuse", never "no worktree". One
+        // extra git invocation per launch is the cost of the choice.
+        if let Ok(out) = out {
+            if out.status.success() {
+                let listed = String::from_utf8_lossy(&out.stdout);
+                if let Some(found) = crate::gh_pr::worktree_on_branch(&listed, &branch) {
+                    return Ok(WorktreeAdded {
+                        path: found.to_string_lossy().to_string(),
+                        reused: true,
+                    });
+                }
+            }
+        }
     }
     std::fs::create_dir_all(path.parent().unwrap_or(&path)).map_err(|e| e.to_string())?;
 
@@ -731,7 +767,7 @@ pub fn pr_worktree_add(
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
-    Ok(path.to_string_lossy().to_string())
+    Ok(WorktreeAdded { path: path.to_string_lossy().to_string(), reused: false })
 }
 
 #[tauri::command]
