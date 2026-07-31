@@ -431,10 +431,67 @@ fn gh_invocation(
     Ok(GhInvocation { path, cwd: ws.path.clone(), env })
 }
 
+/// `gh`'s own exit code for "authentication required" — the one status worth
+/// interpreting rather than merely reporting.
+const GH_EXIT_AUTH: i32 = 4;
+
+/// The message a failed `gh` leaves behind, out of its exit status and its stderr.
+///
+/// **Never empty, and that is why it exists.** `gh` killed by a signal, or a
+/// future `gh` that reports to stdout, leaves stderr blank; the bare
+/// `Err(redacted stderr)` this replaces then reached the board as
+/// `TaskError::Remote("")`, rendered as an error paragraph containing no words at
+/// all above a list the user had no way to tell was stale. Nothing downstream can
+/// rescue that, because there is no phrase to match — so the exit status, the one
+/// fact that always exists, is the fallback.
+///
+/// Exit 4 is `gh`'s "authentication required", and `no-account` is appended so
+/// `unavailableFrom` (`src/issues.ts:124`) resolves it to a screen that says what
+/// to do about it. The nearest of the three states rather than an exact one: it
+/// covers a workspace with no account bound, and this is a bound account whose
+/// credentials `gh` will not accept — but "Bind an account" is the right action
+/// for both, and the alternative is an unrecognised error.
+///
+/// **stderr is kept verbatim and the marker is appended, never substituted:**
+/// `unavailableFrom` matches with `includes`, which survives an added prefix or
+/// suffix but not a replaced body. The marker is bare for the same reason — it is
+/// a contract with that table, and prose around it invites a rewording that
+/// breaks the match.
+///
+/// Redaction happens here rather than at the two call sites, because this is the
+/// only place a failed `gh` becomes a message and therefore the only place that
+/// could forget.
+fn gh_failure(code: Option<i32>, stderr: &str) -> String {
+    let said = gh::redact(stderr.trim());
+    let mut msg = match (said.is_empty(), code) {
+        (false, _) => said,
+        (true, Some(c)) => format!("gh exited with code {c} and wrote no error"),
+        // No code at all: killed by a signal, so there is not even a number.
+        (true, None) => "gh was killed before it could write an error".to_string(),
+    };
+    if code == Some(GH_EXIT_AUTH) {
+        msg.push_str(" (no-account)");
+    }
+    msg
+}
+
+/// The one place a finished `gh` becomes a `Result`, shared by both runners.
+///
+/// **The exit code is read before stdout is**, and the order is load-bearing: a
+/// missing scope is exit 1 with nothing on stdout, so a parse-first runner would
+/// report a scope failure as unreadable JSON.
+fn gh_output(out: std::process::Output) -> Result<String, String> {
+    if !out.status.success() {
+        return Err(gh_failure(out.status.code(), &String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 /// Run `gh` in the workspace's folder, under the workspace's account.
 ///
 /// Every path out of here is redacted: `gh` is capable of echoing a token back
-/// in an error, and this is the only place that decides what the frontend sees.
+/// in an error, and this and `gh_output` are the only places that decide what the
+/// frontend sees.
 pub(crate) fn run_gh_for_workspace(
     state: &State<AppState>,
     workspace_id: &str,
@@ -448,10 +505,7 @@ pub(crate) fn run_gh_for_workspace(
         .envs(env)
         .output()
         .map_err(|e| gh::redact(&e.to_string()))?;
-    if !out.status.success() {
-        return Err(gh::redact(String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    gh_output(out)
 }
 
 /// `run_gh_for_workspace` with a body on stdin.
@@ -459,8 +513,9 @@ pub(crate) fn run_gh_for_workspace(
 /// `Command::output()` sets stdin to null, so the existing runner cannot feed
 /// one — and `gh issue create` prompts interactively for a missing body, which
 /// in a child process is a hang waiting for the one case that reaches it. Same
-/// account resolution, same `cwd`, same redaction, same
-/// check-the-exit-code-before-parsing rule; the only difference is the pipe.
+/// account resolution, same `cwd`, and — since both end on `gh_output` — the same
+/// redaction and the same check-the-exit-code-before-parsing rule by construction
+/// rather than by agreement; the only difference is the pipe.
 pub(crate) fn run_gh_with_stdin(
     state: &State<AppState>,
     workspace_id: &str,
@@ -486,10 +541,7 @@ pub(crate) fn run_gh_with_stdin(
         let _ = sink.write_all(stdin_body.as_bytes());
     }
     let out = child.wait_with_output().map_err(|e| gh::redact(&e.to_string()))?;
-    if !out.status.success() {
-        return Err(gh::redact(String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    gh_output(out)
 }
 
 /// Split `gh api --include` output into the remaining GraphQL budget and the
@@ -1274,6 +1326,77 @@ mod tests {
 
     fn value<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
         env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    /// A failed `gh` always says something.
+    ///
+    /// The empty case needs no unusual conditions — `gh` killed by a signal, or a
+    /// future `gh` that reports to stdout — and it used to return `Err("")`,
+    /// which the board turns into `TaskError::Remote("")`, "GitHub: ", and an
+    /// error paragraph containing no words at all above a list nothing said was
+    /// stale. Nothing downstream can rescue it, because there is no phrase to
+    /// match; the exit status is the one fact that always exists.
+    #[test]
+    fn a_failed_gh_always_says_something() {
+        for (code, stderr) in [
+            (Some(1), ""),
+            (Some(4), ""),
+            (Some(128), ""),
+            // Whitespace only: `trim` empties it, which is the same hole.
+            (Some(1), " \n "),
+            // No code at all — killed by a signal, and the case that has no
+            // number to fall back on either.
+            (None, ""),
+            (None, "\n"),
+        ] {
+            let msg = gh_failure(code, stderr);
+            assert!(!msg.trim().is_empty(), "{code:?} with {stderr:?} said nothing");
+            // And it says what happened, not merely *something*: the code is the
+            // only fact left, so it has to be in there when there is one.
+            if let Some(c) = code {
+                assert!(msg.contains(&c.to_string()), "{msg}");
+            }
+        }
+    }
+
+    /// stderr survives verbatim, because that is what the frontend matches on:
+    /// `unavailableFrom` (`src/issues.ts:124`) uses `includes`, which survives an
+    /// added prefix or suffix but not a replaced body.
+    #[test]
+    fn stderr_is_kept_verbatim_so_the_frontends_markers_still_match() {
+        for said in [
+            "gh: no git remotes found",
+            "fatal: not a git repository (or any of the parent directories): .git",
+            "none of the git remotes configured for this repository point to a known GitHub host",
+            "API rate limit exceeded for user ID 1234",
+        ] {
+            assert!(gh_failure(Some(1), said).contains(said), "{said}");
+        }
+    }
+
+    /// Exit 4 is `gh`'s own "authentication required", and it is the signal
+    /// `src/issues.ts` wanted and could not have while the status was dropped
+    /// here. The marker is appended, never substituted, so a stderr that names
+    /// something the table also knows is still readable.
+    #[test]
+    fn exit_four_is_reported_as_the_no_account_state() {
+        let msg = gh_failure(Some(4), "gh: To get started with GitHub CLI, please run: gh auth login");
+        assert!(msg.contains("no-account"), "{msg}");
+        assert!(msg.contains("gh auth login"), "the cause is still in it: {msg}");
+        // And only exit 4: every other status stays an ordinary error, which
+        // keeps the last good list on screen beside it.
+        for code in [Some(1), Some(2), Some(3), Some(128), None] {
+            let msg = gh_failure(code, "something else went wrong");
+            assert!(!msg.contains("no-account"), "{code:?} claimed an auth failure: {msg}");
+        }
+    }
+
+    /// The constraint the whole function exists inside: nothing from `gh` leaves
+    /// the backend unredacted, and there is exactly one place that can forget.
+    #[test]
+    fn a_token_echoed_back_by_gh_is_redacted_on_every_branch() {
+        assert!(!gh_failure(Some(1), "bad credentials: gho_secretvalue").contains("gho_secret"));
+        assert!(!gh_failure(Some(4), "token ghp_secretvalue rejected").contains("ghp_secret"));
     }
 
     /// The leak test, written as an assertion about what is *missing*, because

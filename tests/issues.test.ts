@@ -156,6 +156,15 @@ describe("unavailableFrom", () => {
     expect(unavailableFrom("none of the git remotes point at GitHub")).toBe("no-repo");
   });
 
+  /// The one state carried by an exit code rather than by `gh`'s prose. The
+  /// backend appends the marker to whatever `gh` said instead of replacing it
+  /// (`commands.rs`'s `gh_failure`), so the message arrives with the marker at the
+  /// end and `gh`'s own words in front of it — exactly the shape `includes` was
+  /// chosen for, and one an equality check would miss.
+  it("recognises the marker an exit-4 gh failure carries", () => {
+    expect(unavailableFrom("GitHub: gh: run: gh auth login (no-account)")).toBe("no-account");
+  });
+
   /// The important half. Everything else — offline, rate-limited, a missing
   /// scope, HTTP 502 — keeps the last good list on screen beside the error, and
   /// mapping one of those onto a screen would replace real data with a wrong

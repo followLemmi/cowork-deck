@@ -114,13 +114,18 @@ const UNAVAILABLE_MARKERS: { marker: string; state: GhUnavailable }[] = [
  *  and read it as an if-chain of its own, which is one place for the two to
  *  disagree about what "no repository" looks like.
  *
- *  **`gh`'s exit code is not part of this, and cannot be.** Exit 4 is `gh`'s own
- *  "authentication required" and would be a far better signal than any string —
- *  but `run_gh_for_workspace` returns `Err(redacted stderr)` and drops the status
- *  (`commands.rs:451-453`), so no exit code reaches the frontend at all. Keying on
- *  a guessed *phrase* for that state instead was considered and refused: the
+ *  **`gh`'s exit code arrives here as a marker, never as a number.** Exit 4 is
+ *  `gh`'s own "authentication required" and is a far better signal than any string.
+ *  It used to be dropped — the runner returned the redacted stderr and nothing
+ *  else, so no status reached the frontend at all — and `gh_failure`
+ *  (`commands.rs`) now appends `no-account` to the message on that status alone.
+ *  The nearest of the three states rather than an exact one: it also covers a
+ *  workspace with no account bound, and "Bind an account" is the right action for
+ *  both that and a bound account whose credentials `gh` refuses.
+ *
+ *  Keying on a guessed *phrase* for that state instead is still refused: the
  *  message is unobserved, and a match on an unobserved message is a guess that
- *  fails on the one day it matters. Everything unrecognised stays an ordinary
+ *  fails on the one day it matters. Everything else unrecognised stays an ordinary
  *  error, which keeps the last good list on screen beside it — the conservative
  *  outcome. A missing *scope* is exit 1 with nothing on stdout and belongs in that
  *  group too. */
