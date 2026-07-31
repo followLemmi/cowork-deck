@@ -517,3 +517,121 @@ fn guard_announces_nothing_when_no_tracker_is_configured() {
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "");
 }
+
+/// `cowork_task guard` as a session in a GitHub workspace gets it: a repository,
+/// optionally an issue, and — deliberately — no tracker directory. Returns
+/// `(exit code, stdout, stderr)`.
+fn gh_guard(repo: &str, issue: Option<&str>, dir: Option<&std::path::Path>, payload: &str)
+    -> (i32, String, String)
+{
+    let bin = env!("CARGO_BIN_EXE_cowork_task");
+    let mut cmd = Command::new(bin);
+    cmd.arg("guard")
+        .env("COWORK_ISSUE_REPO", repo)
+        .env_remove("COWORK_TASK_ID")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match issue {
+        Some(n) => { cmd.env("COWORK_ISSUE_NUMBER", n); }
+        None => { cmd.env_remove("COWORK_ISSUE_NUMBER"); }
+    }
+    match dir {
+        Some(d) => { cmd.env("COWORK_TASKS_DIR", d); }
+        None => { cmd.env_remove("COWORK_TASKS_DIR"); }
+    }
+    let mut child = cmd.spawn().unwrap();
+    let _ = child.stdin.take().unwrap().write_all(payload.as_bytes());
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The row that keeps the "file a ticket for a side problem" convention alive in
+/// a GitHub workspace. `guard_allows_when_the_tracker_directory_is_unset` above
+/// is the precedent for allowing when there is no reachable tracker — and it is
+/// right for *its* case, an unreachable file tracker where there is nothing true
+/// left to say. Here the tracker is perfectly reachable by another route, so
+/// allowing *silently* would mean the contract changed under the agent with no
+/// announcement.
+#[test]
+fn github_guard_announces_the_repository_on_a_user_prompt_without_an_issue() {
+    let (code, out, err) =
+        gh_guard("followLemmi/cowork-deck", None, None, r#"{"hook_event_name":"UserPromptSubmit"}"#);
+    assert_eq!(code, 0, "announcing is not blocking");
+    assert!(err.trim().is_empty(), "nothing belongs on stderr here: {err}");
+    let v: serde_json::Value = serde_json::from_str(&out).expect("a hook reply");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().expect("context");
+    assert!(ctx.contains("followLemmi/cowork-deck"), "must name the repository: {ctx}");
+    assert!(ctx.contains("gh issue create"), "must name the call that files one: {ctx}");
+    // The non-leak invariant, on the sidecar side: no folder, no variable name,
+    // no sidecar.
+    assert!(!ctx.contains("COWORK_"), "must not name an environment variable: {ctx}");
+    assert!(!ctx.contains("cowork_task"), "must not name the sidecar: {ctx}");
+    // Per line, not over the whole string: `ctx` always names the repository, so
+    // any assertion of the form "no slash unless owner/name appears" is vacuously
+    // true and would pass with a filesystem path sitting right next to it.
+    for line in ctx.lines() {
+        assert!(
+            !line.contains('/') || line.contains("followLemmi/"),
+            "no filesystem path: {line}",
+        );
+    }
+}
+
+#[test]
+fn github_guard_names_the_issue_and_how_to_close_it() {
+    let (code, out, _) = gh_guard(
+        "followLemmi/cowork-deck", Some("42"), None,
+        r#"{"hook_event_name":"UserPromptSubmit"}"#,
+    );
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("a hook reply");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().expect("context");
+    assert!(ctx.contains("#42"), "must name the issue: {ctx}");
+    assert!(ctx.contains("gh issue close 42"), "must name the close command: {ctx}");
+    // The warning is the point of the sentence, not decoration.
+    assert!(ctx.contains("visible to everyone"), "must say what closing costs: {ctx}");
+    assert!(!ctx.contains("COWORK_"), "{ctx}");
+}
+
+/// Decision 5's refusal to block, asserted rather than intended. Closing a
+/// GitHub issue is public and undoing it is a second public action; a hook that
+/// holds a session hostage until the agent closes one is a hook that pressures
+/// an agent into a public write.
+#[test]
+fn github_guard_never_blocks_a_stop_with_or_without_an_issue() {
+    for issue in [None, Some("42")] {
+        let (code, out, err) = gh_guard(
+            "followLemmi/cowork-deck", issue, None,
+            r#"{"hook_event_name":"Stop","stop_hook_active":false}"#,
+        );
+        assert_eq!(code, 0, "a github workspace must never block a Stop (issue: {issue:?})");
+        assert!(out.trim().is_empty(), "a Stop gets no context: {out}");
+        assert!(err.trim().is_empty(), "and nothing to feed back: {err}");
+    }
+}
+
+/// The state that should never occur, resolved one way on purpose rather than by
+/// statement order in a future edit: `COWORK_ISSUE_REPO` is dispatched first, so
+/// a contradictory environment takes the GitHub branch and no folder is ever
+/// named.
+#[test]
+fn github_guard_wins_when_a_tracker_directory_is_also_set() {
+    let dir = tempdir_with_board(DEFAULT_BOARD);
+    let (code, out, _) = gh_guard(
+        "followLemmi/cowork-deck", Some("42"), Some(dir.path()),
+        r#"{"hook_event_name":"UserPromptSubmit"}"#,
+    );
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("a hook reply");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().expect("context");
+    assert!(ctx.contains("gh issue close 42"), "{ctx}");
+    assert!(
+        !ctx.contains(dir.path().to_str().unwrap()),
+        "the github branch must never name a folder: {ctx}",
+    );
+}
