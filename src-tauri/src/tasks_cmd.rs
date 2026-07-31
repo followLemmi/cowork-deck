@@ -656,6 +656,26 @@ pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::Has
     Ok(out)
 }
 
+/// How many open cards are at this workspace's configured root, or `None` when
+/// there is no root or it cannot be read. Read-only, and never an error: the
+/// workspace form calls it to write one sentence, and a directory read that
+/// fails must not block a save.
+fn open_count_at_root(ws: &Workspace) -> Option<usize> {
+    let p = fs_provider_for(ws).ok()?;
+    let cards = p.list(&ws.name).ok()?;
+    Some(open_count(&cards, p.board()))
+}
+
+/// How many cards a source switch would stop showing. Asked *before* the save,
+/// because afterwards the deck no longer knows the old root.
+#[tauri::command]
+pub fn tracker_open_count(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<Option<usize>, String> {
+    Ok(open_count_at_root(&workspace(&state, &workspace_id)?))
+}
+
 /// Point the watcher set at every configured tracker root. Called by the
 /// frontend at boot and after any workspace change, because a root can appear,
 /// move, or disappear at runtime.
@@ -2242,5 +2262,37 @@ mod tests {
     #[test]
     fn a_board_with_no_open_cards_counts_zero_rather_than_being_absent() {
         assert_eq!(open_count(&[issue_card("3", "closed")], &github_board()), 0);
+    }
+
+    /// The form asks before the save, so the workspace still has its file
+    /// tracker at this point. A workspace whose tracker is already GitHub — or
+    /// none — has no folder to count, and `None` is the honest answer.
+    #[test]
+    fn the_open_count_is_absent_for_a_workspace_with_no_folder() {
+        assert_eq!(open_count_at_root(&ws(Some(github_tracker()))), None);
+        assert_eq!(open_count_at_root(&ws(None)), None);
+    }
+
+    #[test]
+    fn the_open_count_reads_the_configured_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let w = ws(Some(tracker(TrackerRoot::Path { path: dir.path().to_string_lossy().into() })));
+        let (root, creation) = resolve_root(&w).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let p = FsTaskProvider::new(root, creation);
+        p.create(crate::tasks::model::TaskDraft {
+            title: "A card".into(), kind: KindId("task".into()), body: String::new(),
+            project: "cowork-deck".into(), origin: TaskOrigin::Human, session: None,
+        })
+        .unwrap();
+        assert_eq!(open_count_at_root(&w), Some(1));
+    }
+
+    /// An unreadable root is not zero: "0 open cards" would invite a switch that
+    /// silently abandons a folder full of them.
+    #[test]
+    fn an_unreadable_root_reports_nothing_rather_than_zero() {
+        let w = ws(Some(tracker(TrackerRoot::Path { path: "/nonexistent/xyz".into() })));
+        assert_eq!(open_count_at_root(&w), None);
     }
 }
