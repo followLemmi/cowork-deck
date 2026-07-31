@@ -3744,7 +3744,13 @@ git commit -m "feat(issues): count the cards a source switch would leave behind"
 - **The return shape:** it returns an object while `ipc.ts` still declares `invoke<string>`.
 - **A new required argument** — `cross_repository: bool` — which this barrier used to omit and which is the more serious half (added 2026-07-30, from the Task 15 report). `main.ts:454` calls `prWorktreeAdd(ws.id, pr.number, pr.headRefName)` with three arguments. Tauri deserialises command arguments from a map, so a missing key for a non-`Option` parameter rejects the invoke outright: "Open worktree" in the PR view **fails** rather than returning something misshapen. Reasoned from Tauri's argument handling rather than observed — exercising it needs the app running — so treat it as the expected behaviour and not a measurement.
 
-Nothing user-facing is at risk either way, because the branch cannot ship mid-phase. **For Task 18:** the field already exists on the frontend as `isCrossRepository` (`ipc.ts:85`), so the wrapper must pass `crossRepository` *and* read `.path`/`.reused`. The backend is complete and reachable only from tests: the frontend cannot yet produce a `{"type":"github"}` tracker config, so nothing user-visible has changed. This is the last point at which a backend bug is unambiguously a backend bug.
+Nothing user-facing is at risk either way, because the branch cannot ship mid-phase. **For Task 18:** the field already exists on the frontend as `isCrossRepository` (`ipc.ts:85`), so the wrapper must pass `crossRepository` *and* read `.path`/`.reused`. The `cross_repository` half is **verified against the crate source**, not reasoned: `CommandItem::deserialize_json` (`tauri-2.11.5/src/ipc/command.rs:96-102`) returns `Err("command … missing required key …")` when `v.get(self.key)` is `None`, and only `deserialize_option` tolerates absence — so the invoke is rejected outright rather than defaulting to `false`.
+
+**No GitHub feature is reachable, and here is the fact that makes that true.** It is *not* that the GitHub code is absent — `GhIssueProvider` is constructed at `tasks_cmd.rs:390`, `provider_for` returns a `Box<dyn TaskProvider>`, and four commands are registered. It is that **no code path constructs a non-`fs` tracker provider.** The only writer of a tracker config is `save_workspace` → `upsert_workspace`, fed from `forms.ts:361-363`, which builds the literal `{ type: "fs", root: … }` in *both* arms; there is no third. `TrackerProvider::GitHub` arises only from test fixtures and from `From<TrackerProviderOnDisk>` at `model.rs:218` reading a stored `{"type":"github"}`, and `tracker_kind` returns `GitHub` only on that stored variant — there is no fallback inferring it from `ws.github`.
+
+**State it that way and not as "`ipc.ts` types the provider as the literal `\"fs\"`"** (corrected 2026-07-30, from the Barrier B review). TypeScript types are erased; the type makes the fence *checked*, `forms.ts` makes it *true*. Task 18 widens the type while Task 24 widens the form, so a barrier resting on the type would read as violated for six tasks while the real fence still held.
+
+**One thing this barrier used to claim that is false: "nothing user-visible has changed".** The same retraction already recorded at the Phase-2 row applies here, and there is a second reason besides: **`pr_worktree_add` is reachable from the shipped PR view today and is broken by Task 15** on both counts above, so Phase 2 ends with an existing feature regressed until Task 18 lands. Two damaged-store behaviours from Tasks 1–2 are user-observable too. What is true is narrower and worth saying precisely: **no *new* feature is reachable**, and this is the last point at which a backend bug is unambiguously a backend bug.
 
 ---
 
@@ -4708,6 +4714,11 @@ Everything the board's actions need, source by source. No rule is decided here: 
      *  than focus the first. */
     taskId?: string,
   ): Promise<void> {
+```
+
+**A limit of the cleanup offer, worth stating rather than fixing (Barrier B review, 2026-07-30).** `issue_worktree_path` and `issue_branch` (`gh_issues.rs:242-260`) both embed `slug(title)`, so **renaming an issue on GitHub orphans its worktree**: the derived path and branch both change, `issue_worktree_add` cuts a second branch from the default and makes a second directory, `issue_worktree_path` reports `None` for the first, and `issue_worktree_remove` cannot find it. The `{number}-` prefix keeps the orphans adjacent on disk, so this is untidiness rather than loss — but **this task's cleanup offer keys on those paths and will silently fail to offer** for a renamed issue. Do not re-derive this as a bug; it is the known cost of deriving a path from a mutable title, and the offer's absence is the symptom.
+
+```ts
     await this.spawnTile({
       session: crypto.randomUUID(), cwd, workspaceId, titleText, prompt, resume: false, taskId,
     });
@@ -4866,11 +4877,20 @@ The only place a GitHub tracker can be configured, and the warning decision 8 re
 
 Add to `tests/forms.test.ts`:
 
+**A pre-existing defect this task must fix, found by the Barrier B review (2026-07-30). Adding the third radio without fixing it turns it into a GitHub-config deleter.**
+
+`forms.ts:316` keys the prefill on `initial?.tracker?.providers[0]?.root`. Neither `GitHub` nor `Unknown` **has** a `root`, so `initialRoot` is `null`, the checkbox stays unchecked, and `submit` (`:355-365`) writes `tracker: null` — **destroying the configuration.** The comment two lines above says *"editing a workspace's name must not silently wipe its tracker configuration"*, which is exactly what it does today for two of the three variants.
+
+`forms.ts` is untouched by this branch, so this is Task 2's new `Unknown` tolerance meeting old code rather than a Phase 2 regression — but it means **#117's store-level guarantee is defeated one layer up.** Tasks 1–2 make the store keep a config it cannot read; this form then deletes it on the next name edit. Key the prefill on the *provider variant*, not on the presence of a `root`, and make the unrecognised case carry its config through untouched rather than reconstruct it.
+
 ```ts
   it("offers a third source and saves it as a github provider", async () => { /* … */ });
 
   /// Prefill, so editing a workspace's name does not silently drop its source.
   it("preselects github for a workspace already using it", async () => { /* … */ });
+
+  /// **This is the defect below, and this task is the only chance to catch it.**
+  it("keeps a source it cannot show a folder for when only the name is edited", async () => { /* … */ });
 
   /// The path row and its preview belong to the folder choice alone: a GitHub
   /// tracker has no folder, and a picker for one would be a control that does
