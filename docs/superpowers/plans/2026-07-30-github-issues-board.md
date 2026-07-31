@@ -25,7 +25,8 @@ Whether #113 merges to `main` first is **not settled and is the user's call.** I
 - **Tokens never reach a log or the frontend unredacted.** Every error string from `gh` leaves the backend through `gh::redact`, which `run_gh_for_workspace` already applies (`commands.rs:382`, `:384`). The new stdin-carrying sibling must apply it too.
 - **The exit code is checked before the output is parsed.** A missing scope is exit 1 with *nothing on stdout* (spec, "Exit codes"), so "parse and see whether it was JSON" would report a scope problem as unreadable JSON. `run_gh_for_workspace` already gets this right (`:383`); it must keep doing so.
 - **No `innerHTML` for anything that came from the network.** Titles, labels and bodies are set with `textContent`, following `board.ts:47`.
-- **Pure functions carry the logic; DOM classes only render.** Anything with a truth table lives in a module with its own unit tests and no DOM. `main.ts` is not reachable from a test, so no rule may live there.
+- **Pure functions carry the logic; DOM classes only render.** Anything with a truth table lives in a module with its own unit tests and no DOM, and **no rule may live in `main.ts`** — that part of this constraint stands and every task has kept to it.
+  **But the reason given for it was false, and the false version misled two tasks** (corrected 2026-07-31, while executing Task 22). This line used to say "`main.ts` is not reachable from a test". It is: **`tests/pr-polling.test.ts` imports and drives it** — jsdom, a mocked `ipc`, fake timers, and real clicks on the view switch — and its own header says the wiring is what it guards "and none of it is reachable from a smaller module". So `main.ts`'s *wiring* is observable and testable; what does not belong there is a rule with a truth table, because a rule deserves a unit test that does not need a DOM. Wherever this plan says a wiring change "cannot be tested" or "no test can see it", check `pr-polling.test.ts` before believing it — Task 22's gated chain was pinned there, including the blur and focus transitions, and a defect in the plan's own focus handler (D6) was caught by exactly those assertions.
 - **Baseline, measured on this branch at `60438bc`:** `npx tsc --noEmit` clean, **43 vitest files / 412 tests**, **286 cargo tests** across the lib, both binaries and both integration files. Nothing may regress below those numbers. (The pull request plan's recorded 367/263 are stale — do not repeat them.)
 - **The full gate:** `npx tsc --noEmit && npx vitest run && (cd src-tauri && cargo test)`. Per-task verification is narrow: `cd src-tauri && cargo test <filter>` or `npx vitest run tests/<file>.test.ts && npx tsc --noEmit`.
 - **Run everything from this worktree**, `/home/evgeny-kharetski/workspace/lemsoft/cowork-deck/.claude/worktrees/workspace-github-account`, and **never from `/home/evgeny-kharetski/workspace/lemsoft/cowork-deck`**. That is the main checkout with `.claude/worktrees/` nested inside it, and vitest globs suites out of nested worktrees — BUG-026 itself, the same bug decision 6 keeps worktrees outside the workspace to avoid.
@@ -4561,6 +4562,14 @@ and, after the columns, the rate banner and the count line, each from its pure r
 
 The error branch changes shape: today `caps === null || error` returns early with an empty state. A GitHub board with a last-good list must keep it, so `error` alone no longer returns — it renders as a line above the columns (`tk-board-error`'s sibling) and the columns draw underneath, exactly as the pull request view does. `caps === null` keeps its early return unchanged: no tracker is configured, and there is nothing to draw.
 
+**Taken literally, that reshape regresses the file board** (corrected 2026-07-31, while executing). With `error` no longer returning early, an unreachable root — where `refreshBoard` leaves `tasks` empty — renders the error line, **empty columns**, and "No tasks.", and **loses the `Configure` button**, which is the only in-app way to fix the root. The requirement above is narrower than the code that implements it: *a GitHub board with a last-good list must keep it.* So gate the early return on there being nothing to keep:
+
+```ts
+if (caps === null || (error !== null && state.tasks.length === 0))
+```
+
+A last-good list then survives beside the error, and no list at all keeps the shipped screen. Pin it with a test in `tests/board.test.ts` that passes against the unfixed code by design — its job is that it keeps passing.
+
 **And the `boardError` banner's prose shrinks to the message itself.** `board.ts:100-105` currently hardcodes a wrapper around it:
 
 > `board.json could not be used: ${caps.boardError}. The default two-step board is shown instead, so cards may appear in the wrong column. The file was left alone.`
@@ -4575,7 +4584,14 @@ Every clause of that was true of the only sender it has ever had. None of it is 
       // the old wrapper was false for it.
       const detail = state.source === "github"
         ? caps.boardError
-        : `board.json could not be used: ${caps.boardError} The default two-step board is `
+        // **Keep the full stop after the interpolation** — `${caps.boardError}.`
+        // (corrected 2026-07-31). Dropping it, as this snippet did, silently
+        // changes the *file* board's wording, which this same task requires to
+        // be unchanged: `steps[1]: missing id` is not a sentence, so the message
+        // became "…missing id The default…". The three existing `toContain`
+        // assertions in `tests/board.test.ts` cannot see a lost full stop — add
+        // `expect(banner.textContent).toBe(<the whole sentence>)`.
+        : `board.json could not be used: ${caps.boardError}. The default two-step board is `
           + "shown instead, so cards may appear in the wrong column. The file was left alone.";
       this.mount.append(el("p", "tk-board-error", detail));
     }
@@ -4601,7 +4617,7 @@ Expected: PASS and clean.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/board.ts src/pr-view.ts src/styles.css tests/board-github.test.ts tests/board-drag.test.ts
+git add src/board.ts src/pr-view.ts src/styles.css src/main.ts tests/board-github.test.ts tests/board-drag.test.ts tests/board.test.ts
 git commit -m "feat(issues): the board grows an age, an unavailable box, a count and label chips"
 ```
 
@@ -4631,6 +4647,13 @@ The chain shape matters as much as the gates: a new tick is scheduled only after
   /// rule rather than two copies of a timer test: the interval is the only thing
   /// that differs between them.
   it("the board polls slower than a five-second tick for a github source", () => {
+    // **This test pins nothing and was not written** (2026-07-31). `issues.ts`
+    // landed in Task 20, so it passes against unmodified code, and it duplicates
+    // `tests/issues.test.ts`'s "is 30 seconds for a github board and unchanged
+    // for a file one". Its stated failure — "`boardPollMs` is not imported
+    // there yet" — is a failure of the test file, not of the code under test.
+    // Replaced by two tests that drive the chain through `main.ts`: see D5 in
+    // Global Constraints, and the note under Step 4 below.
     expect(boardPollMs("github")).toBeGreaterThan(boardPollMs("fs"));
   });
 ```
@@ -4681,6 +4704,21 @@ window.addEventListener("focus", () => {
   if (currentView === "pr") void refreshPrs();
   // Coming back refreshes at once rather than at the next tick, which is the
   // whole point of pausing on blur.
+  // **This line is wrong as written — a real bug, found executing the task
+  // (2026-07-31).** Blur *clears* the handle and this plan forbids every caller
+  // from arming a timer, so a blur→focus cycle leaves the board refreshed once
+  // and then PERMANENTLY STILL until the user leaves the view and comes back —
+  // for the file board as much as the GitHub one, i.e. strictly worse than the
+  // blind interval it replaces. The pull request view escapes this only because
+  // `refreshPrs` ends in `schedulePrPoll()`.
+  //
+  // Extract `boardTick()` — `refreshBoard`, `refreshCounts`, then
+  // `scheduleBoardPoll` — and use it in *both* the timer and this handler:
+  //   if (currentView === "board") void boardTick();
+  // Mutation callers still end in `refreshBoard(); refreshCounts();` and arm
+  // nothing, so the rule is intact. The test that catches this asserts focus
+  // **re-arms** the chain, not merely that it refreshes: advance another 5 s and
+  // expect one more read.
   if (currentView === "board") { void refreshBoard(); void refreshCounts(); }
 });
 window.addEventListener("blur", () => { stopPrPolling(); stopBoardPolling(); });
@@ -5221,4 +5259,4 @@ git commit -m "docs(issues): the board's second source, and what switching away 
 
 **One piece of behaviour in this plan that the spec does not describe.** Task 8's `capabilities_for` branch for an unreadable tracker source: without it, a workspace whose source only a newer build can read would have its board say "No task tracker is configured", which is false and invites configuring a second source over the top of the first. It uses the `board_error` channel that already exists, invents no board state, and is unreachable except by downgrade. Flagged when it was written and approved explicitly; noted in the task itself so a reader coming from the spec alone is not surprised by it. Everything else in the plan traces to a spec decision, a closed question, or #117.
 
-**One thing the spec is right about that this plan makes worse before it makes better.** Task 22 changes the *file* board: it stops polling on blur. That is a behaviour change to a shipped screen, made for a decision about a different screen, and no test can see it. It is why check 4 of the manual list exists and why Task 22 carries the re-check in its own verification step rather than deferring all of it to Task 26.
+**One thing the spec is right about that this plan makes worse before it makes better.** Task 22 changes the *file* board: it stops polling on blur. That is a behaviour change to a shipped screen, made for a decision about a different screen. ~~and no test can see it~~ — **that clause was false and is struck** (2026-07-31): `tests/pr-polling.test.ts` drives `main.ts`, so the chain *is* observable, and Task 22 pinned the file board reading once on entry, once per 5 s, falling silent on blur, and **re-arming on focus** — the last of which caught a real bug in the plan's own handler. Check 4 of the manual list still exists and is now **narrower**: what remains unverifiable in a test is whether the real WebKitGTK window delivers `focus`/`blur` to the webview at all, and whether the file watcher still delivers an external edit. The logic between those two ends is pinned.
