@@ -299,13 +299,21 @@ async function launchFromTask(t: Task) {
  *  populated. In memory only, and keyed by workspace id: a late reply about a
  *  workspace nobody is looking at must not repaint the current one.
  *
- *  **GitHub only, deliberately.** The reason for keeping stale rows is that being
- *  offline or rate-limited is a blip in front of data that is still true, which is
- *  a GitHub condition; a file board's failure is almost always "the folder is
- *  gone", where phantom cards would invite actions that can only fail and would
- *  replace the one screen offering `Configure`. The plan's code kept them for both
- *  sources; narrowed here rather than changing a shipped screen nobody asked
- *  about. */
+ *  **GitHub only, deliberately — on the read as much as on the write.** The reason
+ *  for keeping stale rows is that being offline or rate-limited is a blip in front
+ *  of data that is still true, which is a GitHub condition; a file board's failure
+ *  is almost always "the folder is gone", where phantom cards would invite actions
+ *  that can only fail and would replace the one screen offering `Configure`. The
+ *  plan's code kept them for both sources; narrowed here rather than changing a
+ *  shipped screen nobody asked about.
+ *
+ *  Gating only the write was not enough, and the entry outliving the source is the
+ *  reason: switching a workspace's source to a folder is a first-class action with
+ *  its own confirmation, and it leaves this map holding that workspace's issues
+ *  under the same id. An ungated read then handed the file board those issues on
+ *  its first failure — phantom cards on a board whose root is gone, `Configure`
+ *  withheld because the list was not empty, and a count line about issues that
+ *  were never in that folder. */
 const lastGood = new Map<string, { tasks: Task[]; fetchedAt: number; total: number | null }>();
 
 /** Redraw the active workspace's board. Every IPC call is isolated: one failing
@@ -351,7 +359,11 @@ async function refreshBoard() {
       const known = source === "github" ? unavailableFrom(msg) : null;
       if (known !== null) unavailable = known;
       else error = msg;
-      const kept = lastGood.get(wsId);
+      // Read under the same condition it is written under: the map is keyed by
+      // workspace id and outlives a source switch, so an ungated read is how a
+      // file board ends up drawing the issues that workspace had while it was
+      // GitHub-backed.
+      const kept = source === "github" ? lastGood.get(wsId) : undefined;
       if (kept) { tasks = kept.tasks; fetchedAt = kept.fetchedAt; total = kept.total; }
     }
   }

@@ -109,6 +109,19 @@ describe("the board's github states", () => {
     expect(v.mount.querySelector(".tk-count")).toBeNull();
   });
 
+  /// A count is a statement about a repository's open issues, so a file board has
+  /// no business printing one whatever left a `total` behind — and something can:
+  /// the last-good list a GitHub board kept is still in memory when the same
+  /// workspace is switched to a folder.
+  it("prints no count line on a file board, whatever supplied the total", () => {
+    const v = new BoardView(handlers());
+    v.render(state({
+      source: "fs", total: 63,
+      tasks: Array.from({ length: 50 }, (_, i) => issue({ id: String(i) })),
+    }), NOW);
+    expect(v.mount.querySelector(".tk-count")).toBeNull();
+  });
+
   it("warns before the refusal, not after it", () => {
     const v = new BoardView(handlers());
     v.render(state({ rateRemaining: 40 }), NOW);

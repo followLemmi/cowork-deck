@@ -186,8 +186,14 @@ export class BoardView {
     // step is the open one by convention, not by construction.
     const rate = rateLimitBanner(state.rateRemaining ?? null);
     if (rate) this.mount.append(el("p", "tk-rate", rate));
+    // Gated on the source as well as on the numbers: "of 63 open issues" is a
+    // statement about a repository, and a file board has none. A `total` can reach
+    // one — the last-good list is keyed by workspace and survives a source switch
+    // — so the gate is here rather than left to whoever fills the field.
     const openCol = cols.columns.find((c) => c.step.terminal !== true);
-    const count = countLine(openCol?.tasks.length ?? 0, state.total ?? null);
+    const count = state.source === "github"
+      ? countLine(openCol?.tasks.length ?? 0, state.total ?? null)
+      : null;
     if (count) this.mount.append(el("p", "tk-count", count));
 
     if (cols.columns.every((c) => c.tasks.length === 0) && cols.unknown.length === 0) {
