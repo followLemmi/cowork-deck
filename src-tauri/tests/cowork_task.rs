@@ -234,11 +234,22 @@ fn steps_warns_on_stderr_when_board_json_is_unusable_but_still_lists_the_fallbac
 /// a failure the way `run`'s callers mean it. Claude Code feeds only stderr
 /// back to the agent on exit 2 — stdout is surfaced only on exit 0 — so the
 /// blocking reason has to be asserted on stderr, not stdout.
+///
+/// `COWORK_ISSUE_REPO` is cleared even though no row here ever sets it, and that
+/// is not superstition — do not delete it. `guard()` dispatches on that variable
+/// *before* it reads `COWORK_TASKS_DIR`, so its mere presence sends every row
+/// below down the GitHub branch, where no folder is named and none of these
+/// assertions can hold. A child process inherits the harness's environment, and
+/// the product now exports exactly this variable to a session in a GitHub-backed
+/// workspace — so `cargo test` run from inside such a session would fail every
+/// file-tracker row for a reason unrelated to the change under test. These rows
+/// state their own environment rather than inherit one.
 fn guard(dir: &tempfile::TempDir, card: Option<&str>, payload: &str) -> (i32, String, String) {
     let bin = env!("CARGO_BIN_EXE_cowork_task");
     let mut cmd = Command::new(bin);
     cmd.arg("guard")
         .env("COWORK_TASKS_DIR", dir.path())
+        .env_remove("COWORK_ISSUE_REPO")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
