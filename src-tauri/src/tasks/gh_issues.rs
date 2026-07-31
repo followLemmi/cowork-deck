@@ -231,6 +231,9 @@ pub fn issue_create_argv(repo: &str, title: &str) -> Vec<String> {
     issue_argv(repo, &["create", "--title", title, "--body-file", "-"])
 }
 
+/// **Both fields, every time** — `--title` on argv and `--body-file -` on stdin,
+/// for the same reasons as `create`. Which means an omitted field is a write of
+/// empty rather than a no-op: `update` resends whatever the patch left out.
 pub fn issue_edit_argv(repo: &str, number: u64, title: &str) -> Vec<String> {
     let n = number.to_string();
     issue_argv(repo, &["edit", &n, "--title", title, "--body-file", "-"])
@@ -414,14 +417,27 @@ impl TaskProvider for GhIssueProvider<'_> {
             (self.run)(&argv, None).map_err(TaskError::Io)?;
         }
         if patch.title.is_some() || patch.body.is_some() {
-            // `edit` prompts interactively for a missing title, so the current
-            // one is resent when the patch only touches the body.
+            // `edit` writes both fields every time — the title on argv, the body
+            // on stdin — so a patch naming only one has to resend the other.
+            // Neither omission is inert: a missing title makes `edit` prompt
+            // interactively, and an empty stdin is not "leave the body alone",
+            // it blanks the issue body. `computePatch` (`card-modal.ts:15`) is a
+            // diff, so a rename really does arrive as `title` alone.
+            //
+            // One read-back for both, not one per field: a patch carrying both
+            // must make no extra request.
+            let current = (patch.title.is_none() || patch.body.is_none())
+                .then(|| self.resolve(id))
+                .transpose()?;
             let title = match &patch.title {
-                Some(t) => t.clone(),
-                None => self.resolve(id)?.title,
+                Some(t) => t.as_str(),
+                None => current.as_ref().map_or("", |c| c.title.as_str()),
             };
-            let body = patch.body.clone().unwrap_or_default();
-            (self.run)(&issue_edit_argv(&self.repo()?, n, &title), Some(&body))
+            let body = match &patch.body {
+                Some(b) => b.as_str(),
+                None => current.as_ref().map_or("", |c| c.body.as_str()),
+            };
+            (self.run)(&issue_edit_argv(&self.repo()?, n, title), Some(body))
                 .map_err(TaskError::Io)?;
         }
         // Read back rather than synthesized: the write's own output says nothing.
@@ -1017,8 +1033,13 @@ mod tests {
 
     /// `edit` carries `--body-file -` too, so it hangs on a missing stdin the
     /// same way `create` does, and needs the same positive assertion.
+    ///
+    /// Named "and" rather than "or" because that is all it exercises: it passes
+    /// both fields, so it says nothing about a patch carrying one. The two
+    /// single-field cases are the tests below, and they are the ones that catch
+    /// a resend gone missing.
     #[test]
-    fn a_title_or_body_patch_edits_the_issue() {
+    fn a_title_and_body_patch_edits_the_issue() {
         let (p, fake) = provider(vec![Ok(String::new()), Ok(ONE_OPEN_OBJECT.into())]);
         p.update(
             "42",
@@ -1031,6 +1052,69 @@ mod tests {
             Some("New body"),
             "`--body-file -` with no stdin is an interactive prompt in a child process",
         );
+        // Nothing has to be read back when the patch names both fields, and the
+        // extra request would be one per keystroke-batch of the modal's Save.
+        assert_eq!(
+            fake.calls.borrow().len(),
+            2,
+            "the edit and the read-back after it, and no read-back before it",
+        );
+    }
+
+    /// The issue as it stands before an edit. Both fields are non-empty and
+    /// distinct, so a field that was resent is distinguishable from the blank
+    /// that a dropped one leaves behind.
+    const BEFORE_EDIT: &str = r#"{"number":42,"title":"Old title","state":"OPEN",
+        "createdAt":"c","closedAt":null,"body":"Old body","labels":[],"url":"u"}"#;
+
+    /// The call that carries `edit`, wherever in the script it fell — the fix
+    /// adds a read-back *before* the edit, so an index would pin the bug rather
+    /// than the behaviour.
+    fn edit_call(fake: &FakeGh) -> usize {
+        fake.calls
+            .borrow()
+            .iter()
+            .position(|c| c.iter().any(|a| a == "edit"))
+            .expect("an edit call")
+    }
+
+    /// Renaming a card sends `title` alone — `computePatch` (`card-modal.ts:15`)
+    /// is a diff. `edit` still writes both fields, the body from stdin, so an
+    /// empty stdin here is not "leave the body alone": GitHub sets the body to
+    /// empty, publicly and unrecoverably.
+    #[test]
+    fn a_title_only_patch_resends_the_current_body_rather_than_blanking_it() {
+        let (p, fake) = provider(vec![Ok(BEFORE_EDIT.into()); 3]);
+        p.update("42", TaskPatch { title: Some("New".into()), ..Default::default() }).unwrap();
+        let at = edit_call(&fake);
+        assert_eq!(
+            fake.stdins.borrow()[at].as_deref(),
+            Some("Old body"),
+            "an empty stdin blanks the issue body",
+        );
+        assert!(fake.calls.borrow()[at].iter().any(|a| a == "New"), "the new title still lands");
+        assert_eq!(
+            fake.calls.borrow().len(),
+            3,
+            "one read-back before the edit, not one per missing field",
+        );
+    }
+
+    /// The other direction, which has always worked: `edit` prompts
+    /// interactively for a missing title, so the current one is resent. Pinned
+    /// so that the symmetry the body fix introduces cannot be half-removed.
+    #[test]
+    fn a_body_only_patch_resends_the_current_title_rather_than_prompting() {
+        let (p, fake) = provider(vec![Ok(BEFORE_EDIT.into()); 3]);
+        p.update("42", TaskPatch { body: Some("New body".into()), ..Default::default() }).unwrap();
+        let at = edit_call(&fake);
+        let argv = &fake.calls.borrow()[at];
+        assert!(
+            argv.windows(2).any(|w| w[0] == "--title" && w[1] == "Old title"),
+            "{argv:?}",
+        );
+        assert_eq!(fake.stdins.borrow()[at].as_deref(), Some("New body"));
+        assert_eq!(fake.calls.borrow().len(), 3);
     }
 
     /// Nothing can set it: no issue carries a kind, and the one synthetic kind
