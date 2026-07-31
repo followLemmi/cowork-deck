@@ -1,6 +1,6 @@
 import type { MigrationOffer, ProviderCapabilities, StepId, Task } from "./ipc";
 import { isTerminal, stepAfter, stepBefore } from "./board-config";
-import { countLine, rateLimitBanner, type TaskSource } from "./issues";
+import { countLine, needsTotals, rateLimitBanner, type TaskSource } from "./issues";
 import { ago } from "./pr";
 import { GH_UNAVAILABLE, type GhUnavailable } from "./pr-view";
 import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
@@ -191,8 +191,12 @@ export class BoardView {
     // one — the last-good list is keyed by workspace and survives a source switch
     // — so the gate is here rather than left to whoever fills the field.
     const openCol = cols.columns.find((c) => c.step.terminal !== true);
+    const shown = openCol?.tasks.length ?? 0;
+    // `needsTotals` is the same predicate `main.ts` asks before the totals call —
+    // a page at the cap is a capped page — so the sentence and the call that feeds
+    // it cannot disagree about which pages have more behind them.
     const count = state.source === "github"
-      ? countLine(openCol?.tasks.length ?? 0, state.total ?? null)
+      ? countLine(shown, state.total ?? null, needsTotals(shown))
       : null;
     if (count) this.mount.append(el("p", "tk-count", count));
 

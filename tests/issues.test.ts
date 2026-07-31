@@ -42,22 +42,34 @@ describe("the totals call", () => {
 });
 
 describe("the count line", () => {
-  it("has two real numbers when the page was capped", () => {
-    expect(countLine(50, 63)).toBe("Showing 50 of 63 open issues.");
+  it("has two real numbers when the page was capped and the total came back", () => {
+    expect(countLine(50, 63, true)).toBe("Showing 50 of 63 open issues.");
   });
 
   // Absent on a short page: the list is the whole truth there, and a line
-  // saying so is noise on every render.
-  it("is absent on a short page and when no total is known", () => {
-    expect(countLine(12, 12)).toBeNull();
-    expect(countLine(50, null)).toBeNull();
+  // saying so is noise on every render. Whether a total is known makes no
+  // difference — nothing is being hidden.
+  it("is absent on a short page, total or no total", () => {
+    expect(countLine(12, 12, false)).toBeNull();
+    expect(countLine(12, null, false)).toBeNull();
+  });
+
+  // `issue_totals` is a second `gh api` call and fails independently of the list.
+  // It used to leave the board showing exactly 50 cards with no indication there
+  // were more — indistinguishable from a repository with exactly 50 open issues,
+  // which on any repository with a triage backlog is the common case. One number,
+  // and no claim the board cannot support.
+  it("says the page was capped when the totals call failed", () => {
+    expect(countLine(50, null, true)).toBe("Showing the first 50 open issues.");
   });
 
   // The total can be lower than the page if an issue closed between the two
-  // calls. Saying "showing 50 of 49" would look like a bug in the app rather
-  // than a moment's inconsistency at GitHub.
-  it("is absent when the total has fallen below what is on screen", () => {
-    expect(countLine(50, 49)).toBeNull();
+  // calls. "Showing 50 of 49" would look like a bug in the app rather than a
+  // moment's inconsistency at GitHub — but silence would say the repository has
+  // exactly 50, which is the one thing known to be false here. The sentence
+  // without a second number is true whichever of the two numbers moved.
+  it("drops the second number when the total has fallen below what is on screen", () => {
+    expect(countLine(50, 49, true)).toBe("Showing the first 50 open issues.");
   });
 });
 

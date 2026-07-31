@@ -32,15 +32,29 @@ export function needsTotals(openOnPage: number, limit = OPEN_PAGE_LIMIT): boolea
   return openOnPage >= limit;
 }
 
-/** "Showing 50 of 63 open issues.", or nothing at all.
+/** "Showing 50 of 63 open issues.", "Showing the first 50 open issues.", or
+ *  nothing at all.
  *
- *  Absent on a short page, absent with no total, and absent when the total has
- *  fallen below what is on screen — an issue closed between the two calls is a
- *  moment's inconsistency at GitHub, and "showing 50 of 49" would read as a bug
- *  in the app. */
-export function countLine(shown: number, total: number | null): string | null {
-  if (total === null || total <= shown) return null;
-  return `Showing ${shown} of ${total} open issues.`;
+ *  Absent on a short page: the list is the whole truth there, and a line saying so
+ *  is noise on every render.
+ *
+ *  `capped` is passed in rather than inferred from `shown`, because the two are
+ *  different facts and only the caller holds the second one: how many rows came
+ *  back is not, on its own, whether the page was cut short. Without it a capped
+ *  page whose totals call failed was silent — `issue_totals` is a separate
+ *  `gh api` call that fails on its own, and 50 cards with nothing said about them
+ *  is indistinguishable from a repository with exactly 50 open issues. On any
+ *  repository with a triage backlog that is the common case, so the honest answer
+ *  is one number and no second claim.
+ *
+ *  The same sentence covers a total that has fallen below what is on screen: an
+ *  issue closed between the two calls is a moment's inconsistency at GitHub,
+ *  "showing 50 of 49" would read as a bug in the app, and silence would assert the
+ *  one thing already known to be false — that this is all of them. */
+export function countLine(shown: number, total: number | null, capped: boolean): string | null {
+  if (!capped) return null;
+  if (total !== null && total > shown) return `Showing ${shown} of ${total} open issues.`;
+  return `Showing the first ${shown} open issues.`;
 }
 
 /** Whether a move needs confirming before it is sent.

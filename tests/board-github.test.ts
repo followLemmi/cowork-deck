@@ -117,6 +117,21 @@ describe("the board's github states", () => {
     expect(v.mount.querySelector(".tk-count")).toBeNull();
   });
 
+  /// `issue_totals` is a separate `gh api` call and fails on its own, leaving
+  /// `total` null on a page that really was cut short. Silence there says the
+  /// repository has exactly fifty open issues, which is the one thing known to be
+  /// false. Asserted through the view, since what the board passes for "capped" is
+  /// wiring the rule's own unit tests cannot see.
+  it("says a capped page is capped when the totals call brought nothing back", () => {
+    const v = new BoardView(handlers());
+    v.render(state({
+      total: null,
+      tasks: Array.from({ length: 50 }, (_, i) => issue({ id: String(i) })),
+    }), NOW);
+    expect(v.mount.querySelector(".tk-count")?.textContent)
+      .toBe("Showing the first 50 open issues.");
+  });
+
   /// A count is a statement about a repository's open issues, so a file board has
   /// no business printing one whatever left a `total` behind — and something can:
   /// the last-good list a GitHub board kept is still in memory when the same
