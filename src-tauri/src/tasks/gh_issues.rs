@@ -314,7 +314,7 @@ impl<'a> GhIssueProvider<'a> {
         if let Some(r) = self.resolved.borrow().as_ref() {
             return Ok(r.clone());
         }
-        let r = (self.repo)().map_err(TaskError::Io)?;
+        let r = (self.repo)().map_err(TaskError::Remote)?;
         *self.resolved.borrow_mut() = Some(r.clone());
         Ok(r)
     }
@@ -328,8 +328,8 @@ impl<'a> GhIssueProvider<'a> {
 
     fn page(&self, state: &str, limit: usize, project: &str) -> Result<Vec<Task>, TaskError> {
         let json = (self.run)(&issue_list_argv(&self.repo()?, state, limit), None)
-            .map_err(TaskError::Io)?;
-        parse_issues(&json, project).map_err(TaskError::Io)
+            .map_err(TaskError::Remote)?;
+        parse_issues(&json, project).map_err(TaskError::Remote)
     }
 }
 
@@ -359,7 +359,7 @@ impl TaskProvider for GhIssueProvider<'_> {
     /// draft's own fields and no id, and its only caller discards it.
     fn create(&self, draft: TaskDraft) -> Result<Task, TaskError> {
         (self.run)(&issue_create_argv(&self.repo()?, &draft.title), Some(&draft.body))
-            .map_err(TaskError::Io)?;
+            .map_err(TaskError::Remote)?;
         Ok(Task {
             id: String::new(),
             title: draft.title,
@@ -395,8 +395,8 @@ impl TaskProvider for GhIssueProvider<'_> {
         let mut argv = issue_argv(&self.repo()?, &["view", &n.to_string()]);
         argv.push("--json".into());
         argv.push(ISSUE_LIST_FIELDS.into());
-        let json = (self.run)(&argv, None).map_err(TaskError::Io)?;
-        parse_issue(&json, "").map_err(TaskError::Io)
+        let json = (self.run)(&argv, None).map_err(TaskError::Remote)?;
+        parse_issue(&json, "").map_err(TaskError::Remote)
     }
 
     fn update(&self, id: &str, patch: TaskPatch) -> Result<Task, TaskError> {
@@ -414,7 +414,7 @@ impl TaskProvider for GhIssueProvider<'_> {
                 "open" => issue_reopen_argv(&self.repo()?, n),
                 other => return Err(TaskError::UnknownStep(other.to_string())),
             };
-            (self.run)(&argv, None).map_err(TaskError::Io)?;
+            (self.run)(&argv, None).map_err(TaskError::Remote)?;
         }
         if patch.title.is_some() || patch.body.is_some() {
             // `edit` writes both fields every time — the title on argv, the body
@@ -438,7 +438,7 @@ impl TaskProvider for GhIssueProvider<'_> {
                 None => current.as_ref().map_or("", |c| c.body.as_str()),
             };
             (self.run)(&issue_edit_argv(&self.repo()?, n, title), Some(body))
-                .map_err(TaskError::Io)?;
+                .map_err(TaskError::Remote)?;
         }
         // Read back rather than synthesized: the write's own output says nothing.
         self.resolve(id)
@@ -1175,6 +1175,74 @@ mod tests {
     fn resolving_an_issue_that_is_not_there_is_an_error() {
         let (p, _) = provider(vec![Err("could not resolve to an Issue".into())]);
         assert!(p.resolve("999").is_err());
+    }
+
+    /// A GitHub failure is not a filesystem failure.
+    ///
+    /// Every failure on this path used to become `TaskError::Io`, whose `Display`
+    /// reads "filesystem error: {e}" — and nothing reworded it on the way out:
+    /// `main.ts:352` assigns the string to `error` and `board.ts:148` renders it
+    /// as `.tk-error`, so a rate-limited board told the user their disk was at
+    /// fault. `TaskError::Io` keeps that wording, because `fs.rs` uses it for
+    /// eleven genuine `std::fs` failures where it is exactly right; this is a
+    /// variant of its own rather than a reword of that one.
+    ///
+    /// Every kind of failure the provider can raise is here — the runner
+    /// refusing, `gh` answering with something unparseable, the repository lookup,
+    /// and each write path — because the honest prefix is only honest if no site
+    /// was missed.
+    #[test]
+    fn a_github_failure_is_not_reported_as_a_filesystem_error() {
+        let filed = |e: TaskError| {
+            let s = e.to_string();
+            assert!(!s.contains("filesystem"), "a GitHub failure said filesystem: {s}");
+            assert!(s.contains("GitHub"), "a GitHub failure did not name GitHub: {s}");
+            s
+        };
+
+        // The runner refusing: what a rate limit or an HTTP 502 arrives as.
+        let (p, _) = provider(vec![Err("API rate limit exceeded".into())]);
+        let s = filed(p.list("deck").unwrap_err());
+        assert!(s.contains("API rate limit exceeded"), "the cause is still in it: {s}");
+
+        // `gh` answering with something no parser can read is GitHub's answer
+        // too, not a disk's.
+        let (p, _) = provider(vec![Ok("{ not json".into())]);
+        filed(p.list("deck").unwrap_err());
+
+        // The repository lookup — the failure decision 9's three unavailable
+        // states arrive through.
+        let p = GhIssueProvider::new(
+            Box::new(|| Err("no-account".to_string())),
+            Box::new(|_argv: &[String], _stdin: Option<&str>| Ok("[]".to_string())),
+        );
+        let s = filed(p.list("deck").unwrap_err());
+        // The marker `unavailableFrom` (`src/issues.ts:100`) matches lives *inside*
+        // the message rather than in the prefix, and it is matched with `includes`,
+        // so a changed prefix leaves the three unavailable screens reachable.
+        assert!(s.contains("no-account"), "the marker must survive the prefix: {s}");
+
+        // The write paths: close, edit, and the read-back every one of them ends
+        // on.
+        let (p, _) = provider(vec![Err("HTTP 502".into())]);
+        filed(
+            p.update("7", TaskPatch { status: Some(StepId("closed".into())), ..Default::default() })
+                .unwrap_err(),
+        );
+        let (p, _) = provider(vec![Err("could not resolve to an Issue".into())]);
+        filed(p.resolve("999").unwrap_err());
+        let (p, _) = provider(vec![Err("could not create issue".into())]);
+        filed(
+            p.create(crate::tasks::model::TaskDraft {
+                title: "A title".into(),
+                kind: KindId(String::new()),
+                body: String::new(),
+                project: "deck".into(),
+                origin: TaskOrigin::Human,
+                session: None,
+            })
+            .unwrap_err(),
+        );
     }
 
     /// An id that is not a number cannot be an issue, and must not become

@@ -93,10 +93,13 @@ export function rateLimitBanner(remaining: number | null): string | null {
 }
 
 /** The markers that name an unavailability, as data rather than an if-chain, and
- *  matched with `includes` because the message arrives wrapped: a GitHub failure
- *  reaches the frontend through `TaskError::Io`, whose Display prefixes
- *  "filesystem error: ". `gh-not-found` and `no-account` are the backend's own
- *  words (`commands.rs:424-425`); the three `no-repo` markers are `gh`'s. */
+ *  matched with `includes` because the message arrives wrapped: a board's GitHub
+ *  failure reaches the frontend through `TaskError::Remote`, whose Display
+ *  prefixes "GitHub: " — and matching inside the message rather than on the whole
+ *  of it is what let that prefix be corrected from `TaskError::Io`'s "filesystem
+ *  error: " without touching this table. `gh-not-found` and `no-account` are the
+ *  backend's own words (`commands.rs:424-425`); the three `no-repo` markers are
+ *  `gh`'s. */
 const UNAVAILABLE_MARKERS: { marker: string; state: GhUnavailable }[] = [
   { marker: "gh-not-found", state: "no-gh" },
   { marker: "no-account", state: "no-account" },

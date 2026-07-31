@@ -51,6 +51,16 @@ pub enum TaskError {
     NotConfigured,
     RootMissing(String),
     Io(String),
+    /// The remote source refused, or answered with something no parser can read.
+    ///
+    /// Separate from `Io` because the string reaches the user unmodified —
+    /// `main.ts:352` assigns it to `error`, `board.ts:148` renders it as
+    /// `.tk-error` — and "filesystem error: API rate limit exceeded" names the
+    /// wrong culprit entirely. `Io` was not reworded instead: `fs.rs` raises it
+    /// for eleven genuine `std::fs` failures, where "filesystem error:" is
+    /// exactly right, and degrading the honest sender to fix the dishonest one
+    /// trades one wrong message for eleven.
+    Remote(String),
     NotFound(String),
     Conflict(String),
     /// The card has an `id` but is otherwise incomplete (see
@@ -72,6 +82,11 @@ impl std::fmt::Display for TaskError {
             TaskError::NotConfigured => write!(f, "no task tracker is configured for this workspace"),
             TaskError::RootMissing(p) => write!(f, "the task folder is unreachable: {p}"),
             TaskError::Io(e) => write!(f, "filesystem error: {e}"),
+            // Names GitHub rather than "the task source", because GitHub is the
+            // only remote source there is and a vaguer sentence helps nobody. A
+            // second provider is the moment the variant has to carry its own
+            // name — not the moment to reword this one.
+            TaskError::Remote(e) => write!(f, "GitHub: {e}"),
             TaskError::NotFound(id) => write!(f, "card not found: {id}"),
             TaskError::Conflict(id) => {
                 write!(f, "more than one file carries id {id} — fix it by hand")

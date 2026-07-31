@@ -143,13 +143,15 @@ describe("fsRootOf", () => {
 
 describe("unavailableFrom", () => {
   /// The messages as they actually arrive, wrapped: a GitHub failure comes back
-  /// through `TaskError::Io`, whose Display prefixes "filesystem error: ". So
-  /// this matches on a marker inside the message and never on the whole string —
-  /// an equality check would recognise none of these.
+  /// through `TaskError::Remote`, whose Display prefixes "GitHub: ". So this
+  /// matches on a marker inside the message and never on the whole string — an
+  /// equality check would recognise none of these, and it is what let that prefix
+  /// be corrected from `TaskError::Io`'s "filesystem error: " with no change here
+  /// beyond these fixtures.
   it("recognises the three states a GitHub source cannot work in", () => {
-    expect(unavailableFrom("filesystem error: gh-not-found")).toBe("no-gh");
+    expect(unavailableFrom("GitHub: gh-not-found")).toBe("no-gh");
     expect(unavailableFrom("no-account")).toBe("no-account");
-    expect(unavailableFrom("filesystem error: no git remotes found")).toBe("no-repo");
+    expect(unavailableFrom("GitHub: no git remotes found")).toBe("no-repo");
     expect(unavailableFrom("fatal: not a git repository")).toBe("no-repo");
     expect(unavailableFrom("none of the git remotes point at GitHub")).toBe("no-repo");
   });
@@ -160,7 +162,7 @@ describe("unavailableFrom", () => {
   /// explanation. A missing scope in particular is exit 1 with nothing on stdout.
   it("maps anything it does not recognise to null rather than to a screen", () => {
     expect(unavailableFrom("HTTP 502")).toBeNull();
-    expect(unavailableFrom("filesystem error: your token has not been granted 'repo'")).toBeNull();
+    expect(unavailableFrom("GitHub: your token has not been granted 'repo'")).toBeNull();
     expect(unavailableFrom("API rate limit exceeded")).toBeNull();
     expect(unavailableFrom("")).toBeNull();
   });
