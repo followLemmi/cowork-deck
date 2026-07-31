@@ -780,6 +780,30 @@ fn migration_refusal(ws: &Workspace) -> Option<String> {
     matches!(tracker_kind(ws), Some(TrackerKind::GitHub)).then(|| FILE_ONLY.to_string())
 }
 
+/// Whether the `previousLocation` pointer has done its job and may be forgotten.
+/// Asked only once `offer_for` has answered `None`, which covers three
+/// situations and means it of one.
+///
+/// The tracker has to be folder-backed. Forgetting where the cards *were* is
+/// only meaningful if we can read where they are now, and for a source only a
+/// newer build understands (#117) we cannot — while `clear_previous_location`
+/// stamps `cfg.version` on the way out. A polled command silently rewriting a
+/// newer build's configuration is #117's own failure mode.
+///
+/// And the old root has to be readable: a missing one is an unmounted volume as
+/// often as a deleted folder, so its pointer survives and the banner returns
+/// with the volume. Same reasoning as `offer_for`'s own check.
+fn may_forget_previous_location(ws: &Workspace) -> bool {
+    if !matches!(tracker_kind(ws), Some(TrackerKind::Fs { .. })) {
+        return false;
+    }
+    ws.tracker
+        .as_ref()
+        .and_then(|c| c.previous_location.as_ref())
+        .map(|p| PathBuf::from(&p.root).is_dir())
+        .unwrap_or(false)
+}
+
 /// Forget where the cards were. Stamps the version too, or the next read would
 /// re-seed a version 1 config and the banner would come back.
 fn clear_previous_location(state: &State<AppState>, workspace_id: &str) -> Result<(), String> {
@@ -806,16 +830,10 @@ pub fn tasks_migration_status(
         return Err(err);
     }
     let Some((offer, _)) = offer_for(&ws)? else {
-        // Nothing of ours is at the old root any more, so the pointer has done
-        // its job — but only when the folder is actually readable. A missing
-        // root keeps its pointer: see `offer_for`.
-        let has_pointer = ws
-            .tracker
-            .as_ref()
-            .and_then(|c| c.previous_location.as_ref())
-            .map(|p| PathBuf::from(&p.root).is_dir())
-            .unwrap_or(false);
-        if has_pointer {
+        // Nothing of ours is at the old root any more, so the pointer may have
+        // done its job — `may_forget_previous_location` decides, because
+        // `Ok(None)` covers three situations and only one of them means that.
+        if may_forget_previous_location(&ws) {
             clear_previous_location(&state, &workspace_id)?;
         }
         return Ok(None);
@@ -2245,6 +2263,51 @@ mod tests {
         }));
         assert_eq!(migration_refusal(&unknown), None);
         assert!(offer_for(&unknown).unwrap().is_none());
+
+        // …and `Ok(None)` is where the danger is, because the command reads it
+        // as "the pointer has done its job". Give that same config a
+        // `previousLocation` whose root exists and the old code cleared the
+        // pointer *and* stamped `version` onto a config this build cannot
+        // read — a poll tick, every board tick, silently rewriting a newer
+        // build's configuration. #117's failure mode by a new route.
+        let live = tempfile::tempdir().unwrap();
+        let unknown_with_pointer = ws(Some(TrackerConfig {
+            providers: vec![TrackerProvider::Unknown(serde_json::json!({"type": "jira"}))],
+            previous_location: Some(PreviousLocation {
+                root: live.path().to_string_lossy().to_string(),
+                project: "cowork-deck".into(),
+                was_project_root: false,
+            }),
+            version: crate::model::TRACKER_CONFIG_VERSION,
+        }));
+        assert!(offer_for(&unknown_with_pointer).unwrap().is_none(), "nothing of ours to read");
+        assert!(
+            !may_forget_previous_location(&unknown_with_pointer),
+            "clearing it would rewrite a config only a newer build understands",
+        );
+    }
+
+    /// The other half: the gate must not cost a folder-backed workspace the
+    /// forgetting it is there for. An old root that is readable and holds
+    /// nothing of ours has genuinely done its job.
+    #[test]
+    fn a_folder_backed_workspace_still_forgets_an_emptied_old_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("Tasks");
+        std::fs::create_dir_all(&old).unwrap();
+        let w = ws_with_previous(dir.path(), "cowork-deck", &old);
+        assert!(offer_for(&w).unwrap().is_none(), "an empty old root offers nothing");
+        assert!(may_forget_previous_location(&w));
+    }
+
+    /// And a root that is not there keeps its pointer, folder-backed or not: an
+    /// unmounted volume is not a resolved migration, and the banner has to come
+    /// back with the volume.
+    #[test]
+    fn a_missing_old_root_keeps_its_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("never-existed");
+        assert!(!may_forget_previous_location(&ws_with_previous(dir.path(), "cowork-deck", &gone)));
     }
 
     /// "Open" is "not closed", asked of the board rather than assumed: the file
