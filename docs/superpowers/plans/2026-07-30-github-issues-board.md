@@ -3820,7 +3820,16 @@ Add to `tests/ipc.test.ts`:
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run tests/ipc.test.ts`
-Expected: FAIL — `issueTotals is not exported`.
+Expected: FAIL — `issueTotals is not a function`. (Corrected 2026-07-31: the plan said "is not exported"; vitest reports "is not a function", because the module resolves and the binding is simply undefined.)
+
+**`src/forms.ts` is not optional in this task** (found while executing, 2026-07-31; its Files block and its `git add` line both omitted it, and Step 4 named only `main.ts` as needing a change to stay tsc-clean). Widening `TrackerConfig.providers` to a union breaks `forms.ts:316` — `initial?.tracker?.providers[0]?.root` is `TS2339: Property 'root' does not exist on type '{ type: "github" }'`. **Narrow on the discriminant** rather than reaching for `root`:
+
+```ts
+const initialProvider = initial?.tracker?.providers[0];
+const initialRoot = initialProvider?.type === "fs" ? initialProvider.root : null;
+```
+
+Behaviour-identical today, it is what Task 24 wants anyway, and it makes the code state its reason instead of relying on `root` being absent. See Task 24 for the live hazard that sits two lines below this and that Task 24 must close.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -3896,7 +3905,7 @@ Expected: PASS and clean. `main.ts`'s call to `prWorktreeAdd` needs its fourth a
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/ipc.ts src/main.ts tests/
+git add src/ipc.ts src/main.ts src/forms.ts tests/
 git commit -m "feat(issues): frontend types for a github tracker and the new commands"
 ```
 
@@ -3983,6 +3992,10 @@ describe("issuePrompt", () => {
       ...Array.from({ length: 3 }, (_, i) =>
         issue({ id: `o${i}`, status: "open", created: `2026-07-0${i + 1}T00:00:00Z` })),
       ...Array.from({ length: 25 }, (_, i) =>
+        // `10 + i` runs past the end of the month for i > 20 — `2026-06-34` is
+        // not a real date. Deliberate and harmless: `byTimeDesc` is a string
+        // compare and this test depends only on the ordering. Noted so a reader
+        // does not take it for a date, 2026-07-31.
         issue({ id: `c${i}`, status: "closed", resolved: `2026-06-${10 + i}T00:00:00Z` })),
     ];
     const cols = boardColumns(issues, "cowork-deck", cfg);
@@ -4017,7 +4030,9 @@ describe("issuePrompt", () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npx vitest run tests/tasks.test.ts`
-Expected: FAIL — `issuePrompt is not exported`.
+Expected: FAIL — `issuePrompt is not a function`, on **4 of the block's 6 tests**. (Corrected 2026-07-31. The blanket "Expected: FAIL" over-described the block: "columns a synthesized two-step board…" and "taskPrompt names no gh command" are both green before `issuePrompt` exists. That is legitimate — they are regression pins over existing code, and this task's own text says so for the first — but an agent expecting six failures would go looking for a problem that is not there.)
+
+**One test in Step 1 is weaker than its own name, and must be strengthened** (found while executing, 2026-07-31). "omits the body when there is none rather than leaving a blank stanza" asserted `not.toMatch(/\n\n\n/)` against a fixture whose body is `"   "`. An implementation pushing the body untrimmed produces `…\n\n   \n\n…`, which contains **no three consecutive newlines** — so the test would pass over exactly the blank stanza it is named for. Use `/\n\s*\n\s*\n/`, which enforces the claim as stated; verified to pass the correct implementation and fail the untrimmed one.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -4056,7 +4071,7 @@ export function issuePrompt(task: Task, repo: string): string {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npx vitest run tests/tasks.test.ts && npx tsc --noEmit`
-Expected: PASS, 5 new tests.
+Expected: PASS, **6** new tests — Step 1's block contains six `it`s. (Corrected 2026-07-31 from "5"; measured `tasks.test.ts` 26 → 32.)
 
 - [ ] **Step 5: Commit**
 
@@ -4879,9 +4894,18 @@ Add to `tests/forms.test.ts`:
 
 **A pre-existing defect this task must fix, found by the Barrier B review (2026-07-30). Adding the third radio without fixing it turns it into a GitHub-config deleter.**
 
-`forms.ts:316` keys the prefill on `initial?.tracker?.providers[0]?.root`. Neither `GitHub` nor `Unknown` **has** a `root`, so `initialRoot` is `null`, the checkbox stays unchecked, and `submit` (`:355-365`) writes `tracker: null` — **destroying the configuration.** The comment two lines above says *"editing a workspace's name must not silently wipe its tracker configuration"*, which is exactly what it does today for two of the three variants.
+**The chain, step by step** (measured 2026-07-31; Task 18 has since narrowed line 316 on the discriminant, which changes nothing here — `providers[0]?.root` on a github provider was already `undefined`, the same falsy path, so this is not a regression either version introduced):
+
+1. `forms.ts:316` computes `initialRoot`, which is `null` for a `{type:"github"}` provider — **correctly**, since there is no root.
+2. So line 322's `onInput.checked = true` never runs, and the "Task tracker" checkbox comes up **unchecked**.
+3. So `submit`'s `if (onInput.checked)` at line 360 is false and `tracker` stays `null`.
+4. So the form returns a workspace **with its GitHub tracker dropped** — on any edit at all, including a name or a colour change.
+
+The comment at `forms.ts:314` says *"editing a workspace's name must not silently wipe its tracker configuration"*, which is exactly what it does for two of the three variants.
 
 `forms.ts` is untouched by this branch, so this is Task 2's new `Unknown` tolerance meeting old code rather than a Phase 2 regression — but it means **#117's store-level guarantee is defeated one layer up.** Tasks 1–2 make the store keep a config it cannot read; this form then deletes it on the next name edit. Key the prefill on the *provider variant*, not on the presence of a `root`, and make the unrecognised case carry its config through untouched rather than reconstruct it.
+
+**A second trap in the same task, and this one is a type-level one** (found executing Task 18, 2026-07-31). `TrackerProviderConfig` is a **closed two-variant union**, while #117's entire purpose is that a *future* build may write a third `type` this build must tolerate. `sourceOf` handles it correctly at runtime — it falls back to `"fs"` for an unrecognised `type`, and its comment says so — but such a record is **representable at runtime and unrepresentable in the type.** This task is where branching on `.type` begins, so any `switch` written here will look exhaustive to `tsc` while it is not, and the unrecognised case will fall into whichever arm the compiler was satisfied by. Give the union an open tail — `| { type: string }` — before writing that branch, so the third case has to be handled explicitly rather than silently.
 
 ```ts
   it("offers a third source and saves it as a github provider", async () => { /* … */ });
