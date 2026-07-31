@@ -482,6 +482,45 @@ describe("Deck.launchOnWorktree", () => {
     expect(deckEl.querySelector(".tile")!.classList.contains("ws-hidden")).toBe(true);
   });
 
+  // Deleting the `if (alive) { ...; return "focused"; }` guard inside
+  // `launchOnWorktree` must fail this test. It is not redundant with the board
+  // hiding ▶: `derivedStatus` reads "in progress" only while the session is
+  // *busy*, so an idle session still linked to the issue leaves ▶ on screen —
+  // which is exactly the click that would otherwise put a second agent in the
+  // same worktree, on the same branch, editing the same files.
+  it("focuses the session an issue already has instead of launching a second one", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    const first = await deck.launchOnWorktree(WT, WS.id, "☑ #42", "issue #42", "42");
+    expect(first).toBe("launched");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+
+    const second = await deck.launchOnWorktree(WT, WS.id, "☑ #42", "issue #42", "42");
+
+    expect(second).toBe("focused");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+    expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  // The other half of the condition: with no card to apply it to there is nothing
+  // to compare, and a pull request session must still be launchable a second time
+  // — the guard is keyed on the issue, not on the worktree.
+  it("does not apply the guard to a session with no card behind it", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+    const second = await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+
+    expect(second).toBe("launched");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(2);
+  });
+
   // Two GitHub-backed workspaces whose repositories both have an open #42. The
   // guard used to compare the issue number alone, so B's #42 found A's session
   // and focused it: the person landed in a terminal attached to another
