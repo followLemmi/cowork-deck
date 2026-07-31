@@ -1,8 +1,16 @@
 import type { BoardConfig, BoardStep, SessionState, Task } from "./ipc";
 import { isKnownStep, isTerminal, kindLabel, workingStep } from "./board-config";
 
-/** A live tile, as far as the board cares: which card it came from and how it is doing. */
-export interface TaskSessionLink { session: string; taskId?: string; state: SessionState }
+/** A live tile, as far as the board cares: which card it came from, which
+ *  workspace that card belongs to, and how the session is doing. */
+export interface TaskSessionLink {
+  session: string;
+  taskId?: string;
+  /** The workspace whose tracker owns `taskId`. Absent when the tile could not be
+   *  placed in one at all — see `linksInWorkspace`. */
+  workspaceId?: string;
+  state: SessionState;
+}
 
 // Re-exported so the board keeps one import for everything card-shaped; the
 // reader itself lives with the rest of them in board-config.ts.
@@ -13,6 +21,26 @@ export { kindLabel };
 const ALIVE: SessionState[] = ["idle", "working", "waitingInput"];
 /** States in which the card should read as "in progress" on the board. */
 const BUSY: SessionState[] = ["working", "waitingInput"];
+
+/** One workspace's links, and the reason every rule below is asked of the result
+ *  rather than of every tile in the app.
+ *
+ *  A card id is unique inside its own tracker and nowhere else. That was true but
+ *  harmless while every id was a ULID — globally unique, so a match really was the
+ *  same card — and a GitHub issue number is the first id two repositories can
+ *  legitimately share. Unfiltered, a session on A's #42 makes B's #42 read "in
+ *  progress" (which withholds ▶ from it entirely) and makes B's launch guard focus
+ *  A's session: a terminal attached to another repository, with a fresh worktree
+ *  left behind in B.
+ *
+ *  A link naming no workspace is dropped rather than matched everywhere. It cannot
+ *  be shown to belong to this one, and "it might be anybody's" is precisely the
+ *  reading that lands work in the wrong repository; the cost is a possible second
+ *  session on one card, which is recoverable, against a wrong-repository session,
+ *  which is not. */
+export function linksInWorkspace(links: TaskSessionLink[], workspaceId: string): TaskSessionLink[] {
+  return links.filter((l) => l.workspaceId !== undefined && l.workspaceId === workspaceId);
+}
 
 export function liveSessionForTask(taskId: string, links: TaskSessionLink[]): string | null {
   const hit = links.find((l) => l.taskId === taskId && ALIVE.includes(l.state));

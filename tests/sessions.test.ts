@@ -482,6 +482,45 @@ describe("Deck.launchOnWorktree", () => {
     expect(deckEl.querySelector(".tile")!.classList.contains("ws-hidden")).toBe(true);
   });
 
+  // Two GitHub-backed workspaces whose repositories both have an open #42. The
+  // guard used to compare the issue number alone, so B's #42 found A's session
+  // and focused it: the person landed in a terminal attached to another
+  // repository, with a worktree just created in B and nothing running in it.
+  it("launches a second workspace's issue of the same number instead of focusing the first", async () => {
+    const WS2 = { id: "w2", name: "Q", path: "/q", color: "#000" };
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS, WS2]);
+
+    const first = await deck.launchOnWorktree("/p-wt/42", WS.id, "☑ #42", "issue #42", "42");
+    expect(first).toBe("launched");
+
+    const second = await deck.launchOnWorktree("/q-wt/42", WS2.id, "☑ #42", "issue #42", "42");
+
+    expect(second).toBe("launched");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(2);
+    expect(startMock).toHaveBeenCalledTimes(2);
+    // The second session runs in B's worktree, not in A's.
+    expect(startMock.mock.calls[1][0]).toBe("/q-wt/42");
+  });
+
+  // What the board is handed for one workspace never mentions another's tiles —
+  // the rules match on the card id, so the scoping has to happen before they see
+  // the list.
+  it("reports links for the named workspace only", async () => {
+    const WS2 = { id: "w2", name: "Q", path: "/q", color: "#000" };
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS, WS2]);
+
+    await deck.launchOnWorktree("/p-wt/42", WS.id, "☑ #42", "issue #42", "42");
+
+    expect(deck.taskLinks(WS.id).map((l) => l.taskId)).toEqual(["42"]);
+    expect(deck.taskLinks(WS2.id)).toEqual([]);
+  });
+
   // Removing a worktree under a live session would leave it restarting in a
   // directory that no longer exists, so removal has to be able to ask first.
   it("reports a live session inside a worktree path", async () => {

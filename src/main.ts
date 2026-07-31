@@ -366,7 +366,11 @@ async function refreshBoard() {
   // must not repaint the board with another workspace's data over the current one.
   if (workspaces.active?.id !== wsId) return;
   board.render({
-    project: ws.name, caps, error, tasks, links: deck.taskLinks(), migration,
+    // This workspace's links, never the app's: the rules behind "in progress" and
+    // "no live session" match on the card id, and an issue number is unique to one
+    // repository. A session on another workspace's #42 must not speak for this
+    // board's — it would read as in progress and lose its ▶.
+    project: ws.name, caps, error, tasks, links: deck.taskLinks(wsId), migration,
     source, unavailable, fetchedAt, total, rateRemaining,
   }, Date.now());
 }

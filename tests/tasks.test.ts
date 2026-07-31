@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  taskPrompt, issuePrompt, derivedStatus, liveSessionForTask, boardColumns, isStale, kindLabel,
-  type TaskSessionLink,
+  taskPrompt, issuePrompt, derivedStatus, liveSessionForTask, linksInWorkspace, boardColumns,
+  isStale, kindLabel, type TaskSessionLink,
 } from "../src/tasks";
 import type { BoardConfig, Task } from "../src/ipc";
 
@@ -220,6 +220,61 @@ describe("launch guard", () => {
   it("an alive session for the card means focus, not a second launch", () => {
     const links: TaskSessionLink[] = [{ session: "s1", taskId: "01AAA", state: "waitingInput" }];
     expect(liveSessionForTask("01AAA", links)).toBe("s1");
+  });
+});
+
+/** A card id is only unique inside its own tracker. That was true but harmless
+ *  while every id was a ULID; a GitHub issue number is the first id two
+ *  repositories can legitimately share, so every rule below has to be asked of
+ *  one workspace's links rather than of every tile in the app. */
+describe("linksInWorkspace", () => {
+  /** Two GitHub-backed workspaces, each with an open #42. A session is running on
+   *  A's; B's has never been launched. */
+  const both: TaskSessionLink[] = [
+    { session: "sA", taskId: "42", workspaceId: "wsA", state: "working" },
+    { session: "sB", taskId: "42", workspaceId: "wsB", state: "idle" },
+  ];
+  const issue42 = card({ id: "42", status: "open" });
+
+  it("keeps only the named workspace's links", () => {
+    expect(linksInWorkspace(both, "wsA").map((l) => l.session)).toEqual(["sA"]);
+    expect(linksInWorkspace(both, "wsB").map((l) => l.session)).toEqual(["sB"]);
+    expect(linksInWorkspace(both, "wsC")).toEqual([]);
+  });
+
+  // A link that names no workspace cannot be shown to belong to this one, and
+  // "it might be anybody's" is exactly the reading that lands a session in the
+  // wrong repository.
+  it("drops a link that names no workspace at all", () => {
+    expect(linksInWorkspace([{ session: "s", taskId: "42", state: "working" }], "wsA")).toEqual([]);
+  });
+
+  // The guard: B's #42 has its own idle session and must find that one, never
+  // A's — focusing A's would attach the person to a terminal in another
+  // repository, in a worktree that was just created in B.
+  it("finds each workspace's own session for the same issue number", () => {
+    expect(liveSessionForTask("42", linksInWorkspace(both, "wsA"))).toBe("sA");
+    expect(liveSessionForTask("42", linksInWorkspace(both, "wsB"))).toBe("sB");
+    // Nothing running in C, so ▶ there launches rather than focuses.
+    expect(liveSessionForTask("42", linksInWorkspace(both, "wsC"))).toBeNull();
+  });
+
+  // The consequence on screen: unfiltered, B's #42 reads "in progress" and
+  // board.ts withholds ▶ from it entirely, so it cannot be launched at all.
+  it("leaves the other workspace's issue open while this one's session works", () => {
+    expect(derivedStatus(issue42, linksInWorkspace(both, "wsA"), CFG)).toBe("working");
+    expect(derivedStatus(issue42, linksInWorkspace(both, "wsB"), CFG)).toBe("open");
+  });
+
+  // And the third rule: a card of B's parked in the working step is genuinely
+  // stale, whatever A is running.
+  it("calls the other workspace's parked card stale, whatever this one is running", () => {
+    const parked = card({ id: "42", status: "doing" });
+    const aOnly: TaskSessionLink[] = [
+      { session: "sA", taskId: "42", workspaceId: "wsA", state: "working" },
+    ];
+    expect(isStale(parked, linksInWorkspace(aOnly, "wsA"), CFG4)).toBe(false);
+    expect(isStale(parked, linksInWorkspace(aOnly, "wsB"), CFG4)).toBe(true);
   });
 });
 

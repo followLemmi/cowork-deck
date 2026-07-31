@@ -11,7 +11,7 @@ import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
 import { icon, iconButton } from "./icons";
-import { liveSessionForTask, taskPrompt } from "./tasks";
+import { linksInWorkspace, liveSessionForTask, taskPrompt, type TaskSessionLink } from "./tasks";
 import { workingStep } from "./board-config";
 
 /** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
@@ -232,7 +232,7 @@ export class Deck {
   async launchFromTask(
     workspace: Workspace, task: Task, cfg: BoardConfig,
   ): Promise<"launched" | "focused"> {
-    const alive = liveSessionForTask(task.id, this.taskLinks());
+    const alive = liveSessionForTask(task.id, this.taskLinks(workspace.id));
     if (alive) { this.focusTile(alive); return "focused"; }
     // ▶ writes the step itself, so the card moves whether or not the agent
     // remembers to. A failure must not block the launch: the work matters more
@@ -281,8 +281,13 @@ export class Deck {
     // reads "in progress" only while the session is *busy*, so an idle session
     // still linked to the issue leaves ▶ on screen — which is precisely the case
     // that would otherwise put a second session in the same worktree.
+    //
+    // Asked of this workspace's links only. An issue number belongs to one
+    // repository, so a session on another workspace's #42 is a different piece of
+    // work; focusing it would hand the person a terminal in the wrong repository
+    // and leave the worktree just prepared here with nothing running in it.
     if (taskId !== undefined) {
-      const alive = liveSessionForTask(taskId, this.taskLinks());
+      const alive = liveSessionForTask(taskId, this.taskLinks(workspaceId));
       if (alive) { this.focusTile(alive); return "focused"; }
     }
     await this.spawnTile({
@@ -498,9 +503,28 @@ export class Deck {
     void this.persistLayout();
   }
 
-  /** Live tiles in the shape the board needs. */
-  taskLinks(): { session: string; taskId?: string; state: SessionState }[] {
-    return [...this.tiles.values()].map((t) => ({ session: t.session, taskId: t.taskId, state: t.state }));
+  /** Live tiles in the shape the board needs, for one workspace.
+   *
+   *  The workspace is a required argument, not a filter a caller may forget: a
+   *  card id is unique only inside its own tracker (a GitHub issue number is the
+   *  first id two repositories can share), and every rule reading these links
+   *  matches on the id alone. Handing out the whole app's tiles is what let a
+   *  session on A's #42 speak for B's #42 — see `linksInWorkspace`. */
+  taskLinks(workspaceId: string): TaskSessionLink[] {
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    return linksInWorkspace(
+      [...this.tiles.values()].map((t) => ({
+        session: t.session,
+        taskId: t.taskId,
+        // The tile's own id wins, and is never discarded merely because the
+        // workspace list has not loaded yet — that would silently stop the launch
+        // guard matching. Only a tile without one (an older layout entry) falls
+        // back to being placed by its directory, exactly as the sidebar places it.
+        workspaceId: t.workspaceId ?? resolveWorkspaceId(undefined, t.workspacePath, ws) ?? undefined,
+        state: t.state,
+      })),
+      workspaceId,
+    );
   }
 
   get activeSession(): string | null {
