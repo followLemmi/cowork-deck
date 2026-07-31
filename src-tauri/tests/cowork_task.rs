@@ -429,6 +429,11 @@ fn guard_allows_when_the_tracker_directory_is_unset() {
         .arg("guard")
         .env("COWORK_TASK_ID", &id)
         .env_remove("COWORK_TASKS_DIR")
+        // Cleared for the reason the `guard` helper's doc block gives. This row
+        // asserts only the exit code, and the GitHub branch also returns 0 for a
+        // `Stop` — so with the variable inherited it would stay green while
+        // testing something other than what its name says.
+        .env_remove("COWORK_ISSUE_REPO")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -517,6 +522,11 @@ fn guard_announces_nothing_when_no_tracker_is_configured() {
         .arg("guard")
         .env_remove("COWORK_TASK_ID")
         .env_remove("COWORK_TASKS_DIR")
+        // Cleared for the reason the `guard` helper's doc block gives, and this
+        // row is the one it matters most for: inheriting the variable makes
+        // `guard` announce a GitHub tracker, which is the exact opposite of what
+        // the test is named for.
+        .env_remove("COWORK_ISSUE_REPO")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
