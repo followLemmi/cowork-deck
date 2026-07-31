@@ -353,7 +353,11 @@ fn noauth_dir(state: &State<AppState>) -> std::path::PathBuf {
 /// as a complete one.
 pub const PR_PAGE_LIMIT: usize = 50;
 
-pub fn pr_list_argv(limit: usize) -> Vec<String> {
+/// `-R` rather than letting `gh` resolve the repository from `cwd`: this feature
+/// creates worktrees whose `origin` is related to but not identical with the
+/// workspace's, and a call that resolves from wherever it is standing is a call
+/// waiting to answer for the wrong repository (decision 11).
+pub fn pr_list_argv(repo: &str, limit: usize) -> Vec<String> {
     vec![
         "pr".into(),
         "list".into(),
@@ -363,6 +367,8 @@ pub fn pr_list_argv(limit: usize) -> Vec<String> {
         limit.to_string(),
         "--json".into(),
         crate::gh_pr::PR_LIST_FIELDS.into(),
+        "-R".into(),
+        repo.into(),
     ]
 }
 
@@ -568,7 +574,9 @@ pub fn pr_list(
     state: State<AppState>,
     workspace_id: String,
 ) -> Result<Vec<crate::gh_pr::PullRequest>, String> {
-    let json = run_gh_for_workspace(&state, &workspace_id, &pr_list_argv(PR_PAGE_LIMIT))?;
+    // One cached lookup on the first refresh of an app run, none thereafter.
+    let repo = repo_facts_for(&state, &workspace_id)?.repo;
+    let json = run_gh_for_workspace(&state, &workspace_id, &pr_list_argv(&repo, PR_PAGE_LIMIT))?;
     crate::gh_pr::parse_pull_requests(&json)
 }
 
@@ -1389,7 +1397,7 @@ mod tests {
     /// it is worth pinning even though the call itself needs the network.
     #[test]
     fn pr_list_argv_asks_for_open_prs_with_every_field() {
-        let argv = pr_list_argv(50);
+        let argv = pr_list_argv("o/n", 50);
         assert_eq!(argv[0], "pr");
         assert_eq!(argv[1], "list");
         assert!(argv.contains(&"--state".to_string()));
@@ -1398,6 +1406,17 @@ mod tests {
         assert!(argv.contains(&"50".to_string()));
         let json_at = argv.iter().position(|a| a == "--json").expect("--json");
         assert_eq!(argv[json_at + 1], crate::gh_pr::PR_LIST_FIELDS);
+    }
+
+    /// Explicit rather than resolved from `cwd`. This feature creates worktrees
+    /// whose `origin` is related to but not identical with the workspace's, so a
+    /// command that resolves its repository from wherever it happens to be
+    /// standing is a command waiting to act on the wrong one.
+    #[test]
+    fn the_pr_list_call_names_its_repository() {
+        let argv = pr_list_argv("o/n", PR_PAGE_LIMIT);
+        let at = argv.iter().position(|a| a == "-R").expect("-R");
+        assert_eq!(argv[at + 1], "o/n");
     }
 
     /// --match-head-commit is the whole safety story of this button: without it
