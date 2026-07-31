@@ -92,6 +92,8 @@ fn main() {
                 scheduler_ready: scheduler_ready.clone(),
                 watchers: std::sync::Arc::new(tasks::watch::TaskWatchers::new()),
                 gh_tokens: Mutex::new(std::collections::HashMap::new()),
+                gh_repos: Mutex::new(std::collections::HashMap::new()),
+                issue_open_counts: Mutex::new(std::collections::HashMap::new()),
             });
 
             // Scheduled scenarios: the backend decides *when* and emits
@@ -160,6 +162,7 @@ fn main() {
             commands::pr_worktree_add,
             commands::pr_worktree_remove,
             commands::host_platform,
+            commands::issue_totals,
             tasks_cmd::tasks_list,
             tasks_cmd::tasks_create,
             tasks_cmd::tasks_resolve,

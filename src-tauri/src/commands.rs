@@ -25,6 +25,17 @@ pub struct AppState {
     pub watchers: std::sync::Arc<cowork_deck::tasks::watch::TaskWatchers>,
     /// In-memory account tokens, keyed by (host, login). See `workspace_token`.
     pub gh_tokens: Mutex<std::collections::HashMap<(String, String), String>>,
+    /// Per-workspace repository facts: `owner/name` and the default branch, as
+    /// `gh` resolved them from the workspace's folder. Resolved once per
+    /// workspace per app run — the same lifetime and the same "in memory only,
+    /// never persisted" rule as `gh_tokens` beside it — and cleared whenever a
+    /// workspace is saved, since its folder may now be a different repository.
+    pub gh_repos: Mutex<std::collections::HashMap<String, cowork_deck::tasks::gh_issues::RepoFacts>>,
+    /// The open-issue count each GitHub workspace's board last saw, for the
+    /// sidebar badge. Written by `tasks_list`, read by `tasks_open_counts`, never
+    /// a network call. A workspace whose board has not been opened this run is
+    /// absent, and `WorkspacesPanel` already draws nothing for that.
+    pub issue_open_counts: Mutex<std::collections::HashMap<String, usize>>,
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
@@ -96,6 +107,15 @@ pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Works
     // workspace talking as the old account. The map holds a handful of entries,
     // so clearing all of it costs nothing and precision buys nothing.
     if let Ok(mut cache) = state.gh_tokens.lock() {
+        cache.clear();
+    }
+    // A re-pointed folder is a different repository, and a re-sourced tracker is
+    // a different count. Both caches are keyed by workspace, so both would
+    // otherwise keep answering for the workspace this one used to be.
+    if let Ok(mut cache) = state.gh_repos.lock() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = state.issue_open_counts.lock() {
         cache.clear();
     }
     let store = state.store.lock().map_err(|_| "store lock".to_string())?;
@@ -350,15 +370,27 @@ fn workspace_token(state: &State<AppState>, cfg: &WorkspaceGithub) -> Option<Str
     Some(t)
 }
 
-/// Run `gh` in the workspace's folder, under the workspace's account.
+/// Everything a `gh` call in a workspace needs before it can be spawned.
 ///
-/// Every path out of here is redacted: `gh` is capable of echoing a token back
-/// in an error, and this is the only place that decides what the frontend sees.
-fn run_gh_for_workspace(
+/// A struct rather than the three-element tuple this started as: the tuple's
+/// type trips `clippy::type_complexity`, and the ceiling this plan works under
+/// allows neither a new warning nor an `allow` to hide one.
+struct GhInvocation {
+    /// The `gh` program itself.
+    path: String,
+    /// The workspace folder the call runs in — `gh` resolves the repository from
+    /// it, so it is not incidental.
+    cwd: String,
+    /// What decides which account the call speaks as.
+    env: Vec<(String, String)>,
+}
+
+/// Resolve that invocation. Factored out of the two runners below so the account
+/// resolution exists once and they can only differ in how they spawn.
+fn gh_invocation(
     state: &State<AppState>,
     workspace_id: &str,
-    args: &[String],
-) -> Result<String, String> {
+) -> Result<GhInvocation, String> {
     // The store lock is taken and released before the token is resolved:
     // `gh::token` blocks for up to five seconds, and holding the shared mutex
     // that long would stall every other operation on the store.
@@ -374,9 +406,23 @@ fn run_gh_for_workspace(
     let dir = noauth_dir(state);
     let env = gh::session_env(&cfg, token.as_deref(), &dir.to_string_lossy());
 
+    Ok(GhInvocation { path, cwd: ws.path.clone(), env })
+}
+
+/// Run `gh` in the workspace's folder, under the workspace's account.
+///
+/// Every path out of here is redacted: `gh` is capable of echoing a token back
+/// in an error, and this is the only place that decides what the frontend sees.
+fn run_gh_for_workspace(
+    state: &State<AppState>,
+    workspace_id: &str,
+    args: &[String],
+) -> Result<String, String> {
+    let GhInvocation { path, cwd, env } = gh_invocation(state, workspace_id)?;
+
     let out = std::process::Command::new(&path)
         .args(args)
-        .current_dir(&ws.path)
+        .current_dir(&cwd)
         .envs(env)
         .output()
         .map_err(|e| gh::redact(&e.to_string()))?;
@@ -384,6 +430,121 @@ fn run_gh_for_workspace(
         return Err(gh::redact(String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// `run_gh_for_workspace` with a body on stdin.
+///
+/// `Command::output()` sets stdin to null, so the existing runner cannot feed
+/// one — and `gh issue create` prompts interactively for a missing body, which
+/// in a child process is a hang waiting for the one case that reaches it. Same
+/// account resolution, same `cwd`, same redaction, same
+/// check-the-exit-code-before-parsing rule; the only difference is the pipe.
+fn run_gh_with_stdin(
+    state: &State<AppState>,
+    workspace_id: &str,
+    args: &[String],
+    stdin_body: &str,
+) -> Result<String, String> {
+    let GhInvocation { path, cwd, env } = gh_invocation(state, workspace_id)?;
+
+    let mut child = std::process::Command::new(&path)
+        .args(args)
+        .current_dir(&cwd)
+        .envs(env)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| gh::redact(&e.to_string()))?;
+    // Best effort, and deliberately not fatal: gh may have exited already (an
+    // argument error, no credentials), and a BrokenPipe here would report that
+    // as a write failure instead of letting the real message through.
+    if let Some(mut sink) = child.stdin.take() {
+        use std::io::Write;
+        let _ = sink.write_all(stdin_body.as_bytes());
+    }
+    let out = child.wait_with_output().map_err(|e| gh::redact(&e.to_string()))?;
+    if !out.status.success() {
+        return Err(gh::redact(String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Split `gh api --include` output into the remaining GraphQL budget and the
+/// body. The budget is the proactive rate-limit signal of decision 9: the
+/// refusal's own text is unverified, so nothing matches on it.
+fn split_gh_response(out: &str) -> (Option<u64>, &str) {
+    let (head, body) = match out.split_once("\r\n\r\n") {
+        Some(p) => p,
+        None => match out.split_once("\n\n") {
+            Some(p) => p,
+            // No header block: the call was made without `--include`, or gh
+            // changed. The body is all of it, and there is no signal — which is
+            // `None`, never `0`: zero means exhausted and would raise the
+            // banner on every tick.
+            None => return (None, out),
+        },
+    };
+    let remaining = head.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.trim().eq_ignore_ascii_case("x-ratelimit-remaining").then(|| v.trim().parse().ok())?
+    });
+    (remaining, body)
+}
+
+pub fn issue_totals_argv_with_headers(repo: &str) -> Vec<String> {
+    let mut argv = cowork_deck::tasks::gh_issues::issue_totals_argv(repo);
+    argv.push("--include".into());
+    argv
+}
+
+/// `owner/name` and the default branch for a workspace, resolved once and
+/// cached. Not parsed out of `git remote get-url`: that is free but has to
+/// handle both SSH and HTTPS forms, and `gh`'s own answer is authoritative about
+/// which remote `gh` would have picked.
+pub fn repo_facts_for(
+    state: &State<AppState>,
+    workspace_id: &str,
+) -> Result<cowork_deck::tasks::gh_issues::RepoFacts, String> {
+    if let Some(f) = state.gh_repos.lock().ok().and_then(|c| c.get(workspace_id).cloned()) {
+        return Ok(f);
+    }
+    let json = run_gh_for_workspace(
+        state,
+        workspace_id,
+        &cowork_deck::tasks::gh_issues::repo_facts_argv(),
+    )?;
+    let facts = cowork_deck::tasks::gh_issues::parse_repo_facts(&json)?;
+    if let Ok(mut cache) = state.gh_repos.lock() {
+        cache.insert(workspace_id.to_string(), facts.clone());
+    }
+    Ok(facts)
+}
+
+/// How many issues the repository has, in both states. One GraphQL point, and
+/// the frontend only calls it when the open page came back full — a shorter page
+/// *is* the total.
+#[tauri::command]
+pub fn issue_totals(
+    state: State<AppState>,
+    workspace_id: String,
+) -> Result<IssueTotalsView, String> {
+    let facts = repo_facts_for(&state, &workspace_id)?;
+    let out =
+        run_gh_for_workspace(&state, &workspace_id, &issue_totals_argv_with_headers(&facts.repo))?;
+    let (remaining, body) = split_gh_response(&out);
+    let t = cowork_deck::tasks::gh_issues::parse_issue_totals(body)?;
+    Ok(IssueTotalsView { open: t.open, closed: t.closed, rate_remaining: remaining })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueTotalsView {
+    pub open: u64,
+    pub closed: u64,
+    /// GraphQL points left this hour, from the response headers. `None` when the
+    /// headers said nothing — never `0`, which means exhausted.
+    pub rate_remaining: Option<u64>,
 }
 
 #[tauri::command]
@@ -1029,5 +1190,43 @@ mod tests {
         // Removed before the assertion so a failure cannot leak the directory.
         let _ = std::fs::remove_dir_all(&dir);
         assert!(verdict.is_err());
+    }
+
+    /// `gh api --include` prints the response headers, a blank line, then the
+    /// body. The remaining budget is read from the headers and the body is
+    /// handed on untouched — a parser that fed the whole thing to serde would
+    /// report a perfectly good response as unreadable JSON.
+    #[test]
+    fn headers_and_body_are_split_and_the_budget_is_read() {
+        let out = "HTTP/2.0 200 OK\r\nX-Ratelimit-Resource: graphql\r\n\
+                   X-Ratelimit-Remaining: 4873\r\n\r\n{\"data\":{}}";
+        let (remaining, body) = split_gh_response(out);
+        assert_eq!(remaining, Some(4873));
+        assert_eq!(body.trim(), "{\"data\":{}}");
+    }
+
+    /// Header names are case-insensitive on the wire and gh does not normalise
+    /// them; a match on one exact spelling would read as "no signal" forever.
+    #[test]
+    fn the_budget_header_is_matched_case_insensitively() {
+        let (remaining, _) = split_gh_response("x-ratelimit-remaining: 12\n\n{}");
+        assert_eq!(remaining, Some(12));
+    }
+
+    /// No headers at all — an older gh, or a call made without `--include`. The
+    /// body must survive and the signal must simply be absent, never zero: zero
+    /// means "exhausted" and would raise the banner on every tick.
+    #[test]
+    fn a_response_without_headers_keeps_its_body_and_reports_no_budget() {
+        let (remaining, body) = split_gh_response("{\"data\":{}}");
+        assert_eq!(remaining, None);
+        assert_eq!(body, "{\"data\":{}}");
+    }
+
+    #[test]
+    fn the_totals_call_asks_for_headers() {
+        let argv = issue_totals_argv_with_headers("o/n");
+        assert!(argv.iter().any(|a| a == "--include"), "the budget comes from the headers");
+        assert!(argv.iter().any(|a| a.starts_with("query=")));
     }
 }
