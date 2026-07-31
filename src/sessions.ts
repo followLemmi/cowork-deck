@@ -270,7 +270,21 @@ export class Deck {
    *  filters and inherits its account exactly like any other. */
   async launchOnWorktree(
     cwd: string, workspaceId: string, titleText: string, prompt: string,
-  ): Promise<void> {
+    /** Set for an issue, absent for a pull request. An issue session is both in a
+     *  worktree and linked to a card: without the link `derivedStatus` cannot
+     *  show "in progress" and a second ▶ would raise a duplicate session rather
+     *  than focus the first. */
+    taskId?: string,
+  ): Promise<"launched" | "focused"> {
+    // The same guard `launchFromTask` applies, and only where there is a card to
+    // apply it to. It is not redundant with the board hiding ▶: `derivedStatus`
+    // reads "in progress" only while the session is *busy*, so an idle session
+    // still linked to the issue leaves ▶ on screen — which is precisely the case
+    // that would otherwise put a second session in the same worktree.
+    if (taskId !== undefined) {
+      const alive = liveSessionForTask(taskId, this.taskLinks());
+      if (alive) { this.focusTile(alive); return "focused"; }
+    }
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd,
@@ -278,7 +292,9 @@ export class Deck {
       titleText,
       prompt,
       resume: false,
+      taskId,
     });
+    return "launched";
   }
 
   /** Whether any live tile is running inside `path`. Removal of a worktree

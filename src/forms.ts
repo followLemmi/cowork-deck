@@ -7,6 +7,7 @@ import { pickFolder } from "./dialog";
 import { ghStatus, trackerRootPreview } from "./ipc";
 import type { BoardConfig, KindId, MergeOptions, Schedule, SchedulePreset, TaskDraft, TrackerConfig, TrackerRootPreview, WorkspaceGithub } from "./ipc";
 import { accountChoices } from "./github";
+import { closeConfirmText } from "./issues";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule, schedulePreview } from "./schedule";
 import { openDialog } from "./dialog-shell";
@@ -60,13 +61,15 @@ function selectWrap(select: HTMLSelectElement): HTMLElement {
   return wrap;
 }
 
-function actions(): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButtonElement } {
+/** `okLabel` names the action where "OK" would not: a dialog whose confirmation
+ *  is public wants its button to say what it does. */
+function actions(okLabel = "OK"): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButtonElement } {
   const row = document.createElement("div");
   row.className = "modal-actions";
   const cancel = document.createElement("button");
   cancel.className = "modal-cancel"; cancel.textContent = "Cancel";
   const ok = document.createElement("button");
-  ok.className = "modal-ok"; ok.textContent = "OK";
+  ok.className = "modal-ok"; ok.textContent = okLabel;
   row.append(cancel, ok);
   return { row, ok, cancel };
 }
@@ -705,6 +708,75 @@ export function taskForm(cfg: BoardConfig): Promise<TaskDraft | null> {
     ok.onclick = submit;
     cancel.onclick = () => close(null);
     titleInput.focus();
+  });
+}
+
+/** The close confirmation for an issue, which is a confirmation *and* a choice.
+ *
+ *  `confirmModal` cannot carry the choice, and `gh issue close` takes a reason
+ *  that is visible on the issue forever, so this is its own dialog: the sentence
+ *  from `closeConfirmText` — the same one the rule's test pins, so the warning
+ *  exists once — and the two reasons `gh` accepts, `completed` preselected.
+ *
+ *  Exactly two reasons, in that order: `gh_issues::close_reason` drops anything
+ *  else, and a third option here would be a close that quietly lost its reason.
+ *  No comment field — a comment is a conversation, and conversations are the next
+ *  spec.
+ *
+ *  Resolves the chosen reason, or `null` on Cancel, Escape or the backdrop.
+ *  Never a default reason on refusal: an unanswered confirmation closes nothing. */
+export function closeIssueModal(
+  number: number | string, title: string,
+): Promise<"completed" | "not planned" | null> {
+  return new Promise((resolve) => {
+    const { box, close: closeDialog } = openDialog({
+      onCancel: () => close(null),
+      onAccept: () => submit(),
+    });
+    const heading = document.createElement("div");
+    heading.className = "modal-title";
+    // textContent, not innerHTML: the title is the repository's text and anyone
+    // who can open an issue on a repository the user can read chooses it.
+    heading.textContent = closeConfirmText(number, title);
+
+    // Built like mergeForm's strategy row: a span label plus the radios in a
+    // <div>, never `labeled()` — a <label> wrapping the whole group forwards a
+    // click on its text to the first control and would silently change the answer.
+    const row = document.createElement("div");
+    row.className = "form-row";
+    const label = document.createElement("span");
+    label.className = "form-label";
+    label.textContent = "Reason";
+    const group = document.createElement("div");
+    group.className = "ci-reasons";
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-label", "Close reason");
+    const REASONS = ["completed", "not planned"] as const;
+    const radios: HTMLInputElement[] = [];
+    for (const r of REASONS) {
+      const l = document.createElement("label");
+      const i = document.createElement("input");
+      i.type = "radio"; i.name = "closeReason"; i.className = "ci-reason"; i.value = r;
+      i.checked = r === "completed";
+      l.append(i, document.createTextNode(` ${r}`));
+      group.append(l);
+      radios.push(i);
+    }
+    row.append(label, group);
+
+    const { row: acts, ok, cancel } = actions("Close issue");
+    box.append(heading, row, acts);
+
+    const close = (v: "completed" | "not planned" | null) => { closeDialog(); resolve(v); };
+    const submit = () => {
+      // Found among the radios rather than read off an index: the checked one is
+      // whichever the person left checked.
+      const chosen = radios.find((r) => r.checked)?.value;
+      close(chosen === "not planned" ? "not planned" : "completed");
+    };
+    ok.onclick = submit;
+    cancel.onclick = () => close(null);
+    ok.focus();
   });
 }
 

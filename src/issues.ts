@@ -1,5 +1,6 @@
 import type { BoardConfig, StepId, TrackerConfig } from "./ipc";
 import { isTerminal } from "./board-config";
+import type { GhUnavailable } from "./pr-view";
 
 /** Which source a workspace's board reads. */
 export type TaskSource = "fs" | "github";
@@ -73,6 +74,59 @@ export const RATE_WARN_BELOW = 250;
 export function rateLimitBanner(remaining: number | null): string | null {
   if (remaining === null || remaining >= RATE_WARN_BELOW) return null;
   return "GitHub's hourly API budget is nearly used up — the board will stop refreshing shortly.";
+}
+
+/** The markers that name an unavailability, as data rather than an if-chain, and
+ *  matched with `includes` because the message arrives wrapped: a GitHub failure
+ *  reaches the frontend through `TaskError::Io`, whose Display prefixes
+ *  "filesystem error: ". `gh-not-found` and `no-account` are the backend's own
+ *  words (`commands.rs:424-425`); the three `no-repo` markers are `gh`'s. */
+const UNAVAILABLE_MARKERS: { marker: string; state: GhUnavailable }[] = [
+  { marker: "gh-not-found", state: "no-gh" },
+  { marker: "no-account", state: "no-account" },
+  { marker: "no git remotes", state: "no-repo" },
+  { marker: "not a git repository", state: "no-repo" },
+  { marker: "none of the git remotes", state: "no-repo" },
+];
+
+/** Which unavailability an error names, or null for everything else.
+ *
+ *  One table for both GitHub views: the pull request list grew this mapping first
+ *  and read it as an if-chain of its own, which is one place for the two to
+ *  disagree about what "no repository" looks like.
+ *
+ *  **`gh`'s exit code is not part of this, and cannot be.** Exit 4 is `gh`'s own
+ *  "authentication required" and would be a far better signal than any string —
+ *  but `run_gh_for_workspace` returns `Err(redacted stderr)` and drops the status
+ *  (`commands.rs:451-453`), so no exit code reaches the frontend at all. Keying on
+ *  a guessed *phrase* for that state instead was considered and refused: the
+ *  message is unobserved, and a match on an unobserved message is a guess that
+ *  fails on the one day it matters. Everything unrecognised stays an ordinary
+ *  error, which keeps the last good list on screen beside it — the conservative
+ *  outcome. A missing *scope* is exit 1 with nothing on stdout and belongs in that
+ *  group too. */
+export function unavailableFrom(message: string): GhUnavailable | null {
+  return UNAVAILABLE_MARKERS.find((m) => message.includes(m.marker))?.state ?? null;
+}
+
+/** `owner/name` from an issue's own URL, or `""`.
+ *
+ *  The launch needs the repository for the prompt, and the issue's `path` is
+ *  already that URL — so this replaces a second IPC command and its failure mode
+ *  with a pure read of a value the board already has.
+ *
+ *  The segments are found by searching for `issues` from the end rather than by
+ *  taking positions 1 and 2: a repository may legitimately be called `issues`,
+ *  and the host is not assumed to be github.com. Anything unreadable — a card
+ *  file's filesystem path, a truncated URL — is `""` rather than a throw or a
+ *  guess; `issuePrompt` says nothing about the repository in that case. */
+export function repoFromIssueUrl(url: string): string {
+  let pathname: string;
+  try { pathname = new URL(url).pathname; } catch { return ""; }
+  const parts = pathname.split("/").filter(Boolean);
+  const at = parts.lastIndexOf("issues");
+  if (at < 2) return "";
+  return `${parts[at - 2]}/${parts[at - 1]}`;
 }
 
 /** A workspace's one task source. `TrackerConfig.providers` is a list so a second

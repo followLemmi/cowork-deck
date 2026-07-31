@@ -12,10 +12,15 @@ import {
   boardConfigSave, boardStepRewrite, boardStepUsage,
   prList, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
   prWorktreePath, prWorktreeRemove,
+  issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove,
 } from "./ipc";
 import type { MigrationOffer, PullRequest, StepId, Task } from "./ipc";
+import { firstTerminal, isTerminal } from "./board-config";
+import { issuePrompt } from "./tasks";
 import { pollIntervalMs } from "./pr";
-import { boardPollMs, sourceOf } from "./issues";
+import {
+  boardPollMs, needsCloseConfirmation, needsTotals, repoFromIssueUrl, sourceOf, unavailableFrom,
+} from "./issues";
 import { PrView } from "./pr-view";
 import type { GhUnavailable, PrState } from "./pr-view";
 import { alertModal, confirmModal } from "./modal";
@@ -27,7 +32,7 @@ import { installSprite } from "./icons";
 import { openGithubScreen } from "./github-screen";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
-import { mergeForm, placeholderForm, taskForm } from "./forms";
+import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
 import { listen } from "@tauri-apps/api/event";
@@ -251,6 +256,27 @@ async function launchFromTask(t: Task) {
       `Was the workspace renamed? The launch was cancelled rather than start work in the wrong directory.`);
     return;
   }
+  if (sourceOf(target.tracker ?? null) === "github") {
+    const number = Number(t.id);
+    if (!Number.isInteger(number)) {
+      await alertModal(`“${t.id}” is not an issue number, so no branch could be derived from it.`);
+      return;
+    }
+    // A worktree of its own, on a new branch off the repository's default branch,
+    // and the session linked to the issue so a second ▶ focuses it rather than
+    // starting a rival session in the same directory.
+    const cwd = await issueWorktreeAdd(target.id, number, t.title)
+      .catch((e) => { void alertModal(`Could not prepare a worktree for #${t.id}: ${String(e)}`); return null; });
+    if (cwd === null) return;
+    // The repository comes off the issue's own URL — the same row the prompt is
+    // built from — rather than from a command of its own: one less call and one
+    // less failure mode, and `issuePrompt` says nothing about the repository when
+    // the URL cannot be read.
+    await deck.launchOnWorktree(
+      cwd, target.id, `☑ #${t.id}`, issuePrompt(t, repoFromIssueUrl(t.path)), t.id);
+    setView("deck");
+    return;
+  }
   // The *target* workspace's configuration, not the active board's: on a shared
   // root the card may belong to another project with another board.json, and the
   // kind's label comes from whichever one owns the card.
@@ -268,30 +294,80 @@ async function launchFromTask(t: Task) {
   setView("deck");
 }
 
+/** The last good list per GitHub workspace, so a failed tick keeps the screen
+ *  populated. In memory only, and keyed by workspace id: a late reply about a
+ *  workspace nobody is looking at must not repaint the current one.
+ *
+ *  **GitHub only, deliberately.** The reason for keeping stale rows is that being
+ *  offline or rate-limited is a blip in front of data that is still true, which is
+ *  a GitHub condition; a file board's failure is almost always "the folder is
+ *  gone", where phantom cards would invite actions that can only fail and would
+ *  replace the one screen offering `Configure`. The plan's code kept them for both
+ *  sources; narrowed here rather than changing a shipped screen nobody asked
+ *  about. */
+const lastGood = new Map<string, { tasks: Task[]; fetchedAt: number; total: number | null }>();
+
 /** Redraw the active workspace's board. Every IPC call is isolated: one failing
  *  handle must not take the whole tick down. */
 async function refreshBoard() {
   const ws = workspaces.active;
   if (!ws) {
-    board.render({ project: "", caps: null, error: null, tasks: [], links: [] });
+    board.render({ project: "", caps: null, error: null, tasks: [], links: [], source: "fs" });
     return;
   }
   const wsId = ws.id;
+  const source = sourceOf(ws.tracker ?? null);
   let caps = null;
   try { caps = await taskCapabilities(wsId); } catch (e) { console.debug("caps failed", e); }
+
   let tasks: Task[] = [];
   let error: string | null = null;
+  let unavailable: GhUnavailable | null = null;
+  let total: number | null = null;
+  let rateRemaining: number | null = null;
+  let fetchedAt: number | null = null;
+
   if (caps) {
-    try { tasks = await listTasks(wsId); }
-    catch (e) { error = String(e); }
+    const cfg = caps.board;
+    try {
+      tasks = await listTasks(wsId);
+      fetchedAt = Date.now();
+      const open = tasks.filter((t) => !isTerminal(cfg, t.status)).length;
+      // Only when it can change the answer: a page shorter than the cap *is* the
+      // total, so in a repository under fifty open issues this never fires.
+      if (source === "github" && needsTotals(open)) {
+        const t = await issueTotals(wsId).catch(() => null);
+        if (t) { total = t.open; rateRemaining = t.rateRemaining; }
+      }
+      if (source === "github") lastGood.set(wsId, { tasks, fetchedAt, total });
+    } catch (e) {
+      const msg = String((e as { message?: string })?.message ?? e);
+      // The three states in which the source cannot be read at all become their
+      // own screen; everything else — offline, rate-limited, a missing scope —
+      // keeps the last good list on screen beside the error, with its age. Asked
+      // only of a GitHub source: none of those markers can come out of a folder,
+      // and a file board's own errors already say what is wrong.
+      const known = source === "github" ? unavailableFrom(msg) : null;
+      if (known !== null) unavailable = known;
+      else error = msg;
+      const kept = lastGood.get(wsId);
+      if (kept) { tasks = kept.tasks; fetchedAt = kept.fetchedAt; total = kept.total; }
+    }
   }
   let migration: MigrationOffer | null = null;
-  try { migration = await taskMigrationStatus(wsId); }
-  catch (e) { console.debug("migration status failed", e); }
+  // Asked only where it can be answered: a GitHub workspace has no previous
+  // folder, and the backend refuses the command rather than inventing one.
+  if (source === "fs") {
+    try { migration = await taskMigrationStatus(wsId); }
+    catch (e) { console.debug("migration status failed", e); }
+  }
   // The workspace may have been switched while we waited on IPC: a late reply
   // must not repaint the board with another workspace's data over the current one.
   if (workspaces.active?.id !== wsId) return;
-  board.render({ project: ws.name, caps, error, tasks, links: deck.taskLinks(), migration });
+  board.render({
+    project: ws.name, caps, error, tasks, links: deck.taskLinks(), migration,
+    source, unavailable, fetchedAt, total, rateRemaining,
+  }, Date.now());
 }
 
 /** The sidebar counts — one handle covering every workspace. */
@@ -300,22 +376,63 @@ async function refreshCounts() {
   catch (e) { console.debug("taskOpenCounts failed", e); }
 }
 
+/** ✓ on a card. A file card is resolved; an issue is closed, which is public, so
+ *  it is confirmed first and carries the reason the confirmation collected. */
 async function closeTask(t: Task) {
   const ws = workspaces.active;
   if (!ws) return;
-  try { await resolveTask(ws.id, t.id); }
-  catch (e) { await alertModal(`Could not close the task: ${String(e)}`); }
+  if (sourceOf(ws.tracker ?? null) !== "github") {
+    try { await resolveTask(ws.id, t.id); }
+    catch (e) { await alertModal(`Could not close the task: ${String(e)}`); }
+    await refreshBoard();
+    await refreshCounts();
+    return;
+  }
+  const caps = await taskCapabilities(ws.id).catch(() => null);
+  // Which step closes an issue is the configuration's answer, not the literal
+  // "closed": the synthesized board names it, and asking `firstTerminal` is how
+  // the four write paths stay one. No terminal step means nothing to do, and
+  // saying so beats a patch the backend would refuse.
+  const step = caps ? firstTerminal(caps.board) : null;
+  if (step === null) {
+    await alertModal("This board has no closing step, so there is nothing for ✓ to do.");
+    return;
+  }
+  const reason = await closeIssueModal(t.id, t.title);
+  if (reason === null) return;
+  let closed = true;
+  try { await updateTask(ws.id, t.id, { status: step, reason }); }
+  catch (e) {
+    closed = false;
+    await alertModal(`Could not close the issue: ${String(e)}`);
+  }
   await refreshBoard();
   await refreshCounts();
+  // Only a close that actually happened leaves a worktree nobody needs.
+  if (closed) await offerIssueWorktreeCleanup(t);
 }
 
 /** A drag or an arrow click both land here: a step-only patch, exactly like
- *  the modal's own step-only move (card-modal.ts's computePatch). */
+ *  the modal's own step-only move (card-modal.ts's computePatch).
+ *
+ *  A move into a terminal step on a GitHub board *is* a close, so it asks the same
+ *  question and carries the same reason — the drag, the arrow and ✓ are one write
+ *  path, and a confirmation that only one of them raised would be a hole rather
+ *  than a shortcut. Which moves need it is `needsCloseConfirmation`'s decision. */
 async function moveTask(t: Task, step: StepId) {
   const ws = workspaces.active;
   if (!ws) return;
-  try { await updateTask(ws.id, t.id, { status: step }); }
+  const source = sourceOf(ws.tracker ?? null);
+  const caps = source === "github" ? await taskCapabilities(ws.id).catch(() => null) : null;
+  let reason: string | null = null;
+  if (caps && needsCloseConfirmation(caps.board, t.status, step, source)) {
+    reason = await closeIssueModal(t.id, t.title);
+    if (reason === null) return;
+  }
+  let moved = true;
+  try { await updateTask(ws.id, t.id, reason === null ? { status: step } : { status: step, reason }); }
   catch (e) {
+    moved = false;
     // Nothing here is optimistic — a native drag never moves the node, and this
     // awaits the write before re-reading the board. So a refusal has to be said
     // out loud: without the alert the drag or the arrow would simply appear to
@@ -324,6 +441,35 @@ async function moveTask(t: Task, step: StepId) {
   }
   await refreshBoard();
   await refreshCounts();
+  // A closing move orphans the issue's worktree exactly as ✓ does.
+  if (moved && reason !== null) await offerIssueWorktreeCleanup(t);
+}
+
+/** A closed issue leaves the worktree its session ran in.
+ *
+ *  The same three guards as `offerWorktreeCleanup`: a live session in it stops the
+ *  offer outright, the backend refuses while it is dirty, and the person still has
+ *  to say yes. Offered when the issue closes, never automatic.
+ *
+ *  **It silently does not offer for an issue renamed on GitHub since the worktree
+ *  was made.** `issue_worktree_path` derives the directory from `slug(title)`, so
+ *  a renamed issue reports `None` for the old one — known, recorded under Task 23,
+ *  and untidiness rather than loss: the `{number}-` prefix keeps the orphan
+ *  adjacent to its replacement on disk. */
+async function offerIssueWorktreeCleanup(t: Task) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  const number = Number(t.id);
+  // An issue's id is its number. Anything else is not an issue and the derived
+  // path would be nonsense — an fs card reaching here is a bug elsewhere, and a
+  // silent return is the safe reading of it.
+  if (!Number.isInteger(number)) return;
+  const path = await issueWorktreePath(ws.id, number, t.title).catch(() => null);
+  if (!path) return;
+  if (deck.hasSessionIn(path)) return;
+  if (!(await confirmModal(`Remove the worktree at ${path}?`))) return;
+  await issueWorktreeRemove(ws.id, number, t.title)
+    .catch((e) => void alertModal(String(e)));
 }
 
 /** Open a card, edit it, and save only what changed — see card-modal.ts for
@@ -468,15 +614,13 @@ async function refreshPrs() {
     const msg = String((e as { message?: string })?.message ?? e);
     // Known unavailabilities become their own screen; everything else — a
     // missing `repo` scope, the rate limit, an offline machine — keeps the last
-    // good list on screen beside the error, with its age.
-    if (msg.includes("gh-not-found")) prState = { ...prState, unavailable: "no-gh" };
-    else if (msg.includes("no-account")) prState = { ...prState, unavailable: "no-account" };
-    else if (msg.includes("no git remotes") || msg.includes("not a git repository")
-             || msg.includes("none of the git remotes")) {
-      prState = { ...prState, unavailable: "no-repo" };
-    } else {
-      prState = { ...prState, error: msg };
-    }
+    // good list on screen beside the error, with its age. The mapping itself now
+    // lives in `issues.ts` and is read by the board too: it used to be an
+    // if-chain here, which was one place for the two GitHub views to disagree
+    // about what "no repository" looks like.
+    const known = unavailableFrom(msg);
+    if (known !== null) prState = { ...prState, unavailable: known };
+    else prState = { ...prState, error: msg };
   }
   prView.render(prState, Date.now());
   schedulePrPoll();
@@ -506,7 +650,15 @@ async function launchFromPr(pr: PullRequest) {
     await deck.launchOnWorktree(
       cwd, ws.id, `⑂ #${pr.number}`,
       `You are working on pull request #${pr.number}: ${pr.title}\n`
-      + `Branch ${pr.headRefName} → ${pr.baseRefName}, checked out in ${cwd}.`,
+      + `Branch ${pr.headRefName} → ${pr.baseRefName}, checked out in ${cwd}.`
+      // Said out loud when the directory was already there for something else —
+      // an issue's worktree on the same branch, which is the ordinary case once
+      // the branch that fixes an issue is the branch the pull request proposes.
+      // Without it the same commits under two names read as two pieces of work.
+      + (added.reused
+        ? `\nThat directory already existed for this branch and was reused, so anything`
+          + ` already committed there is part of this pull request.`
+        : ""),
     );
     setView("deck");
   } catch (e) {

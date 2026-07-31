@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   ISSUE_POLL_MS, FILE_POLL_MS, boardPollMs, OPEN_PAGE_LIMIT, needsTotals, countLine,
   needsCloseConfirmation, closeConfirmText, RATE_WARN_BELOW, rateLimitBanner, sourceOf,
+  unavailableFrom, repoFromIssueUrl,
 } from "../src/issues";
 import type { BoardConfig, TrackerConfig } from "../src/ipc";
 
@@ -103,6 +104,61 @@ describe("the rate limit banner", () => {
     expect(rateLimitBanner(4873)).toBeNull();
     // Null, not zero: an absent header must never read as exhausted.
     expect(rateLimitBanner(null)).toBeNull();
+  });
+});
+
+describe("unavailableFrom", () => {
+  /// The messages as they actually arrive, wrapped: a GitHub failure comes back
+  /// through `TaskError::Io`, whose Display prefixes "filesystem error: ". So
+  /// this matches on a marker inside the message and never on the whole string —
+  /// an equality check would recognise none of these.
+  it("recognises the three states a GitHub source cannot work in", () => {
+    expect(unavailableFrom("filesystem error: gh-not-found")).toBe("no-gh");
+    expect(unavailableFrom("no-account")).toBe("no-account");
+    expect(unavailableFrom("filesystem error: no git remotes found")).toBe("no-repo");
+    expect(unavailableFrom("fatal: not a git repository")).toBe("no-repo");
+    expect(unavailableFrom("none of the git remotes point at GitHub")).toBe("no-repo");
+  });
+
+  /// The important half. Everything else — offline, rate-limited, a missing
+  /// scope, HTTP 502 — keeps the last good list on screen beside the error, and
+  /// mapping one of those onto a screen would replace real data with a wrong
+  /// explanation. A missing scope in particular is exit 1 with nothing on stdout.
+  it("maps anything it does not recognise to null rather than to a screen", () => {
+    expect(unavailableFrom("HTTP 502")).toBeNull();
+    expect(unavailableFrom("filesystem error: your token has not been granted 'repo'")).toBeNull();
+    expect(unavailableFrom("API rate limit exceeded")).toBeNull();
+    expect(unavailableFrom("")).toBeNull();
+  });
+});
+
+describe("repoFromIssueUrl", () => {
+  it("reads owner/name off the issue's own URL", () => {
+    expect(repoFromIssueUrl("https://github.com/followLemmi/cowork-deck/issues/42"))
+      .toBe("followLemmi/cowork-deck");
+  });
+
+  /// An enterprise host is not github.com, and nothing here may assume it is:
+  /// the owner and the name are the two segments before `issues`, whatever the
+  /// host.
+  it("works on an enterprise host", () => {
+    expect(repoFromIssueUrl("https://github.acme.example/team/tools/issues/7")).toBe("team/tools");
+  });
+
+  /// Found by searching for the `issues` segment from the end rather than by
+  /// indexing: a repository may legitimately be called `issues`, and taking
+  /// positions 1 and 2 would be right only by luck.
+  it("survives an owner or a repository called issues", () => {
+    expect(repoFromIssueUrl("https://github.com/issues/issues/issues/1")).toBe("issues/issues");
+  });
+
+  /// The empty string, never a guess and never a throw: this feeds the prompt,
+  /// and a card file's `path` is a filesystem path rather than a URL.
+  it("falls back to the empty string on anything it cannot read", () => {
+    expect(repoFromIssueUrl("/home/u/vault/Tasks/01AAA-pill.md")).toBe("");
+    expect(repoFromIssueUrl("https://github.com/o/issues/42")).toBe("");
+    expect(repoFromIssueUrl("not a url at all")).toBe("");
+    expect(repoFromIssueUrl("")).toBe("");
   });
 });
 

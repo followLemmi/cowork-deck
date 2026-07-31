@@ -77,7 +77,10 @@ export function taskPrompt(task: Task, cfg: BoardConfig): string {
  *  the close instruction, and nothing between them to move to. */
 export function issuePrompt(task: Task, repo: string): string {
   const lines = [
-    `GitHub issue #${task.id} in ${repo}.`,
+    // `repo` is `repoFromIssueUrl`'s answer and that is `""` for a URL it cannot
+    // read — a reachable input, not a hypothetical one — so the clause is omitted
+    // rather than interpolated into "in .", a sentence about nothing.
+    repo ? `GitHub issue #${task.id} in ${repo}.` : `GitHub issue #${task.id}.`,
     "",
     `Title: ${task.title}`,
     task.path,

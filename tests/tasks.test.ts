@@ -97,6 +97,16 @@ describe("issuePrompt", () => {
     expect(p).not.toContain("status");
   });
 
+  // `repoFromIssueUrl` returns "" for a URL it cannot read, by design, and the
+  // launch passes that straight in — so this is a reachable input, not a
+  // hypothetical one. "GitHub issue #42 in ." would be a sentence about nothing.
+  it("says nothing about the repository when the repository is not known", () => {
+    const p = issuePrompt(issue(), "");
+    expect(p).toContain("GitHub issue #42");
+    expect(p).not.toContain(" in .");
+    expect(p.split("\n")[0]).toBe("GitHub issue #42.");
+  });
+
   // `\s*` between the newlines, not nothing: a builder that pushed the body
   // without trimming would leave a stanza of spaces, which is the blank stanza
   // this test is named for and which /\n\n\n/ alone would not catch.

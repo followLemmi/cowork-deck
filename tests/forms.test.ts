@@ -5,7 +5,8 @@ const { pickFolderMock } = vi.hoisted(() => ({ pickFolderMock: vi.fn() }));
 vi.mock("../src/dialog", () => ({ pickFolder: pickFolderMock }));
 vi.mock("@tauri-apps/api/core");
 
-import { workspaceForm, skillForm, placeholderForm, mergeForm } from "../src/forms";
+import { workspaceForm, skillForm, placeholderForm, mergeForm, closeIssueModal } from "../src/forms";
+import { closeConfirmText } from "../src/issues";
 import { invoke } from "@tauri-apps/api/core";
 
 beforeEach(() => {
@@ -479,5 +480,61 @@ describe("mergeForm", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(await p).toBeNull();
     expect(document.querySelector(".modal-box")).toBeNull();
+  });
+});
+
+describe("closeIssueModal", () => {
+  /// The two literal strings `gh issue close -r` accepts, and nothing else:
+  /// `gh_issues::close_reason` drops anything it does not recognise, so a third
+  /// option here would be a close that silently lost its reason.
+  it("offers exactly the two reasons gh accepts, with completed chosen", async () => {
+    const p = closeIssueModal(42, "Sidebar badge sticks");
+    const reasons = [...document.querySelectorAll<HTMLInputElement>(".ci-reason")];
+    expect(reasons.map((r) => r.value)).toEqual(["completed", "not planned"]);
+    expect(reasons.find((r) => r.checked)?.value).toBe("completed");
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect(await p).toBe("completed");
+  });
+
+  it("returns the other reason when it is the one chosen", async () => {
+    const p = closeIssueModal(42, "Sidebar badge sticks");
+    document.querySelector<HTMLInputElement>(".ci-reason[value='not planned']")!.checked = true;
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect(await p).toBe("not planned");
+  });
+
+  /// The sentence is `closeConfirmText`'s, not a second copy: the rule's own test
+  /// pins the wording, and this pins that the modal asks with it. Two copies of a
+  /// warning drift, and this one is the only place the person is told the close is
+  /// public.
+  it("asks with the shared sentence, naming the issue and who sees it", async () => {
+    const p = closeIssueModal(42, "Sidebar badge sticks");
+    const asked = document.querySelector(".modal-title")!.textContent!;
+    expect(asked).toBe(closeConfirmText(42, "Sidebar badge sticks"));
+    expect(asked).toContain("#42");
+    expect(asked).toContain("everyone in the repository");
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    expect(await p).toBeNull();
+  });
+
+  /// Null, never a default reason: an unanswered confirmation must not close
+  /// anything, and Escape is how a person says no to a dialog.
+  it("resolves null on Escape, closing nothing", async () => {
+    const p = closeIssueModal(7, "t");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(await p).toBeNull();
+    expect(document.querySelector(".modal-box")).toBeNull();
+  });
+
+  /// A title is the repository's text. Set with textContent like every other
+  /// dialog's — `.modal-title` is built by `modal.ts`'s `title()` for the shared
+  /// dialogs and here by hand, so it is worth an assertion rather than a reading.
+  it("renders a title carrying markup as text", async () => {
+    const p = closeIssueModal(9, "<img src=x onerror=alert(1)>");
+    expect(document.querySelector("img")).toBeNull();
+    expect(document.querySelector(".modal-title")!.textContent)
+      .toContain("<img src=x onerror=alert(1)>");
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await p;
   });
 });
