@@ -553,7 +553,16 @@ pub fn tasks_capabilities(
 pub fn tasks_list(state: State<AppState>, workspace_id: String) -> Result<Vec<Task>, String> {
     let ws = workspace(&state, &workspace_id)?;
     let p = provider_for(&state, &ws)?;
-    p.list(&ws.name).map_err(|e| e.to_string())
+    let cards = p.list(&ws.name).map_err(|e| e.to_string())?;
+    // The sidebar badge's only source for this workspace. Recorded here rather
+    // than fetched there, because `tasks_open_counts` runs across every
+    // workspace after every mutation and must never spend a GraphQL point.
+    if matches!(tracker_kind(&ws), Some(TrackerKind::GitHub)) {
+        if let Ok(mut cache) = state.issue_open_counts.lock() {
+            cache.insert(ws.id.clone(), open_count(&cards, &board_for(&ws).config));
+        }
+    }
+    Ok(cards)
 }
 
 #[tauri::command]
@@ -606,6 +615,12 @@ pub fn tasks_update(
     p.update(&id, patch).map_err(|e| e.to_string())
 }
 
+/// How many of these cards are not in a terminal step. Which steps those are is
+/// the board's business, not this function's.
+fn open_count(cards: &[Task], board: &BoardConfig) -> usize {
+    cards.iter().filter(|c| !board.is_terminal(&c.status)).count()
+}
+
 /// Open-card count per workspace id, for the sidebar badges. One call instead of
 /// one per workspace, and a workspace whose root is broken contributes 0 rather
 /// than failing the whole map.
@@ -614,20 +629,29 @@ pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::Has
     let all = tracker_workspaces(&state)?;
     let mut out = std::collections::HashMap::new();
     for ws in all {
-        // Task 11 rewrites this loop to serve a GitHub workspace from the count
-        // its own board last recorded; until then only a file board answers.
-        let Ok(p) = fs_provider_for(&ws) else { continue };
-        let n = match p.list(&ws.name) {
-            Ok(cards) => cards
-                .iter()
-                // "Open" is "not closed": which steps count as closed is
-                // board.json's business, and a board with `backlog`/`todo`/
-                // `doing` has three of them.
-                .filter(|c| !p.board().is_terminal(&c.status))
-                .count(),
-            Err(_) => continue,
-        };
-        out.insert(ws.id.clone(), n);
+        match tracker_kind(&ws) {
+            // Never a network call. A workspace whose board has not been opened
+            // this run is *absent* rather than zero, and `WorkspacesPanel`
+            // already draws nothing for an absent count
+            // (`workspaces.ts:137-143`). The cost, plainly: a GitHub
+            // workspace's badge is as fresh as the last time you looked at that
+            // board. The better answer — one batched GraphQL query returning
+            // `totalCount` for every GitHub workspace in a single point — is an
+            // addition, not a rewrite, if that staleness turns out to matter.
+            Some(TrackerKind::GitHub) => {
+                if let Some(n) =
+                    state.issue_open_counts.lock().ok().and_then(|c| c.get(&ws.id).copied())
+                {
+                    out.insert(ws.id.clone(), n);
+                }
+            }
+            Some(TrackerKind::Fs { .. }) => {
+                let Ok(p) = fs_provider_for(&ws) else { continue };
+                let Ok(cards) = p.list(&ws.name) else { continue };
+                out.insert(ws.id.clone(), open_count(&cards, p.board()));
+            }
+            None => continue,
+        }
     }
     Ok(out)
 }
@@ -1881,6 +1905,27 @@ mod tests {
         (dir, root, w)
     }
 
+    /// One card as the GitHub provider produces it: an issue number for an id, a
+    /// step, and nothing else the count looks at.
+    fn issue_card(id: &str, step: &str) -> Task {
+        Task {
+            id: id.into(),
+            title: "t".into(),
+            kind: KindId(String::new()),
+            status: StepId(step.into()),
+            project: "cowork-deck".into(),
+            created: String::new(),
+            resolved: None,
+            origin: TaskOrigin::Human,
+            session: None,
+            body: String::new(),
+            path: String::new(),
+            damaged: None,
+            conflict: false,
+            labels: Vec::new(),
+        }
+    }
+
     fn write_card(dir: &std::path::Path, filename: &str, id: &str, project: &str, status: &str) {
         std::fs::write(
             dir.join(filename),
@@ -2127,5 +2172,22 @@ mod tests {
         assert!(rewrite_step(&w, &StepId("open".into()), &StepId("closed".into()), &github_board())
             .is_err());
         assert!(save_config(&w, github_board()).is_err());
+    }
+
+    /// "Open" is "not closed", asked of the board rather than assumed: the file
+    /// board can have three non-terminal steps.
+    #[test]
+    fn the_open_count_is_everything_not_in_a_terminal_step() {
+        let cards = vec![
+            issue_card("1", "open"),
+            issue_card("2", "open"),
+            issue_card("3", "closed"),
+        ];
+        assert_eq!(open_count(&cards, &github_board()), 2);
+    }
+
+    #[test]
+    fn a_board_with_no_open_cards_counts_zero_rather_than_being_absent() {
+        assert_eq!(open_count(&[issue_card("3", "closed")], &github_board()), 0);
     }
 }
