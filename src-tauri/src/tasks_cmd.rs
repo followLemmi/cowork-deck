@@ -345,9 +345,58 @@ fn workspace(state: &State<AppState>, id: &str) -> Result<Workspace, String> {
         .ok_or_else(|| format!("workspace not found: {id}"))
 }
 
-fn provider_for(ws: &Workspace) -> Result<FsTaskProvider, String> {
-    let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
-    Ok(FsTaskProvider::new(root, creation))
+/// What the six file-backed commands say to a workspace whose board is GitHub
+/// issues. One message, in one place: six variations on it would drift.
+const FILE_ONLY: &str =
+    "this needs a folder-backed tracker — this workspace's board is its GitHub issues";
+
+/// The concrete provider, for the callers that need more than the trait: the
+/// migration (`offer_for`), the step rewrite and the ⚙ editor. Each of those is
+/// meaningless without a folder, and each refuses rather than pretending.
+fn fs_provider_for(ws: &Workspace) -> Result<FsTaskProvider, String> {
+    match tracker_kind(ws) {
+        Some(TrackerKind::Fs { root, creation }) => {
+            // Handed the board `board_for` decided rather than reading it again:
+            // one decision, one configuration (decision 1).
+            Ok(FsTaskProvider::with_board(root, creation, board_for(ws).config))
+        }
+        Some(TrackerKind::GitHub) => Err(FILE_ONLY.to_string()),
+        None => Err("not-configured".to_string()),
+    }
+}
+
+/// The provider for everything that only needs the port.
+///
+/// `Box<dyn TaskProvider>` rather than an enum: an enum would make each
+/// file-only command a compiler-checked `match`, which is attractive — but the
+/// trait already exists, and one boxed value plus one narrowing function is less
+/// machinery than an enum whose every arm has to be visited when Jira lands.
+fn provider_for<'a>(
+    state: &'a State<'_, AppState>,
+    ws: &Workspace,
+) -> Result<Box<dyn TaskProvider + 'a>, String> {
+    match tracker_kind(ws) {
+        Some(TrackerKind::Fs { .. }) => Ok(Box::new(fs_provider_for(ws)?)),
+        Some(TrackerKind::GitHub) => {
+            // **No I/O here.** Both closures borrow the state and run only when
+            // the provider is actually used, so building a provider for a
+            // workspace whose `gh` is missing succeeds — and the failure lands on
+            // the list call, where the frontend can turn it into "Set up gh"
+            // rather than "no tracker is configured". Resolving the repository
+            // here instead is the single change that would make all three of
+            // decision 9's unavailable states unreachable.
+            let id = ws.id.clone();
+            let repo_id = id.clone();
+            Ok(Box::new(crate::tasks::gh_issues::GhIssueProvider::new(
+                Box::new(move || crate::commands::repo_facts_for(state, &repo_id).map(|f| f.repo)),
+                Box::new(move |argv, stdin| match stdin {
+                    Some(body) => crate::commands::run_gh_with_stdin(state, &id, argv, body),
+                    None => crate::commands::run_gh_for_workspace(state, &id, argv),
+                }),
+            )))
+        }
+        None => Err("not-configured".to_string()),
+    }
 }
 
 /// The board a GitHub workspace has: two steps, synthesized, not editable.
@@ -437,7 +486,17 @@ pub struct BoardCapabilities {
     pub board_editable: bool,
 }
 
-fn capabilities_for(ws: &Workspace) -> Option<BoardCapabilities> {
+/// The board's whole description of itself, from the workspace plus the
+/// provider's own answer about what it can do.
+///
+/// `caps` is handed in rather than resolved here: since Task 10 the provider is
+/// built from the app state, which this function has no business holding — and
+/// the one case that needs no provider at all, an unreadable source, is decided
+/// before `caps` is ever looked at.
+fn capabilities_for(
+    ws: &Workspace,
+    caps: Option<ProviderCapabilities>,
+) -> Option<BoardCapabilities> {
     // A source written by a newer build (Task 2). Not `None`: that means "no
     // tracker configured", and this workspace has one — we simply cannot read
     // it. Reported through the channel that already exists for "the board is not
@@ -463,16 +522,14 @@ fn capabilities_for(ws: &Workspace) -> Option<BoardCapabilities> {
         });
     }
     let loaded = board_for(ws);
-    // Task 10 boxes `provider_for`, and a GitHub workspace answers here too.
-    // Until then it has no provider to ask, which is what keeps the feature
-    // unreachable through Barrier A.
-    //
-    // The `.ok()` is safe only because `provider_for` does no network I/O: if
-    // resolving the repository ever moved inside it, every unavailable state
-    // would arrive at the board as "No task tracker is configured for this
-    // workspace" — the false claim the branch above exists to prevent.
+    // `None` here still means "no tracker configured for this workspace", which
+    // is why the caller resolves `caps` with a `provider_for` that does no
+    // network I/O: if resolving the repository ever moved inside it, every
+    // unavailable state would arrive at the board as "No task tracker is
+    // configured for this workspace" — the false claim the branch above exists
+    // to prevent.
     Some(BoardCapabilities {
-        caps: provider_for(ws).ok()?.capabilities(),
+        caps: caps?,
         board: loaded.config,
         board_error: loaded.error,
         board_editable: board_editable(ws),
@@ -488,13 +545,14 @@ pub fn tasks_capabilities(
     // `None` still means "no tracker configured for this workspace" and nothing
     // else — a configured root that cannot be read yields real capabilities plus
     // an error from `tasks_list`. The board treats the two differently.
-    Ok(capabilities_for(&ws))
+    let caps = provider_for(&state, &ws).ok().map(|p| p.capabilities());
+    Ok(capabilities_for(&ws, caps))
 }
 
 #[tauri::command]
 pub fn tasks_list(state: State<AppState>, workspace_id: String) -> Result<Vec<Task>, String> {
     let ws = workspace(&state, &workspace_id)?;
-    let p = provider_for(&ws)?;
+    let p = provider_for(&state, &ws)?;
     p.list(&ws.name).map_err(|e| e.to_string())
 }
 
@@ -505,7 +563,7 @@ pub fn tasks_create(
     draft: TaskDraftInput,
 ) -> Result<Task, String> {
     let ws = workspace(&state, &workspace_id)?;
-    let p = provider_for(&ws)?;
+    let p = provider_for(&state, &ws)?;
     // project/origin/session are never taken from the caller: project is
     // always this workspace's name, and every card created through IPC is
     // human-created by definition (the `cowork_task` CLI is the only path
@@ -528,7 +586,7 @@ pub fn tasks_resolve(
     id: String,
 ) -> Result<Task, String> {
     let ws = workspace(&state, &workspace_id)?;
-    let p = provider_for(&ws)?;
+    let p = provider_for(&state, &ws)?;
     p.resolve(&id).map_err(|e| e.to_string())
 }
 
@@ -544,7 +602,7 @@ pub fn tasks_update(
     patch: TaskPatch,
 ) -> Result<Task, String> {
     let ws = workspace(&state, &workspace_id)?;
-    let p = provider_for(&ws)?;
+    let p = provider_for(&state, &ws)?;
     p.update(&id, patch).map_err(|e| e.to_string())
 }
 
@@ -556,7 +614,9 @@ pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::Has
     let all = tracker_workspaces(&state)?;
     let mut out = std::collections::HashMap::new();
     for ws in all {
-        let Ok(p) = provider_for(&ws) else { continue };
+        // Task 11 rewrites this loop to serve a GitHub workspace from the count
+        // its own board last recorded; until then only a file board answers.
+        let Ok(p) = fs_provider_for(&ws) else { continue };
         let n = match p.list(&ws.name) {
             Ok(cards) => cards
                 .iter()
@@ -683,6 +743,9 @@ pub fn tasks_migration_status(
     workspace_id: String,
 ) -> Result<Option<MigrationOffer>, String> {
     let ws = workspace(&state, &workspace_id)?;
+    // Before anything else: a card migration moves files between folders, and
+    // this workspace's board has neither.
+    fs_provider_for(&ws).map(|_| ())?;
     let Some((offer, _)) = offer_for(&ws)? else {
         // Nothing of ours is at the old root any more, so the pointer has done
         // its job — but only when the folder is actually readable. A missing
@@ -707,6 +770,10 @@ pub fn tasks_migrate(
     workspace_id: String,
 ) -> Result<MigrationReport, String> {
     let ws = workspace(&state, &workspace_id)?;
+    // `resolve_root` below would refuse a GitHub workspace too, but with
+    // "not-configured" — the wrong sentence for a workspace that is configured
+    // and simply has no folder.
+    fs_provider_for(&ws).map(|_| ())?;
     let (root, creation) = resolve_root(&ws).ok_or_else(|| "not-configured".to_string())?;
 
     // Before planning anything: moving some cards and then discovering there is
@@ -742,6 +809,9 @@ pub fn tasks_migration_dismiss(
     state: State<AppState>,
     workspace_id: String,
 ) -> Result<(), String> {
+    // There is no offer to dismiss without a folder, and clearing a pointer a
+    // GitHub workspace cannot have would be a write nobody asked for.
+    fs_provider_for(&workspace(&state, &workspace_id)?).map(|_| ())?;
     clear_previous_location(&state, &workspace_id)
 }
 
@@ -846,6 +916,9 @@ fn rewrite_step(
     to: &StepId,
     config: &BoardConfig,
 ) -> Result<RewriteReport, String> {
+    // Refused here rather than by `resolve_root`'s `None` below: a GitHub
+    // workspace has a configured tracker, so "not-configured" would be false.
+    fs_provider_for(ws).map(|_| ())?;
     let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
     let board = board_for_rewrite(&root, from, config);
     let p = FsTaskProvider::with_board(root, creation, board);
@@ -875,7 +948,7 @@ fn rewrite_step(
 /// `status:` field at all (damaged) parses to an empty step id, which matches
 /// no row the editor can show, so it is dropped rather than counted.
 fn step_usage(ws: &Workspace) -> Result<Vec<StepUsage>, String> {
-    let p = provider_for(ws)?;
+    let p = fs_provider_for(ws)?;
     let cards = p.scan().map_err(|e| e.to_string())?;
 
     let mut counts: Vec<(StepId, usize)> = Vec::new();
@@ -909,6 +982,9 @@ fn step_usage(ws: &Workspace) -> Result<Vec<StepUsage>, String> {
 /// same guarantee `load_or_create` already gives the read side.
 fn save_config(ws: &Workspace, config: BoardConfig) -> Result<(), String> {
     config.validate().map_err(|e| e.to_string())?;
+    // Same reason as `rewrite_step`: there is no `board.json` to write, and
+    // "not-configured" would describe the wrong problem.
+    fs_provider_for(ws).map(|_| ())?;
     let (root, creation) = resolve_root(ws).ok_or_else(|| "not-configured".to_string())?;
     let existing = FsTaskProvider::new(root.clone(), creation);
     if let Some(err) = existing.board_error() {
@@ -1134,7 +1210,9 @@ mod tests {
             previous_location: None,
             version: crate::model::TRACKER_CONFIG_VERSION,
         }));
-        let caps = capabilities_for(&w).expect("not None: that would read as unconfigured");
+        // No capabilities to hand in: an unreadable source is decided before
+        // they are looked at, which is the whole point of the branch.
+        let caps = capabilities_for(&w, None).expect("not None: that would read as unconfigured");
         let err = caps.board_error.expect("an explanation");
         // Both possibilities, because `untagged` cannot tell them apart: a source
         // from the future and a hand-edited `{"type":"fs"}` with no `root` both
@@ -1641,9 +1719,12 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join(crate::tasks::board::BOARD_FILE), "{ \"steps\": [ oops").unwrap();
 
-        let p = provider_for(&ws).expect("configured");
-        assert_eq!(p.board().step_ids(), BoardConfig::default_config().step_ids());
-        let err = p.board_error().expect("the reason has to reach the board");
+        // Asked of `board_for`, which is what the board itself now reads: since
+        // Task 8 the configuration and its error reach the frontend from there,
+        // and `fs_provider_for` is handed the result rather than loading again.
+        let loaded = board_for(&ws);
+        assert_eq!(loaded.config.step_ids(), BoardConfig::default_config().step_ids());
+        let err = loaded.error.expect("the reason has to reach the board");
         assert!(err.contains(crate::tasks::board::BOARD_FILE), "{err}");
     }
 
@@ -2005,5 +2086,46 @@ mod tests {
         assert!(usage.iter().all(|u| !u.step.as_str().is_empty()), "{usage:?}");
         let count = |id: &str| usage.iter().find(|u| u.step.as_str() == id).map(|u| u.count);
         assert_eq!(count("todo"), Some(1));
+    }
+
+    /// Each of the six refuses with one message, and the message says what is
+    /// wrong rather than "not-configured" — which would be a lie: a tracker *is*
+    /// configured, it just has no folder.
+    #[test]
+    fn the_six_file_only_commands_refuse_a_github_workspace() {
+        let w = ws(Some(github_tracker()));
+        // `map(|_| ())` because `FsTaskProvider` is not `Debug` and `expect_err`
+        // wants to print the `Ok` side; the refusal is what is under test.
+        let err = fs_provider_for(&w).map(|_| ()).expect_err("a github workspace has no folder");
+        assert!(err.contains("folder"), "{err}");
+        assert_ne!(err, "not-configured", "a github tracker is configured");
+    }
+
+    #[test]
+    fn an_unconfigured_workspace_is_still_not_configured() {
+        assert_eq!(fs_provider_for(&ws(None)).map(|_| ()).unwrap_err(), "not-configured");
+    }
+
+    #[test]
+    fn fs_provider_for_still_serves_a_file_workspace() {
+        assert!(fs_provider_for(&ws(Some(tracker(TrackerRoot::Project)))).is_ok());
+    }
+
+    /// The two functions that used `provider_for` for its concrete methods must
+    /// now name `fs_provider_for` — asserted through their public commands'
+    /// behaviour rather than by reading the source, so a future edit that
+    /// switches one back is caught.
+    #[test]
+    fn step_usage_refuses_a_github_workspace_rather_than_scanning_a_folder() {
+        let err = step_usage(&ws(Some(github_tracker()))).unwrap_err();
+        assert!(err.contains("folder"), "{err}");
+    }
+
+    #[test]
+    fn a_step_rewrite_and_a_config_save_refuse_a_github_workspace() {
+        let w = ws(Some(github_tracker()));
+        assert!(rewrite_step(&w, &StepId("open".into()), &StepId("closed".into()), &github_board())
+            .is_err());
+        assert!(save_config(&w, github_board()).is_err());
     }
 }

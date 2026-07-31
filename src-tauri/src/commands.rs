@@ -413,7 +413,7 @@ fn gh_invocation(
 ///
 /// Every path out of here is redacted: `gh` is capable of echoing a token back
 /// in an error, and this is the only place that decides what the frontend sees.
-fn run_gh_for_workspace(
+pub(crate) fn run_gh_for_workspace(
     state: &State<AppState>,
     workspace_id: &str,
     args: &[String],
@@ -439,7 +439,7 @@ fn run_gh_for_workspace(
 /// in a child process is a hang waiting for the one case that reaches it. Same
 /// account resolution, same `cwd`, same redaction, same
 /// check-the-exit-code-before-parsing rule; the only difference is the pipe.
-fn run_gh_with_stdin(
+pub(crate) fn run_gh_with_stdin(
     state: &State<AppState>,
     workspace_id: &str,
     args: &[String],
@@ -502,7 +502,7 @@ pub fn issue_totals_argv_with_headers(repo: &str) -> Vec<String> {
 /// cached. Not parsed out of `git remote get-url`: that is free but has to
 /// handle both SSH and HTTPS forms, and `gh`'s own answer is authoritative about
 /// which remote `gh` would have picked.
-pub fn repo_facts_for(
+pub(crate) fn repo_facts_for(
     state: &State<AppState>,
     workspace_id: &str,
 ) -> Result<cowork_deck::tasks::gh_issues::RepoFacts, String> {
