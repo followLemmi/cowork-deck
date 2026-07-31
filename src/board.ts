@@ -1,7 +1,9 @@
 import type { MigrationOffer, ProviderCapabilities, StepId, Task } from "./ipc";
 import { isTerminal, stepAfter, stepBefore } from "./board-config";
 import { ghUnavailable, type GhUnavailable } from "./gh-unavailable";
-import { countLine, needsTotals, rateLimitBanner, type TaskSource } from "./issues";
+import {
+  canShowMore, countLine, initialPageLimit, needsTotals, rateLimitBanner, type TaskSource,
+} from "./issues";
 import { ago } from "./pr";
 import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
 
@@ -28,8 +30,23 @@ export interface BoardState {
   /** Open issues in the repository, when a capped page made the number worth
    *  asking for. */
   total?: number | null;
+  /** Closed issues in the repository, on the same terms. The totals call answers
+   *  both in one point, so the second number costs nothing once the first is
+   *  worth asking for — and the closed filter needs it for exactly the reason the
+   *  open one does. */
+  closedTotal?: number | null;
   /** GraphQL points left this hour. Null when the headers said nothing. */
   rateRemaining?: number | null;
+  /** The read that will replace `tasks` is still in flight.
+   *
+   *  Drawn as skeleton rows only when there is nothing to keep: a board that
+   *  already has a list keeps it, because replacing true-a-moment-ago rows with
+   *  grey boxes every 30 s is a worse screen than a slightly stale one. */
+  loading?: boolean;
+  /** The page size `tasks` were fetched with, or absent for the provider's own
+   *  defaults. Read by "Show more" to decide whether it has anything left to ask
+   *  for — a page shorter than what was requested is the whole of that state. */
+  pageLimit?: number | null;
 }
 
 export interface BoardHandlers {
@@ -45,6 +62,16 @@ export interface BoardHandlers {
   /** The one addition that cannot be optional: a box offering a button that does
    *  nothing is worse than no box. */
   onFixUnavailable: (u: GhUnavailable) => void;
+  /** "Show more": raise the page the source is asked for and read it again. Not
+   *  optional for the same reason — the view only draws the button where there is
+   *  something behind it, so a no-op handler would strand rows nobody can reach.
+   *
+   *  `from` is the page size the rows on screen were measured against, which only
+   *  the view knows: the two states start at different defaults (50 open, 20
+   *  closed) and the filter decides which of them the button is under. Handed over
+   *  rather than guessed, so the next page is one step past what is actually
+   *  shown. */
+  onShowMore: (from: number) => void;
 }
 
 /** `caps === null` means no tracker is configured — a legal state, not a failure. */
@@ -70,8 +97,19 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+/** How many grey rows a first load draws. Enough to read as a list rather than
+ *  as one stuck row, few enough not to promise a length nobody knows yet. */
+const SKELETON_ROWS = 6;
+
 export class BoardView {
   readonly mount = el("div", "tk-board");
+  /** Which step the list is filtered to, or null for "whichever comes first".
+   *
+   *  View state, not board state: switching between Open and Closed needs no
+   *  request, so it must not travel through `refreshBoard` and cannot be reset by
+   *  a poll landing under the person's hand. Null rather than `"open"` because the
+   *  step ids are the configuration's to choose. */
+  private filter: StepId | null = null;
   constructor(private h: BoardHandlers) {}
 
   /** `now` is a parameter, not a `Date.now()` inside, so the age line is
@@ -128,6 +166,22 @@ export class BoardView {
       return;
     }
 
+    // Before the `caps === null` branch below, and that order is the whole point.
+    // The first read of a GitHub board is three `gh` calls deep — a repository
+    // lookup and a page per state — and `caps` arrives from a call of its own, so
+    // for those seconds the state on screen is "no capabilities yet, no tasks
+    // yet". Drawn by the branch below that is "No task tracker is configured for
+    // this workspace", which is false and is the one sentence a person acts on by
+    // going to look for a setting that is already correct.
+    //
+    // Only with nothing to keep: a board that already has rows keeps them, with
+    // the age line above saying how old they are. Grey boxes every 30 s in place
+    // of rows that were true a moment ago is a worse screen than a stale one.
+    if (state.loading && state.tasks.length === 0) {
+      this.mount.append(this.skeleton());
+      return;
+    }
+
     // A failure with a last good list keeps it — offline and rate-limited are not
     // their own screens (see below). A failure with nothing to show is still this
     // screen: empty columns under an error read as a folder with no cards in
@@ -168,40 +222,41 @@ export class BoardView {
       this.mount.append(el("p", "tk-board-error", detail));
     }
 
-    const cols = boardColumns(state.tasks, state.project, caps.board);
-    const wrap = el("div", "tk-cols");
-    for (const c of cols.columns) wrap.append(this.column(c, state, caps));
-    if (cols.unknown.length > 0) {
-      // `id: ""` on purpose: it is not a configured step, and column() only
-      // sets `data-step` for a non-empty id — see the comment there.
-      const unknownCol = this.column(
-        { step: { id: "", label: "unknown step" }, tasks: cols.unknown, hidden: 0 }, state, caps,
-      );
-      unknownCol.classList.add("tk-col-unknown");
-      wrap.append(unknownCol);
+    // One list for an issue source, columns for a folder. Not a preference: an
+    // issue has two steps and moving between them *is* closing and reopening it,
+    // which the row's own ✓ and arrows already do — so a column pair buys a drag
+    // gesture for an action that has a button, at the cost of splitting fifty rows
+    // across two narrow strips and capping the second at twenty. A file board's
+    // steps are the person's own, as many as they configured, and dragging between
+    // them is the whole of how a card advances.
+    //
+    // `Infinity` because the page, not a column cap, is what decides how much of a
+    // paged source is on screen. `boardColumns` is still the one grouping rule:
+    // both layouts get the same project filter, the same unknown-step handling and
+    // the same sort.
+    const list = state.source === "github";
+    const cols = boardColumns(state.tasks, state.project, caps.board, list ? Infinity : undefined);
+    if (list) this.mount.append(this.list(cols, state, caps, now));
+    else {
+      const wrap = el("div", "tk-cols");
+      for (const c of cols.columns) wrap.append(this.column(c, state, caps));
+      if (cols.unknown.length > 0) {
+        // `id: ""` on purpose: it is not a configured step, and column() only
+        // sets `data-step` for a non-empty id — see the comment there.
+        const unknownCol = this.column(
+          { step: { id: "", label: "unknown step" }, tasks: cols.unknown, hidden: 0 }, state, caps,
+        );
+        unknownCol.classList.add("tk-col-unknown");
+        wrap.append(unknownCol);
+      }
+      this.mount.append(wrap);
     }
-    this.mount.append(wrap);
 
-    // Both from their pure rules, and both silent unless they have something to
-    // say. The count is measured against the non-terminal column rather than
-    // `state.tasks`: closed issues come down the same list and are not what
-    // "of 63 open" counts. Found by predicate, not by index — a board's first
-    // step is the open one by convention, not by construction.
+    // From its pure rule, and silent unless it has something to say. Outside the
+    // layout branch because a budget nearly spent is a fact about the token, not
+    // about which screen is drawn.
     const rate = rateLimitBanner(state.rateRemaining ?? null);
     if (rate) this.mount.append(el("p", "tk-rate", rate));
-    // Gated on the source as well as on the numbers: "of 63 open issues" is a
-    // statement about a repository, and a file board has none. A `total` can reach
-    // one — the last-good list is keyed by workspace and survives a source switch
-    // — so the gate is here rather than left to whoever fills the field.
-    const openCol = cols.columns.find((c) => c.step.terminal !== true);
-    const shown = openCol?.tasks.length ?? 0;
-    // `needsTotals` is the same predicate `main.ts` asks before the totals call —
-    // a page at the cap is a capped page — so the sentence and the call that feeds
-    // it cannot disagree about which pages have more behind them.
-    const count = state.source === "github"
-      ? countLine(shown, state.total ?? null, needsTotals(shown))
-      : null;
-    if (count) this.mount.append(el("p", "tk-count", count));
 
     if (cols.columns.every((c) => c.tasks.length === 0) && cols.unknown.length === 0) {
       this.mount.append(el("div", "tk-empty", emptyStateMessage(caps, null).text));
@@ -310,51 +365,186 @@ export class BoardView {
     };
   }
 
-  private card(t: Task, state: BoardState, caps: ProviderCapabilities) {
+  /** Grey rows standing in for a list that has not arrived.
+   *
+   *  `aria-hidden`, with one live sentence beside them: to a screen reader six
+   *  empty boxes are six pieces of nothing, and "Loading…" is the whole of what
+   *  they say to anybody else either. */
+  private skeleton(): HTMLElement {
+    const wrap = el("div", "tk-skeleton");
+    wrap.append(el("p", "tk-skeleton-text", "Loading…"));
+    const rows = el("div", "tk-skeleton-rows");
+    rows.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < SKELETON_ROWS; i++) rows.append(el("div", "tk-skeleton-row"));
+    wrap.append(rows);
+    return wrap;
+  }
+
+  /** One list, one state at a time, the way the repository's own issues page
+   *  reads: a filter for each step, the rows under it, and "Show more" where the
+   *  page it came from was full.
+   *
+   *  The filter lives on the view (`this.filter`) and the page size on the state,
+   *  and that split is not incidental: switching states needs no request and must
+   *  survive a poll landing mid-click, while asking for more rows *is* a request
+   *  and belongs to whoever owns the fetch. */
+  private list(
+    cols: ReturnType<typeof boardColumns>, state: BoardState, caps: ProviderCapabilities,
+    now: number,
+  ): HTMLElement {
+    interface Group {
+      id: StepId; label: string; tasks: Task[]; terminal: boolean; total: number | null;
+    }
+    const groups: Group[] = cols.columns.map((c) => ({
+      id: c.step.id,
+      label: c.step.label,
+      tasks: c.tasks,
+      terminal: c.step.terminal === true,
+      total: (c.step.terminal === true ? state.closedTotal : state.total) ?? null,
+    }));
+    // Cards naming a step the configuration does not know get a filter of their
+    // own rather than being folded into either real one. Unreachable for a GitHub
+    // source — `open` and `closed` are the only two statuses the provider writes —
+    // and kept because the alternative is a card that exists and cannot be seen.
+    // `total: null`: the repository counts open and closed issues, not this.
+    if (cols.unknown.length > 0) {
+      groups.push({
+        id: "", label: "unknown step", tasks: cols.unknown, terminal: false, total: null,
+      });
+    }
+
+    const wrap = el("div", "tk-list");
+    // Falls back to the first group whenever the filter names a step this board
+    // no longer has: a board.json edited underneath, or a source switched between
+    // renders. Which is also what makes `null` the right initial value — the open
+    // step is first by convention, and its id is the configuration's to choose.
+    const active = groups.find((g) => g.id === this.filter) ?? groups[0];
+    // A configuration with no steps at all and no card naming one: legal — `steps:
+    // []` is a shape the fallback board and `taskPrompt` both already handle — and
+    // there is no filter to draw and nothing to put under it. Said rather than
+    // indexed into: `groups[0]` would be `undefined` and every line below it would
+    // throw, taking the head and the banners down with it.
+    if (!active) {
+      wrap.append(el("div", "tk-empty", "This board has no steps configured."));
+      return wrap;
+    }
+    if (groups.length > 1) {
+      const bar = el("div", "tk-filters");
+      bar.setAttribute("role", "group");
+      bar.setAttribute("aria-label", "Which issues to show");
+      for (const g of groups) {
+        // The repository's own count where it is known, so the chip agrees with
+        // GitHub rather than with what a page happened to fit; the count line
+        // below says how much of it is on screen.
+        const chip = el("button", "tk-filter", `${g.label} (${g.total ?? g.tasks.length})`);
+        chip.type = "button";
+        const on = g === active;
+        if (on) chip.classList.add("selected");
+        chip.setAttribute("aria-pressed", String(on));
+        // Re-renders the state it was handed, with a fresh `now`: nothing here
+        // needs the network, and re-reading would throw away a page somebody
+        // pressed for.
+        chip.onclick = () => { this.filter = g.id; this.render(state, Date.now()); };
+        bar.append(chip);
+      }
+      wrap.append(bar);
+    }
+
+    const rows = el("div", "tk-rows");
+    for (const t of active.tasks) rows.append(this.row(t, state, caps, now));
+    if (active.tasks.length === 0) {
+      rows.append(el("div", "tk-empty", `No ${active.label.toLowerCase()} issues.`));
+    }
+    wrap.append(rows);
+
+    // What the page was measured against: the size it was actually fetched with,
+    // never a constant. Without it a board paged to 150 would compare a full page
+    // against 50, decide it was capped, and go on offering "Show more" for rows
+    // that are already all of them.
+    const limit = state.pageLimit ?? initialPageLimit(active.terminal);
+    if (canShowMore(active.tasks.length, active.total, limit)) {
+      const more = el("button", "tk-more", "Show more");
+      more.type = "button";
+      more.onclick = () => this.h.onShowMore(limit);
+      wrap.append(more);
+    }
+    // Silent on a short page — there the list is the whole truth and a line saying
+    // so is noise on every render — and never for the unknown group, which the
+    // repository counts neither as open nor as closed.
+    const count = active.id === ""
+      ? null
+      : countLine(
+        active.tasks.length, active.total, needsTotals(active.tasks.length, limit),
+        active.terminal ? "closed issues" : "open issues",
+      );
+    if (count) wrap.append(el("p", "tk-count", count));
+    return wrap;
+  }
+
+  /** One issue as a row. Everything the card shows, in a shape that reads down a
+   *  page instead of across two strips — and with the issue's number, which is
+   *  the name a person actually uses for it. */
+  private row(t: Task, state: BoardState, caps: ProviderCapabilities, now: number): HTMLElement {
     const status = derivedStatus(t, state.links, caps.board);
-    const box = el("div", `tk-card ${status}`);
-    if (t.damaged) box.classList.add("damaged");
+    const row = el("div", `tk-row ${status}`);
+    if (t.damaged) row.classList.add("damaged");
+    this.makeOpenable(row, t);
 
-    // The same condition card-modal.ts's `canWrite` applies to the whole
-    // modal, and `▶`/`✓` apply below: a damaged card's fields may be
-    // unreadable and a conflicting card's file is ambiguous, so a step write
-    // is refused server-side either way (see fs.rs's update guards). Offering
-    // a control that can only ever error is worse than not offering it.
-    const canWrite = !t.damaged && !t.conflict;
+    const main = el("div", "tk-row-main");
+    // `#42` from the card's own id, which for this source *is* the issue number
+    // (`gh_issues.rs`'s `row_to_task`). A file card would print `#01J…` here,
+    // which is why the row is reached only from the GitHub layout.
+    main.append(el("span", "tk-row-number", `#${t.id}`));
+    main.append(el("span", "tk-row-title", t.title));
+    main.append(...this.chips(t, status, state, caps));
+    row.append(main);
 
-    // Native drag needs the id on the wire, and a visual cue while it's in
-    // flight; `dragend` fires whether the drop was accepted or not, so it is
-    // the one place to take `tk-dragging` back off.
-    box.draggable = canWrite;
-    box.ondragstart = (e) => {
-      e.dataTransfer?.setData("text/plain", t.id);
-      // Paired with `makeDropTarget`'s `dropEffect` above: same reason, same badge.
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-      box.classList.add("tk-dragging");
+    // Which timestamp is the honest one depends on the step: a closed issue's
+    // `created` is the least interesting date on it, and `resolved` is null for
+    // an open one, so neither field can serve both.
+    const when = t.resolved ? `closed ${ago(t.resolved, now)}` : `opened ${ago(t.created, now)}`;
+    row.append(el("span", "tk-row-when", when));
+    row.append(this.actions(t, status, caps));
+    return row;
+  }
+
+  /** Open on a click anywhere that is not a control.
+   *
+   *  The title used to be the only target, which made a card a thin strip of text
+   *  in a box that otherwise did nothing. It stays a `<button>` — that is what
+   *  makes it reachable and operable from the keyboard, and its click bubbles to
+   *  here, so there is one handler and no way for the two to disagree.
+   *
+   *  `.tk-acts` is excluded because every control in it means something other than
+   *  "open this": ▶ starts a session, ✓ closes the issue, the arrows move it. A
+   *  click there that also opened the card would put a modal over the thing the
+   *  person just did. Matched with `closest` rather than by identity so a glyph
+   *  *inside* a button counts as that button. */
+  private makeOpenable(node: HTMLElement, t: Task) {
+    node.classList.add("tk-openable");
+    node.onclick = (e) => {
+      if ((e.target as Element | null)?.closest(".tk-acts")) return;
+      this.h.onOpen(t);
     };
-    box.ondragend = () => box.classList.remove("tk-dragging");
+  }
 
-    // The grid child Task 6 placed, not a child of it: `.tk-card-title` carries
-    // `grid-row: 1` and the two-line clamp, so it becomes the button itself —
-    // wrapping a button inside it would put the clamp on the div and the click
-    // target on something else.
-    const openBtn = el("button", "tk-card-title tk-card-open", t.title);
-    openBtn.type = "button";
-    openBtn.setAttribute("aria-label", `Open card: ${t.title}`);
-    openBtn.onclick = () => this.h.onOpen(t);
-    box.append(openBtn);
-
-    const meta = el("div", "tk-meta");
+  /** The chips: kind, labels, and whatever the card's own state is worth saying.
+   *  Shared by the card and the row so the two cannot drift about what an issue
+   *  looks like. */
+  private chips(
+    t: Task, status: "open" | "done" | "working", state: BoardState, caps: ProviderCapabilities,
+  ): HTMLElement[] {
+    const out: HTMLElement[] = [];
     const kind = kindLabel(caps.board, t.kind);
-    if (kind) meta.append(el("span", "tk-kind", kind));
+    if (kind) out.push(el("span", "tk-kind", kind));
     // An issue's labels, and never its kind: an issue can carry two labels where
     // `kind` is a single value, which is why a GitHub card has no kind at all.
     // Chips through `el`, so a label naming itself `<img src=x onerror=…>` — and
     // anyone who can open an issue on a readable repository chooses that text —
     // arrives as characters rather than as markup.
-    for (const l of t.labels) meta.append(el("span", "tk-label", l));
-    if (t.origin === "session") meta.append(el("span", "tk-bot", "session"));
-    if (status === "working") meta.append(el("span", "tk-busy", "in progress"));
+    for (const l of t.labels) out.push(el("span", "tk-label", l));
+    if (t.origin === "session") out.push(el("span", "tk-bot", "session"));
+    if (status === "working") out.push(el("span", "tk-busy", "in progress"));
     if (t.damaged || t.conflict) {
       const reasons: string[] = [];
       if (t.damaged) reasons.push(`damaged: ${t.damaged} · id ${t.id} · ${t.path}`);
@@ -368,24 +558,35 @@ export class BoardView {
       // An aria-label on a bare span is not reliably announced; role="img"
       // makes it so. A damaged card's only remaining signal is this glyph.
       warn.setAttribute("role", "img");
-      meta.append(warn);
+      out.push(warn);
     }
     if (isStale(t, state.links, caps.board)) {
       const stale = el("span", "tk-stale", "no live session");
       stale.title = "This card sits in the working step, but no session is running on it.";
-      meta.append(stale);
+      out.push(stale);
     }
-    box.append(meta);
+    return out;
+  }
 
+  /** ‹ ▶ ✓ ›, on the same rules in both layouts. */
+  private actions(
+    t: Task, status: "open" | "done" | "working", caps: ProviderCapabilities,
+  ): HTMLElement {
     const acts = el("div", "tk-acts");
+    // The same condition card-modal.ts's `canWrite` applies to the whole
+    // modal: a damaged card's fields may be unreadable and a conflicting card's
+    // file is ambiguous, so a step write is refused server-side either way (see
+    // fs.rs's update guards). Offering a control that can only ever error is
+    // worse than not offering it.
+    const canWrite = !t.damaged && !t.conflict;
+
     // The keyboard equivalent of a drag, and not a fallback for it: xterm eats
     // Tab inside a tile, and every other action here already carries an
     // aria-label. `null` (first step, last step, or a step board.json does not
     // know) means no neighbour, so the arrow is simply not rendered — no
     // separate check for the unknown step, `stepBefore`/`stepAfter` already
     // say "no neighbour" for it. Withheld from a damaged or conflicting card
-    // for the same reason `draggable` is above: the write would only ever be
-    // refused.
+    // for the same reason `draggable` is: the write would only ever be refused.
     const prevStep = stepBefore(caps.board, t.status);
     if (prevStep !== null && canWrite) {
       const prev = el("button", "tk-prev", "‹");
@@ -432,10 +633,49 @@ export class BoardView {
       next.onclick = () => this.h.onMove(t, nextStep);
       acts.append(next);
     }
-    // Always present, even empty: this is what makes the fixed card height
-    // (styles.css .tk-card) hold — the meta and action rows sit at the same
-    // offset whatever the card's own content.
-    box.append(acts);
+    return acts;
+  }
+
+  private card(t: Task, state: BoardState, caps: ProviderCapabilities) {
+    const status = derivedStatus(t, state.links, caps.board);
+    const box = el("div", `tk-card ${status}`);
+    if (t.damaged) box.classList.add("damaged");
+    this.makeOpenable(box, t);
+
+    // A damaged card's fields may be unreadable and a conflicting card's file is
+    // ambiguous, so a step write is refused server-side either way — which makes
+    // dragging one an action that can only ever error.
+    const canWrite = !t.damaged && !t.conflict;
+
+    // Native drag needs the id on the wire, and a visual cue while it's in
+    // flight; `dragend` fires whether the drop was accepted or not, so it is
+    // the one place to take `tk-dragging` back off.
+    box.draggable = canWrite;
+    box.ondragstart = (e) => {
+      e.dataTransfer?.setData("text/plain", t.id);
+      // Paired with `makeDropTarget`'s `dropEffect` above: same reason, same badge.
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      box.classList.add("tk-dragging");
+    };
+    box.ondragend = () => box.classList.remove("tk-dragging");
+
+    // Still a button, and still the card's own grid child: `.tk-card-title`
+    // carries the line clamp, so wrapping a button inside it would put the clamp
+    // on the div and the keyboard target on something else. What changed is that
+    // it no longer owns the click — `makeOpenable` above does, and this bubbles
+    // into it, so one handler serves the pointer and the keyboard alike.
+    const openBtn = el("button", "tk-card-title tk-card-open", t.title);
+    openBtn.type = "button";
+    openBtn.setAttribute("aria-label", `Open card: ${t.title}`);
+    box.append(openBtn);
+
+    const meta = el("div", "tk-meta");
+    meta.append(...this.chips(t, status, state, caps));
+    box.append(meta);
+
+    // Always present, even empty: the meta and action rows sit at the same offset
+    // whatever the card's own content, which is what makes a column read as a grid.
+    box.append(this.actions(t, status, caps));
     return box;
   }
 }

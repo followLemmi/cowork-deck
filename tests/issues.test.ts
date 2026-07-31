@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  ISSUE_POLL_MS, FILE_POLL_MS, boardPollMs, OPEN_PAGE_LIMIT, needsTotals, countLine,
-  needsCloseConfirmation, closeConfirmText, RATE_WARN_BELOW, rateLimitBanner, sourceOf,
+  ISSUE_POLL_MS, FILE_POLL_MS, boardPollMs, OPEN_PAGE_LIMIT, CLOSED_PAGE_LIMIT, needsTotals,
+  countLine, needsCloseConfirmation, closeConfirmText, RATE_WARN_BELOW, rateLimitBanner, sourceOf,
   unavailableFrom, repoFromIssueUrl, fsRootOf,
+  PAGE_STEP, MAX_PAGE_LIMIT, initialPageLimit, nextPageLimit, canShowMore,
 } from "../src/issues";
 import type { BoardConfig, TrackerConfig } from "../src/ipc";
 
@@ -215,5 +216,67 @@ describe("sourceOf", () => {
     // A record from a future build, or an empty list: treated as file-backed,
     // which is the conservative answer — it polls slowly and asks for no token.
     expect(sourceOf({ providers: [] } as TrackerConfig)).toBe("fs");
+  });
+});
+
+describe("paging", () => {
+  /// The two defaults are the backend's own (`gh_issues.rs`), and which one a short
+  /// page is measured against decides whether "Show more" appears: eighteen closed
+  /// rows are the whole of that state, eighteen open ones are evidence of nothing.
+  it("starts each state at the page the source actually asks for", () => {
+    expect(initialPageLimit(false)).toBe(OPEN_PAGE_LIMIT);
+    expect(initialPageLimit(true)).toBe(CLOSED_PAGE_LIMIT);
+  });
+
+  it("grows by one step and never past the ceiling", () => {
+    expect(nextPageLimit(OPEN_PAGE_LIMIT)).toBe(OPEN_PAGE_LIMIT + PAGE_STEP);
+    expect(nextPageLimit(CLOSED_PAGE_LIMIT)).toBe(CLOSED_PAGE_LIMIT + PAGE_STEP);
+    expect(nextPageLimit(MAX_PAGE_LIMIT)).toBe(MAX_PAGE_LIMIT);
+    expect(nextPageLimit(MAX_PAGE_LIMIT - 1)).toBe(MAX_PAGE_LIMIT);
+  });
+
+  describe("whether Show more has anything left", () => {
+    /// A page shorter than what was asked for *is* the whole of that state, and this
+    /// is the common case — so it needs no total and costs no request.
+    it("refuses a short page whatever the total says", () => {
+      expect(canShowMore(12, null, 50)).toBe(false);
+      expect(canShowMore(12, 400, 50)).toBe(false);
+    });
+
+    it("offers a full page with more behind it", () => {
+      expect(canShowMore(50, 63, 50)).toBe(true);
+      expect(canShowMore(20, 400, 20)).toBe(true);
+    });
+
+    /// Everything the repository has is on screen: the same answer as a short page,
+    /// with a number behind it.
+    it("refuses a full page that is already all of them", () => {
+      expect(canShowMore(50, 50, 50)).toBe(false);
+      expect(canShowMore(50, 49, 50)).toBe(false);
+    });
+
+    /// The honest direction. The cost of offering the button wrongly is one wasted
+    /// request; the cost of withholding it wrongly is issues nobody can reach.
+    it("offers a full page when the total is unknown", () => {
+      expect(canShowMore(50, null, 50)).toBe(true);
+    });
+
+    /// At the ceiling the backend clamps the next page back to the one already on
+    /// screen, so the button would do nothing — which is worse than not being there.
+    it("stops at the ceiling the backend clamps to", () => {
+      expect(canShowMore(MAX_PAGE_LIMIT, null, MAX_PAGE_LIMIT)).toBe(false);
+      expect(canShowMore(MAX_PAGE_LIMIT, 900, MAX_PAGE_LIMIT)).toBe(false);
+    });
+  });
+});
+
+describe("the count line's noun", () => {
+  /// Defaulted to the open issues, because that is what the line counted when there
+  /// was one column it could describe — and the list passes the state's own name, so
+  /// "showing the first 20 open issues" never appears under a list of closed ones.
+  it("counts whichever issues it was given", () => {
+    expect(countLine(50, 63, true)).toBe("Showing 50 of 63 open issues.");
+    expect(countLine(20, 400, true, "closed issues")).toBe("Showing 20 of 400 closed issues.");
+    expect(countLine(20, null, true, "closed issues")).toBe("Showing the first 20 closed issues.");
   });
 });

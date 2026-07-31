@@ -319,6 +319,10 @@ describe("the last good list", () => {
     body: "", path: `https://github.com/o/n/issues/${id}`, damaged: null, conflict: false,
     labels: [],
   });
+  // Two selectors, because the two sources draw two layouts: an issue source is one
+  // list of rows and a folder keeps its columns of cards. Counting only one of them
+  // would make "the file board kept nothing" pass for the wrong reason.
+  const rows = () => document.querySelectorAll("#board .tk-row").length;
   const cards = () => document.querySelectorAll("#board .tk-card").length;
 
   it("keeps a github board's cards through a failed tick, and never a file board's", async () => {
@@ -332,7 +336,7 @@ describe("the last good list", () => {
     listTasksMock.mockResolvedValue([issue("41"), issue("42")]);
     boardBtn.click();
     await flush();
-    expect(cards()).toBe(2);
+    expect(rows()).toBe(2);
 
     // Offline, rate-limited, a missing scope: a blip in front of data that is
     // still true, so the rows stay with the error beside them.
@@ -340,7 +344,7 @@ describe("the last good list", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await flush();
     expect(document.querySelector("#board .tk-error")?.textContent).toContain("HTTP 502");
-    expect(cards()).toBe(2);
+    expect(rows()).toBe(2);
 
     // Now the same workspace is switched to a folder and the folder cannot be
     // read. Keeping the issues would put phantom cards on a board whose root is
@@ -350,7 +354,7 @@ describe("the last good list", () => {
     listTasksMock.mockRejectedValue(new Error("the task folder is unreachable: /p/tasks"));
     onSelect!(active);
     await flush();
-    expect(cards()).toBe(0);
+    expect(cards() + rows()).toBe(0);
     expect(document.querySelector("#board .tk-configure")).not.toBeNull();
     expect(document.querySelector("#board .tk-count")).toBeNull();
 
@@ -388,6 +392,85 @@ describe("the last good list", () => {
     active = WS;
     listTasksMock.mockReset();
     listTasksMock.mockResolvedValue([]);
+    vi.useRealTimers();
+  });
+});
+
+/** Which read keeps what is already on screen. The other half — that a *first* read
+ *  paints a skeleton at all — needs a `main.ts` that has never drawn this board, so
+ *  it lives in `tests/board-loading.test.ts`: this file's earlier tests have already
+ *  visited it, and the module is imported once.
+ *
+ *  Wiring, and `main.ts`'s alone: the views draw a skeleton whenever they are told
+ *  to, and deciding when to tell them is the whole of the bug. */
+describe("the loading state", () => {
+  const issue = (id: string) => ({
+    id, title: `Issue ${id}`, kind: "", status: "open", project: "P",
+    created: "2026-07-01T10:00:00Z", resolved: null, origin: "human", session: null,
+    body: "", path: `https://github.com/o/n/issues/${id}`, damaged: null, conflict: false,
+    labels: [],
+  });
+
+  /// A poll tick over a list that is already there keeps it: the age line says how
+  /// old it is, and grey boxes every 30 s would be a flicker rather than feedback.
+  it("never skeletons over a board that already has rows", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const [termBtn, boardBtn] = buttons;
+
+    active = WS_GH;
+    listTasksMock.mockReset();
+    listTasksMock.mockResolvedValue([issue("41"), issue("42")]);
+    boardBtn.click();
+    await flush();
+    expect(document.querySelectorAll("#board .tk-row").length).toBe(2);
+
+    // Still reading, and this one never comes back.
+    listTasksMock.mockReset();
+    listTasksMock.mockReturnValue(new Promise(() => {}));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flush();
+    expect(document.querySelector("#board .tk-skeleton")).toBeNull();
+    expect(document.querySelectorAll("#board .tk-row").length).toBe(2);
+
+    termBtn.click();
+    await flush();
+    active = WS;
+    listTasksMock.mockReset();
+    listTasksMock.mockResolvedValue([]);
+    vi.useRealTimers();
+  });
+
+  /// The case that made a second variable necessary. A first read that fails leaves
+  /// no rows and no `fetchedAt`, so anything keyed on "have we ever fetched" would go
+  /// on treating every tick as a first read — blanking the box, and with it the only
+  /// button that fixes it, for grey rows and then putting it back. Every 15 s.
+  it("keeps a failed pull request read on screen instead of skeletoning over it", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const [termBtn, , prBtn] = buttons;
+
+    active = WS;
+    prListMock.mockReset();
+    prListMock.mockRejectedValue(new Error("gh-not-found"));
+    prBtn.click();
+    await flush();
+    expect(document.querySelector("#pr .pr-unavailable")).not.toBeNull();
+
+    // The read is still failing and still slow. The box stays.
+    prListMock.mockReset();
+    prListMock.mockReturnValue(new Promise(() => {}));
+    await vi.advanceTimersByTimeAsync(60_000);
+    await flush();
+    expect(document.querySelector("#pr .pr-skeleton")).toBeNull();
+    expect(document.querySelector("#pr .pr-unavailable")).not.toBeNull();
+
+    termBtn.click();
+    await flush();
+    prListMock.mockReset();
+    prListMock.mockResolvedValue([]);
     vi.useRealTimers();
   });
 });

@@ -1,4 +1,4 @@
-import type { PullRequest } from "./ipc";
+import type { PrDetail, PullRequest } from "./ipc";
 import { ghUnavailable, type GhUnavailable } from "./gh-unavailable";
 import { ago, canMerge, checksLabel, reviewLabel, sortPrs } from "./pr";
 
@@ -15,6 +15,10 @@ export interface PrState {
   fetchedAt: number | null;
   /** How many came back, so a capped page can say so. */
   total: number | null;
+  /** The read that will replace `prs` is still in flight. Drawn as skeleton rows
+   *  only when there is nothing to keep — a list that is a minute old beats grey
+   *  boxes, and this view re-reads every 15 s while anything is building. */
+  loading: boolean;
 }
 
 export interface PrHandlers {
@@ -24,9 +28,25 @@ export interface PrHandlers {
   onReopen: (pr: PullRequest) => void;
   onRefresh: () => void;
   onFixUnavailable: (u: PrUnavailable) => void;
+  /** What the pull request holds, fetched when a row is opened and not before.
+   *
+   *  A promise rather than a second render pass driven from outside: the view is
+   *  the only thing that knows which rows are open, so it is the only thing that
+   *  can decide what to ask for. Rejection is expected and is drawn inside the
+   *  panel — one row failing to expand is not the list failing. */
+  onDetail: (pr: PullRequest) => Promise<PrDetail>;
 }
 
 const PAGE_LIMIT = 50;
+/** How many grey rows an empty first load draws. */
+const SKELETON_ROWS = 4;
+
+/** What is known about one row's contents. Absent from the map means "never
+ *  asked"; the three states are what a person needs told apart while waiting. */
+type DetailSlot =
+  | { state: "loading"; updatedAt: string }
+  | { state: "ok"; updatedAt: string; detail: PrDetail }
+  | { state: "failed"; updatedAt: string; message: string };
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K, cls?: string, text?: string,
@@ -40,9 +60,26 @@ function el<K extends keyof HTMLElementTagNameMap>(
 
 export class PrView {
   readonly mount = el("div", "pr-view");
+  /** Which rows are open, by number.
+   *
+   *  View state, not `PrState`: opening a row needs no list read, and a poll
+   *  landing every 15 s must not fold it shut under the person reading it. */
+  private expanded = new Set<number>();
+  /** What has been fetched for each row, and whether it is still current.
+   *
+   *  Keyed by number and stamped with the `updatedAt` it was fetched at: a push to
+   *  the branch changes the description and the diffstat both, and a panel left
+   *  showing the previous commit's numbers beside a row that says "just now" is the
+   *  kind of wrong that is worse than empty. A poll that brings a newer `updatedAt`
+   *  therefore re-fetches whatever is still open, and nothing else. */
+  private details = new Map<number, DetailSlot>();
+  /** The last thing rendered, so an answer arriving later — or a disclosure being
+   *  clicked — can redraw without a list read. */
+  private last: PrState | null = null;
   constructor(private h: PrHandlers) {}
 
   render(state: PrState, now: number) {
+    this.last = state;
     this.mount.replaceChildren();
 
     const head = el("div", "pr-head");
@@ -75,6 +112,15 @@ export class PrView {
 
     if (state.error) this.mount.append(el("p", "pr-error", state.error));
 
+    // Before the empty state, which is a claim about the repository: an empty list
+    // that has not been read yet is not "no open pull requests", and one `gh pr
+    // list` on a slow network is long enough for that sentence to be read and
+    // believed. A list already on screen keeps it, with its age above.
+    if (state.loading && state.prs.length === 0) {
+      this.mount.append(this.skeleton());
+      return;
+    }
+
     if (state.prs.length === 0) {
       this.mount.append(el("div", "pr-empty", "No open pull requests."));
       return;
@@ -88,10 +134,142 @@ export class PrView {
     }
   }
 
+  /** Grey rows standing in for a list that has not arrived. `aria-hidden`, with
+   *  one live sentence beside them: to a screen reader four empty boxes are four
+   *  pieces of nothing. */
+  private skeleton(): HTMLElement {
+    const wrap = el("div", "pr-skeleton");
+    wrap.append(el("p", "pr-skeleton-text", "Loading…"));
+    const rows = el("div", "pr-skeleton-rows");
+    rows.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < SKELETON_ROWS; i++) rows.append(el("div", "pr-skeleton-row"));
+    wrap.append(rows);
+    return wrap;
+  }
+
+  /** Redraw from the state already on screen. No list read: everything that calls
+   *  this changed only what the view knows about itself. */
+  private redraw() {
+    if (this.last) this.render(this.last, Date.now());
+  }
+
+  /** Open or close a row, fetching its contents the first time — and again when
+   *  the row has moved on since they were fetched. */
+  private toggle(pr: PullRequest) {
+    if (this.expanded.has(pr.number)) {
+      this.expanded.delete(pr.number);
+      this.redraw();
+      return;
+    }
+    this.expanded.add(pr.number);
+    this.fetchIfStale(pr);
+    this.redraw();
+  }
+
+  /** One request per row per commit, and never one already in flight. */
+  private fetchIfStale(pr: PullRequest) {
+    const have = this.details.get(pr.number);
+    if (have && have.updatedAt === pr.updatedAt) return;
+    this.details.set(pr.number, { state: "loading", updatedAt: pr.updatedAt });
+    void this.h.onDetail(pr).then(
+      (detail) => {
+        this.details.set(pr.number, { state: "ok", updatedAt: pr.updatedAt, detail });
+        this.redraw();
+      },
+      (e: unknown) => {
+        this.details.set(pr.number, {
+          state: "failed",
+          updatedAt: pr.updatedAt,
+          message: String((e as { message?: string })?.message ?? e),
+        });
+        this.redraw();
+      },
+    );
+  }
+
+  /** What the row holds, under it. Three states, because "still loading" and
+   *  "could not be read" are different things to be told and neither of them is an
+   *  empty panel. */
+  private panel(pr: PullRequest): HTMLElement {
+    const box = el("div", "pr-detail");
+    const slot = this.details.get(pr.number);
+    if (!slot || slot.state === "loading") {
+      box.append(el("p", "pr-detail-note", "Loading…"));
+      return box;
+    }
+    if (slot.state === "failed") {
+      // The row above stays exactly as it was: one panel that cannot be read is
+      // not the list failing, and the merge button beside it is still good.
+      box.append(el("p", "pr-detail-error", `Could not read #${pr.number}: ${slot.message}`));
+      const retry = el("button", "pr-detail-retry", "Try again");
+      retry.type = "button";
+      retry.onclick = () => {
+        this.details.delete(pr.number);
+        this.fetchIfStale(pr);
+        this.redraw();
+      };
+      box.append(retry);
+      return box;
+    }
+
+    const d = slot.detail;
+    box.append(el(
+      "p", "pr-detail-stat",
+      `${d.changedFiles} file${d.changedFiles === 1 ? "" : "s"} changed · `
+      + `+${d.additions} −${d.deletions}`,
+    ));
+    // As written, in a <pre>, never parsed. The description is Markdown and this
+    // app has no Markdown renderer; the two honest options were plain text and a
+    // dependency, and a hand-rolled subset that turns `[x](javascript:…)` into an
+    // anchor is not a third. `el` sets textContent, so a body containing markup
+    // arrives as characters — and anyone who can open a pull request writes it.
+    if (d.body.trim()) box.append(el("pre", "pr-detail-body", d.body));
+    else box.append(el("p", "pr-detail-note", "No description."));
+
+    if (d.files.length) {
+      const files = el("ul", "pr-detail-files");
+      for (const f of d.files) {
+        const li = el("li", "pr-detail-file");
+        li.append(el("span", "pr-detail-path", f.path));
+        li.append(el("span", "pr-detail-plus", `+${f.additions}`));
+        li.append(el("span", "pr-detail-minus", `−${f.deletions}`));
+        files.append(li);
+      }
+      box.append(files);
+      // `changedFiles` is GitHub's count and `files` is a page of its own, so the
+      // two can legitimately disagree on a very large pull request. Saying so beats
+      // a list that quietly stops.
+      if (d.files.length < d.changedFiles) {
+        box.append(el(
+          "p", "pr-detail-note",
+          `Listing ${d.files.length} of ${d.changedFiles} changed files.`,
+        ));
+      }
+    }
+    return box;
+  }
+
   private row(pr: PullRequest, now: number): HTMLElement {
     const row = el("div", "pr-row");
 
+    const open = this.expanded.has(pr.number);
+    // A row that is open re-fetches when the pull request itself has moved on. Done
+    // on render rather than only on the click, because the thing that moves it on is
+    // the poll: a push lands, the row's `updatedAt` changes, and the panel under it
+    // is describing the previous commit until something notices.
+    if (open) this.fetchIfStale(pr);
+
     const main = el("div", "pr-main");
+    // The disclosure, first in the row so its position does not move with the
+    // title's length. A button, not a bare glyph: it is operable from the keyboard,
+    // and `aria-expanded` is what makes its state audible.
+    const toggle = el("button", "pr-toggle", open ? "▾" : "▸");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.setAttribute("aria-label", open ? `Hide #${pr.number}` : `Show #${pr.number}`);
+    toggle.title = open ? "Hide the description and the changed files" : "Show the description and the changed files";
+    toggle.onclick = () => this.toggle(pr);
+    main.append(toggle);
     main.append(el("span", "pr-number", `#${pr.number}`));
     main.append(el("span", "pr-title", pr.title));
     if (pr.isDraft) main.append(el("span", "pr-draft", "draft"));
@@ -131,13 +309,16 @@ export class PrView {
     // plugin, and `github-screen.ts` already links out exactly this way.
     // Whether Tauri routes target=_blank to the system browser is unverified
     // there too — it is on the manual checklist in Task 13.
-    const open = el("a", "pr-open", "Open in browser");
-    open.href = pr.url;
-    open.target = "_blank";
-    open.rel = "noreferrer";
-    actions.append(open);
+    const link = el("a", "pr-open", "Open in browser");
+    link.href = pr.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    actions.append(link);
 
     row.append(actions);
+    // Inside the row, not after it: the panel belongs to this pull request, and a
+    // sibling would drift away from it the moment the list re-sorts.
+    if (open) row.append(this.panel(pr));
     return row;
   }
 }

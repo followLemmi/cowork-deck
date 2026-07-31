@@ -10,7 +10,7 @@ import {
   listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
   taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage,
-  prList, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
+  prList, prDetail, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
   prWorktreePath, prWorktreeRemove,
   issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove,
 } from "./ipc";
@@ -19,7 +19,8 @@ import { firstTerminal, isTerminal } from "./board-config";
 import { issuePrompt } from "./tasks";
 import { pollIntervalMs } from "./pr";
 import {
-  boardPollMs, needsCloseConfirmation, needsTotals, repoFromIssueUrl, sourceOf, unavailableFrom,
+  boardPollMs, CLOSED_PAGE_LIMIT, needsCloseConfirmation, needsTotals, nextPageLimit,
+  repoFromIssueUrl, sourceOf, unavailableFrom,
 } from "./issues";
 import { PrView } from "./pr-view";
 import type { GhUnavailable } from "./gh-unavailable";
@@ -87,6 +88,7 @@ const board = new BoardView({
   onMove: (t, step) => void moveTask(t, step),
   onEditBoard: () => void editBoard(),
   onFixUnavailable: (u) => fixUnavailable(u),
+  onShowMore: (from) => void showMoreTasks(from),
 });
 boardEl.append(board.mount);
 
@@ -97,6 +99,15 @@ const prView = new PrView({
   onReopen: (pr) => void reopenPr(pr),
   onRefresh: () => void refreshPrs(),
   onFixUnavailable: (u) => fixUnavailable(u),
+  // The workspace is resolved at call time, not captured: a row can be expanded
+  // moments before a switch, and the answer must be about the repository the row
+  // came from or about nothing at all.
+  onDetail: (pr) => {
+    const ws = workspaces.active;
+    return ws
+      ? prDetail(ws.id, pr.number)
+      : Promise.reject(new Error("No workspace is selected."));
+  },
 });
 // The pull request screen. Created here rather than in index.html because
 // nothing else refers to it, and the view's own root *is* the screen: `.pr-view`
@@ -322,7 +333,39 @@ async function launchFromTask(t: Task) {
  *  its first failure — phantom cards on a board whose root is gone, `Configure`
  *  withheld because the list was not empty, and a count line about issues that
  *  were never in that folder. */
-const lastGood = new Map<string, { tasks: Task[]; fetchedAt: number; total: number | null }>();
+const lastGood = new Map<
+  string, { tasks: Task[]; fetchedAt: number; total: number | null; closedTotal: number | null }
+>();
+
+/** How far each GitHub workspace has been paged, or absent for the source's own
+ *  defaults (50 open, 20 closed).
+ *
+ *  Keyed by workspace, so paging one board does not widen another's — and every
+ *  poll from then on fetches the larger page, which is the honest cost of showing
+ *  rows somebody asked to see. In memory only: a page is a reading position, not a
+ *  setting, and a restart landing back on the first fifty is the right default. */
+const pageLimits = new Map<string, number>();
+
+/** Which workspace the board is currently showing an answer for, whatever that
+ *  answer is — rows, an error beside them, or an unavailable box.
+ *
+ *  The one thing the skeleton needs to know. A loading state is painted only when
+ *  this is not the workspace about to be read: the first read of a board, and the
+ *  first read after a switch, are the two moments when nothing on screen belongs
+ *  to it. A poll tick keeps what is drawn; replacing a screen that is true — or a
+ *  box explaining why it cannot be — with grey boxes every 30 s is a flicker
+ *  rather than feedback. */
+let boardShowing: string | null = null;
+
+/** "Show more": one step past the page the rows on screen were measured against,
+ *  then read it again. `from` comes from the view because the two states start at
+ *  different defaults and only the view knows which filter the button was under. */
+async function showMoreTasks(from: number) {
+  const ws = workspaces.active;
+  if (!ws) return;
+  pageLimits.set(ws.id, nextPageLimit(from));
+  await refreshBoard();
+}
 
 /** Redraw the active workspace's board. Every IPC call is isolated: one failing
  *  handle must not take the whole tick down. */
@@ -330,33 +373,67 @@ async function refreshBoard() {
   const ws = workspaces.active;
   if (!ws) {
     board.render({ project: "", caps: null, error: null, tasks: [], links: [], source: "fs" });
+    // No workspace is nobody's answer, so the next board to be read gets a
+    // skeleton rather than inheriting this screen's emptiness.
+    boardShowing = null;
     return;
   }
   const wsId = ws.id;
   const source = sourceOf(ws.tracker ?? null);
+  const pageLimit = pageLimits.get(wsId) ?? null;
   let caps = null;
   try { caps = await taskCapabilities(wsId); } catch (e) { console.debug("caps failed", e); }
+
+  // Until now this window drew nothing at all: `setView("board")` called this, and
+  // the first render came after every await below — so opening a GitHub board left an
+  // empty pane for as long as a repository lookup plus a page per state takes.
+  //
+  // Painted after `taskCapabilities` and not before it, and the few milliseconds are
+  // affordable because that call is a local read by construction — `provider_for`
+  // does no I/O, which is what keeps the three unavailable states reachable. What it
+  // buys is a head drawn with this board's real `+ task` and `⚙` rather than one
+  // that grows buttons a moment later. It is not what keeps "No task tracker is
+  // configured" off the screen: the skeleton branch in `board.ts` sits ahead of that
+  // one deliberately, and the comment there is the reason.
+  if (boardShowing !== wsId && workspaces.active?.id === wsId) {
+    board.render({
+      project: ws.name, caps, error: null, tasks: [], links: deck.taskLinks(wsId),
+      source, unavailable: null, fetchedAt: null, total: null, closedTotal: null,
+      rateRemaining: null, loading: true, pageLimit,
+    }, Date.now());
+  }
 
   let tasks: Task[] = [];
   let error: string | null = null;
   let unavailable: GhUnavailable | null = null;
   let total: number | null = null;
+  let closedTotal: number | null = null;
   let rateRemaining: number | null = null;
   let fetchedAt: number | null = null;
 
   if (caps) {
     const cfg = caps.board;
     try {
-      tasks = await listTasks(wsId);
+      tasks = await listTasks(wsId, pageLimit ?? undefined);
       fetchedAt = Date.now();
       const open = tasks.filter((t) => !isTerminal(cfg, t.status)).length;
-      // Only when it can change the answer: a page shorter than the cap *is* the
-      // total, so in a repository under fifty open issues this never fires.
-      if (source === "github" && needsTotals(open)) {
+      const closed = tasks.length - open;
+      // Only when it can change the answer: a page shorter than what was asked for
+      // *is* the total, so in a repository under fifty open issues this never
+      // fires. Measured against the page actually requested rather than against
+      // the constant — a board paged to 150 would otherwise ask for totals it
+      // already has on screen, every 30 s.
+      //
+      // Either state being at its cap is reason enough: the closed filter needs its
+      // own total for the same reason the open one does, and both come back in the
+      // one point this call costs.
+      if (source === "github"
+          && (needsTotals(open, pageLimit ?? undefined)
+            || needsTotals(closed, pageLimit ?? CLOSED_PAGE_LIMIT))) {
         const t = await issueTotals(wsId).catch(() => null);
-        if (t) { total = t.open; rateRemaining = t.rateRemaining; }
+        if (t) { total = t.open; closedTotal = t.closed; rateRemaining = t.rateRemaining; }
       }
-      if (source === "github") lastGood.set(wsId, { tasks, fetchedAt, total });
+      if (source === "github") lastGood.set(wsId, { tasks, fetchedAt, total, closedTotal });
     } catch (e) {
       const msg = String((e as { message?: string })?.message ?? e);
       // The three states in which the source cannot be read at all become their
@@ -372,7 +449,12 @@ async function refreshBoard() {
       // file board ends up drawing the issues that workspace had while it was
       // GitHub-backed.
       const kept = source === "github" ? lastGood.get(wsId) : undefined;
-      if (kept) { tasks = kept.tasks; fetchedAt = kept.fetchedAt; total = kept.total; }
+      if (kept) {
+        tasks = kept.tasks;
+        fetchedAt = kept.fetchedAt;
+        total = kept.total;
+        closedTotal = kept.closedTotal;
+      }
     }
   }
   let migration: MigrationOffer | null = null;
@@ -391,8 +473,12 @@ async function refreshBoard() {
     // repository. A session on another workspace's #42 must not speak for this
     // board's — it would read as in progress and lose its ▶.
     project: ws.name, caps, error, tasks, links: deck.taskLinks(wsId), migration,
-    source, unavailable, fetchedAt, total, rateRemaining,
+    source, unavailable, fetchedAt, total, closedTotal, rateRemaining, pageLimit,
   }, Date.now());
+  // Whatever the board ended up drawing, it is this workspace's answer — so the
+  // next tick keeps it rather than blanking it. Set after the render, and after the
+  // late-reply guard above, so a reply that was discarded does not claim the screen.
+  boardShowing = wsId;
 }
 
 /** The sidebar counts — one handle covering every workspace. */
@@ -585,8 +671,20 @@ async function dismissMigration() {
 /* --- Pull requests ------------------------------------------------------- */
 
 let prTimer: ReturnType<typeof setTimeout> | null = null;
+/** Which workspace the pull request view is showing an answer for — rows, an error
+ *  beside them, or an unavailable box. The board's `boardShowing`, for the same
+ *  reason and with the same rule: a skeleton is painted only where nothing on
+ *  screen belongs to the workspace about to be read.
+ *
+ *  Not derivable from `prState`. `workspace` alone says which workspace the state is
+ *  *about*, and pairing it with `fetchedAt === null` was wrong in the case that
+ *  matters most: a first read that fails leaves both set that way, so every tick
+ *  from then on would blank the error — or the unavailable box and its only button —
+ *  for grey boxes and then put it back. */
+let prShowing: string | null = null;
 let prState: PrState = {
   workspace: null, unavailable: null, prs: [], error: null, fetchedAt: null, total: null,
+  loading: false,
 };
 
 function stopPrPolling() {
@@ -611,18 +709,35 @@ async function refreshPrs() {
   stopPrPolling();
   const ws = workspaces.active;
   if (!ws) {
-    prState = { ...prState, workspace: null, unavailable: "no-account", prs: [] };
+    prState = {
+      ...prState, workspace: null, unavailable: "no-account", prs: [], loading: false,
+    };
     prView.render(prState, Date.now());
+    // No workspace is nobody's answer, so the next one read gets a skeleton rather
+    // than inheriting this screen.
+    prShowing = null;
     return;
   }
   if (!ws.github) {
-    prState = { ...prState, workspace: ws.name, unavailable: "no-account", prs: [] };
+    prState = {
+      ...prState, workspace: ws.name, unavailable: "no-account", prs: [], loading: false,
+    };
     prView.render(prState, Date.now());
+    prShowing = ws.id;
     // Nothing will change here without a human editing the workspace, so this
     // state does not poll — but it also must not leave the previous one polling.
     return;
   }
   const wsId = ws.id;
+  // Only where there is nothing of this workspace's to keep: a poll tick every 15 s
+  // keeps the rows it already has, with the age line above saying how old they are.
+  if (prShowing !== wsId) {
+    prState = {
+      workspace: ws.name, unavailable: null, prs: [], error: null, fetchedAt: null,
+      total: null, loading: true,
+    };
+    prView.render(prState, Date.now());
+  }
   try {
     const prs = await prList(wsId);
     // The workspace may have been switched while we waited on IPC: a late reply
@@ -635,6 +750,7 @@ async function refreshPrs() {
       // number of open pull requests the repository has is not knowable from
       // here (see #115).
       total: prs.length,
+      loading: false,
     };
   } catch (e) {
     if (workspaces.active?.id !== wsId) return;
@@ -646,10 +762,14 @@ async function refreshPrs() {
     // if-chain here, which was one place for the two GitHub views to disagree
     // about what "no repository" looks like.
     const known = unavailableFrom(msg);
-    if (known !== null) prState = { ...prState, unavailable: known };
-    else prState = { ...prState, error: msg };
+    if (known !== null) prState = { ...prState, unavailable: known, loading: false };
+    else prState = { ...prState, error: msg, loading: false };
   }
   prView.render(prState, Date.now());
+  // Whatever it ended up drawing, it is this workspace's answer — so the next tick
+  // keeps it. After the render, and after the two late-reply guards above, so a
+  // reply that was discarded does not claim the screen.
+  prShowing = wsId;
   schedulePrPoll();
 }
 

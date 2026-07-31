@@ -102,8 +102,28 @@ export interface MergeOptions {
   repoDeletesBranch: boolean;
 }
 
+export interface ChangedFile { path: string; additions: number; deletions: number }
+
+/** What a pull request holds, beyond what a row shows. */
+export interface PrDetail {
+  /** The description as written, Markdown and all. Empty is a legal answer — a
+   *  pull request opened without one — and reads as "no description". */
+  body: string;
+  additions: number;
+  deletions: number;
+  /** GitHub's own count, which is why it sits beside `files` rather than being
+   *  derived from its length: `files` is itself a page. */
+  changedFiles: number;
+  files: ChangedFile[];
+}
+
 export const prList = (workspaceId: string) =>
   invoke<PullRequest[]>("pr_list", { workspaceId });
+/** One pull request's contents, fetched only when a row is opened. Never part of
+ *  the list call: a description and a per-path diffstat on a fifty-row page that
+ *  re-polls every 15 s is payload for rows nobody looked at. */
+export const prDetail = (workspaceId: string, number: number) =>
+  invoke<PrDetail>("pr_detail", { workspaceId, number });
 export const prMergeOptions = (workspaceId: string) =>
   invoke<MergeOptions>("pr_merge_options", { workspaceId });
 /** `headOid` pins the merge to the commit that was reviewed: the backend passes
@@ -275,7 +295,13 @@ export interface IssueTotals {
   rateRemaining: number | null;
 }
 
-export const listTasks = (workspaceId: string) => invoke<Task[]>("tasks_list", { workspaceId });
+/** `limit` is how many rows per state to ask a paging source for; omitted, the
+ *  provider uses its own defaults (50 open, 20 closed). A folder ignores it —
+ *  `read_dir` returns all of it, so a page size there would be a fiction. The
+ *  backend clamps whatever arrives (`tasks_cmd.rs`'s `MAX_PAGE_LIMIT`), because
+ *  this number reaches `gh issue list -L` on a poll that repeats every 30 s. */
+export const listTasks = (workspaceId: string, limit?: number) =>
+  invoke<Task[]>("tasks_list", { workspaceId, limit: limit ?? null });
 export const createTask = (workspaceId: string, draft: TaskDraft) =>
   invoke<Task>("tasks_create", { workspaceId, draft });
 export const resolveTask = (workspaceId: string, id: string) =>

@@ -24,6 +24,53 @@ export function boardPollMs(source: TaskSource): number {
 /** All open issues in one page, and the number the count line is measured
  *  against. Mirrors `gh_issues::OPEN_PAGE_LIMIT`. */
 export const OPEN_PAGE_LIMIT = 50;
+/** The closed page's own default. Mirrors `gh_issues::CLOSED_PAGE_LIMIT`. */
+export const CLOSED_PAGE_LIMIT = 20;
+
+/** How much one press of "Show more" adds. */
+export const PAGE_STEP = 50;
+/** The ceiling the backend clamps to (`tasks_cmd::MAX_PAGE_LIMIT`). Repeated
+ *  rather than fetched because the button has to stop offering itself at the same
+ *  number the backend stops honouring — a button that silently returns the same
+ *  page is worse than no button. Pinned to the Rust constant by
+ *  `tasks_cmd`'s `the_page_sizes_agree_with_the_frontend`, which reads this file:
+ *  the three shared numbers are load-bearing on both sides, and a comment saying
+ *  "mirrors X" is not a check. */
+export const MAX_PAGE_LIMIT = 500;
+
+/** The page size a state starts at, before anybody has pressed "Show more".
+ *
+ *  Two numbers rather than one because the backend's own defaults are two, and
+ *  the frontend has to know which one a short page is being measured against: an
+ *  eighteen-row closed page is the whole of it, while an eighteen-row open page
+ *  is not evidence of anything. */
+export function initialPageLimit(terminal: boolean): number {
+  return terminal ? CLOSED_PAGE_LIMIT : OPEN_PAGE_LIMIT;
+}
+
+/** The next page size to ask for, never past the ceiling. */
+export function nextPageLimit(limit: number): number {
+  return Math.min(MAX_PAGE_LIMIT, limit + PAGE_STEP);
+}
+
+/** Whether "Show more" has anything left to fetch.
+ *
+ *  Three refusals, in the order that makes each of them cheap. A page shorter
+ *  than what was asked for *is* the whole of that state, so there is nothing
+ *  behind it — this is the common case and it needs no total. A total that has
+ *  been fetched and is already on screen is the same answer with a number behind
+ *  it. And at the ceiling the button would ask for a page the backend clamps back
+ *  to the one already shown, which reads as a button that does nothing.
+ *
+ *  `total === null` — the totals call failed, or was never worth making — leaves
+ *  the button offered on a full page. That is the honest direction: the cost of
+ *  offering it wrongly is one wasted request, and the cost of withholding it
+ *  wrongly is issues nobody can reach. */
+export function canShowMore(shown: number, total: number | null, limit: number): boolean {
+  if (shown < limit) return false;
+  if (total !== null && shown >= total) return false;
+  return limit < MAX_PAGE_LIMIT;
+}
 
 /** Whether the totals query can still change the answer. A page shorter than the
  *  cap *is* the total, so the only moment worth a second call is a capped page —
@@ -51,10 +98,18 @@ export function needsTotals(openOnPage: number, limit = OPEN_PAGE_LIMIT): boolea
  *  issue closed between the two calls is a moment's inconsistency at GitHub,
  *  "showing 50 of 49" would read as a bug in the app, and silence would assert the
  *  one thing already known to be false — that this is all of them. */
-export function countLine(shown: number, total: number | null, capped: boolean): string | null {
+export function countLine(
+  shown: number, total: number | null, capped: boolean,
+  /** Which issues are being counted. Defaulted to the open ones because that is
+   *  what the line counted when there was only one column it could describe; the
+   *  list view shows one state at a time and passes the state's own noun, and
+   *  "showing the first 20 open issues" under a list of closed ones would be a
+   *  sentence about a different set of rows. */
+  noun = "open issues",
+): string | null {
   if (!capped) return null;
-  if (total !== null && total > shown) return `Showing ${shown} of ${total} open issues.`;
-  return `Showing the first ${shown} open issues.`;
+  if (total !== null && total > shown) return `Showing ${shown} of ${total} ${noun}.`;
+  return `Showing the first ${shown} ${noun}.`;
 }
 
 /** Whether a move needs confirming before it is sent.

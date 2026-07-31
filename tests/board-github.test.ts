@@ -17,7 +17,7 @@ const GH_CAPS: ProviderCapabilities = {
 const handlers = () => ({
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
   onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove: vi.fn(),
-  onEditBoard: vi.fn(), onFixUnavailable: vi.fn(),
+  onEditBoard: vi.fn(), onFixUnavailable: vi.fn(), onShowMore: vi.fn(),
 });
 
 const issue = (over: Partial<Task> = {}): Task => ({
@@ -118,7 +118,7 @@ describe("the board's github states", () => {
     const v = new BoardView(handlers());
     v.render(state({ error: "HTTP 502" }), NOW);
     expect(v.mount.textContent).toContain("HTTP 502");
-    expect(v.mount.querySelectorAll(".tk-card").length).toBe(1);
+    expect(v.mount.querySelectorAll(".tk-row").length).toBe(1);
   });
 
   /// The second render is a real short page: one card and `total: null`, which is
@@ -202,30 +202,183 @@ describe("the board's github states", () => {
     expect(v.mount.querySelector(".tk-label")?.textContent).toBe("<img src=x onerror=alert(1)>");
   });
 
-  /// The arrows stay: they are the keyboard path, not a fallback for the drag —
-  /// xterm eats Tab inside a tile. With two steps each card gets exactly one.
+  /// The arrows are how a row moves at all now: the list has no columns to drag
+  /// between, so ‹ and › carry the whole of reopen and close beside ✓. With two
+  /// steps each row gets exactly one, and reaching the closed one means switching
+  /// the filter — which is the second half of what this pins.
   it("gives an open issue one arrow and a closed one the other", () => {
     const v = new BoardView(handlers());
     v.render(state(), NOW);
     expect(v.mount.querySelector(".tk-next")).not.toBeNull();
     expect(v.mount.querySelector(".tk-prev")).toBeNull();
+
     v.render(state({ tasks: [issue({ status: "closed", resolved: "2026-07-02T00:00:00Z" })] }), NOW);
+    // Still on the open filter, which is now empty and says so rather than
+    // silently showing the closed issue in a list labelled Open.
+    expect(v.mount.querySelector(".tk-row")).toBeNull();
+    expect(v.mount.querySelector(".tk-empty")?.textContent).toBe("No open issues.");
+    closedFilter(v).click();
     expect(v.mount.querySelector(".tk-prev")).not.toBeNull();
   });
 
-  /// Every card is draggable and both actions are always offered: `damaged` and
-  /// `conflict` are false by construction for an issue, so `canWrite` is always
-  /// true. Correct rather than accidental, which is why it is pinned — over two
-  /// cards, since "every" is the claim.
+  /// Both actions are always offered: `damaged` and `conflict` are false by
+  /// construction for an issue, so `canWrite` is always true. Correct rather than
+  /// accidental, which is why it is pinned — over two rows, since "every" is the
+  /// claim.
   it("offers ▶ and ✓ on every open issue", () => {
     const v = new BoardView(handlers());
     v.render(state({ tasks: [issue(), issue({ id: "43", title: "Second" })] }), NOW);
-    const cards = [...v.mount.querySelectorAll<HTMLElement>(".tk-card")];
-    expect(cards.length).toBe(2);
-    for (const c of cards) {
-      expect(c.querySelector(".tk-run")).not.toBeNull();
-      expect(c.querySelector(".tk-done")).not.toBeNull();
-      expect(c.draggable).toBe(true);
+    const rows = [...v.mount.querySelectorAll<HTMLElement>(".tk-row")];
+    expect(rows.length).toBe(2);
+    for (const r of rows) {
+      expect(r.querySelector(".tk-run")).not.toBeNull();
+      expect(r.querySelector(".tk-done")).not.toBeNull();
     }
   });
+
+  /// One list, not two columns. The columns bought a drag gesture for an action
+  /// that has a button, and paid for it by splitting fifty rows across two narrow
+  /// strips — so the GitHub source draws rows and the file source keeps its board.
+  it("draws one list for an issue source and columns for a folder", () => {
+    const gh = new BoardView(handlers());
+    gh.render(state(), NOW);
+    expect(gh.mount.querySelector(".tk-list")).not.toBeNull();
+    expect(gh.mount.querySelector(".tk-cols")).toBeNull();
+
+    const fs = new BoardView(handlers());
+    fs.render(state({ source: "fs" }), NOW);
+    expect(fs.mount.querySelector(".tk-cols")).not.toBeNull();
+    expect(fs.mount.querySelector(".tk-list")).toBeNull();
+  });
+
+  /// The issue's number is the name a person uses for it, and the card layout had
+  /// nowhere to put one.
+  it("names each row by its issue number", () => {
+    const v = new BoardView(handlers());
+    v.render(state(), NOW);
+    expect(v.mount.querySelector(".tk-row-number")?.textContent).toBe("#42");
+  });
+
+  /// The chip counts the repository where that is known, so it agrees with GitHub
+  /// rather than with whatever a page happened to fit; the count line under the
+  /// rows is what says how much of it is on screen.
+  it("counts the repository on the filter chips, not the page", () => {
+    const v = new BoardView(handlers());
+    v.render(state({
+      total: 63, closedTotal: 400,
+      tasks: Array.from({ length: 50 }, (_, i) => issue({ id: String(i) })),
+    }), NOW);
+    expect([...v.mount.querySelectorAll(".tk-filter")].map((n) => n.textContent))
+      .toEqual(["Open (63)", "Closed (400)"]);
+  });
+
+  /// The filter is the view's own, so a poll landing on it must not fold it back
+  /// to Open under the person's hand — that is the whole reason it does not travel
+  /// through `BoardState`.
+  it("keeps the chosen filter across a re-render", () => {
+    const v = new BoardView(handlers());
+    const closed = issue({ id: "7", status: "closed", resolved: "2026-07-02T00:00:00Z" });
+    v.render(state({ tasks: [issue(), closed] }), NOW);
+    closedFilter(v).click();
+    expect(v.mount.querySelector(".tk-row-number")?.textContent).toBe("#7");
+    v.render(state({ tasks: [issue(), closed] }), NOW);
+    expect(v.mount.querySelector(".tk-row-number")?.textContent).toBe("#7");
+  });
+
+  /// The count line follows the filter: "showing the first 20 open issues" under a
+  /// list of closed ones is a sentence about a different set of rows.
+  it("counts the state the filter is on, by its own name", () => {
+    const v = new BoardView(handlers());
+    const closed = Array.from({ length: 20 }, (_, i) =>
+      issue({ id: `c${i}`, status: "closed", resolved: "2026-07-02T00:00:00Z" }));
+    v.render(state({
+      closedTotal: 400,
+      tasks: [...Array.from({ length: 50 }, (_, i) => issue({ id: String(i) })), ...closed],
+      total: 63,
+    }), NOW);
+    expect(v.mount.querySelector(".tk-count")?.textContent).toBe("Showing 50 of 63 open issues.");
+    closedFilter(v).click();
+    expect(v.mount.querySelector(".tk-count")?.textContent)
+      .toBe("Showing 20 of 400 closed issues.");
+  });
+
+  /// A full page may have more behind it and a short one is the whole of that
+  /// state — so the button appears only where pressing it could change the answer,
+  /// and it hands back the page size the rows were measured against.
+  it("offers Show more only on a full page, and says which page it grew from", () => {
+    const h = handlers();
+    const v = new BoardView(h);
+    v.render(state({
+      total: 63, tasks: Array.from({ length: 50 }, (_, i) => issue({ id: String(i) })),
+    }), NOW);
+    v.mount.querySelector<HTMLButtonElement>(".tk-more")!.click();
+    expect(h.onShowMore).toHaveBeenCalledWith(50);
+
+    v.render(state({ total: null, tasks: [issue()] }), NOW);
+    expect(v.mount.querySelector(".tk-more")).toBeNull();
+  });
+
+  /// A board already paged to 150 compares its full page against 150, not against
+  /// the constant 50 — otherwise it would call every page capped and go on offering
+  /// rows that are already all of them.
+  it("measures a grown page against the page it was fetched with", () => {
+    const v = new BoardView(handlers());
+    const tasks = Array.from({ length: 60 }, (_, i) => issue({ id: String(i) }));
+    v.render(state({ total: 60, pageLimit: 150, tasks }), NOW);
+    expect(v.mount.querySelector(".tk-more")).toBeNull();
+    expect(v.mount.querySelector(".tk-count")).toBeNull();
+  });
+
+  /// A first read of a GitHub board is a repository lookup and a page per state
+  /// deep. Skeleton rows say so; an empty board says something false, and
+  /// `caps: null` says something worse — "no task tracker is configured".
+  it("draws skeleton rows while a first read is in flight, and never over a list", () => {
+    const v = new BoardView(handlers());
+    v.render(state({ loading: true, tasks: [], caps: null }), NOW);
+    expect(v.mount.querySelectorAll(".tk-skeleton-row").length).toBeGreaterThan(0);
+    expect(v.mount.textContent).not.toContain("No task tracker is configured");
+
+    v.render(state({ loading: true }), NOW);
+    expect(v.mount.querySelector(".tk-skeleton")).toBeNull();
+    expect(v.mount.querySelectorAll(".tk-row").length).toBe(1);
+  });
+
+  /// An unavailable source is still its own screen while a read is in flight: it is
+  /// the answer for this workspace, and replacing it with grey boxes would hide the
+  /// only button that fixes it.
+  it("keeps the unavailable box ahead of the skeleton", () => {
+    const v = new BoardView(handlers());
+    v.render(state({ loading: true, tasks: [], unavailable: "no-gh" }), NOW);
+    expect(v.mount.querySelector(".tk-unavailable")).not.toBeNull();
+    expect(v.mount.querySelector(".tk-skeleton")).toBeNull();
+  });
+
+  /// A row was a strip of clickable text in a box that did nothing. The whole row
+  /// opens it now — except the controls, where a click means something else and a
+  /// modal over the top of it would bury what just happened.
+  it("opens the card from anywhere in the row but the actions", () => {
+    const h = handlers();
+    const v = new BoardView(h);
+    v.render(state(), NOW);
+    v.mount.querySelector<HTMLElement>(".tk-row-title")!.click();
+    v.mount.querySelector<HTMLElement>(".tk-row-when")!.click();
+    v.mount.querySelector<HTMLElement>(".tk-row")!.click();
+    expect(h.onOpen).toHaveBeenCalledTimes(3);
+
+    h.onOpen.mockClear();
+    v.mount.querySelector<HTMLButtonElement>(".tk-run")!.click();
+    v.mount.querySelector<HTMLButtonElement>(".tk-done")!.click();
+    expect(h.onOpen).not.toHaveBeenCalled();
+    expect(h.onLaunch).toHaveBeenCalledTimes(1);
+    expect(h.onResolve).toHaveBeenCalledTimes(1);
+  });
 });
+
+/** The Closed chip, by its label rather than by position: which step is second is
+ *  the configuration's business, and an index would pass on the wrong chip. */
+function closedFilter(v: BoardView): HTMLButtonElement {
+  const chip = [...v.mount.querySelectorAll<HTMLButtonElement>(".tk-filter")]
+    .find((n) => n.textContent?.startsWith("Closed"));
+  if (!chip) throw new Error("no Closed filter chip");
+  return chip;
+}
