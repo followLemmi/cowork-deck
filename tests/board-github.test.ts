@@ -64,20 +64,37 @@ describe("the board's github states", () => {
 
   /// Never rendered as an empty list: from one it is impossible to tell whether
   /// something broke.
+  /// The sentence is asserted, not merely its existence: "explains %s" is a claim
+  /// about what the box says, and a non-empty check would pass on any prose at
+  /// all — including prose written for another screen, which is exactly what it
+  /// did pass on.
   it.each([
-    ["no-gh", "Set up gh"],
-    ["no-account", "Bind an account"],
-  ] as const)("explains %s and offers its next step", (u, action) => {
+    ["no-gh", "Set up gh", "so issues cannot be read"],
+    ["no-account", "Bind an account", "no GitHub account bound"],
+  ] as const)("explains %s and offers its next step", (u, action, says) => {
     const h = handlers();
     const v = new BoardView(h);
     v.render(state({ unavailable: u, tasks: [] }), NOW);
     expect(v.mount.querySelector(".tk-cols")).toBeNull();
-    expect(v.mount.querySelector(".tk-unavailable-text")?.textContent).not.toBe("");
+    expect(v.mount.querySelector(".tk-unavailable-text")?.textContent).toContain(says);
     const fix = v.mount.querySelector<HTMLButtonElement>(".tk-fix");
     expect(fix?.textContent).toBe(action);
     fix?.click();
     expect(h.onFixUnavailable).toHaveBeenCalledWith(u);
   });
+
+  /// The three sentences are shared with the pull request view, and one of them
+  /// carried that view's subject: a person looking at an issues board with no
+  /// `gh` installed was told their *pull requests* could not be read. The board
+  /// is the screen they are on, and pull requests are not what they asked for.
+  it.each(["no-gh", "no-account", "no-repo"] as const)(
+    "never names pull requests in %s", (u) => {
+      const v = new BoardView(handlers());
+      v.render(state({ unavailable: u, tasks: [] }), NOW);
+      expect(v.mount.querySelector(".tk-unavailable-text")?.textContent)
+        .not.toContain("pull request");
+    },
+  );
 
   /// Nothing in the app can fix it, so no button is offered — a dead button is
   /// worse than none. It still has to say what is wrong, which is the half of

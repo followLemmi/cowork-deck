@@ -22,7 +22,8 @@ import {
   boardPollMs, needsCloseConfirmation, needsTotals, repoFromIssueUrl, sourceOf, unavailableFrom,
 } from "./issues";
 import { PrView } from "./pr-view";
-import type { GhUnavailable, PrState } from "./pr-view";
+import type { GhUnavailable } from "./gh-unavailable";
+import type { PrState } from "./pr-view";
 import { alertModal, confirmModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";

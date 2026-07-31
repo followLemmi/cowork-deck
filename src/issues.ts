@@ -2,7 +2,7 @@ import type {
   BoardConfig, StepId, TrackerConfig, TrackerProviderConfig, TrackerRoot,
 } from "./ipc";
 import { isTerminal } from "./board-config";
-import type { GhUnavailable } from "./pr-view";
+import type { GhUnavailable } from "./gh-unavailable";
 
 /** Which source a workspace's board reads. */
 export type TaskSource = "fs" | "github";

@@ -1,8 +1,8 @@
 import type { MigrationOffer, ProviderCapabilities, StepId, Task } from "./ipc";
 import { isTerminal, stepAfter, stepBefore } from "./board-config";
+import { ghUnavailable, type GhUnavailable } from "./gh-unavailable";
 import { countLine, needsTotals, rateLimitBanner, type TaskSource } from "./issues";
 import { ago } from "./pr";
-import { GH_UNAVAILABLE, type GhUnavailable } from "./pr-view";
 import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
 
 export interface BoardState {
@@ -112,7 +112,10 @@ export class BoardView {
     // An unavailable source is not an empty board, and drawing it as one makes a
     // broken token look like a repository with no issues.
     if (state.unavailable) {
-      const spec = GH_UNAVAILABLE[state.unavailable];
+      // "issues", because that is what this board reads when it has a GitHub
+      // source at all — the same three states on the pull request view name that
+      // view's subject instead.
+      const spec = ghUnavailable(state.unavailable, "issues");
       const box = el("div", "tk-unavailable");
       box.append(el("p", "tk-unavailable-text", spec.text));
       if (spec.action) {

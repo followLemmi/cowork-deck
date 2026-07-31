@@ -1,11 +1,7 @@
 import type { PullRequest } from "./ipc";
+import { ghUnavailable, type GhUnavailable } from "./gh-unavailable";
 import { ago, canMerge, checksLabel, reviewLabel, sortPrs } from "./pr";
 
-/** The three states in which a GitHub-backed view cannot work at all. Shared with
- *  the board, so the three sentences exist once: the board's source can be
- *  unavailable for exactly the same three reasons, and two copies of the prose
- *  would drift. */
-export type GhUnavailable = "no-gh" | "no-account" | "no-repo";
 export type PrUnavailable = GhUnavailable;
 
 export interface PrState {
@@ -29,23 +25,6 @@ export interface PrHandlers {
   onRefresh: () => void;
   onFixUnavailable: (u: PrUnavailable) => void;
 }
-
-export const GH_UNAVAILABLE: Record<GhUnavailable, { text: string; action: string | null }> = {
-  "no-gh": {
-    text: "The gh command-line tool is not installed, so pull requests cannot be read.",
-    action: "Set up gh",
-  },
-  "no-account": {
-    text: "This workspace has no GitHub account bound, so there is no account to read as.",
-    action: "Bind an account",
-  },
-  "no-repo": {
-    text: "This workspace is not a git repository with a GitHub remote.",
-    action: null,
-  },
-};
-/** The name the rest of this file has always used. Kept so nothing below moves. */
-const UNAVAILABLE = GH_UNAVAILABLE;
 
 const PAGE_LIMIT = 50;
 
@@ -79,7 +58,9 @@ export class PrView {
     this.mount.append(head);
 
     if (state.unavailable) {
-      const spec = UNAVAILABLE[state.unavailable];
+      // This view's own noun, not the shared file's: the sentence says what
+      // cannot be read, and here that is pull requests.
+      const spec = ghUnavailable(state.unavailable, "pull requests");
       const box = el("div", "pr-unavailable");
       box.append(el("p", "pr-unavailable-text", spec.text));
       if (spec.action) {

@@ -120,6 +120,17 @@ describe("PrView", () => {
     }
   });
 
+  // The board draws the same three states, and one sentence named this view's
+  // subject there too. The subject is the caller's to supply now, so this pins
+  // what *this* view supplies: a screen-neutral "GitHub cannot be read" would be
+  // a regression here, not a fix.
+  it("names pull requests when gh is missing", () => {
+    const { view } = mk();
+    view.render(state({ unavailable: "no-gh", prs: [] }), NOW);
+    expect(document.querySelector(".pr-unavailable-text")!.textContent)
+      .toBe("The gh command-line tool is not installed, so pull requests cannot be read.");
+  });
+
   it("says nothing is open, distinctly from being unavailable", () => {
     const { view } = mk();
     view.render(state({ prs: [], total: 0 }), NOW);
