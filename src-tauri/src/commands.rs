@@ -1410,6 +1410,34 @@ branch refs/heads/feature/y\n";
         assert_eq!(reusable_worktree(REUSE_PORCELAIN, "feature/none", WS, 11), None);
     }
 
+    /// `reusable_worktree` compares parent directories and throws the leaves
+    /// away, which is what lets it build its two candidates from the functions
+    /// that create those directories instead of spelling `-pr` and `-issue` a
+    /// third time. It is sound only while the leaf is the only part the
+    /// title-or-branch argument decides. Nest either builder one level deeper and
+    /// the comparison silently changes meaning — reuse stops working, or starts
+    /// matching a directory it should not — with nothing to fail. These two fail.
+    ///
+    /// `assert_ne` on the whole path is half the invariant: the parents must
+    /// agree *because* the argument reaches no further than the leaf, not because
+    /// the builder ignores it.
+    #[test]
+    fn a_pull_request_worktrees_parent_does_not_depend_on_the_branch() {
+        let one = crate::gh_pr::worktree_path(WS, 11, "one");
+        let other = crate::gh_pr::worktree_path(WS, 11, "another");
+        assert_eq!(one.parent().expect("a parent"), other.parent().expect("a parent"));
+        assert_ne!(one, other, "the branch still reaches the leaf");
+    }
+
+    #[test]
+    fn an_issue_worktrees_parent_does_not_depend_on_the_title() {
+        use cowork_deck::tasks::gh_issues::issue_worktree_path;
+        let one = issue_worktree_path(WS, 11, "one");
+        let other = issue_worktree_path(WS, 11, "another");
+        assert_eq!(one.parent().expect("a parent"), other.parent().expect("a parent"));
+        assert_ne!(one, other, "the title still reaches the leaf");
+    }
+
     #[test]
     fn sum_usage_lines_adds_assistant_usage_only() {
         let content = concat!(

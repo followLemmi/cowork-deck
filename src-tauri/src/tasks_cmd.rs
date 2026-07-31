@@ -728,7 +728,7 @@ pub struct MigrationOffer {
 /// nothing to offer.
 ///
 /// `None` covers three different situations, and only one of them means the
-/// pointer can be forgotten — see `clear_previous_location`'s caller.
+/// pointer can be forgotten — that answer is `may_forget_previous_location`.
 pub fn offer_for(ws: &Workspace) -> Result<Option<(MigrationOffer, MigrationPlan)>, String> {
     let Some(previous) = ws.tracker.as_ref().and_then(|c| c.previous_location.clone()) else {
         return Ok(None);
