@@ -709,6 +709,44 @@ pub struct WorktreeAdded {
     pub reused: bool,
 }
 
+/// The worktree `pr_worktree_add` may reuse for a pull request on `branch`, out
+/// of `git worktree list --porcelain`.
+///
+/// `worktree_on_branch` answers a narrower question — which worktree is on this
+/// branch — and its first candidate is the workspace's **own working copy**,
+/// because that is the first block git prints. For the ordinary pull request,
+/// pushed from the workspace with its branch still checked out there, that block
+/// is the one that matches; handing it back opens a session in the workspace
+/// root beside every other live session there, which is the precise harm this
+/// command refuses `gh pr checkout` to avoid.
+///
+/// So reuse is limited to the two sibling directories this app creates worktrees
+/// in, which is also what makes it meaningful: the case reuse exists for is the
+/// worktree our own issue flow made on the issue's branch. A directory somebody
+/// created by hand is on the right branch and nothing else, and `reused: true`
+/// would tell the tile it is the same piece of work.
+fn reusable_worktree(
+    porcelain: &str,
+    branch: &str,
+    ws_path: &str,
+    number: u64,
+) -> Option<std::path::PathBuf> {
+    let found = crate::gh_pr::worktree_on_branch(porcelain, branch)?;
+    if found == std::path::Path::new(ws_path) {
+        return None;
+    }
+    // Built by the two functions that create them, so those names keep one
+    // source; only the parent is read, and `number` and `branch` reach no
+    // further than the leaf both of them discard.
+    let ours = [
+        crate::gh_pr::worktree_path(ws_path, number, branch),
+        cowork_deck::tasks::gh_issues::issue_worktree_path(ws_path, number, branch),
+    ];
+    ours.iter()
+        .any(|d| d.parent().is_some() && d.parent() == found.parent())
+        .then_some(found)
+}
+
 #[tauri::command]
 pub fn pr_worktree_add(
     state: State<AppState>,
@@ -741,7 +779,7 @@ pub fn pr_worktree_add(
         if let Ok(out) = out {
             if out.status.success() {
                 let listed = String::from_utf8_lossy(&out.stdout);
-                if let Some(found) = crate::gh_pr::worktree_on_branch(&listed, &branch) {
+                if let Some(found) = reusable_worktree(&listed, &branch, &ws_path, number) {
                     return Ok(WorktreeAdded {
                         path: found.to_string_lossy().to_string(),
                         reused: true,
@@ -1304,6 +1342,69 @@ mod tests {
         let gh = session_env(None, "deck", "/b", "s", None, Some("o/n"), None);
         assert!(value(&file, "COWORK_ISSUE_REPO").is_none());
         assert!(value(&gh, "COWORK_TASKS_DIR").is_none());
+    }
+
+    /// The workspace: `/home/u/projects/cowork-deck`, its two sibling worktree
+    /// directories `…-issue/` and `…-pr/`. The first block is the workspace's own
+    /// working copy, because that is where `git worktree list --porcelain` puts
+    /// it, and `feature/x` is checked out there — a developer pushed the branch
+    /// from the workspace and opened a pull request, which is the ordinary case.
+    const WS: &str = "/home/u/projects/cowork-deck";
+    const REUSE_PORCELAIN: &str = "worktree /home/u/projects/cowork-deck\n\
+HEAD aaaa\n\
+branch refs/heads/feature/x\n\
+\n\
+worktree /home/u/projects/cowork-deck-issue/42-sidebar\n\
+HEAD bbbb\n\
+branch refs/heads/issue-42-sidebar\n\
+\n\
+worktree /home/u/projects/cowork-deck-pr/9-old\n\
+HEAD cccc\n\
+branch refs/heads/pr-9\n\
+\n\
+worktree /home/u/scratch/wip\n\
+HEAD dddd\n\
+branch refs/heads/feature/y\n";
+
+    /// Clicking ▶ on that pull request must not open a session in the workspace
+    /// root, alongside every other live session there. That is the precise harm
+    /// `pr_worktree_add` refuses `gh pr checkout` to avoid, and reuse walked
+    /// straight into it.
+    #[test]
+    fn the_workspaces_own_working_copy_is_never_reused() {
+        // The pure function is right, and stays right: that worktree really is
+        // on the branch. The judgement belongs to the caller.
+        assert_eq!(
+            crate::gh_pr::worktree_on_branch(REUSE_PORCELAIN, "feature/x"),
+            Some(WS.into()),
+        );
+        assert_eq!(reusable_worktree(REUSE_PORCELAIN, "feature/x", WS, 11), None);
+    }
+
+    /// Reuse exists for one situation: the worktree our own issue flow made on
+    /// the issue's branch. A directory somebody created by hand is on the right
+    /// branch and nothing else — the tile would call it "reused" and describe
+    /// work it knows nothing about.
+    #[test]
+    fn only_a_worktree_this_app_created_is_reused() {
+        assert_eq!(
+            reusable_worktree(REUSE_PORCELAIN, "issue-42-sidebar", WS, 11),
+            Some("/home/u/projects/cowork-deck-issue/42-sidebar".into()),
+        );
+        assert_eq!(
+            reusable_worktree(REUSE_PORCELAIN, "pr-9", WS, 11),
+            Some("/home/u/projects/cowork-deck-pr/9-old".into()),
+        );
+        assert_eq!(
+            reusable_worktree(REUSE_PORCELAIN, "feature/y", WS, 11),
+            None,
+            "/home/u/scratch/wip is on the branch and is not ours",
+        );
+    }
+
+    #[test]
+    fn a_branch_with_no_worktree_at_all_is_not_reused() {
+        assert_eq!(reusable_worktree(REUSE_PORCELAIN, "feature/none", WS, 11), None);
     }
 
     #[test]
