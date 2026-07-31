@@ -770,7 +770,7 @@ pub fn offer_for(ws: &Workspace) -> Result<Option<(MigrationOffer, MigrationPlan
 ///
 /// Only a GitHub board refuses: an unconfigured workspace and a source this
 /// build cannot read both have *no offer*, which is `Ok(None)` and not an error —
-/// `offer_for` has always answered them that way (`:713`). The broader
+/// `offer_for` has always answered them that way (`:734` and `:736`). The broader
 /// `fs_provider_for` check the other five file-only commands use turned both of
 /// those into an error on `tasks_migration_status`, which is the one command of
 /// the six that is **polled** — every board tick, with its error discarded into

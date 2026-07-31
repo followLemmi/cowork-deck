@@ -1331,9 +1331,12 @@ mod tests {
         }
     }
 
-    /// Neither workspace kind gets both. A contradictory environment is the state
-    /// that should never occur, and the two branches are exclusive by
-    /// construction — `root` is `None` exactly when the tracker is GitHub.
+    /// Neither set of arguments gets both. A contradictory environment is the
+    /// state that should never occur, and this pins the half of that which
+    /// `session_env` decides: given a root and no repository, or a repository and
+    /// no root, the two variable groups do not leak into each other. Whether a
+    /// real caller can ever pass both is not visible from here — the arguments
+    /// are seven hand-written values, not a workspace.
     #[test]
     fn the_two_tracker_environments_are_never_both_present() {
         let file = session_env(
