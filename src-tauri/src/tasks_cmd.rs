@@ -149,6 +149,36 @@ pub fn tracker_root_preview(workspace_name: String, picked_path: String) -> Trac
     root_preview(&workspace_name, &picked_path)
 }
 
+/// What a workspace's tracker *is*, as opposed to where its files are.
+///
+/// `resolve_root` answers one question — where do the card files live — and
+/// `None` from it means "there are none", which is the right answer both for an
+/// unconfigured workspace and for a GitHub-backed one. Seven of its eight
+/// callers want precisely that (decision 2); this enum is for the two places
+/// that need to tell those two cases apart: the provider choice and the session
+/// environment.
+pub enum TrackerKind {
+    Fs { root: PathBuf, creation: RootCreation },
+    /// The repository is deliberately not carried here: it is resolved from the
+    /// workspace's own folder by `gh`, once per app run (decision 11).
+    GitHub,
+}
+
+pub fn tracker_kind(ws: &Workspace) -> Option<TrackerKind> {
+    let cfg = ws.tracker.as_ref()?;
+    match cfg.providers.first()? {
+        TrackerProvider::Fs { .. } => {
+            let (root, creation) = resolve_root(ws)?;
+            Some(TrackerKind::Fs { root, creation })
+        }
+        TrackerProvider::GitHub => Some(TrackerKind::GitHub),
+        // A source a newer build wrote (Task 2). There is nothing here to list
+        // from, and resolving it as anything else would act on a folder nobody
+        // named. The board says so in words — see Task 8's capabilities branch.
+        TrackerProvider::Unknown(_) => None,
+    }
+}
+
 /// The provider root for a workspace, plus how much of it we may create.
 /// `None` means "no tracker configured" — a legal, non-error state.
 pub fn resolve_root(ws: &Workspace) -> Option<(PathBuf, RootCreation)> {
@@ -836,6 +866,96 @@ mod tests {
             previous_location: None,
             version: crate::model::TRACKER_CONFIG_VERSION,
         }
+    }
+
+    fn github_tracker() -> TrackerConfig {
+        TrackerConfig {
+            providers: vec![TrackerProvider::GitHub],
+            previous_location: None,
+            version: crate::model::TRACKER_CONFIG_VERSION,
+        }
+    }
+
+    #[test]
+    fn tracker_kind_tells_the_three_configurations_apart() {
+        assert!(tracker_kind(&ws(None)).is_none());
+        assert!(matches!(
+            tracker_kind(&ws(Some(tracker(TrackerRoot::Project)))),
+            Some(TrackerKind::Fs { .. })
+        ));
+        assert!(matches!(
+            tracker_kind(&ws(Some(github_tracker()))),
+            Some(TrackerKind::GitHub)
+        ));
+    }
+
+    /// A fourth configuration, from Task 2: a source written by a newer build.
+    /// `None`, like an unconfigured workspace — there is nothing here that can
+    /// list, create or resolve anything. What it must *not* do is resolve as
+    /// `Fs` and start reading a folder that was never named.
+    #[test]
+    fn a_source_this_build_cannot_read_yields_no_provider() {
+        let w = ws(Some(TrackerConfig {
+            providers: vec![TrackerProvider::Unknown(serde_json::json!({"type": "jira"}))],
+            previous_location: None,
+            version: crate::model::TRACKER_CONFIG_VERSION,
+        }));
+        assert!(tracker_kind(&w).is_none());
+        assert!(resolve_root(&w).is_none());
+        assert!(!is_project_root(&w));
+    }
+
+    /// The whole of decision 2 in one assertion: seven of `resolve_root`'s eight
+    /// callers want exactly this answer, and the eighth (`start_session`) is the
+    /// seam Task 12 fixes.
+    #[test]
+    fn resolve_root_is_none_for_a_github_workspace() {
+        assert!(resolve_root(&ws(Some(github_tracker()))).is_none());
+    }
+
+    /// `is_project_root` matches on `Fs { Project }` directly, so a GitHub
+    /// workspace is not a project root — and the migration machinery downstream
+    /// of it stays quiet.
+    #[test]
+    fn a_github_workspace_is_not_a_project_root_and_has_no_effective_root() {
+        let w = ws(Some(github_tracker()));
+        assert!(!is_project_root(&w));
+        assert_eq!(effective_root(&w), None);
+    }
+
+    /// Switching to GitHub records no pointer, so the migration banner never
+    /// appears: its job is to move card *files* to another *folder*, and there is
+    /// no folder. Decision 8.
+    #[test]
+    fn switching_to_github_records_no_previous_location() {
+        let old = ws(Some(tracker(TrackerRoot::Path { path: "/home/u/vault".into() })));
+        let new = with_previous_location(Some(&old), ws(Some(github_tracker())));
+        assert!(new.tracker.unwrap().previous_location.is_none());
+    }
+
+    /// And no offer is computed for one, whatever a pointer left over from an
+    /// earlier configuration says.
+    #[test]
+    fn no_migration_is_offered_for_a_github_workspace() {
+        let mut w = ws(Some(github_tracker()));
+        if let Some(cfg) = w.tracker.as_mut() {
+            cfg.previous_location = Some(PreviousLocation {
+                root: "/home/u/vault".into(),
+                project: "cowork-deck".into(),
+                was_project_root: false,
+            });
+        }
+        assert!(offer_for(&w).unwrap().is_none());
+    }
+
+    /// `seed_previous_location` only recognises `Fs { Path }`, so an update does
+    /// not invent a root for a GitHub workspace.
+    #[test]
+    fn seeding_leaves_a_github_workspace_alone() {
+        let mut w = ws(Some(github_tracker()));
+        if let Some(cfg) = w.tracker.as_mut() { cfg.version = 1; }
+        let seeded = seed_previous_location(w);
+        assert!(seeded.tracker.unwrap().previous_location.is_none());
     }
 
     #[test]
