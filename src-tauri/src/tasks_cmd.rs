@@ -746,6 +746,20 @@ pub fn offer_for(ws: &Workspace) -> Result<Option<(MigrationOffer, MigrationPlan
     )))
 }
 
+/// Why a migration question cannot be asked of this workspace, when it cannot.
+///
+/// Only a GitHub board refuses: an unconfigured workspace and a source this
+/// build cannot read both have *no offer*, which is `Ok(None)` and not an error —
+/// `offer_for` has always answered them that way (`:713`). The broader
+/// `fs_provider_for` check the other five file-only commands use turned both of
+/// those into an error on `tasks_migration_status`, which is the one command of
+/// the six that is **polled** — every board tick, with its error discarded into
+/// `console.debug` (`main.ts:248`). Nobody could read the refusal there, and the
+/// only thing keeping it invisible was that one `catch`.
+fn migration_refusal(ws: &Workspace) -> Option<String> {
+    matches!(tracker_kind(ws), Some(TrackerKind::GitHub)).then(|| FILE_ONLY.to_string())
+}
+
 /// Forget where the cards were. Stamps the version too, or the next read would
 /// re-seed a version 1 config and the banner would come back.
 fn clear_previous_location(state: &State<AppState>, workspace_id: &str) -> Result<(), String> {
@@ -767,9 +781,10 @@ pub fn tasks_migration_status(
     workspace_id: String,
 ) -> Result<Option<MigrationOffer>, String> {
     let ws = workspace(&state, &workspace_id)?;
-    // Before anything else: a card migration moves files between folders, and
-    // this workspace's board has neither.
-    fs_provider_for(&ws).map(|_| ())?;
+    // Narrower than the other five refusals on purpose: see `migration_refusal`.
+    if let Some(err) = migration_refusal(&ws) {
+        return Err(err);
+    }
     let Some((offer, _)) = offer_for(&ws)? else {
         // Nothing of ours is at the old root any more, so the pointer has done
         // its job — but only when the folder is actually readable. A missing
@@ -833,7 +848,16 @@ pub fn tasks_migration_dismiss(
     state: State<AppState>,
     workspace_id: String,
 ) -> Result<(), String> {
-    // There is no offer to dismiss without a folder, and clearing a pointer a
+    // Keeps the broader `fs_provider_for` check on purpose, where
+    // `tasks_migration_status` above narrowed to GitHub only. This command is
+    // reached from one place — the migration banner's Dismiss button
+    // (`main.ts:365`), and the banner only renders when an offer exists, which
+    // needs a folder — so an unconfigured workspace never arrives here and the
+    // check costs nothing. The refusal is also *read*: this one reaches a person
+    // through `alertModal`, where `status` is polled and its error discarded into
+    // `console.debug`. That is the line between the two, not an inconsistency.
+    //
+    // And there is no offer to dismiss without a folder: clearing a pointer a
     // GitHub workspace cannot have would be a write nobody asked for.
     fs_provider_for(&workspace(&state, &workspace_id)?).map(|_| ())?;
     clear_previous_location(&state, &workspace_id)
@@ -2172,6 +2196,35 @@ mod tests {
         assert!(rewrite_step(&w, &StepId("open".into()), &StepId("closed".into()), &github_board())
             .is_err());
         assert!(save_config(&w, github_board()).is_err());
+    }
+
+    /// Only a GitHub board refuses a migration question. The two cases that
+    /// matter are the other two: an unconfigured workspace and a source this
+    /// build cannot read both have *no offer*, which is `Ok(None)` and not an
+    /// error, and Task 10's broader check turned both into one — on a command
+    /// polled every board tick whose caller discards the error
+    /// (`main.ts:248`). A test that pinned only the GitHub case would pass
+    /// again the moment someone widened it back.
+    #[test]
+    fn only_a_github_board_refuses_a_migration_question() {
+        let refusal = migration_refusal(&ws(Some(github_tracker())))
+            .expect("a github board has no folder to migrate between");
+        assert!(refusal.contains("folder"), "{refusal}");
+
+        // Unconfigured: no refusal, and `offer_for` answers `Ok(None)`. The two
+        // together are what make the command return `Ok(None)`, so the
+        // composition is pinned rather than just the guard.
+        assert_eq!(migration_refusal(&ws(None)), None);
+        assert!(offer_for(&ws(None)).unwrap().is_none());
+
+        // A source written by a newer build (#117): same answer, same reason.
+        let unknown = ws(Some(TrackerConfig {
+            providers: vec![TrackerProvider::Unknown(serde_json::json!({"type": "jira"}))],
+            previous_location: None,
+            version: crate::model::TRACKER_CONFIG_VERSION,
+        }));
+        assert_eq!(migration_refusal(&unknown), None);
+        assert!(offer_for(&unknown).unwrap().is_none());
     }
 
     /// "Open" is "not closed", asked of the board rather than assumed: the file
