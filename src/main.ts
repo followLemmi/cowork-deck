@@ -778,7 +778,13 @@ void listen("pill://focus-next", async () => {
 // deletion re-selects the next one) switches the deck to that workspace's tiles.
 const workspaces = new WorkspacesPanel(wsMount, (ws) => {
   deck.setActiveWorkspace(ws.id);
-  if (boardVisible) void refreshBoard();
+  // `boardTick`, not `refreshBoard` — deliberate, and not a copy of the line
+  // below. A switch changes which source the board has, and the pending tick was
+  // armed for the old one: github→fs would wait 30 s once, fs→github would fire
+  // at 5 s. `scheduleBoardPoll` stops the old handle and re-reads the source, so
+  // going through `boardTick` re-arms at the new interval without making this a
+  // second owner of the timer. Do not simplify it back.
+  if (boardVisible) void boardTick();
   // The pull requests on screen belong to the workspace that was active a
   // moment ago; re-reading also re-points the poll at the new one.
   if (currentView === "pr") void refreshPrs();

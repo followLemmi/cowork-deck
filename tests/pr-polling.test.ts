@@ -52,9 +52,13 @@ vi.mock("../src/ipc", async (orig) => ({
   taskMigrationStatus: vi.fn().mockResolvedValue(null),
 }));
 
-// A workspace with an account bound, so the view has something to poll for.
+// A workspace with an account bound, so the view has something to poll for. The
+// panel's first constructor argument is `main.ts`'s "a workspace was selected"
+// callback, kept here so a test can fire the switch the real sidebar fires.
+let onSelect: ((ws: typeof active) => void) | null = null;
 vi.mock("../src/workspaces", () => ({
   WorkspacesPanel: class {
+    constructor(_mount: HTMLElement, select: (ws: typeof active) => void) { onSelect = select; }
     get active() { return active; }
     get all() { return [active]; }
     load = vi.fn().mockResolvedValue(undefined);
@@ -252,6 +256,50 @@ describe("board polling", () => {
     termBtn.click();
     await flush();
     active = WS;
+    vi.useRealTimers();
+  });
+
+  /// A switch while the board is open re-arms the chain, so the interval belongs
+  /// to the workspace now on screen. Without it the tick already in flight keeps
+  /// the *previous* source's interval: a GitHub board handed over to a file board
+  /// would sit still for thirty seconds, and the person switching cannot tell that
+  /// from a board that is simply not updating.
+  it("re-arms at the new source's interval when the workspace changes", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const [termBtn, boardBtn] = buttons;
+
+    // Open the board on the GitHub workspace, so a thirty-second tick is armed.
+    termBtn.click();
+    await flush();
+    active = WS_GH;
+    boardBtn.click();
+    await flush();
+    // The armed tick is the GitHub one: five seconds bring nothing.
+    listTasksMock.mockClear();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flush();
+    expect(listTasksMock).toHaveBeenCalledTimes(0);
+
+    // Now the sidebar hands over to the file-backed workspace, exactly as a click
+    // in it does.
+    active = WS;
+    listTasksMock.mockClear();
+    onSelect!(active);
+    await flush();
+    // The switch itself reads once — the board on screen belongs to the workspace
+    // that was active a moment ago.
+    expect(listTasksMock).toHaveBeenCalledTimes(1);
+
+    // And the next read is five seconds later, not thirty — the interval belongs
+    // to the workspace now on screen.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flush();
+    expect(listTasksMock).toHaveBeenCalledTimes(2);
+
+    termBtn.click();
+    await flush();
     vi.useRealTimers();
   });
 });
