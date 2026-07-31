@@ -194,6 +194,90 @@ pub fn parse_merge_options(json: &str) -> Result<MergeOptions, String> {
     Ok(MergeOptions { strategies, default, repo_deletes_branch: flag("deleteBranchOnMerge") })
 }
 
+/// What a pull request holds, fetched only when a row is opened.
+///
+/// **Deliberately not part of `PR_LIST_FIELDS`.** A description runs to
+/// kilobytes and `files` is one entry per changed path, so folding either into
+/// the list call would multiply the payload of a fifty-row page — on a poll that
+/// repeats every 15 s while anything is building — to serve a row nobody has
+/// opened. One row expanded is one extra request; that is the trade, and it is
+/// the same one `ISSUE_LIST_FIELDS` made in the other direction for `body`,
+/// where a card's body was measured at 85 KB for fifty issues and the modal
+/// would otherwise need a loading state of its own.
+pub const PR_DETAIL_FIELDS: &str = "body,additions,deletions,changedFiles,files";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrDetail {
+    /// The description as written, Markdown and all. Empty for a pull request
+    /// opened without one, which is not an error and reads as "no description".
+    pub body: String,
+    pub additions: u64,
+    pub deletions: u64,
+    /// GitHub's own count, kept beside `files` rather than derived from its
+    /// length: `files` is itself a page, and a length would quietly disagree with
+    /// the repository on a pull request touching hundreds of paths.
+    pub changed_files: u64,
+    pub files: Vec<ChangedFile>,
+}
+
+/// Read `gh pr view <n> --json <PR_DETAIL_FIELDS>`.
+///
+/// Hand-rolled for the same reason `parse_pull_requests` is: every field here is
+/// absent rather than null on some rows — `files` on a pull request with no diff
+/// GitHub will admit to, `body` on one opened from a template that was cleared —
+/// and a derive would fail the whole request on any of them. An absent field is
+/// its empty value, never a refusal: the expanded row's job is to show what is
+/// there.
+pub fn parse_pr_detail(json: &str) -> Result<PrDetail, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("gh returned unreadable JSON: {e}"))?;
+    if !v.is_object() {
+        return Err("gh did not return one pull request".to_string());
+    }
+    let n = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    Ok(PrDetail {
+        body: v.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        additions: n("additions"),
+        deletions: n("deletions"),
+        changed_files: n("changedFiles"),
+        files: v
+            .get("files")
+            .and_then(|x| x.as_array())
+            .map(|fs| {
+                fs.iter()
+                    // A row with no `path` is dropped rather than shown as a
+                    // blank line: it names no file, so there is nothing to say
+                    // about it. Its numbers stay counted in `changedFiles`,
+                    // which comes from GitHub and not from this list.
+                    .filter_map(|f| {
+                        let path = f.get("path").and_then(|x| x.as_str())?;
+                        Some(ChangedFile {
+                            path: path.to_string(),
+                            additions: f
+                                .get("additions")
+                                .and_then(|x| x.as_u64())
+                                .unwrap_or(0),
+                            deletions: f
+                                .get("deletions")
+                                .and_then(|x| x.as_u64())
+                                .unwrap_or(0),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
 pub use cowork_deck::tasks::slug::slug;
 
 /// Where the worktree for a pull request lives: beside the workspace, never
@@ -504,5 +588,70 @@ detached\n";
     #[test]
     fn empty_porcelain_output_is_none_rather_than_a_panic() {
         assert_eq!(worktree_on_branch("", "main"), None);
+    }
+
+    /// The shape `gh pr view --json body,additions,deletions,changedFiles,files`
+    /// really returns: one object, `files` an array of three-key rows.
+    #[test]
+    fn a_detail_row_becomes_a_description_and_a_diffstat() {
+        let json = r#"{"body":"Fixes #1.","additions":12,"deletions":3,"changedFiles":2,
+            "files":[{"path":"src/board.ts","additions":10,"deletions":3},
+                     {"path":"src/styles.css","additions":2,"deletions":0}]}"#;
+        let d = parse_pr_detail(json).unwrap();
+        assert_eq!(d.body, "Fixes #1.");
+        assert_eq!((d.additions, d.deletions, d.changed_files), (12, 3, 2));
+        assert_eq!(d.files.len(), 2);
+        assert_eq!(d.files[0], ChangedFile { path: "src/board.ts".into(), additions: 10, deletions: 3 });
+    }
+
+    /// A pull request opened without a description is not a failure, and neither
+    /// is one whose fields `gh` omits rather than nulls. The expanded row's job is
+    /// to show what is there.
+    #[test]
+    fn missing_detail_fields_are_their_empty_values_not_a_refusal() {
+        let d = parse_pr_detail("{}").unwrap();
+        assert_eq!(d.body, "");
+        assert_eq!((d.additions, d.deletions, d.changed_files), (0, 0, 0));
+        assert!(d.files.is_empty());
+    }
+
+    /// A file row naming no path says nothing about any file, so it is dropped
+    /// rather than drawn as a blank line. `changedFiles` is GitHub's own count and
+    /// is deliberately not recomputed from what survived.
+    #[test]
+    fn a_file_row_with_no_path_is_dropped_and_never_recounted() {
+        let json = r#"{"changedFiles":2,"files":[{"additions":1,"deletions":0},
+            {"path":"a.ts","additions":1,"deletions":1}]}"#;
+        let d = parse_pr_detail(json).unwrap();
+        assert_eq!(d.files.len(), 1);
+        assert_eq!(d.files[0].path, "a.ts");
+        assert_eq!(d.changed_files, 2, "the count comes from GitHub, not from the list");
+    }
+
+    /// An array is what the *list* command returns; asking for one pull request
+    /// and being handed a page is a mismatch worth naming rather than indexing
+    /// into.
+    #[test]
+    fn a_detail_response_that_is_not_one_object_is_refused() {
+        assert!(parse_pr_detail("[]").is_err());
+        assert!(parse_pr_detail("not json").is_err());
+    }
+
+    /// The two constants must not converge. `body` and `files` in the list call
+    /// would put a description and a per-path diffstat on a fifty-row page that
+    /// re-polls every 15 s — the payload `PR_DETAIL_FIELDS` exists to keep out of
+    /// it.
+    #[test]
+    fn the_list_call_asks_for_neither_the_body_nor_the_files() {
+        for f in ["body", "files", "additions", "deletions", "changedFiles"] {
+            assert!(
+                !PR_LIST_FIELDS.split(',').any(|x| x.trim() == f),
+                "{f} must stay out of PR_LIST_FIELDS",
+            );
+            assert!(
+                PR_DETAIL_FIELDS.split(',').any(|x| x.trim() == f),
+                "{f} missing from PR_DETAIL_FIELDS",
+            );
+        }
     }
 }

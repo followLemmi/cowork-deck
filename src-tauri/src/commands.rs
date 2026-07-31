@@ -1,3 +1,40 @@
+//! # `#[tauri::command(async)]` is not decoration — read this before adding one
+//!
+//! A bare `#[tauri::command]` on a **synchronous** function runs on the thread
+//! that received the IPC message, which is the main thread — and on Linux the
+//! main thread is the one running the GTK loop that paints the WebView. So a
+//! command that spawns `gh` and waits for the network does not merely take a
+//! while: it freezes the window for its whole duration. Nothing the frontend does
+//! can help, because the frontend cannot repaint. That is what
+//! `tauri-macros`' `ExecutionContext::Blocking` (its default) means, and the
+//! generated wrapper calls the function inline to prove it.
+//!
+//! `(async)` on a function that is still `fn` selects the macro's
+//! `sync_threadpool` kind: the same synchronous body, run inside a task on the
+//! async runtime instead of on the main thread. No signature change, no `.await`,
+//! no `Send` gymnastics with `State` — the locks in this file are all taken and
+//! released around the blocking calls rather than held across them (see
+//! `gh_invocation`), which is what makes concurrent commands safe here.
+//!
+//! **Every command that spawns a process or touches the network carries it.**
+//! That is all of `gh_*`, `pr_*`, `issue_*` and `git_status` here, and the whole
+//! of `tasks_cmd`, whose file board reads a directory that may be on a network
+//! mount. The three deliberate exceptions, which stay on the main thread:
+//!
+//! - the store and settings commands (`list_workspaces`, `save_*`, `load_layout`,
+//!   …) — a small JSON file in the app's own directory, and running them in
+//!   arrival order is worth more than the microseconds;
+//! - the session commands (`start_session`, `write_session`, `resize_session`,
+//!   `close_session`) — **ordering is the feature**: a `write` that overtook its
+//!   `start`, or two writes that swapped, is lost or misdirected keyboard input.
+//!   None of them resolves a token (`workspace_token` is reached only from
+//!   `gh_invocation`), so none of them is a candidate anyway;
+//! - `host_platform` and `claude_available` — one `/etc/os-release` read and one
+//!   `which`.
+//!
+//! Adding a command that shells out and forgetting `(async)` reintroduces a
+//! frozen window, and it will not look like this file's fault from the frontend.
+
 use crate::gh;
 use crate::hooks::build_settings_json;
 use crate::model::{GitStatus, SessionEntry, Skill, TokenUsage, UiState, Workspace, WorkspaceGithub};
@@ -266,7 +303,7 @@ pub fn host_platform() -> HostPlatform {
     HostPlatform { os: os.to_string(), distro }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn gh_status() -> gh::GhStatus {
     gh::status()
 }
@@ -367,6 +404,19 @@ pub fn pr_list_argv(repo: &str, limit: usize) -> Vec<String> {
         limit.to_string(),
         "--json".into(),
         crate::gh_pr::PR_LIST_FIELDS.into(),
+        "-R".into(),
+        repo.into(),
+    ]
+}
+
+/// One pull request's contents. Same `-R` discipline, same reason.
+pub fn pr_detail_argv(repo: &str, number: u64) -> Vec<String> {
+    vec![
+        "pr".into(),
+        "view".into(),
+        number.to_string(),
+        "--json".into(),
+        crate::gh_pr::PR_DETAIL_FIELDS.into(),
         "-R".into(),
         repo.into(),
     ]
@@ -598,7 +648,7 @@ pub(crate) fn repo_facts_for(
 /// How many issues the repository has, in both states. One GraphQL point, and
 /// the frontend only calls it when the open page came back full — a shorter page
 /// *is* the total.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn issue_totals(
     state: State<AppState>,
     workspace_id: String,
@@ -621,7 +671,7 @@ pub struct IssueTotalsView {
     pub rate_remaining: Option<u64>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pr_list(
     state: State<AppState>,
     workspace_id: String,
@@ -632,7 +682,22 @@ pub fn pr_list(
     crate::gh_pr::parse_pull_requests(&json)
 }
 
-#[tauri::command]
+/// What one pull request holds, for a row somebody opened.
+///
+/// Not part of the poll: the view fetches this once per expansion and keeps the
+/// answer, so a description does not travel every 15 s alongside the rows.
+#[tauri::command(async)]
+pub fn pr_detail(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+) -> Result<crate::gh_pr::PrDetail, String> {
+    let repo = repo_facts_for(&state, &workspace_id)?.repo;
+    let json = run_gh_for_workspace(&state, &workspace_id, &pr_detail_argv(&repo, number))?;
+    crate::gh_pr::parse_pr_detail(&json)
+}
+
+#[tauri::command(async)]
 pub fn pr_merge_options(
     state: State<AppState>,
     workspace_id: String,
@@ -678,7 +743,7 @@ pub fn pr_merge_argv(
     argv
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pr_merge(
     state: State<AppState>,
     workspace_id: String,
@@ -698,13 +763,13 @@ pub fn pr_merge(
     .map(|_| ())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pr_close(state: State<AppState>, workspace_id: String, number: u64) -> Result<(), String> {
     let args: Vec<String> = vec!["pr".into(), "close".into(), number.to_string()];
     run_gh_for_workspace(&state, &workspace_id, &args).map(|_| ())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pr_reopen(state: State<AppState>, workspace_id: String, number: u64) -> Result<(), String> {
     let args: Vec<String> = vec!["pr".into(), "reopen".into(), number.to_string()];
     run_gh_for_workspace(&state, &workspace_id, &args).map(|_| ())
@@ -739,7 +804,7 @@ fn workspace_path(state: &State<AppState>, workspace_id: &str) -> Result<String,
 
 /// Where this pull request's worktree would live, and whether it is there.
 /// Read-only: the cleanup offer needs the path before it can name it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pr_worktree_path(
     state: State<AppState>,
     workspace_id: String,
@@ -799,7 +864,7 @@ fn reusable_worktree(
         .then_some(found)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pr_worktree_add(
     state: State<AppState>,
     workspace_id: String,
@@ -868,7 +933,7 @@ pub fn pr_worktree_add(
     Ok(WorktreeAdded { path: path.to_string_lossy().to_string(), reused: false })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn pr_worktree_remove(
     state: State<AppState>,
     workspace_id: String,
@@ -937,7 +1002,7 @@ fn branch_exists(ws_path: &str, branch: &str) -> bool {
 /// A worktree on a new branch off the repository's default branch, and the path
 /// to it. Beside the workspace, never inside it — see
 /// `gh_issues::issue_worktree_path` and BUG-026.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn issue_worktree_add(
     state: State<AppState>,
     workspace_id: String,
@@ -991,7 +1056,7 @@ pub fn issue_worktree_add(
 /// Where this issue's worktree would live, and whether it is there. Read-only:
 /// the cleanup offer needs the path before it can name it. Same shape as
 /// `pr_worktree_path`, keyed by `(number, title)` rather than `(number, branch)`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn issue_worktree_path(
     state: State<AppState>,
     workspace_id: String,
@@ -1006,7 +1071,7 @@ pub fn issue_worktree_path(
 /// Remove an issue's worktree, keeping all three of `pr_worktree_remove`'s
 /// guards: never remove what is not there, refuse while it is dirty, and refuse
 /// when cleanliness cannot be determined at all.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn issue_worktree_remove(
     state: State<AppState>,
     workspace_id: String,
@@ -1218,7 +1283,7 @@ pub fn emit_state(app: &AppHandle, session: String, state: crate::model::Session
     let _ = app.emit("session://state", StatePayload { session, state });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn git_status(cwd: String) -> GitStatus {
     use std::process::Command;
     let branch = Command::new("git")
@@ -1674,6 +1739,23 @@ branch refs/heads/feature/y\n";
         assert_eq!(argv[at + 1], "o/n");
     }
 
+    /// `view <n>`, not `list -S <n>`: `-S` is a relevance-ranked full-text search
+    /// capped at `gh`'s own default, so on a busy repository the pull request
+    /// asked for is simply not in the answer — the same mistake an early draft of
+    /// `GhIssueProvider::resolve` made and records.
+    #[test]
+    fn the_pr_detail_call_names_its_number_its_fields_and_its_repository() {
+        let argv = pr_detail_argv("o/n", 7);
+        assert_eq!(argv[0], "pr");
+        assert_eq!(argv[1], "view");
+        assert_eq!(argv[2], "7");
+        let json_at = argv.iter().position(|a| a == "--json").expect("--json");
+        assert_eq!(argv[json_at + 1], crate::gh_pr::PR_DETAIL_FIELDS);
+        let repo_at = argv.iter().position(|a| a == "-R").expect("-R");
+        assert_eq!(argv[repo_at + 1], "o/n");
+        assert!(!argv.contains(&"-S".to_string()), "-S is a search, not a lookup");
+    }
+
     /// --match-head-commit is the whole safety story of this button: without it
     /// the merge takes whatever is at the head now, not what was on screen.
     #[test]
@@ -1798,5 +1880,92 @@ branch refs/heads/feature/y\n";
         let argv = issue_totals_argv_with_headers("o/n");
         assert!(argv.iter().any(|a| a == "--include"), "the budget comes from the headers");
         assert!(argv.iter().any(|a| a.starts_with("query=")));
+    }
+
+    /// Which commands are allowed to run on the thread that paints the window.
+    ///
+    /// Not a style list — a list of things fast enough that arrival order is worth
+    /// more than the microseconds, plus the four session commands where arrival
+    /// order *is* the feature. The reasoning is at the top of this file.
+    const MAIN_THREAD_COMMANDS: [&str; 15] = [
+        "list_workspaces",
+        "save_workspace",
+        "remove_workspace",
+        "list_skills",
+        "save_skill",
+        "remove_skill",
+        "load_schedule_state",
+        "schedule_ack",
+        "scheduler_ready",
+        "load_layout",
+        "save_layout",
+        "load_ui_state",
+        "save_ui_state",
+        "session_tokens",
+        "claude_available",
+    ];
+    /// The same, for the four that must not be reordered — kept apart from the list
+    /// above because these are the ones where moving a command off the main thread
+    /// would be a *correctness* bug rather than merely unnecessary.
+    const ORDERED_COMMANDS: [&str; 6] = [
+        "start_session",
+        "start_command_session",
+        "write_session",
+        "resize_session",
+        "close_session",
+        "host_platform",
+    ];
+
+    /// A synchronous `#[tauri::command]` runs on the main thread, and on Linux that
+    /// is the thread painting the WebView — so one that shells out freezes the
+    /// window for as long as it takes. Every such command carries `(async)`; this is
+    /// what makes "every" true rather than aspirational, because the failure is
+    /// invisible in a unit test and looks like a frontend problem in the app.
+    ///
+    /// Written as an allow-list rather than a scan for `Command::new`: the blocking
+    /// call is usually three helpers deep, and a check that followed it there would
+    /// pass the moment somebody added a fourth. Adding a command now forces a
+    /// decision — carry the attribute, or say here why it need not.
+    #[test]
+    fn every_command_that_can_block_runs_off_the_main_thread() {
+        let files = [
+            include_str!("commands.rs"),
+            include_str!("tasks_cmd.rs"),
+        ];
+        let mut on_main = Vec::new();
+        for src in files {
+            for (i, line) in src.lines().enumerate() {
+                if line.trim() != "#[tauri::command]" {
+                    continue;
+                }
+                // The declaration is the next line; `pub fn name(`.
+                let next = src.lines().nth(i + 1).unwrap_or("");
+                let name = next
+                    .trim()
+                    .strip_prefix("pub fn ")
+                    .and_then(|r| r.split('(').next())
+                    .unwrap_or(next.trim());
+                on_main.push(name.to_string());
+            }
+        }
+        let allowed: Vec<&str> =
+            MAIN_THREAD_COMMANDS.iter().chain(ORDERED_COMMANDS.iter()).copied().collect();
+        let unexpected: Vec<&String> =
+            on_main.iter().filter(|n| !allowed.contains(&n.as_str())).collect();
+        assert!(
+            unexpected.is_empty(),
+            "these commands are synchronous, so they run on the thread that paints the \
+             window: {unexpected:?}. Either add `(async)` — see the note at the top of \
+             commands.rs — or add the name to MAIN_THREAD_COMMANDS with a reason.",
+        );
+        // The other direction: an allow-list nothing matches has stopped guarding
+        // anything, which is how a rename turns this test green and useless.
+        for name in allowed {
+            assert!(
+                on_main.iter().any(|n| n == name),
+                "{name} is on the main-thread allow-list but is no longer a synchronous \
+                 command — was it renamed, removed, or given `(async)`?",
+            );
+        }
     }
 }

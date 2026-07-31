@@ -345,8 +345,23 @@ impl TaskProvider for GhIssueProvider<'_> {
     }
 
     fn list(&self, project: &str) -> Result<Vec<Task>, TaskError> {
-        let mut cards = self.page("open", OPEN_PAGE_LIMIT, project)?;
-        cards.extend(self.page("closed", CLOSED_PAGE_LIMIT, project)?);
+        self.list_page(project, None)
+    }
+
+    /// One `limit` for both states, not one each.
+    ///
+    /// The list the board draws shows one state at a time, so the number a person
+    /// pressing "Show more" has in mind is always the state they are looking at —
+    /// and a second knob for the other one would be a parameter no caller could
+    /// ever fill in usefully. The cost is that paging through open issues also
+    /// widens the closed page; both are one `gh issue list` call either way, and
+    /// two page sizes to keep in step across two languages cost more than that.
+    ///
+    /// `None` keeps the two defaults apart, which is what makes them defaults: a
+    /// board nobody has paged still asks for 50 open and 20 closed.
+    fn list_page(&self, project: &str, limit: Option<usize>) -> Result<Vec<Task>, TaskError> {
+        let mut cards = self.page("open", limit.unwrap_or(OPEN_PAGE_LIMIT), project)?;
+        cards.extend(self.page("closed", limit.unwrap_or(CLOSED_PAGE_LIMIT), project)?);
         Ok(cards)
     }
 
@@ -934,6 +949,27 @@ mod tests {
         // column caps itself the way it always has.
         assert!(calls[1].iter().any(|a| a == "closed") && calls[1].iter().any(|a| a == "20"));
         assert!(calls.iter().all(|c| c.iter().any(|a| a == "-R")));
+    }
+
+    /// "Show more" is one number and it reaches both states. The list the board
+    /// draws shows one state at a time, so a second knob would be a parameter no
+    /// caller could fill in usefully — and the two defaults still have to survive
+    /// a `None`, which is what makes them defaults.
+    #[test]
+    fn a_requested_page_replaces_both_defaults_and_none_keeps_them() {
+        let (p, fake) = provider(vec![Ok(ONE_OPEN.into()), Ok(ONE_CLOSED.into())]);
+        p.list_page("deck", Some(150)).unwrap();
+        {
+            let calls = fake.calls.borrow();
+            assert!(calls[0].iter().any(|a| a == "150"), "open page: {:?}", calls[0]);
+            assert!(calls[1].iter().any(|a| a == "150"), "closed page: {:?}", calls[1]);
+        }
+        fake.calls.borrow_mut().clear();
+        fake.replies.borrow_mut().extend([Ok(ONE_OPEN.into()), Ok(ONE_CLOSED.into())]);
+        p.list_page("deck", None).unwrap();
+        let calls = fake.calls.borrow();
+        assert!(calls[0].iter().any(|a| a == "50"));
+        assert!(calls[1].iter().any(|a| a == "20"));
     }
 
     /// One state failing must fail the list rather than half-render it: a board

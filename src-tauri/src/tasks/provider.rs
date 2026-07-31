@@ -41,6 +41,21 @@ pub struct TaskPatch {
 pub trait TaskProvider {
     fn capabilities(&self) -> ProviderCapabilities;
     fn list(&self, project: &str) -> Result<Vec<Task>, TaskError>;
+    /// The same list, but as much of it as the caller asks for.
+    ///
+    /// A remote source answers in pages, and the board's own page is what makes
+    /// "showing 50 of 63" true rather than a silent truncation. `Some(n)` is the
+    /// board saying a person pressed "Show more"; `None` is the provider's own
+    /// default, which is what every caller that is not the board wants.
+    ///
+    /// Defaulted to `list` rather than made a required method, because a folder
+    /// does not page: `read_dir` returns all of it, so a page size there would be
+    /// a fiction the provider would have to invent a meaning for. Only
+    /// `GhIssueProvider` overrides it.
+    fn list_page(&self, project: &str, limit: Option<usize>) -> Result<Vec<Task>, TaskError> {
+        let _ = limit;
+        self.list(project)
+    }
     fn create(&self, draft: TaskDraft) -> Result<Task, TaskError>;
     fn resolve(&self, id: &str) -> Result<Task, TaskError>;
     fn update(&self, id: &str, patch: TaskPatch) -> Result<Task, TaskError>;

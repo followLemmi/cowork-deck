@@ -154,6 +154,7 @@ fn main() {
             commands::start_command_session,
             commands::gh_status,
             commands::pr_list,
+            commands::pr_detail,
             commands::pr_merge_options,
             commands::pr_merge,
             commands::pr_close,

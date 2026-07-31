@@ -1,6 +1,14 @@
 //! IPC surface of the tracker. Resolves a workspace id to a provider and keeps
 //! every path/config decision on this side, so the frontend never learns that
 //! cards are files.
+//!
+//! **Every command here is `#[tauri::command(async)]`, and none of them may lose
+//! it.** A GitHub board's `tasks_list` is a repository lookup plus a page per
+//! state, and a file board's is a directory that may be on a network mount; a
+//! synchronous Tauri command runs on the thread that paints the window, so either
+//! one freezes the app rather than merely taking a moment. The reasoning, and the
+//! three commands that deliberately stay synchronous, are at the top of
+//! `commands.rs`.
 use crate::commands::AppState;
 use crate::model::{
     PreviousLocation, TrackerProvider, TrackerRoot, Workspace, TRACKER_CONFIG_VERSION,
@@ -536,7 +544,7 @@ fn capabilities_for(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tasks_capabilities(
     state: State<AppState>,
     workspace_id: String,
@@ -549,11 +557,32 @@ pub fn tasks_capabilities(
     Ok(capabilities_for(&ws, caps))
 }
 
-#[tauri::command]
-pub fn tasks_list(state: State<AppState>, workspace_id: String) -> Result<Vec<Task>, String> {
+/// The largest page the board may ask for, per state.
+///
+/// Not a limit on how many issues exist — a limit on how much one poll may cost.
+/// The board grows its page 50 at a time from a button press, so reaching this
+/// takes ten deliberate clicks; past it the answer is a search, not a longer
+/// list. Named so the frontend's own ceiling (`issues.ts`) has something to
+/// agree with.
+pub const MAX_PAGE_LIMIT: usize = 500;
+
+/// Every card the workspace's source will give up, one page at a time.
+///
+/// `limit` is how many rows per state to ask a paging source for, or `None` for
+/// its own default. It is clamped rather than trusted: it arrives from the
+/// frontend and reaches `gh issue list -L`, where an accidental six-figure page
+/// would paginate GitHub until it timed out — on a poll that repeats every 30 s.
+#[tauri::command(async)]
+pub fn tasks_list(
+    state: State<AppState>,
+    workspace_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<Task>, String> {
     let ws = workspace(&state, &workspace_id)?;
     let p = provider_for(&state, &ws)?;
-    let cards = p.list(&ws.name).map_err(|e| e.to_string())?;
+    let cards = p
+        .list_page(&ws.name, limit.map(|n| n.clamp(1, MAX_PAGE_LIMIT)))
+        .map_err(|e| e.to_string())?;
     // The sidebar badge's only source for this workspace. Recorded here rather
     // than fetched there, because `tasks_open_counts` runs across every
     // workspace after every mutation and must never spend a GraphQL point.
@@ -565,7 +594,7 @@ pub fn tasks_list(state: State<AppState>, workspace_id: String) -> Result<Vec<Ta
     Ok(cards)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tasks_create(
     state: State<AppState>,
     workspace_id: String,
@@ -588,7 +617,7 @@ pub fn tasks_create(
     p.create(draft).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tasks_resolve(
     state: State<AppState>,
     workspace_id: String,
@@ -603,7 +632,7 @@ pub fn tasks_resolve(
 /// `‹`/`›` arrows, and `cowork_task status` all write only the fields the
 /// caller names — see `TaskPatch`'s doc comment for why every field is
 /// optional.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tasks_update(
     state: State<AppState>,
     workspace_id: String,
@@ -624,7 +653,7 @@ fn open_count(cards: &[Task], board: &BoardConfig) -> usize {
 /// Open-card count per workspace id, for the sidebar badges. One call instead of
 /// one per workspace, and a workspace whose root is broken contributes 0 rather
 /// than failing the whole map.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::HashMap<String, usize>, String> {
     let all = tracker_workspaces(&state)?;
     let mut out = std::collections::HashMap::new();
@@ -668,7 +697,7 @@ fn open_count_at_root(ws: &Workspace) -> Option<usize> {
 
 /// How many cards a source switch would stop showing. Asked *before* the save,
 /// because afterwards the deck no longer knows the old root.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tracker_open_count(
     state: State<AppState>,
     workspace_id: String,
@@ -679,7 +708,7 @@ pub fn tracker_open_count(
 /// Point the watcher set at every configured tracker root. Called by the
 /// frontend at boot and after any workspace change, because a root can appear,
 /// move, or disappear at runtime.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tasks_watch_sync(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
     let all = tracker_workspaces(&state)?;
     let wanted: Vec<(String, PathBuf)> = all
@@ -819,7 +848,7 @@ fn clear_previous_location(state: &State<AppState>, workspace_id: &str) -> Resul
     store.save_workspaces(&all).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tasks_migration_status(
     state: State<AppState>,
     workspace_id: String,
@@ -841,7 +870,7 @@ pub fn tasks_migration_status(
     Ok(Some(offer))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tasks_migrate(
     state: State<AppState>,
     workspace_id: String,
@@ -881,7 +910,7 @@ pub fn tasks_migrate(
     Ok(report)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn tasks_migration_dismiss(
     state: State<AppState>,
     workspace_id: String,
@@ -1082,7 +1111,7 @@ fn save_config(ws: &Workspace, config: BoardConfig) -> Result<(), String> {
     crate::tasks::board::save(&root, &config).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn board_config_save(
     state: State<AppState>,
     workspace_id: String,
@@ -1092,7 +1121,7 @@ pub fn board_config_save(
     save_config(&ws, config)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn board_step_rewrite(
     state: State<AppState>,
     workspace_id: String,
@@ -1104,7 +1133,7 @@ pub fn board_step_rewrite(
     rewrite_step(&ws, &from, &to, &config)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn board_step_usage(
     state: State<AppState>,
     workspace_id: String,
@@ -2357,5 +2386,35 @@ mod tests {
     fn an_unreadable_root_reports_nothing_rather_than_zero() {
         let w = ws(Some(tracker(TrackerRoot::Path { path: "/nonexistent/xyz".into() })));
         assert_eq!(open_count_at_root(&w), None);
+    }
+
+    /// Three page sizes live in both languages, and each is load-bearing on both
+    /// sides: two decide what this crate fetches and what the frontend calls a short
+    /// page, and the third decides where "Show more" stops offering itself and where
+    /// `tasks_list` stops honouring it. That last one is the pairing that would fail
+    /// quietly — past the clamp the button asks for a page it already has, so it
+    /// would sit on screen doing nothing.
+    ///
+    /// Read out of `src/issues.ts` rather than duplicated as a literal: a comment
+    /// saying "mirrors X" is not a check. Checked from here rather than from vitest
+    /// because reading a file there would mean `@types/node` — a dependency for one
+    /// assertion. Matched loosely, on the `export const NAME = <digits>` shape: the
+    /// point is to fail when one side is edited alone, and a rename fails it too,
+    /// which is correct.
+    #[test]
+    fn the_page_sizes_agree_with_the_frontend() {
+        let ts = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/issues.ts"))
+            .expect("src/issues.ts");
+        let ts_const = |name: &str| -> usize {
+            let at = ts
+                .find(&format!("export const {name} = "))
+                .unwrap_or_else(|| panic!("{name} not found in src/issues.ts — was it renamed?"));
+            let rest = &ts[at + format!("export const {name} = ").len()..];
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse().unwrap_or_else(|_| panic!("{name} is not a plain number"))
+        };
+        assert_eq!(crate::tasks::gh_issues::OPEN_PAGE_LIMIT, ts_const("OPEN_PAGE_LIMIT"));
+        assert_eq!(crate::tasks::gh_issues::CLOSED_PAGE_LIMIT, ts_const("CLOSED_PAGE_LIMIT"));
+        assert_eq!(MAX_PAGE_LIMIT, ts_const("MAX_PAGE_LIMIT"));
     }
 }
