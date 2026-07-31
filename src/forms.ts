@@ -313,7 +313,11 @@ export function workspaceForm(
 
     // Prefill: editing a workspace's name must not silently wipe its tracker
     // configuration.
-    const initialRoot = initial?.tracker?.providers[0]?.root ?? null;
+    // Narrowed on `type` rather than reaching straight for `root`: since a
+    // tracker config can also name a GitHub source, only a file-backed one has a
+    // root for these radios to prefill from.
+    const initialProvider = initial?.tracker?.providers[0];
+    const initialRoot = initialProvider?.type === "fs" ? initialProvider.root : null;
     if (initialRoot) {
       onInput.checked = true;
       if (initialRoot.kind === "path") { pathRadio.checked = true; trackerPath.value = initialRoot.path; }

@@ -18,7 +18,7 @@ function card(over: Partial<Task> = {}): Task {
   return {
     id: "01AAA", title: "The pill keeps blinking", kind: "bug", status: "open", project: "deck",
     created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
-    body: "body", path: "/r/01AAA-pill.md", damaged: null, conflict: false, ...over,
+    body: "body", path: "/r/01AAA-pill.md", damaged: null, conflict: false, labels: [], ...over,
   };
 }
 
@@ -30,14 +30,18 @@ describe("emptyStateMessage", () => {
   });
 
   it("shows the failing path verbatim so a typo is findable", () => {
-    const m = emptyStateMessage({ canCreate: true, canResolve: true, statuses: [], board: CFG, boardError: null },
+    const m = emptyStateMessage(
+      { canCreate: true, canResolve: true, statuses: [], board: CFG, boardError: null, boardEditable: true },
       "the task folder is unreachable: /home/u/typo");
     expect(m.text).toContain("/home/u/typo");
   });
 });
 
 describe("BoardView", () => {
-  const caps = { canCreate: true, canResolve: true, statuses: ["open", "done"], board: CFG, boardError: null };
+  const caps = {
+    canCreate: true, canResolve: true, statuses: ["open", "done"], board: CFG, boardError: null,
+    boardEditable: true,
+  };
 
   it("renders titles as text, never as markup", () => {
     const v = new BoardView({ ...handlers });
@@ -104,7 +108,11 @@ describe("BoardView", () => {
   it("hides create and close when the provider says it cannot", () => {
     const v = new BoardView({ ...handlers });
     v.render({
-      project: "deck", caps: { canCreate: false, canResolve: false, statuses: [], board: CFG, boardError: null },
+      project: "deck",
+      caps: {
+        canCreate: false, canResolve: false, statuses: [], board: CFG, boardError: null,
+        boardEditable: true,
+      },
       error: null, links: [], tasks: [card()],
     });
     expect(v.mount.querySelector(".tk-new")).toBeNull();
@@ -263,7 +271,10 @@ describe("BoardView columns from configuration", () => {
   };
 
   function capsWith(cfg: BoardConfig): ProviderCapabilities {
-    return { canCreate: true, canResolve: true, statuses: cfg.steps.map((s) => s.id), board: cfg, boardError: null };
+    return {
+      canCreate: true, canResolve: true, statuses: cfg.steps.map((s) => s.id), board: cfg,
+      boardError: null, boardEditable: true,
+    };
   }
 
   let view: BoardView;
@@ -330,7 +341,7 @@ describe("BoardView columns from configuration", () => {
 describe("BoardView board configuration error", () => {
   const errCaps: ProviderCapabilities = {
     canCreate: true, canResolve: true, statuses: ["open", "done"], board: CFG,
-    boardError: "steps[1]: missing id",
+    boardError: "steps[1]: missing id", boardEditable: true,
   };
 
   it("shows the fallback message when caps.boardError is set", () => {

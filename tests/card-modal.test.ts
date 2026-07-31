@@ -6,7 +6,7 @@ import type { BoardConfig, Task } from "../src/ipc";
 const original: Task = {
   id: "1", title: "Original", kind: "task", status: "todo", project: "p",
   created: "2026-07-01T00:00:00Z", resolved: null, origin: "human", session: null,
-  body: "Body.\n", path: "/t/1.md", damaged: null, conflict: false,
+  body: "Body.\n", path: "/t/1.md", damaged: null, conflict: false, labels: [],
 };
 const same = (): CardFormValues =>
   ({ title: "Original", kind: "task", status: "todo", body: "Body.\n" });

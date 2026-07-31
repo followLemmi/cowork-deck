@@ -119,8 +119,14 @@ export const prReopen = (workspaceId: string, number: number) =>
 /** Resolves to the path of the worktree that now holds the PR's branch. */
 export const prWorktreePath = (workspaceId: string, number: number, branch: string) =>
   invoke<string | null>("pr_worktree_path", { workspaceId, number, branch });
-export const prWorktreeAdd = (workspaceId: string, number: number, branch: string) =>
-  invoke<string>("pr_worktree_add", { workspaceId, number, branch });
+/** Where a worktree was prepared, and whether it was already there. */
+export interface WorktreeAdded { path: string; reused: boolean }
+/** `crossRepository` is required, not inferred: for a fork the head is not a
+ *  local branch, so the backend must not go looking for a worktree already on
+ *  it. Pass the pull request's own `isCrossRepository`. */
+export const prWorktreeAdd = (
+  workspaceId: string, number: number, branch: string, crossRepository: boolean,
+) => invoke<WorktreeAdded>("pr_worktree_add", { workspaceId, number, branch, crossRepository });
 export const prWorktreeRemove = (workspaceId: string, number: number, branch: string) =>
   invoke<void>("pr_worktree_remove", { workspaceId, number, branch });
 
@@ -206,6 +212,10 @@ export interface Task {
   damaged: string | null;
   /** More than one file carries this id. */
   conflict: boolean;
+  /** Issue labels, as chips in the meta row. Empty for a card file, which has
+   *  none — never a `kind`: an issue can carry two labels and `kind` is a
+   *  single-valued select. */
+  labels: string[];
 }
 // project/origin are set by the backend (workspace name / "human") and are
 // deliberately not settable from here — see tasks_cmd::TaskDraftInput.
@@ -213,7 +223,12 @@ export interface TaskDraft { title: string; kind: KindId; body: string; }
 /** Which fields of a card to write. Every field optional: Save applies only
  *  what the person touched, and a step-only move (drag-and-drop, `‹`/`›`) is a
  *  patch carrying only `status` — see tasks_cmd::tasks_update. */
-export interface TaskPatch { title?: string; kind?: KindId; status?: StepId; body?: string }
+export interface TaskPatch {
+  title?: string; kind?: KindId; status?: StepId; body?: string;
+  /** Why a card is being closed, where closing takes a reason
+   *  (`completed` / `not planned`). Ignored by the file provider. */
+  reason?: string;
+}
 /** Capabilities and the board configuration arrive together, flattened into one
  *  object by `tasks_cmd::BoardCapabilities`: the board, the card modal and the
  *  ⚙ editor all read the same thing, so there is no second channel to fall out
@@ -226,9 +241,26 @@ export interface ProviderCapabilities {
   /** Why `board.json` could not be used, when it could not. The board draws
    *  either way; the person has to be told which they are looking at. */
   boardError: string | null;
+  /** Whether ⚙ is offered. False for a synthesized board: there is no
+   *  `board.json` to write, and one synthetic kind is not a choice. */
+  boardEditable: boolean;
 }
 export type TrackerRoot = { kind: "project" } | { kind: "path"; path: string };
-export interface TrackerConfig { providers: { type: "fs"; root: TrackerRoot }[] }
+/** A workspace's task source. One element, never merged: `TrackerConfig.providers`
+ *  is a list so a second kind arrives as an added variant, and every reader takes
+ *  the first. */
+export type TrackerProviderConfig =
+  | { type: "fs"; root: TrackerRoot }
+  | { type: "github" };
+export interface TrackerConfig { providers: TrackerProviderConfig[] }
+
+export interface IssueTotals {
+  open: number;
+  closed: number;
+  /** GraphQL points left this hour, read from the response headers. Null when
+   *  the headers said nothing — never 0, which means exhausted. */
+  rateRemaining: number | null;
+}
 
 export const listTasks = (workspaceId: string) => invoke<Task[]>("tasks_list", { workspaceId });
 export const createTask = (workspaceId: string, draft: TaskDraft) =>
@@ -276,6 +308,21 @@ export interface TrackerRootPreview {
 
 export const trackerRootPreview = (workspaceName: string, pickedPath: string) =>
   invoke<TrackerRootPreview>("tracker_root_preview", { workspaceName, pickedPath });
+
+export const issueTotals = (workspaceId: string) =>
+  invoke<IssueTotals>("issue_totals", { workspaceId });
+/** The branch is derived in Rust from the number and the title, so the frontend
+ *  never has to know the naming rule — and cannot get it wrong. */
+export const issueWorktreeAdd = (workspaceId: string, number: number, title: string) =>
+  invoke<string>("issue_worktree_add", { workspaceId, number, title });
+export const issueWorktreePath = (workspaceId: string, number: number, title: string) =>
+  invoke<string | null>("issue_worktree_path", { workspaceId, number, title });
+export const issueWorktreeRemove = (workspaceId: string, number: number, title: string) =>
+  invoke<void>("issue_worktree_remove", { workspaceId, number, title });
+/** The sidebar's open count for whichever source this workspace reads. Null when
+ *  there is no count to show — no tracker, or a source that could not answer. */
+export const trackerOpenCount = (workspaceId: string) =>
+  invoke<number | null>("tracker_open_count", { workspaceId });
 
 export const onTasksChanged = (cb: (workspaceId: string) => void): Promise<UnlistenFn> =>
   listen<{ workspaceId: string }>("tasks://changed", (e) => cb(e.payload.workspaceId));

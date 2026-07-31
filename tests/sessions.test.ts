@@ -299,7 +299,7 @@ function card(over: Partial<Task> = {}): Task {
   return {
     id: "01AAA", title: "Fix", kind: "bug", status: "open", project: "P",
     created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
-    body: "", path: "/p/01AAA-fix.md", damaged: null, conflict: false,
+    body: "", path: "/p/01AAA-fix.md", damaged: null, conflict: false, labels: [],
     ...over,
   };
 }

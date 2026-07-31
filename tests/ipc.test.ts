@@ -5,7 +5,8 @@ vi.mock("@tauri-apps/api/event");
 
 import {
   listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck, updateTask,
-  boardConfigSave, boardStepRewrite, boardStepUsage, prList, prMerge,
+  boardConfigSave, boardStepRewrite, boardStepUsage, prList, prMerge, prWorktreeAdd,
+  issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove, trackerOpenCount,
 } from "../src/ipc";
 import type { BoardConfig } from "../src/ipc";
 import { invoke } from "@tauri-apps/api/core";
@@ -113,6 +114,48 @@ describe("ipc", () => {
     vi.mocked(invoke).mockResolvedValue([]);
     await prList("w1");
     expect(invoke).toHaveBeenCalledWith("pr_list", { workspaceId: "w1" });
+  });
+
+  it("issueTotals names the command and its workspace", async () => {
+    vi.mocked(invoke).mockResolvedValue({ open: 50, closed: 63, rateRemaining: 4873 });
+    const t = await issueTotals("w1");
+    expect(invoke).toHaveBeenCalledWith("issue_totals", { workspaceId: "w1" });
+    expect(t.open).toBe(50);
+  });
+
+  it("issueWorktreeAdd passes the issue's number and title, not a branch", async () => {
+    vi.mocked(invoke).mockResolvedValue("/tmp/x-issue/42-t");
+    await issueWorktreeAdd("w1", 42, "Sidebar badge sticks");
+    expect(invoke).toHaveBeenCalledWith("issue_worktree_add", {
+      workspaceId: "w1", number: 42, title: "Sidebar badge sticks",
+    });
+  });
+
+  // The branch is derived in Rust from the number and the title, so the
+  // frontend never has to know the naming rule — and cannot get it wrong.
+  it("issueWorktreePath and issueWorktreeRemove take the same three arguments", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+    await issueWorktreePath("w1", 42, "t");
+    await issueWorktreeRemove("w1", 42, "t");
+    expect(invoke).toHaveBeenNthCalledWith(1, "issue_worktree_path",
+      { workspaceId: "w1", number: 42, title: "t" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "issue_worktree_remove",
+      { workspaceId: "w1", number: 42, title: "t" });
+  });
+
+  it("prWorktreeAdd forwards whether the pull request is from a fork", async () => {
+    vi.mocked(invoke).mockResolvedValue({ path: "/tmp/x-pr/7-b", reused: false });
+    const added = await prWorktreeAdd("w1", 7, "b", true);
+    expect(invoke).toHaveBeenCalledWith("pr_worktree_add", {
+      workspaceId: "w1", number: 7, branch: "b", crossRepository: true,
+    });
+    expect(added.reused).toBe(false);
+  });
+
+  it("trackerOpenCount may answer nothing at all", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+    expect(await trackerOpenCount("w1")).toBeNull();
+    expect(invoke).toHaveBeenCalledWith("tracker_open_count", { workspaceId: "w1" });
   });
 
   it("decodeB64 round-trips utf8", () => {

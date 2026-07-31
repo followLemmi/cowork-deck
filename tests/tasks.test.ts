@@ -27,7 +27,7 @@ function card(over: Partial<Task> = {}): Task {
     id: "01AAA", title: "The pill keeps blinking", kind: "bug", status: "open", project: "deck",
     created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
     body: "Repro: three workspaces.", path: "/r/01AAA-pill.md", damaged: null, conflict: false,
-    ...over,
+    labels: [], ...over,
   };
 }
 

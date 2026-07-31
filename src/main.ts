@@ -451,7 +451,10 @@ async function launchFromPr(pr: PullRequest) {
   const ws = workspaces.active;
   if (!ws) return;
   try {
-    const cwd = await prWorktreeAdd(ws.id, pr.number, pr.headRefName);
+    // `isCrossRepository` decides whether the backend may reuse a worktree
+    // already on the branch: for a fork the head is not a local branch at all.
+    const added = await prWorktreeAdd(ws.id, pr.number, pr.headRefName, pr.isCrossRepository);
+    const cwd = added.path;
     await deck.launchOnWorktree(
       cwd, ws.id, `⑂ #${pr.number}`,
       `You are working on pull request #${pr.number}: ${pr.title}\n`

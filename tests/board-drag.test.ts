@@ -15,7 +15,8 @@ const CFG: BoardConfig = {
 };
 
 const caps: ProviderCapabilities = {
-  canCreate: true, canResolve: true, statuses: ["backlog", "todo", "doing", "done"], board: CFG, boardError: null,
+  canCreate: true, canResolve: true, statuses: ["backlog", "todo", "doing", "done"], board: CFG,
+  boardError: null, boardEditable: true,
 };
 
 // The title doubles as the id: a plain, unique string that cardEl() can find
@@ -25,7 +26,7 @@ function card(over: Partial<Task> = {}): Task {
   return {
     id, title: id, kind: "task", status: "todo", project: "deck",
     created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
-    body: "body", path: `/r/${id}.md`, damaged: null, conflict: false, ...over,
+    body: "body", path: `/r/${id}.md`, damaged: null, conflict: false, labels: [], ...over,
   };
 }
 
