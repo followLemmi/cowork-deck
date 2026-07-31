@@ -56,7 +56,7 @@ The distinction matters, so it is drawn once here: a test barrier says *these te
 | 1b — Rust foundations: the model, the pure parsers, the argv, the provider | 3–6 | `cd src-tauri && cargo test` fully green and `npx tsc --noEmit` clean. Nothing is wired: no command reaches the new code, so a failure here is a failure of the parsers alone and cannot be confused with a seam problem. |
 | 2 — Rust seams: the IPC layer, the session environment, the sidecar, the worktrees | 7–17 | Full `cargo test`, plus the clippy count back at exactly 6. The backend is complete and exercised only by tests; the frontend still cannot produce a GitHub tracker config, so **no new user-reachable feature exists yet.** That is deliberate — it is the last point at which a backend bug is unambiguously a backend bug.
 
-**The four checks this row used to list were wrong, and three of them are false by the end of the phase they describe** (corrected 2026-07-30, each one measured). They describe the state *before* Phase 2, not the state at Barrier A:
+**The four checks this row used to list were wrong, and three of them are false by the end of the phase they describe** (corrected 2026-07-30, each one measured). They describe the state *before* Phase 2, not the state at **Barrier B** — which is this phase's checkpoint, at line 3736. (Barrier A is line 1935, after Task 6, and was passed long ago; an earlier version of this paragraph called the Phase-2 checkpoint "Barrier A" and was wrong.)
 - ~~"`GhIssueProvider` is never constructed outside its own tests"~~ — **false.** Task 10 constructs it at `tasks_cmd.rs:390`.
 - ~~"no Tauri command was added or registered"~~ — **false.** Task 9 adds `issue_totals` and registers it at `main.rs:165`. Tasks 14 and 17 add more.
 - ~~"`provider_for` still returns a concrete `FsTaskProvider`"~~ — **false.** Task 10 is the task that changes it to `Result<Box<dyn TaskProvider + 'a>, String>` (`tasks_cmd.rs:374`).
@@ -3386,7 +3386,7 @@ pub fn issue_worktree_add(
         }
         // Fetched first, so a branch is not cut from a stale `origin/main`. The
         // failure is surfaced rather than swallowed: the same choice
-        // `pr_worktree_add` makes about its own fetch (`commands.rs:545`).
+        // `pr_worktree_add` makes about its own fetch.
         let out = std::process::Command::new("git")
             .args(["fetch", "origin", &facts.default_branch])
             .current_dir(&ws_path)
@@ -3415,7 +3415,9 @@ pub fn issue_worktree_add(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd src-tauri && cargo test commands && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets 2>&1 | grep -c '^warning'`
+Run: `cd src-tauri && cargo test commands && cargo clippy --manifest-path Cargo.toml --all-targets`
+
+(Corrected 2026-07-30. This line was broken twice: run from `src-tauri`, `--manifest-path src-tauri/Cargo.toml` resolves to `src-tauri/src-tauri/Cargo.toml` and clippy errors out; and it piped to `grep -c '^warning'`, which is the counting method Global Constraint 33 forbids because it counts the per-crate summary line. Read the summary lines instead.)
 Expected: PASS, and the clippy count back at exactly 6. If it is higher, something Task 5 landed still has no caller.
 
 - [ ] **Step 5: Commit**
@@ -3494,7 +3496,9 @@ detached\n";
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd src-tauri && cargo test worktree_on_branch`
+Run: `cd src-tauri && cargo test gh_pr`
+
+(Corrected 2026-07-30: this filter was `worktree_on_branch`, which matches **no test name** — none of the five contains that substring. Before the implementation exists it appears to fail only because the crate does not compile; once it does compile, the filter reports `0 passed` and a green run means nothing at all. `gh_pr` is the filter that selects them, and it is what Step 4 already uses.)
 Expected: FAIL — `cannot find function worktree_on_branch`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -3735,7 +3739,12 @@ git commit -m "feat(issues): count the cards a source switch would leave behind"
 
 > ### Barrier B
 >
-> Run `cd src-tauri && cargo test` — fully green, at 286 plus everything Phase 1 and Phase 2 added — and `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets`, which must report **exactly 6** warnings. `npx tsc --noEmit` is **clean**, and one thing it is clean *about* is worth stating so an agent does not read the green as coverage: `pr_worktree_add` returns an object as of Task 15 while `ipc.ts` still declares `invoke<string>`, and `tsc` cannot see across that boundary. It is a runtime break, not a compile-time one, and Task 18 closes it. The backend is complete and reachable only from tests: the frontend cannot yet produce a `{"type":"github"}` tracker config, so nothing user-visible has changed. This is the last point at which a backend bug is unambiguously a backend bug.
+> Run `cd src-tauri && cargo test` — fully green, at 286 plus everything Phase 1 and Phase 2 added — and `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets`, which must report **exactly 6** warnings. `npx tsc --noEmit` is **clean**, and one thing it is clean *about* is worth stating so an agent does not read the green as coverage: `pr_worktree_add` breaks its frontend caller in **two** ways as of Task 15, and `tsc` cannot see across that boundary. Both are runtime breaks, not compile-time ones, and Task 18 closes both.
+
+- **The return shape:** it returns an object while `ipc.ts` still declares `invoke<string>`.
+- **A new required argument** — `cross_repository: bool` — which this barrier used to omit and which is the more serious half (added 2026-07-30, from the Task 15 report). `main.ts:454` calls `prWorktreeAdd(ws.id, pr.number, pr.headRefName)` with three arguments. Tauri deserialises command arguments from a map, so a missing key for a non-`Option` parameter rejects the invoke outright: "Open worktree" in the PR view **fails** rather than returning something misshapen. Reasoned from Tauri's argument handling rather than observed — exercising it needs the app running — so treat it as the expected behaviour and not a measurement.
+
+Nothing user-facing is at risk either way, because the branch cannot ship mid-phase. **For Task 18:** the field already exists on the frontend as `isCrossRepository` (`ipc.ts:85`), so the wrapper must pass `crossRepository` *and* read `.path`/`.reused`. The backend is complete and reachable only from tests: the frontend cannot yet produce a `{"type":"github"}` tracker config, so nothing user-visible has changed. This is the last point at which a backend bug is unambiguously a backend bug.
 
 ---
 
@@ -5160,7 +5169,7 @@ git commit -m "docs(issues): the board's second source, and what switching away 
 4. **The rate-limit signal has only one source, and it is conditional.** Decision 9 reads `X-Ratelimit-Remaining` from the response, but only `gh api` exposes headers — `gh issue list` does not. So the signal rides on the totals call (Task 9), which by decision 7 fires only on a capped page: **in a repository with fewer than 50 open issues the banner never appears.** Accepted rather than worked around, because such a repository spends two points a tick and is not the one that exhausts a budget, and because the alternative — a probe every tick — would raise 240 points an hour to 360 and change decision 7's arithmetic. Named here so nobody reads its absence as a bug.
 5. **`create` must return a `Task` it cannot know.** The trait requires one and none of the write commands accepts `--json`. Task 6 returns a card built from the draft with an empty `id`, pins that with a test, and says in the doc comment that the board refetches — which is decision 10's own ruling, given a shape. *Since this plan was first written, `create`'s output has been observed* (the new issue's URL on stdout, exit 0, from filing #117), so the number is in fact recoverable — and the decision does not change: the refetch needs no fact about `gh`'s output and survives a change to it. The test's name and comments were updated so they no longer claim the output is unverified. `gh issue close`'s output is still unobserved, and check 11 of the manual list keeps that half.
 
-6. **`start_session`'s GitHub branch has no test, and the leak invariant is asserted one level below where it can break.** Found while executing Task 12 (2026-07-30), and not fixable inside that task as written. `start_session` is a `#[tauri::command]` taking `State` and `AppHandle`, so nothing in the suite constructs it; all four of Task 12's tests call `session_env` directly. The invariant the fourth test's doc comment leans on — "`root` is `None` exactly when the tracker is GitHub" — is therefore asserted about **`session_env`'s parameters**, not about the code that fills them. So `session_env` is proven not to leak `COWORK_TASKS_DIR` when handed `None`, and nothing proves the `TrackerKind::GitHub` arm hands it `None`: an edit that passed a root from that arm would leak the variable into a GitHub session **with every test still green.** The leak test itself is sound — it was verified by mutation, not by reading, and it does fail with `COWORK_TASKS_DIR must not be set for a github workspace` when `session_env` is made to push it. The gap is the seam above it. Whether closing it needs a small extracted helper that a test can reach is a Barrier A decision rather than something to settle in passing.
+6. **`start_session`'s GitHub branch has no test, and the leak invariant is asserted one level below where it can break.** Found while executing Task 12 (2026-07-30), and not fixable inside that task as written. `start_session` is a `#[tauri::command]` taking `State` and `AppHandle`, so nothing in the suite constructs it; all four of Task 12's tests call `session_env` directly. The invariant the fourth test's doc comment leans on — "`root` is `None` exactly when the tracker is GitHub" — is therefore asserted about **`session_env`'s parameters**, not about the code that fills them. So `session_env` is proven not to leak `COWORK_TASKS_DIR` when handed `None`, and nothing proves the `TrackerKind::GitHub` arm hands it `None`: an edit that passed a root from that arm would leak the variable into a GitHub session **with every test still green.** The leak test itself is sound — it was verified by mutation, not by reading, and it does fail with `COWORK_TASKS_DIR must not be set for a github workspace` when `session_env` is made to push it. The gap is the seam above it. Whether closing it needs a small extracted helper that a test can reach is a **Barrier B** decision — line 3736, the checkpoint after Task 17 — rather than something to settle in passing. (This said "Barrier A" when first written, which would have filed a live decision against a checkpoint already passed, so it would simply never have been taken. Caught on the Task 17 report, 2026-07-30.)
 
 **What the independent review changed, recorded because a plan that hides its corrections invites the same ones twice.** Four things stopped execution and are fixed: `resolve_root`'s match has no catch-all, so Task 3 must add the `GitHub` arm or the crate stops compiling for four tasks (an earlier draft deferred it to Task 7); `crate::gh_pr::slug` is unreachable from the library — `lib.rs` exposes only `pub mod tasks` and says so — so Task 5 now *moves* `slug` into `tasks/slug.rs` and `gh_pr` re-exports it, and the spec's change table has been corrected to match; Task 2's `Serialize` is now a delegation to a derived `KnownTrackerProvider` rather than a hand-rolled tag, so the wire format exists in one place; and `provider_for` **does no I/O**, because resolving the repository there made all three of decision 9's unavailable states arrive as "No task tracker is configured". Two of those were mine to have caught: the crate boundary is stated in the file I cited, and the I/O one I introduced while fixing something else. Smaller fixes worth naming because each would have shipped something wrong: five raw strings that do not compile (`"#fff"` closes `r#"`); a zero-byte `workspaces.json` wedging every write; `resolve` addressing issues by full-text search, which returns the wrong issue on a busy repository and breaks every write path silently; and `board.ts`'s `boardError` banner asserting things about `board.json` that are false for the new sender.
 
