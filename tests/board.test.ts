@@ -177,7 +177,11 @@ describe("BoardView", () => {
     expect(v.mount.querySelector(".tk-cols")).toBeNull();
   });
 
-  it("offers ⚙ only once a tracker is configured — there is nothing to edit before then", () => {
+  // Not "only once a tracker is configured" — that stopped being the rule when the
+  // GitHub source arrived: a GitHub tracker *is* configured and still gets no ⚙,
+  // because there is no board.json behind it. The rule is `caps.boardEditable`, and
+  // `caps: null` fails it for the plainer reason that there is no board at all.
+  it("withholds ⚙ when there is no board to edit", () => {
     const v = new BoardView({ ...handlers });
     v.render({ project: "deck", caps: null, error: null, tasks: [], links: [] });
     expect(v.mount.querySelector(".tk-board-edit")).toBeNull();

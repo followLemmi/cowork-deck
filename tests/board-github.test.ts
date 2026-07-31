@@ -91,21 +91,29 @@ describe("the board's github states", () => {
     expect(v.mount.querySelector(".tk-fix")).toBeNull();
   });
 
-  /// The last good list stays on screen with its age and the error text, exactly
-  /// as the pull request view does: offline and rate-limited are not their own
-  /// screens.
-  it("keeps the cards on screen beside a failure", () => {
+  /// Half the claim, and the name now says which half: the view draws whatever
+  /// list it is handed beside the error, rather than treating a failure as a
+  /// screen of its own. What *supplies* a list after a failure is `lastGood` in
+  /// `main.ts`, which this cannot see — a state literal with cards in it proves
+  /// nothing about where they came from. Both directions of that live in
+  /// `tests/pr-polling.test.ts`, which drives `main.ts` itself.
+  it("draws the error beside the cards it was handed, not instead of them", () => {
     const v = new BoardView(handlers());
     v.render(state({ error: "HTTP 502" }), NOW);
     expect(v.mount.textContent).toContain("HTTP 502");
     expect(v.mount.querySelectorAll(".tk-card").length).toBe(1);
   });
 
+  /// The second render is a real short page: one card and `total: null`, which is
+  /// what the board is given when the page came back under the cap, since the
+  /// totals call is skipped entirely there. It used to pass `total: 1` against one
+  /// card — a page that *was* capped and whose total merely equalled it, so the
+  /// case it tested was "total <= shown", not a short page at all.
   it("shows the count line with two real numbers, and nothing on a short page", () => {
     const v = new BoardView(handlers());
     v.render(state({ total: 63, tasks: Array.from({ length: 50 }, (_, i) => issue({ id: String(i) })) }), NOW);
     expect(v.mount.querySelector(".tk-count")?.textContent).toBe("Showing 50 of 63 open issues.");
-    v.render(state({ total: 1 }), NOW);
+    v.render(state({ total: null }), NOW);
     expect(v.mount.querySelector(".tk-count")).toBeNull();
   });
 

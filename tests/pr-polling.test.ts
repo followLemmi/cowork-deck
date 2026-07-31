@@ -303,3 +303,91 @@ describe("board polling", () => {
     vi.useRealTimers();
   });
 });
+
+/** The last-good list, which lives in `main.ts` and nowhere else. The board's own
+ *  suite can only be shown a `BoardState` that already has cards in it — that a
+ *  failed tick is what puts them there, and that a file board never gets them, is
+ *  wiring, and no test looked at either direction until now.
+ *
+ *  Both are asserted against the *same* workspace id, because that is the real
+ *  path in: switching a workspace's source is a first-class action with its own
+ *  confirmation, and it leaves the GitHub list behind in memory under that id. */
+describe("the last good list", () => {
+  const issue = (id: string) => ({
+    id, title: `Issue ${id}`, kind: "", status: "open", project: "P",
+    created: "2026-07-01T10:00:00Z", resolved: null, origin: "human", session: null,
+    body: "", path: `https://github.com/o/n/issues/${id}`, damaged: null, conflict: false,
+    labels: [],
+  });
+  const cards = () => document.querySelectorAll("#board .tk-card").length;
+
+  it("keeps a github board's cards through a failed tick, and never a file board's", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const [termBtn, boardBtn] = buttons;
+
+    active = WS_GH;
+    listTasksMock.mockReset();
+    listTasksMock.mockResolvedValue([issue("41"), issue("42")]);
+    boardBtn.click();
+    await flush();
+    expect(cards()).toBe(2);
+
+    // Offline, rate-limited, a missing scope: a blip in front of data that is
+    // still true, so the rows stay with the error beside them.
+    listTasksMock.mockRejectedValue(new Error("HTTP 502"));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flush();
+    expect(document.querySelector("#board .tk-error")?.textContent).toContain("HTTP 502");
+    expect(cards()).toBe(2);
+
+    // Now the same workspace is switched to a folder and the folder cannot be
+    // read. Keeping the issues would put phantom cards on a board whose root is
+    // gone, and — because a non-empty list skips the empty screen — would withhold
+    // `Configure`, the only way back in the app.
+    active = WS;
+    listTasksMock.mockRejectedValue(new Error("the task folder is unreachable: /p/tasks"));
+    onSelect!(active);
+    await flush();
+    expect(cards()).toBe(0);
+    expect(document.querySelector("#board .tk-configure")).not.toBeNull();
+    expect(document.querySelector("#board .tk-count")).toBeNull();
+
+    termBtn.click();
+    await flush();
+    listTasksMock.mockReset();
+    listTasksMock.mockResolvedValue([]);
+    vi.useRealTimers();
+  });
+
+  /// The screen a first-run user without `gh` sees, and nothing tested it: an
+  /// unreadable source drawn as an empty board is indistinguishable from a
+  /// repository with no open issues. It has to win over the kept list too — cards
+  /// under "gh is not installed" would invite actions that cannot work.
+  it("draws the unavailable screen when gh is missing, never a board", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const [termBtn, boardBtn] = buttons;
+
+    active = WS_GH;
+    listTasksMock.mockReset();
+    // As it arrives: a GitHub failure reaches the frontend through `TaskError::Io`,
+    // whose Display prefixes "filesystem error: ".
+    listTasksMock.mockRejectedValue(new Error("filesystem error: gh-not-found"));
+    boardBtn.click();
+    await flush();
+
+    expect(document.querySelector("#board .tk-unavailable")).not.toBeNull();
+    expect(document.querySelector("#board .tk-cols")).toBeNull();
+    expect(document.querySelector("#board .tk-fix")?.textContent).toBe("Set up gh");
+
+    termBtn.click();
+    await flush();
+    active = WS;
+    listTasksMock.mockReset();
+    listTasksMock.mockResolvedValue([]);
+    vi.useRealTimers();
+  });
+});
