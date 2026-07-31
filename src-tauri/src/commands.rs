@@ -772,6 +772,144 @@ pub fn pr_worktree_remove(
     Ok(())
 }
 
+/// `git worktree add` for an issue branch. `base` is `Some` when the branch has
+/// to be created and `None` when it already exists.
+fn worktree_add_argv(path: &str, branch: &str, base: Option<&str>) -> Vec<String> {
+    let mut argv: Vec<String> = vec!["worktree".into(), "add".into()];
+    match base {
+        Some(default) => {
+            argv.push("-b".into());
+            argv.push(branch.into());
+            argv.push(path.into());
+            argv.push(format!("origin/{default}"));
+        }
+        None => {
+            argv.push(path.into());
+            argv.push(branch.into());
+        }
+    }
+    argv
+}
+
+fn branch_exists(ws_path: &str, branch: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .current_dir(ws_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// A worktree on a new branch off the repository's default branch, and the path
+/// to it. Beside the workspace, never inside it — see
+/// `gh_issues::issue_worktree_path` and BUG-026.
+#[tauri::command]
+pub fn issue_worktree_add(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+    title: String,
+) -> Result<String, String> {
+    let ws_path = workspace_path(&state, &workspace_id)?;
+    let path = cowork_deck::tasks::gh_issues::issue_worktree_path(&ws_path, number, &title);
+    // Already there from an earlier launch: hand it back rather than failing, as
+    // `pr_worktree_add` does. The session that opens in it sees whatever state it
+    // was left in.
+    if path.exists() {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    std::fs::create_dir_all(path.parent().unwrap_or(&path)).map_err(|e| e.to_string())?;
+
+    let branch = cowork_deck::tasks::gh_issues::issue_branch(number, &title);
+    let base = if branch_exists(&ws_path, &branch) {
+        None
+    } else {
+        let facts = repo_facts_for(&state, &workspace_id)?;
+        if facts.default_branch.is_empty() {
+            return Err("this repository has no default branch to base an issue branch on".into());
+        }
+        // Fetched first, so a branch is not cut from a stale `origin/main`. The
+        // failure is surfaced rather than swallowed: the same choice
+        // `pr_worktree_add` makes about its own fetch.
+        let out = std::process::Command::new("git")
+            .args(["fetch", "origin", &facts.default_branch])
+            .current_dir(&ws_path)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+        Some(facts.default_branch)
+    };
+
+    let argv = worktree_add_argv(&path.to_string_lossy(), &branch, base.as_deref());
+    let out = std::process::Command::new("git")
+        .args(&argv)
+        .current_dir(&ws_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Where this issue's worktree would live, and whether it is there. Read-only:
+/// the cleanup offer needs the path before it can name it. Same shape as
+/// `pr_worktree_path`, keyed by `(number, title)` rather than `(number, branch)`.
+#[tauri::command]
+pub fn issue_worktree_path(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+    title: String,
+) -> Result<Option<String>, String> {
+    let ws_path = workspace_path(&state, &workspace_id)?;
+    let path = cowork_deck::tasks::gh_issues::issue_worktree_path(&ws_path, number, &title);
+    Ok(path.exists().then(|| path.to_string_lossy().to_string()))
+}
+
+/// Remove an issue's worktree, keeping all three of `pr_worktree_remove`'s
+/// guards: never remove what is not there, refuse while it is dirty, and refuse
+/// when cleanliness cannot be determined at all.
+#[tauri::command]
+pub fn issue_worktree_remove(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+    title: String,
+) -> Result<(), String> {
+    let ws_path = workspace_path(&state, &workspace_id)?;
+    let path = cowork_deck::tasks::gh_issues::issue_worktree_path(&ws_path, number, &title);
+    if !path.exists() {
+        return Ok(());
+    }
+    match worktree_is_clean(&path) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(format!(
+                "{} has uncommitted changes — nothing was removed",
+                path.to_string_lossy()
+            ))
+        }
+        Err(e) => {
+            return Err(format!(
+                "cannot tell whether {} is clean, so it was left alone: {e}",
+                path.to_string_lossy()
+            ))
+        }
+    }
+    let out = std::process::Command::new("git")
+        .args(["worktree", "remove", &path.to_string_lossy()])
+        .current_dir(&ws_path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
@@ -1321,6 +1459,28 @@ mod tests {
         let (remaining, body) = split_gh_response("{\"data\":{}}");
         assert_eq!(remaining, None);
         assert_eq!(body, "{\"data\":{}}");
+    }
+
+    /// The base is the repository's default branch, never the workspace's
+    /// current HEAD: the person may be sitting on a feature branch, and an issue
+    /// branch based on it would silently inherit unrelated work.
+    #[test]
+    fn a_new_issue_worktree_branches_off_the_remote_default() {
+        let argv = worktree_add_argv("/tmp/x-issue/42-t", "issue-42-t", Some("main"));
+        assert_eq!(&argv[0..2], &["worktree".to_string(), "add".to_string()]);
+        let at = argv.iter().position(|a| a == "-b").expect("-b");
+        assert_eq!(argv[at + 1], "issue-42-t");
+        assert_eq!(argv.last().unwrap(), "origin/main");
+    }
+
+    /// If the branch exists but the directory does not — a manual `rm -rf` — a
+    /// worktree is attached to the existing branch rather than created, or the
+    /// second launch dies where the first succeeded.
+    #[test]
+    fn an_existing_branch_is_attached_rather_than_recreated() {
+        let argv = worktree_add_argv("/tmp/x-issue/42-t", "issue-42-t", None);
+        assert!(!argv.iter().any(|a| a == "-b"), "an existing branch is not created again");
+        assert_eq!(argv.last().unwrap(), "issue-42-t");
     }
 
     #[test]
