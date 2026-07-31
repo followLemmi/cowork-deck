@@ -40,7 +40,8 @@ Whether #113 merges to `main` first is **not settled and is the user's call.** I
   Do **not** paper over the intermediate 7 with `#[allow(dead_code)]`: it is a suppression this plan forbids, it would have to be taken out again three tasks later, and it hides the signal that says whether Task 10 actually wired the field. Treat 7 at Tasks 8–9 as the correct number and 8 at Task 7 as the correct number; anything above those, or anything still above 6 after Task 10, is a real new warning.
   Watch `session_env` in Task 12: it is at 5 parameters and goes to 7. Clippy's threshold is *more than* 7, so 7 is legal — an eighth would add a warning and must instead become a struct.
 - **`gh` against `followLemmi/cowork-deck` must be scoped per command:** `GH_TOKEN=$(gh auth token --user followLemmi) gh …`. The default `gh` account on this machine is an EMU that cannot write to that repository, and a plain `gh issue comment` fails with a confusing permission error. This matters in Tasks 25 and 26 only, and is stated in both.
-- **Task issues are not filed yet.** Before starting, file one epic and one issue per task below (26 of them) in `followLemmi/cowork-deck`, and record the number under each task heading, as the pull request plan does. The issue bodies are the task headings plus their "Files" and "Interfaces" blocks. Tasks 1 and 2 are the exception: they belong to **#117**, which is already filed and is not part of this feature's epic.
+- **The task issues are filed** (done 2026-07-30; this line used to say they were not). Epic **#118**, and one issue per task in `followLemmi/cowork-deck`: **task N is issue #(118 + N)**, so #121 for Task 3 through #144 for Task 26. Each number is now recorded under its task heading. Tasks 1 and 2 are the exception: they belong to **#117**, which was filed separately and is not part of this feature's epic.
+  **The commits deliberately carry no issue trailer.** Every commit message in this plan is given verbatim and none of them references its issue, so the twelve commits landed so far have none either. That is the precedent; do not amend earlier commits to add them, and do not add one to yours.
 - **Tasks 1 and 2 stay first, for a compiler reason rather than a release one.** Task 3's tests reference `KnownTrackerProvider` from Task 2 and will not compile without it. The release ahead of the variant was proposed and declined (Barrier 0): one branch means one release, so the tolerance in #117 will not protect any build already installed. It still closes the door for the next schema addition, still stops a truncated store file destroying the rest, and still keeps an unreadable record visible — see Barrier 0 for the full accounting.
 
 ## Phases and barriers
@@ -517,7 +518,7 @@ Then continue to Task 3. Reference #117 in the eventual pull request description
 
 ### Task 3/26: The model widens, and what an older build does with it
 
-**Issue:** _(file it)_
+**Issue:** #121
 
 Two one-line model changes, now that Tasks 1 and 2 have made the first of them safe. Decision 2 asked what an older build does with `{"type":"github"}`; #117 is the answer, and the tolerance and the refusal that contain it are already in. What is left here is the variant itself, `Task.labels`, and the test that pins the *new* behaviour rather than the old.
 
@@ -681,7 +682,7 @@ git commit -m "feat(issues): a github tracker variant, and labels on a card"
 
 ### Task 4/26: `gh_issues.rs` — the issue-to-card mapping and the field-list guard
 
-**Issue:** _(file it)_
+**Issue:** #122
 
 The whole of decision 4 in one pure function, plus the constant that decides what `gh` is asked for. The guard test has two halves and the second is the load-bearing one: `projectCards` and `projectItems` fail the *entire* request without `read:project`, which the app does not require of a bound account (`src/github.ts:27`), so one added field would blank the board for everyone.
 
@@ -1013,7 +1014,7 @@ git commit -m "feat(issues): map a gh issue row onto a card, and guard the field
 
 ### Task 5/26: Repository facts, the argv builders, and where an issue's worktree goes
 
-**Issue:** _(file it)_
+**Issue:** #123
 
 Everything else pure. Three groups, one commit, because each is a handful of lines with its own table of cases and none of them can be wired up until Phase 2.
 
@@ -1423,7 +1424,7 @@ git commit -m "feat(issues): repository facts, every argv with its repo, and the
 
 ### Task 6/26: `GhIssueProvider` — the trait over an injected runner
 
-**Issue:** _(file it)_
+**Issue:** #124
 
 The `TaskProvider` implementation, driven by a closure that runs `gh`, so every branch of it has a test with no process and no network. The trait gains no sixth method (decision 1).
 
@@ -1933,7 +1934,7 @@ git commit -m "feat(issues): a TaskProvider over gh, testable without a process"
 
 ### Task 7/26: `tracker_kind` beside `resolve_root`
 
-**Issue:** _(file it)_
+**Issue:** #125
 
 The new resolution sits *beside* `resolve_root`, not inside it (decision 2). `resolve_root` keeps answering exactly one question — where do this workspace's card files live — and keeps returning `None` for a GitHub workspace, which is the correct answer for seven of its eight callers.
 
@@ -2098,7 +2099,7 @@ git commit -m "feat(issues): tracker_kind beside resolve_root, which keeps its s
 
 ### Task 8/26: `board_for` and `board_editable`
 
-**Issue:** _(file it)_
+**Issue:** #126
 
 The board configuration moves up out of the port (decision 1): one function decides which board a workspace has, and `FsTaskProvider` is handed that same result through `with_board` — the existing precedent for a provider being given a board it did not read. `provider_for` still returns the concrete type here; Task 10 flips it. Splitting the two keeps each compiling and verifiable on its own.
 
@@ -2351,7 +2352,7 @@ git commit -m "feat(issues): one place decides the board, and whether it is edit
 
 ### Task 9/26: The repository facts cache, the stdin-carrying runner, and `issue_totals`
 
-**Issue:** _(file it)_
+**Issue:** #127
 
 Everything the GitHub provider needs from the process world, before anything constructs one. Three pieces: a cache beside the token cache, a `gh` runner that can feed stdin, and the one new read-only command the count line needs.
 
@@ -2583,7 +2584,7 @@ git commit -m "feat(issues): cached repository facts, a stdin-carrying gh runner
 
 ### Task 10/26: `provider_for` returns a boxed provider, and six commands become file-only
 
-**Issue:** _(file it)_
+**Issue:** #128
 
 **This is the riskiest task in the plan.** `provider_for` (`tasks_cmd.rs:309`) has seven non-test call sites and three of them reach for methods that are not on the trait; six commands stop working for a non-file-backed workspace by design. Everything the board does passes through here, so a mistake in this task looks like "the board is empty" rather than like a type error — which is why Task 8 landed `board_for` first and left this task nothing to do but narrow.
 
@@ -2742,7 +2743,7 @@ git commit -m "feat(issues): one boxed provider, and six commands that need a fo
 
 ### Task 11/26: The sidebar count, served from the board's own last fetch
 
-**Issue:** _(file it)_
+**Issue:** #129
 
 `tasks_open_counts` iterates *every* workspace and is called on every board tick and after every mutation (`main.ts:116`, `:198`, `:267`, `:284`, `:302`, `:336`, `:359`). Four GitHub workspaces at three points each would put twelve points behind every card edit, so it must never touch the network.
 
@@ -2851,7 +2852,7 @@ git commit -m "feat(issues): the sidebar count comes from the last fetch, never 
 
 ### Task 12/26: `session_env`, `start_session`, and the leak test
 
-**Issue:** _(file it)_
+**Issue:** #130
 
 **Risky, and the reason is stated in the spec:** `session_env` is the leak surface. Decision 5's promise is that a session in a GitHub workspace is never told about `board.json`, a cards directory, or the `cowork_task` sidecar — and the only way to test a promise about absence is to assert the absence.
 
@@ -3035,7 +3036,7 @@ git commit -m "feat(issues): a github session gets a repository and no folder, a
 
 ### Task 13/26: `guard`'s GitHub branch, and its four integration cases
 
-**Issue:** _(file it)_
+**Issue:** #131
 
 The sidecar gets no GitHub mode (decision 5): no token, no repository, no faked `COWORK_TASKS_DIR`. What it gets is one branch that reports and never blocks, dispatched **before** `COWORK_TASKS_DIR` is read, so it never constructs an `FsTaskProvider` and never names a folder.
 
@@ -3256,7 +3257,7 @@ git commit -m "feat(issues): the sidecar guard reports a repository and never bl
 
 ### Task 14/26: The issue worktree commands
 
-**Issue:** _(file it)_
+**Issue:** #132
 
 The three commands behind ▶ on an issue and the cleanup offer after it closes. The clippy count is unchanged at 6 and was never above it — the sanctioned excess rested on a wrong premise about `dead_code` in a library crate, withdrawn at Task 5. Do not go looking for two warnings to remove.
 
@@ -3404,7 +3405,7 @@ git commit -m "feat(issues): a worktree per issue, beside the workspace and neve
 
 ### Task 15/26: `pr_worktree_add` reuses an existing worktree
 
-**Issue:** _(file it)_
+**Issue:** #133
 
 **Risky: a change to a shipped path**, and the only task in the plan that changes behaviour the pull request view already has. Without it the ordinary path through this feature produces two copies of one piece of work — an issue worktree on `issue-42-…` and, after the pull request opens, a second worktree on `pr-57` with the same commits in a different directory, where pushing back needs `git push origin pr-57:issue-42-…` and nothing says so.
 
@@ -3570,7 +3571,7 @@ git commit -m "feat(pr): reuse the worktree an issue was already worked in"
 
 ### Task 16/26: `pr_list_argv` names its repository
 
-**Issue:** _(file it)_
+**Issue:** #134
 
 Decision 11's recommendation, accepted by the user as closed question 6: a change to a shipped path with no user-visible gain, so it is a task of its own with its own commit, and it goes on the manual check.
 
@@ -3619,7 +3620,7 @@ git commit -m "refactor(pr): pass the repository explicitly instead of relying o
 
 ### Task 17/26: `tracker_open_count`, for the switch confirmation
 
-**Issue:** _(file it)_
+**Issue:** #135
 
 The workspace form has to say how many cards it is about to stop showing, and it has to say it *before* the save — afterwards the deck no longer knows the old root. One read-only command, and `None` rather than an error when the root cannot be read: the form says "any cards there" instead of a number rather than blocking the save on a directory read.
 
@@ -3718,7 +3719,7 @@ git commit -m "feat(issues): count the cards a source switch would leave behind"
 
 ### Task 18/26: `ipc.ts` — the types and the wrappers
 
-**Issue:** _(file it)_
+**Issue:** #136
 
 The Rust model mirrored, and the seven new or changed wrappers. This task closes the one expected TypeScript breakage from Task 15.
 
@@ -3864,7 +3865,7 @@ git commit -m "feat(issues): frontend types for a github tracker and the new com
 
 ### Task 19/26: `issuePrompt`, and the two non-leak invariants
 
-**Issue:** _(file it)_
+**Issue:** #137
 
 The launch prompt for an issue, beside `taskPrompt` rather than inside it. Both directions are tested, and the second matters as much as the first: a shared prompt builder that grew a `gh` line would leak the network model into a folder-backed workspace.
 
@@ -4029,7 +4030,7 @@ git commit -m "feat(issues): a launch prompt that names gh and never names a fol
 
 ### Task 20/26: `src/issues.ts` — the pure rules
 
-**Issue:** _(file it)_
+**Issue:** #138
 
 Every rule the board's GitHub behaviour needs, in a module with no DOM and no IPC. `main.ts` is not reachable from a test, so nothing with a truth table may live there — which is why the confirmation *rule* is here and only the modal call is there.
 
@@ -4277,7 +4278,7 @@ git commit -m "feat(issues): the poll gate, the count line and the confirmation 
 
 ### Task 21/26: The board view — the ⚙ gate, the age, the unavailable box, the count, the chips
 
-**Issue:** _(file it)_
+**Issue:** #139
 
 Everything decision 9 says the board grows, plus decision 3's hidden ⚙ and decision 4's label chips. Render-only: every rule it applies was decided in Task 20 or in `board-config.ts`.
 
@@ -4554,7 +4555,7 @@ git commit -m "feat(issues): the board grows an age, an unavailable box, a count
 
 ### Task 22/26: The board's poll becomes a gated chain
 
-**Issue:** _(file it)_
+**Issue:** #140
 
 **Risky, and not for the reason it looks like.** `main.ts:116` is a five-second `setInterval` with no focus gate firing three IPC calls a tick, one of which (`tasks_open_counts`) fans out across every workspace. Replacing it with a gated `setTimeout` chain is what decision 7 requires for the issues board — and it changes the **file** board's behaviour too: it stops polling when the window loses focus. Nothing about the file board was asked for, so that board needs re-checking even though it is not the feature.
 
@@ -4649,7 +4650,7 @@ git commit -m "refactor(board): one gated poll chain for both sources, replacing
 
 ### Task 23/26: The wiring — refresh, confirmations, the launch and the cleanup offer
 
-**Issue:** _(file it)_
+**Issue:** #141
 
 Everything the board's actions need, source by source. No rule is decided here: each is `src/issues.ts`'s or `board-config.ts`'s, and this task only calls them in the right order.
 
@@ -4817,7 +4818,7 @@ git commit -m "feat(issues): wire the board's actions, the confirmations and the
 
 ### Task 24/26: The workspace form's third source, and the kind controls
 
-**Issue:** _(file it)_
+**Issue:** #142
 
 The only place a GitHub tracker can be configured, and the warning decision 8 requires — raised **before** the save, because afterwards the deck no longer knows the old root.
 
@@ -4939,7 +4940,7 @@ git commit -m "feat(issues): choose the source in the workspace form, and say wh
 
 ### Task 25/26: Correct issue #115
 
-**Issue:** #115 itself.
+**Issue:** #143 is the task; the correction it makes lands on #115 itself.
 
 The spec establishes that #115's recorded recommendation — the REST route `/search/issues?…&advanced_search=true` for the open-issue total — is worse than GraphQL `repository.issues.totalCount` on both counts that comment weighed, and that two of its caveats therefore do not apply at all. A plan that silently does the opposite of a recorded recommendation leaves the disagreement for the next reader to find.
 
@@ -4997,7 +4998,7 @@ Record the comment's URL in the pull request description instead. If #115 turns 
 
 ### Task 26/26: Documentation, and the manual check
 
-**Issue:** _(file it)_
+**Issue:** #144
 
 **Files:**
 - Modify: `README.md`
