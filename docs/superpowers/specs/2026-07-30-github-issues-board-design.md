@@ -743,7 +743,7 @@ costs 1 point and only when the page is capped, and it should: "showing 50 of 63
 open" is a sentence with two real numbers in it.
 
 **And issue #115 needs correcting, not silently contradicting.** Its comment
-recommends the REST route, `/search/issues?…&advanced_search=true`, for the
+recommends the REST route, `/search/issues?q=…&per_page=1`, for the
 total. GraphQL `repository.issues.totalCount` is strictly better on both counts
 that comment weighed: it spends 1 GraphQL point rather than the 30-per-minute
 search budget, and it reads the repository object directly, so it has **no
