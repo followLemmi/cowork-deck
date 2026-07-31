@@ -33,7 +33,8 @@ Whether #113 merges to `main` first is **not settled and is the user's call.** I
   **Count diagnostics, not lines.** `grep -c '^warning'` reports **8** at the ceiling, because cargo prints a per-crate summary line ("warning: `cowork-deck` generated N warnings") that is not itself a diagnostic. Use `grep -c '^warning: ' | ` minus the summaries, or simply read the two summary lines and add them — they are the authority. An agent counting with a bare grep will believe it is two over before it has changed anything. A task may raise the test counts; it may not raise the warning count. **A sanctioned exception that turned out to be unnecessary** (corrected 2026-07-30 while executing Task 5): Tasks 5–6 were allowed up to two warnings above the ceiling, on the assumption that `issue_branch`, `issue_worktree_path` and the argv builders would trip `dead_code` until Tasks 10 and 14 called them. They do not. They are `pub` items in the **library** crate (`cowork_deck::tasks`), and `dead_code` does not fire on a public item of a library regardless of callers — measured at Task 5: exactly 6, unchanged. **So the count is 6 across Tasks 5–6, and Task 14 has nothing to bring back.**
   **But that correction does not transfer to Task 7, and the sentence that used to follow it here — "the count is 6 at every task" — was wrong** (corrected 2026-07-30 while executing Task 7). The reason it held for Tasks 5–6 is that `src-tauri/src/tasks/*` is reachable from `lib.rs:7`, `pub mod tasks`, so those items are public items of a *library*. `tasks_cmd.rs` is not: it is declared only at `main.rs:12`, `mod tasks_cmd;`, so it belongs to the **binary** crate alone, and in a bin crate `dead_code` fires on `pub` items normally. **`TrackerKind` therefore trips `dead_code` until something outside the test module reads it, and the expected count is not 6 for three tasks running:**
   - **Task 7 → 8 warnings.** `enum TrackerKind is never used`, `function tracker_kind is never used`, and `fields root and creation are never read`.
-  - **Tasks 8 and 9 → 7 warnings.** `board_for` and `board_editable` consume `TrackerKind` and destructure `root`, clearing two of the three; `field creation is never read` stays.
+  - **Task 8 → 7 warnings.** `board_for` and `board_editable` consume `TrackerKind` and destructure `root`, clearing two of the three; `field creation is never read` stays.
+  - **Task 9 → 8 warnings** (corrected 2026-07-30, measured while executing it): `field creation is never read` plus **`function run_gh_with_stdin is never used`**. Task 9 introduces that runner and nothing calls it until Task 10's `provider_for`, so `dead_code` fires on it for the same bin-crate reason. The paragraph above used to say 7 here and had simply missed this item.
   - **Task 10 → back to 6, on its own.** `FsTaskProvider::with_board(root, creation, …)` at plan line 2652 is the first reader of `creation`. Nothing needs removing for this to happen.
 
   Do **not** paper over the intermediate 7 with `#[allow(dead_code)]`: it is a suppression this plan forbids, it would have to be taken out again three tasks later, and it hides the signal that says whether Task 10 actually wired the field. Treat 7 at Tasks 8–9 as the correct number and 8 at Task 7 as the correct number; anything above those, or anything still above 6 after Task 10, is a real new warning.
@@ -2527,7 +2528,9 @@ fn run_gh_with_stdin(
 }
 ```
 
-Factor the shared preamble of the two runners into one `fn gh_invocation(state, workspace_id) -> Result<(String, String, Vec<(String, String)>), String>` returning the program path, the `cwd` and the environment, so the account resolution and the redaction rule exist once. Both runners then differ only in how they spawn.
+Factor the shared preamble of the two runners into one `fn gh_invocation(state, workspace_id) -> Result<GhInvocation, String>` carrying the program path, the `cwd` and the environment, so the account resolution and the redaction rule exist once. Both runners then differ only in how they spawn, destructuring with `let GhInvocation { path, cwd, env } = …`.
+
+**Corrected 2026-07-30, measured while executing this task.** This line used to specify a bare tuple return, `Result<(String, String, Vec<(String, String)>), String>`. That trips `clippy::type_complexity` — a real new warning, which the 6-warning ceiling forbids — so the three-field struct is not a stylistic preference, it is what keeps the ceiling. Give each field a doc comment saying what it is for; `cwd` in particular is not incidental, it is what `gh` resolves the repository from.
 
 And the command:
 
@@ -2586,12 +2589,19 @@ git commit -m "feat(issues): cached repository facts, a stdin-carrying gh runner
 
 The three sites that touch non-trait methods are `:337` (`board()`, `board_error()` — already handled by Task 8), `:412` (`board()`, inside `tasks_open_counts`) and `:731` (`scan()` and `board()`, inside `step_usage`). Three further sites build an `FsTaskProvider` directly rather than through `provider_for` (`:498`, `:704`, `:766`) and stay as they are.
 
+**Two further sites this enumeration missed, both found while executing the task (2026-07-30). Neither is optional.**
+
+1. **`capabilities_for` holds a `provider_for` call and cannot be given the state.** Threading `&state` into it would be the obvious move and it does not work: its Task 8 test `a_source_this_build_cannot_read_says_so_rather_than_reading_as_unconfigured` calls it directly, and **no unit test can construct a `State<AppState>`.** So the capabilities come in as a parameter instead — `capabilities_for(ws, caps: Option<ProviderCapabilities>)` — and the command resolves them: `let caps = provider_for(&state, &ws).ok().map(|p| p.capabilities());`. Inside, `caps?` preserves the old `.ok()?` semantics exactly: `None` still means "no tracker configured". The unreadable-source branch still returns before `caps` is read, so the test passes `None` and keeps asserting what it always asserted. Move the doc comment explaining why `.ok()` is safe — `provider_for` does no I/O — down to the command, where the state now lives.
+2. **`a_broken_board_file_yields_the_default_steps_and_an_error_the_board_can_show`** (`tasks_cmd.rs:1683`) asserts on `provider_for(&ws).board_error()`, and the boxed trait does not expose `board_error`. `fs_provider_for` cannot answer it either: `FsTaskProvider::with_board` hard-codes `board_error: None` (`tasks/fs.rs:84`). Re-point the test at **`board_for(&ws)`**, which is where the frontend has read both the config and the error since Task 8 — `capabilities_for` uses `loaded.error`, not the provider's. No coverage is lost and the test now exercises the path that actually feeds the UI. Nothing else reads a provider's `board_error`: `save_config` builds `FsTaskProvider::new` directly, and `cowork_task` builds its own.
+
 **Files:**
 - Modify: `src-tauri/src/tasks_cmd.rs`
 
 **Interfaces:**
 - Produces: `provider_for(state, ws) -> Result<Box<dyn TaskProvider>, String>`, `fs_provider_for(ws) -> Result<FsTaskProvider, String>`, `FILE_ONLY`
 - Consumes: `GhIssueProvider`, `repo_facts_for`, `run_gh_with_stdin`
+
+**`FsTaskProvider` does not derive `Debug`**, so two of Step 1's tests as first written do not compile: `expect_err` and `unwrap_err` both need to print the `Ok` side (E0277). Write `fs_provider_for(&w).map(|_| ()).expect_err(…)` — the same `map(|_| ())?` idiom this task already uses for the six refusals. Deriving `Debug` on `FsTaskProvider` would work too and is a library change outside this task's Files block, so it is the wrong fix here. (Found while executing, 2026-07-30.)
 
 - [ ] **Step 1: Write the failing tests**
 
