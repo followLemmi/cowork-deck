@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   ISSUE_POLL_MS, FILE_POLL_MS, boardPollMs, OPEN_PAGE_LIMIT, needsTotals, countLine,
   needsCloseConfirmation, closeConfirmText, RATE_WARN_BELOW, rateLimitBanner, sourceOf,
-  unavailableFrom, repoFromIssueUrl,
+  unavailableFrom, repoFromIssueUrl, fsRootOf,
 } from "../src/issues";
 import type { BoardConfig, TrackerConfig } from "../src/ipc";
 
@@ -104,6 +104,28 @@ describe("the rate limit banner", () => {
     expect(rateLimitBanner(4873)).toBeNull();
     // Null, not zero: an absent header must never read as exhausted.
     expect(rateLimitBanner(null)).toBeNull();
+  });
+});
+
+describe("fsRootOf", () => {
+  it("answers with the root of a file-backed provider and null for the other source", () => {
+    expect(fsRootOf({ type: "fs", root: { kind: "project" } })).toEqual({ kind: "project" });
+    expect(fsRootOf({ type: "fs", root: { kind: "path", path: "/v/T" } }))
+      .toEqual({ kind: "path", path: "/v/T" });
+    expect(fsRootOf({ type: "github" })).toBeNull();
+    expect(fsRootOf(null)).toBeNull();
+    expect(fsRootOf(undefined)).toBeNull();
+  });
+
+  /// The reason this is a function and not a ternary at each call site. All three
+  /// are representable at runtime — a record from a newer build, or one written
+  /// half-way — and unrepresentable in the closed union the type used to be. A
+  /// caller reaching for `.root` after checking only `.type` would read
+  /// `undefined.kind` on the second of these.
+  it("refuses a record whose shape it cannot trust", () => {
+    expect(fsRootOf({ type: "jira" } as never)).toBeNull();
+    expect(fsRootOf({ type: "fs" } as never)).toBeNull();
+    expect(fsRootOf({ type: "fs", root: { kind: "elsewhere" } } as never)).toBeNull();
   });
 });
 

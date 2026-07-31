@@ -84,7 +84,9 @@ export class WorkspacesPanel {
     const cur = this.items.find((w) => w.id === id);
     if (!cur) return;
     const res = await workspaceForm({
-      name: cur.name, path: cur.path, color: cur.color,
+      // The id is what lets the form count the cards still in the old folder
+      // before offering to leave them behind.
+      id: cur.id, name: cur.name, path: cur.path, color: cur.color,
       github: cur.github ?? null, tracker: cur.tracker ?? null,
     });
     if (!res) return;

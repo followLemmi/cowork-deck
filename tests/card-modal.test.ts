@@ -122,6 +122,40 @@ describe("openCardModal", () => {
     return expect(p).resolves.toBeNull();
   });
 
+  /// One synthetic kind is not a choice, and an issue's kind is always empty —
+  /// the same flag the ⚙ button reads, so the two cannot disagree about whether
+  /// this board has kinds worth showing.
+  it("hides the kind select when the board is not editable", async () => {
+    const p = openCardModal(original, CFG, true, false);
+    const ov = document.querySelector(".modal-overlay")!;
+    expect(ov.querySelector(".tk-c-kind")).toBeNull();
+    // And the step select stays: moving an issue between open and closed is the
+    // one edit this modal is for on a GitHub board.
+    expect(ov.querySelector(".tk-c-step")).not.toBeNull();
+    ov.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
+  });
+
+  /// The half that matters for the write: a hidden control must not turn into an
+  /// emptied field. A step-only edit on a board with no kind row has to produce a
+  /// step-only patch, or every save would also blank the card's kind.
+  it("sends no kind at all when the kind select is hidden", async () => {
+    const p = openCardModal(original, CFG, true, false);
+    const ov = document.querySelector(".modal-overlay")!;
+    ov.querySelector<HTMLSelectElement>(".tk-c-step")!.value = "done";
+    ov.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const edited = await p;
+    expect(computePatch(original, edited!)).toEqual({ status: "done" });
+  });
+
+  it("keeps the kind select for a file-backed board", async () => {
+    const p = openCardModal(original, CFG, true);
+    const ov = document.querySelector(".modal-overlay")!;
+    expect(ov.querySelector(".tk-c-kind")).not.toBeNull();
+    ov.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
+  });
+
   it("resolves with the values the form holds when Save is clicked", async () => {
     // The one seam `computePatch`'s pure tests structurally cannot reach: every
     // one of them hand-builds its input, so a `kind`/`status` transposition in

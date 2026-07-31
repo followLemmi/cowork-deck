@@ -4,13 +4,14 @@
 // their own DOM here rather than extending modal.ts's single-field helpers.
 
 import { pickFolder } from "./dialog";
-import { ghStatus, trackerRootPreview } from "./ipc";
+import { ghStatus, trackerOpenCount, trackerRootPreview } from "./ipc";
 import type { BoardConfig, KindId, MergeOptions, Schedule, SchedulePreset, TaskDraft, TrackerConfig, TrackerRootPreview, WorkspaceGithub } from "./ipc";
 import { accountChoices } from "./github";
-import { closeConfirmText } from "./issues";
+import { closeConfirmText, fsRootOf } from "./issues";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule, schedulePreview } from "./schedule";
 import { openDialog } from "./dialog-shell";
+import { confirmModal } from "./modal";
 import { icon, SCENARIO_ICONS, type IconName } from "./icons";
 
 const COLORS = ["#61afef", "#98c379", "#e5c07b", "#c678dd", "#e06c75", "#56b6c2"];
@@ -84,6 +85,9 @@ type WorkspaceFormResult = {
 
 export function workspaceForm(
   initial?: {
+    /** The workspace being edited, so the switch-away warning can count the cards
+     *  still in its folder. Absent for a new workspace, which has none. */
+    id?: string;
     name: string; path: string; color: string;
     github?: WorkspaceGithub | null; tracker?: TrackerConfig | null;
   },
@@ -91,7 +95,7 @@ export function workspaceForm(
   return new Promise((resolve) => {
     const { box, close: closeDialog } = openDialog({
       onCancel: () => close(null),
-      onAccept: () => submit(),
+      onAccept: () => void submit(),
     });
     box.classList.add("modal-box--form");
     const title = document.createElement("div");
@@ -199,7 +203,7 @@ export function workspaceForm(
 
     const rootRow = document.createElement("div");
     rootRow.className = "form-row";
-    const mkRadio = (value: "project" | "path", text: string) => {
+    const mkRadio = (value: "project" | "path" | "github", text: string) => {
       const l = document.createElement("label");
       const i = document.createElement("input");
       i.type = "radio";
@@ -212,6 +216,18 @@ export function workspaceForm(
     };
     const projectRadio = mkRadio("project", "in the project (.cowork/tasks)");
     const pathRadio = mkRadio("path", "a folder of my own");
+    const githubRadio = mkRadio("github", "the repository's GitHub issues");
+
+    // Shown only for a source this build cannot name — a record a newer build
+    // wrote. The checkbox is on because there *is* a tracker, and no radio is
+    // checked because none of them describes it; without this line that would
+    // read as a form that lost its selection.
+    const unknownNote = document.createElement("p");
+    unknownNote.className = "form-hint tk-f-unknown";
+    unknownNote.textContent =
+      "This workspace uses a task source this version does not recognise. It is kept exactly as "
+      + "it is unless you choose one of the options above.";
+    unknownNote.classList.add("tk-hidden");
 
     const trackerPath = document.createElement("input");
     trackerPath.className = "modal-input tk-f-path";
@@ -302,7 +318,9 @@ export function workspaceForm(
     const syncTracker = () => {
       rootRow.classList.toggle("tk-hidden", !onInput.checked);
       // Hide the row, not just the input: the pick button lives beside it and
-      // would otherwise stay behind on its own.
+      // would otherwise stay behind on its own. Keyed on `pathRadio` rather than
+      // on "not project", so the GitHub choice hides the folder controls too —
+      // a picker for a source with no folder is a control that does nothing.
       trackerPathRow.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
       // Hidden with the block it explains, not merely emptied by the guard
       // below. Both are true today; only this one is structural, and an
@@ -313,20 +331,29 @@ export function workspaceForm(
     onInput.onchange = syncTracker;
     projectRadio.onchange = syncTracker;
     pathRadio.onchange = syncTracker;
+    githubRadio.onchange = syncTracker;
 
     // Prefill: editing a workspace's name must not silently wipe its tracker
-    // configuration.
-    // Narrowed on `type` rather than reaching straight for `root`: since a
-    // tracker config can also name a GitHub source, only a file-backed one has a
-    // root for these radios to prefill from.
-    const initialProvider = initial?.tracker?.providers[0];
-    const initialRoot = initialProvider?.type === "fs" ? initialProvider.root : null;
-    if (initialRoot) {
+    // configuration — which is exactly what keying this on the presence of a
+    // `root` used to do to the two variants that have none. The switch is on the
+    // provider *variant*, and its last arm is the one that matters: a source this
+    // build cannot name is left unselected and carried through by `submit`,
+    // because reconstructing it would mean guessing what a newer build meant.
+    const initialProvider = initial?.tracker?.providers[0] ?? null;
+    const initialRoot = fsRootOf(initialProvider);
+    if (initialProvider === null) {
+      projectRadio.checked = true;              // a new or tracker-less workspace
+    } else if (initialProvider.type === "github") {
+      onInput.checked = true;
+      githubRadio.checked = true;
+    } else if (initialRoot) {
       onInput.checked = true;
       if (initialRoot.kind === "path") { pathRadio.checked = true; trackerPath.value = initialRoot.path; }
       else projectRadio.checked = true;
     } else {
-      projectRadio.checked = true;
+      // Present, configured, and unreadable to this build. No radio can say so.
+      onInput.checked = true;
+      unknownNote.classList.remove("tk-hidden");
     }
     syncTracker();
 
@@ -339,10 +366,19 @@ export function workspaceForm(
       labeled("Почта в коммитах", gitEmail),
       labeled("SSH-ключ", sshKey),
       ghHint,
-      onRow, rootRow, trackerPathRow, trackerPreview, error, row);
+      onRow, rootRow, unknownNote, trackerPathRow, trackerPreview, error, row);
 
     const close = (v: WorkspaceFormResult | null) => { closeDialog(); resolve(v); };
-    const submit = () => {
+    // `submit` awaits a confirmation now, and both OK and Enter reach it. Without
+    // this the second of two quick clicks would raise a second confirmation over
+    // the first, for one form.
+    let submitting = false;
+    const submit = async () => {
+      if (submitting) return;
+      submitting = true;
+      try { await run(); } finally { submitting = false; }
+    };
+    const run = async () => {
       const n = name.value.trim(); const p = path.value.trim();
       if (!n) return showError(error, "Enter a workspace name.");
       if (!p) return showError(error, "Choose a project folder.");
@@ -361,18 +397,66 @@ export function workspaceForm(
         : null;
       let tracker: TrackerConfig | null = null;
       if (onInput.checked) {
-        if (pathRadio.checked) {
+        if (githubRadio.checked) {
+          // Asked before the save, and only when a folder is being left behind:
+          // afterwards the deck no longer knows the old root, and renaming the
+          // workspace in the same save loses the pointer to it as well — the old
+          // folder is named after the slug of the old name — so this sentence is
+          // then the only thing that says where the cards are.
+          if (initialRoot !== null) {
+            const ok = await confirmModal(await abandonFolderWarning());
+            if (!ok) return;   // the form stays open, the radio stays where it is
+          }
+          tracker = { providers: [{ type: "github" }] };
+        } else if (pathRadio.checked) {
           const tp = trackerPath.value.trim();
           // An empty path is not "off", it is a typo: keep the form open.
           if (!tp) { trackerPath.focus(); return showError(error, "Enter the tracker folder."); }
           tracker = { providers: [{ type: "fs", root: { kind: "path", path: tp } }] };
-        } else {
+        } else if (projectRadio.checked) {
           tracker = { providers: [{ type: "fs", root: { kind: "project" } }] };
+        } else {
+          // No radio is checked and the tracker is on: the only way to reach this
+          // is the source this build cannot name, left exactly as it was found.
+          // Written before the `else` arms above were made explicit, a stray
+          // `else` here would have replaced it with a project folder.
+          tracker = initial?.tracker ?? null;
         }
       }
       close({ name: n, path: p, color, github, tracker });
     };
-    ok.onclick = submit;
+
+    /** The sentence for leaving a folder behind. Every clause is load-bearing: how
+     *  much is there, where it is, that nothing is deleted, that nothing is copied
+     *  to GitHub, and that the switch is reversible.
+     *
+     *  Both facts are best-effort. The count needs a directory read and the path
+     *  needs the preview's answer; neither may block a save, so each has a wording
+     *  that is true when it is missing — "any cards there", "its previous folder". */
+    async function abandonFolderWarning(): Promise<string> {
+      const id = initial?.id;
+      const n = id ? await trackerOpenCount(id).catch(() => null) : null;
+      const what = n === null ? "any cards there" : `${n} open card${n === 1 ? "" : "s"}`;
+      // Resolved from `initial` every time rather than read off the preview the
+      // form is already showing. The preview follows the *editable* name and path
+      // fields, so on a form where either was changed before the switch it names
+      // where the cards *would have* gone — not where they are. The old name and
+      // the old path are the only two inputs that answer this question.
+      let where: string | null = null;
+      if (initialRoot?.kind === "path" && initial) {
+        where = await trackerRootPreview(initial.name, initialRoot.path)
+          .then((r) => r.root).catch(() => null);
+      } else if (initialRoot?.kind === "project" && initial) {
+        // The same location the radio above names, and the workspace's own folder
+        // is a fact this form already has.
+        where = `${initial.path} (.cowork/tasks)`;
+      }
+      return `This workspace has ${what} in ${where ?? "its previous folder"}. Switching to GitHub `
+        + "issues leaves every one of them on disk, untouched — this board will stop showing them, "
+        + "and nothing will copy them to GitHub. Switching back later brings them back.";
+    }
+
+    ok.onclick = () => void submit();
     cancel.onclick = () => close(null);
     name.focus();
   });
@@ -641,7 +725,14 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
 
 /** Quick capture of a card. The title is required: a nameless card is useless
  *  in a backlog, so an empty input does not close the dialog. */
-export function taskForm(cfg: BoardConfig): Promise<TaskDraft | null> {
+export function taskForm(
+  cfg: BoardConfig,
+  /** Whether to offer the kind row. False for a synthesized board — one synthetic
+   *  kind is not a choice — and the draft then carries that kind unchanged, which
+   *  the GitHub provider ignores anyway. Default true: the file board's own
+   *  callers and tests predate the flag. */
+  showKind = true,
+): Promise<TaskDraft | null> {
   return new Promise((resolve) => {
     const { box, close: closeDialog } = openDialog({
       onCancel: () => close(null),
@@ -695,7 +786,10 @@ export function taskForm(cfg: BoardConfig): Promise<TaskDraft | null> {
     const error = document.createElement("div");
     error.className = "form-error"; error.style.display = "none";
     const { row, ok, cancel } = actions();
-    box.append(title, labeled("Title", titleInput), kindRow,
+    // The row is withheld, not emptied: `kind` still carries `cfg.kinds[0]`, which
+    // is the synthetic kind on a board that has only one, and the GitHub provider
+    // ignores it. A kind row with one button would be a choice that is not one.
+    box.append(title, labeled("Title", titleInput), ...(showKind ? [kindRow] : []),
       labeled("Description", bodyInput), error, row);
 
     const close = (v: TaskDraft | null) => { closeDialog(); resolve(v); };

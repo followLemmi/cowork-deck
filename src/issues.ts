@@ -1,4 +1,6 @@
-import type { BoardConfig, StepId, TrackerConfig } from "./ipc";
+import type {
+  BoardConfig, StepId, TrackerConfig, TrackerProviderConfig, TrackerRoot,
+} from "./ipc";
 import { isTerminal } from "./board-config";
 import type { GhUnavailable } from "./pr-view";
 
@@ -135,4 +137,20 @@ export function repoFromIssueUrl(url: string): string {
  *  answer, since that path polls slowly and asks for no token. */
 export function sourceOf(tracker: TrackerConfig | null | undefined): TaskSource {
   return tracker?.providers[0]?.type === "github" ? "github" : "fs";
+}
+
+/** The root of a file-backed provider, or `null` for anything else.
+ *
+ *  A function rather than a `.type === "fs" ? p.root : null` at each call site,
+ *  because `TrackerProviderConfig` has an open tail: `type === "fs"` does not prove
+ *  there is a `root`, and a record from a newer build — or a half-written one — can
+ *  carry the one without the other. The shape is checked rather than asserted, so
+ *  `{ type: "fs", root: { kind: "elsewhere" } }` reads as "no root this build
+ *  understands" instead of becoming a folder nobody named. */
+export function fsRootOf(p: TrackerProviderConfig | null | undefined): TrackerRoot | null {
+  if (!p || p.type !== "fs") return null;
+  const root = (p as { root?: TrackerRoot }).root;
+  if (!root) return null;
+  if (root.kind === "project") return root;
+  return root.kind === "path" && typeof root.path === "string" ? root : null;
 }

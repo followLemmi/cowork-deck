@@ -233,7 +233,8 @@ async function captureTask() {
     await alertModal("No task tracker is configured for this workspace. Set one up in its settings (✎).");
     return;
   }
-  const draft = await taskForm(caps.board);
+  // No kind row on a synthesized board: one synthetic kind is not a choice.
+  const draft = await taskForm(caps.board, caps.boardEditable);
   if (!draft) return;
   try {
     await createTask(ws.id, draft);
@@ -480,7 +481,9 @@ async function openCard(t: Task) {
   const caps = await taskCapabilities(ws.id).catch(() => null);
   if (!caps) return;
   const canWrite = !t.damaged && !t.conflict;
-  const edited = await openCardModal(t, caps.board, canWrite);
+  // `boardEditable` is what says whether this board has kinds worth choosing
+  // between — the same flag the ⚙ button reads.
+  const edited = await openCardModal(t, caps.board, canWrite, caps.boardEditable);
   if (!edited) return;
   const patch = computePatch(t, edited);
   if (Object.keys(patch).length === 0) return;

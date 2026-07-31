@@ -118,7 +118,15 @@ function brokenMessage(task: Task, canWrite: boolean): string {
  *  edited values on Save or `null` on Cancel/Escape. `canWrite` false — a
  *  damaged or conflicting card — disables every field and drops Save
  *  entirely, rather than offering an edit that cannot be written back. */
-export function openCardModal(task: Task, cfg: BoardConfig, canWrite: boolean): Promise<CardFormValues | null> {
+export function openCardModal(
+  task: Task, cfg: BoardConfig, canWrite: boolean,
+  /** Whether the board has kinds worth choosing between. False for a synthesized
+   *  board — one synthetic kind is not a choice, and an issue's kind is always
+   *  empty — and it is the same `boardEditable` flag the ⚙ button reads, so the
+   *  two cannot disagree about it. Default true: every existing caller is a
+   *  file-backed board. */
+  showKind = true,
+): Promise<CardFormValues | null> {
   return new Promise((resolve) => {
     // Named for a screen reader the way every other dialog in the app is —
     // `forms.ts`'s `taskForm`/`workspaceForm`/`skillForm` all build a
@@ -153,7 +161,12 @@ export function openCardModal(task: Task, cfg: BoardConfig, canWrite: boolean): 
     );
     const selectsRow = document.createElement("div");
     selectsRow.className = "tk-c-selects";
-    selectsRow.append(labeled("Kind", selectWrap(kindSelect)), labeled("Step", selectWrap(stepSelect)));
+    // The select itself is still built and still holds the card's own kind, so a
+    // save from a board without a kind row sends no `kind` at all rather than
+    // blanking it — `computePatch` compares against the original and this is
+    // equal to it by construction. Only the control is withheld.
+    if (showKind) selectsRow.append(labeled("Kind", selectWrap(kindSelect)));
+    selectsRow.append(labeled("Step", selectWrap(stepSelect)));
 
     const bodyInput = document.createElement("textarea");
     bodyInput.className = "modal-input tk-c-body";

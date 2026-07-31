@@ -246,12 +246,25 @@ export interface ProviderCapabilities {
   boardEditable: boolean;
 }
 export type TrackerRoot = { kind: "project" } | { kind: "path"; path: string };
-/** A workspace's task source. One element, never merged: `TrackerConfig.providers`
- *  is a list so a second kind arrives as an added variant, and every reader takes
- *  the first. */
-export type TrackerProviderConfig =
+/** The two sources this build writes. Every *writer* builds one of these, so a
+ *  mistyped `type` is still a compile error where it matters. */
+export type KnownTrackerProviderConfig =
   | { type: "fs"; root: TrackerRoot }
   | { type: "github" };
+/** A workspace's task source, as *read*. One element, never merged:
+ *  `TrackerConfig.providers` is a list so a second kind arrives as an added
+ *  variant, and every reader takes the first.
+ *
+ *  **The open tail is not laziness — it is #117's whole point in the type.** A
+ *  store file written by a newer build can carry a `type` this build has never
+ *  heard of, and Rust's `TrackerProvider::Unknown` keeps such a record rather than
+ *  dropping it. Without the tail that record is representable at runtime and
+ *  unrepresentable here, so every `switch` on `.type` would look exhaustive to
+ *  `tsc` while the unrecognised case fell into whichever arm satisfied the
+ *  compiler. With it, `type === "fs"` no longer proves there is a `root` either —
+ *  which is honest: a damaged record can carry the one without the other, and
+ *  `fsRootOf` is where that is checked once. */
+export type TrackerProviderConfig = KnownTrackerProviderConfig | { type: string };
 export interface TrackerConfig { providers: TrackerProviderConfig[] }
 
 export interface IssueTotals {

@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core");
 
 import { workspaceForm, skillForm, placeholderForm, mergeForm, closeIssueModal } from "../src/forms";
 import { closeConfirmText } from "../src/issues";
+import type { TrackerConfig } from "../src/ipc";
 import { invoke } from "@tauri-apps/api/core";
 
 beforeEach(() => {
@@ -480,6 +481,216 @@ describe("mergeForm", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(await p).toBeNull();
     expect(document.querySelector(".modal-box")).toBeNull();
+  });
+});
+
+describe("workspaceForm — the github source", () => {
+  const ov = () => document.querySelector<HTMLElement>(".modal-overlay")!;
+  const overlays = () => [...document.querySelectorAll<HTMLElement>(".modal-overlay")];
+  /// The confirmation opens *over* the form, so it is the last overlay. Scoped
+  /// rather than taken by index from the front: `ov()` must keep meaning the form.
+  const asked = () => { const all = overlays(); return all[all.length - 1]; };
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+  const fill = () => {
+    ov().querySelector<HTMLInputElement>(".form-name")!.value = "deck";
+    ov().querySelector<HTMLInputElement>(".form-path")!.value = "/p";
+  };
+  const GH: TrackerConfig = { providers: [{ type: "github" }] };
+  const FS_PATH: TrackerConfig = {
+    providers: [{ type: "fs", root: { kind: "path", path: "/v/T" } }],
+  };
+  const editing = (tracker: TrackerConfig | null) =>
+    ({ id: "w1", name: "deck", path: "/p", color: "#61afef", tracker });
+  const radio = (value: string) =>
+    ov().querySelector<HTMLInputElement>(`.tk-f-root[value=${value}]`)!;
+
+  it("offers a third source and saves it as a github provider", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    radio("github").click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)?.tracker).toEqual({ providers: [{ type: "github" }] });
+  });
+
+  /// Prefill, so editing a workspace's name does not silently drop its source.
+  it("preselects github for a workspace already using it", async () => {
+    const p = workspaceForm(editing(GH));
+    expect(ov().querySelector<HTMLInputElement>(".tk-f-on")!.checked).toBe(true);
+    expect(radio("github").checked).toBe(true);
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
+  });
+
+  /// **The defect this task exists to fix.** The prefill used to key on the
+  /// presence of a `root`, which a GitHub provider has none of, so the checkbox
+  /// came up unchecked and `submit` returned `tracker: null` — every edit, name
+  /// and colour included, silently unconfigured the board.
+  it("keeps a source it cannot show a folder for when only the name is edited", async () => {
+    const p = workspaceForm(editing(GH));
+    ov().querySelector<HTMLInputElement>(".form-name")!.value = "renamed";
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res?.name).toBe("renamed");
+    expect(res?.tracker).toEqual({ providers: [{ type: "github" }] });
+  });
+
+  /// #117's whole purpose, one layer up: the store now keeps a source this build
+  /// cannot read, and this form must not be the thing that deletes it. Returned
+  /// as it arrived — including the fields this build knows nothing about — because
+  /// reconstructing it would mean guessing what a newer build meant.
+  it("carries a source this build does not recognise through untouched", async () => {
+    const future = { providers: [{ type: "jira", board: 7 }] } as unknown as TrackerConfig;
+    const p = workspaceForm(editing(future));
+    // There is a tracker, so the checkbox is on…
+    expect(ov().querySelector<HTMLInputElement>(".tk-f-on")!.checked).toBe(true);
+    // …but no radio can represent it, so none is checked and the form says why.
+    expect([...ov().querySelectorAll<HTMLInputElement>(".tk-f-root")].some((r) => r.checked))
+      .toBe(false);
+    expect(ov().querySelector(".tk-f-unknown")).not.toBeNull();
+    ov().querySelector<HTMLInputElement>(".form-name")!.value = "renamed";
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)?.tracker).toEqual(future);
+  });
+
+  /// The path row and its preview belong to the folder choice alone: a GitHub
+  /// tracker has no folder, and a picker for one would be a control that does
+  /// nothing.
+  it("hides the folder picker and the preview when github is chosen", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    radio("path").click();
+    const row = ov().querySelector<HTMLElement>(".tk-f-path")!.closest(".form-pathrow")!;
+    const preview = ov().querySelector<HTMLElement>(".tk-f-preview")!;
+    expect(row.classList.contains("tk-hidden")).toBe(false);
+    radio("github").click();
+    expect(row.classList.contains("tk-hidden")).toBe(true);
+    expect(preview.classList.contains("tk-hidden")).toBe(true);
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
+  });
+
+  /// Raised before the save. Afterwards the deck no longer knows the old root,
+  /// and the sentence could not name it.
+  it("warns with the card count and the full old path before switching away from a folder", async () => {
+    vi.mocked(invoke).mockImplementation(((cmd: string) =>
+      cmd === "tracker_open_count"
+        ? Promise.resolve(3)
+        : Promise.resolve({ root: "/v/T/deck", creating: [], baseMissing: false })) as never);
+    const p = workspaceForm(editing(FS_PATH));
+    await settle();               // the preview resolves the *old* root
+    radio("github").click();      // which must not clear what it resolved
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    await settle();
+    const text = asked().querySelector(".modal-title")!.textContent!;
+    expect(text).toContain("3 open cards");
+    expect(text).toContain("/v/T/deck");
+    // The two halves that make it a decision rather than a scare: nothing is
+    // deleted, and nothing is copied to GitHub either.
+    expect(text).toContain("untouched");
+    expect(text).toContain("nothing will copy");
+    asked().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)?.tracker).toEqual({ providers: [{ type: "github" }] });
+  });
+
+  /// The path in the sentence is the *old* root, resolved from the workspace as
+  /// stored. The preview on screen follows the editable name and path fields, so on
+  /// a form where either was touched before the switch it names where the cards
+  /// would have gone — and the warning would send the person to a folder that has
+  /// none of them.
+  it("names the folder the cards are in, not the one the form was last previewing", async () => {
+    vi.mocked(invoke).mockImplementation(((cmd: string, args: { pickedPath?: string }) => {
+      if (cmd === "tracker_open_count") return Promise.resolve(2);
+      return Promise.resolve({
+        root: `${args.pickedPath}/deck`, creating: [], baseMissing: false,
+      });
+    }) as never);
+    const p = workspaceForm(editing(FS_PATH));
+    await settle();
+    // The person retargets the folder and then changes their mind about the whole
+    // source — the preview has resolved /elsewhere by now.
+    const tp = ov().querySelector<HTMLInputElement>(".tk-f-path")!;
+    tp.value = "/elsewhere";
+    tp.dispatchEvent(new Event("input"));
+    await settle();
+    expect(ov().querySelector(".tk-f-preview-path")!.textContent).toBe("/elsewhere/deck");
+    radio("github").click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    await settle();
+    const text = asked().querySelector(".modal-title")!.textContent!;
+    expect(text).toContain("/v/T/deck");
+    expect(text).not.toContain("/elsewhere");
+    asked().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await settle();
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
+  });
+
+  /// "any cards there" rather than a number: the count needs a directory read,
+  /// and a read that fails must not block the save. The same is true of the path.
+  it("says 'any cards there' and names no path when neither can be read", async () => {
+    vi.mocked(invoke).mockImplementation((() => Promise.reject(new Error("nope"))) as never);
+    const p = workspaceForm(editing(FS_PATH));
+    await settle();
+    radio("github").click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    await settle();
+    const text = asked().querySelector(".modal-title")!.textContent!;
+    expect(text).toContain("any cards there");
+    expect(text).toContain("its previous folder");
+    asked().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)?.tracker).toEqual({ providers: [{ type: "github" }] });
+  });
+
+  /// Switching the other way needs no warning: there is nothing on GitHub that a
+  /// folder-backed board could abandon.
+  it("does not warn when switching from github to a folder", async () => {
+    vi.mocked(invoke).mockImplementation((() =>
+      Promise.resolve({ root: "/p/.cowork/tasks", creating: [], baseMissing: false })) as never);
+    const p = workspaceForm(editing(GH));
+    radio("project").click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    await settle();
+    expect(overlays().length).toBe(0);        // nothing was asked, the form closed
+    expect(invoke).not.toHaveBeenCalledWith("tracker_open_count", expect.anything());
+    expect((await p)?.tracker).toEqual({ providers: [{ type: "fs", root: { kind: "project" } }] });
+  });
+
+  /// And a new workspace has no folder to abandon either, so it is not asked.
+  it("asks nothing when there was no folder in the first place", async () => {
+    const p = workspaceForm();
+    fill();
+    ov().querySelector<HTMLInputElement>(".tk-f-on")!.click();
+    radio("github").click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    await settle();
+    expect(overlays().length).toBe(0);
+    expect(invoke).not.toHaveBeenCalledWith("tracker_open_count", expect.anything());
+    await p;
+  });
+
+  /// Cancelling the confirmation leaves the form open with the source still
+  /// selected, so the person can change their mind about the radio rather than
+  /// starting over.
+  it("keeps the form open when the confirmation is declined", async () => {
+    vi.mocked(invoke).mockImplementation(((cmd: string) =>
+      cmd === "tracker_open_count"
+        ? Promise.resolve(1)
+        : Promise.resolve({ root: "/v/T/deck", creating: [], baseMissing: false })) as never);
+    const p = workspaceForm(editing(FS_PATH));
+    await settle();
+    radio("github").click();
+    ov().querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    await settle();
+    // One card, not "1 open cards".
+    expect(asked().querySelector(".modal-title")!.textContent).toContain("1 open card in");
+    asked().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await settle();
+    expect(overlays().length).toBe(1);        // the form is still there…
+    expect(radio("github").checked).toBe(true);  // …with the choice still made
+    ov().querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
   });
 });
 
