@@ -69,12 +69,22 @@ pub fn build_claude_args(
 /// the exception: it is pushed unconditionally, same as `COWORK_SESSION`,
 /// because the hooks that key off it need to know a card is linked even when
 /// the workspace's tracker is unreachable.
+///
+/// The GitHub half is two variables and no folder. `COWORK_ISSUE_REPO` exists
+/// for one reason: without it `guard`'s no-card branch goes silent, and that
+/// branch is the only thing telling a *plainly started* session that this
+/// workspace has a tracker at all — the launch prompt is built on the launch
+/// path alone. Losing it would quietly kill the "found a side problem, file a
+/// ticket" convention in every GitHub workspace. `COWORK_ISSUE_NUMBER` is the
+/// analogue of `COWORK_TASK_ID` and is set only on the launch-from-an-issue path.
 pub fn session_env(
     root: Option<&std::path::Path>,
     project: &str,
     task_bin: &str,
     session: &str,
     task_id: Option<&str>,
+    issue_repo: Option<&str>,
+    issue_number: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut env = vec![("COWORK_SESSION".to_string(), session.to_string())];
     if let Some(root) = root {
@@ -86,6 +96,12 @@ pub fn session_env(
     // a restored session that lost it would silently stop being reminded.
     if let Some(id) = task_id {
         env.push(("COWORK_TASK_ID".to_string(), id.to_string()));
+    }
+    if let Some(repo) = issue_repo {
+        env.push(("COWORK_ISSUE_REPO".to_string(), repo.to_string()));
+    }
+    if let Some(n) = issue_number {
+        env.push(("COWORK_ISSUE_NUMBER".to_string(), n.to_string()));
     }
     env
 }
@@ -786,26 +802,36 @@ pub fn start_session(
         None => None,
     };
 
-    // Tracker env, resolved from the workspace's config. A missing or
-    // unconfigured workspace simply yields no tracker vars.
-    let (root, project) = match &ws {
-        Some(ws) => {
-            let resolved = crate::tasks_cmd::resolve_root(ws);
-            if let Some((root, creation)) = &resolved {
-                // A project-kind root may not exist yet on a freshly
-                // configured workspace — create it now so the CLI the
-                // session is about to get has somewhere to write.
-                // Best-effort: an I/O failure surfaces the usual way
-                // the first time `cowork_task` touches the directory.
-                let _ = crate::tasks_cmd::ensure_root_if_ours(root, creation);
+    // Tracker environment, resolved from the workspace's configuration. Three
+    // outcomes: a folder, a repository, or nothing at all.
+    let (root, project, issue_repo) = match &ws {
+        Some(ws) => match crate::tasks_cmd::tracker_kind(ws) {
+            Some(crate::tasks_cmd::TrackerKind::Fs { root, creation }) => {
+                // A project-kind root may not exist yet on a freshly configured
+                // workspace — create it now so the CLI the session is about to
+                // get has somewhere to write. Best-effort, as before.
+                let _ = crate::tasks_cmd::ensure_root_if_ours(&root, &creation);
+                (Some(root), ws.name.clone(), None)
             }
-            let root = resolved.map(|(r, _)| r);
-            (root, ws.name.clone())
-        }
-        None => (None, String::new()),
+            // The repository is resolved the same way `pr_list` resolves it, and
+            // cached: a session launch must not spend a point rediscovering what
+            // the board already asked. A failure here is not fatal — the session
+            // starts without the tracker line rather than not at all.
+            Some(crate::tasks_cmd::TrackerKind::GitHub) => (
+                None,
+                ws.name.clone(),
+                repo_facts_for(&state, &ws.id).ok().map(|f| f.repo),
+            ),
+            None => (None, ws.name.clone(), None),
+        },
+        None => (None, String::new(), None),
     };
     let mut env = session_env(
         root.as_deref(), &project, &state.task_bin_path, &session, task_id.as_deref(),
+        issue_repo.as_deref(),
+        // For a GitHub workspace a card id *is* the issue number, so no new
+        // parameter is threaded through this already 10-argument command.
+        issue_repo.as_ref().and(task_id.as_deref()),
     );
 
     // Окружение GitHub-аккаунта кладётся поверх трекерного: наборы ключей не
@@ -992,7 +1018,7 @@ mod tests {
     #[test]
     fn session_env_carries_tracker_paths_when_configured() {
         let root = std::path::PathBuf::from("/home/u/vault/Tasks");
-        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", None);
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", None, None, None);
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("COWORK_TASKS_DIR"), Some("/home/u/vault/Tasks"));
         assert_eq!(get("COWORK_PROJECT"), Some("cowork-deck"));
@@ -1003,7 +1029,7 @@ mod tests {
     #[test]
     fn session_env_omits_tracker_vars_when_not_configured() {
         // Otherwise the agent would see an empty path and start guessing.
-        let env = session_env(None, "cowork-deck", "/opt/cowork_task", "sess-9", None);
+        let env = session_env(None, "cowork-deck", "/opt/cowork_task", "sess-9", None, None, None);
         assert!(env.iter().all(|(n, _)| n != "COWORK_TASKS_DIR"));
         assert!(env.iter().all(|(n, _)| n != "COWORK_TASK_BIN"));
     }
@@ -1011,7 +1037,9 @@ mod tests {
     #[test]
     fn a_session_launched_from_a_card_carries_its_id() {
         let root = std::path::PathBuf::from("/home/u/vault/Tasks");
-        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", Some("01K1CARD"));
+        let env = session_env(
+            Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", Some("01K1CARD"), None, None,
+        );
         let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!(get("COWORK_TASK_ID"), Some("01K1CARD"));
     }
@@ -1020,8 +1048,80 @@ mod tests {
     fn a_session_launched_without_a_card_carries_no_card_id() {
         // The guard reads its absence as "nothing to demand" and allows.
         let root = std::path::PathBuf::from("/home/u/vault/Tasks");
-        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", None);
+        let env = session_env(Some(&root), "cowork-deck", "/opt/cowork_task", "sess-9", None, None, None);
         assert!(env.iter().all(|(n, _)| n != "COWORK_TASK_ID"));
+    }
+
+    fn value<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    /// The leak test, written as an assertion about what is *missing*, because
+    /// that is the failure mode. With no `COWORK_TASK_BIN` the agent has no path
+    /// to the sidecar; with no `COWORK_TASKS_DIR` every subcommand fails loudly
+    /// at `run()`'s env check for anyone who finds it anyway.
+    #[test]
+    fn a_github_session_is_told_nothing_about_files_or_the_sidecar() {
+        let env = session_env(
+            None, "cowork-deck", "/opt/cowork_task", "sess-1", None,
+            Some("followLemmi/cowork-deck"), None,
+        );
+        for k in ["COWORK_TASKS_DIR", "COWORK_PROJECT", "COWORK_TASK_BIN"] {
+            assert!(value(&env, k).is_none(), "{k} must not be set for a github workspace");
+        }
+        assert_eq!(value(&env, "COWORK_ISSUE_REPO"), Some("followLemmi/cowork-deck"));
+        assert!(value(&env, "COWORK_ISSUE_NUMBER").is_none(), "no issue on a plain launch");
+        // And no value anywhere names a folder of ours.
+        assert!(
+            !env.iter().any(|(_, v)| v.contains("cowork-deck-tasks") || v.contains("board.json")),
+            "{env:?}",
+        );
+    }
+
+    /// The analogue of `COWORK_TASK_ID`, set only on the launch-from-an-issue
+    /// path — which is the same path, since for a GitHub workspace a card id *is*
+    /// the issue number.
+    #[test]
+    fn an_issue_launch_names_the_issue() {
+        let env = session_env(
+            None, "cowork-deck", "/opt/cowork_task", "sess-1", Some("42"),
+            Some("followLemmi/cowork-deck"), Some("42"),
+        );
+        assert_eq!(value(&env, "COWORK_ISSUE_NUMBER"), Some("42"));
+        // Still pushed, for the reason its own comment gives: the hooks that key
+        // off it need to know a card is linked. Inert here — `guard` dispatches
+        // on COWORK_ISSUE_REPO before it ever reads this — and consistent, which
+        // is what the assertion pins.
+        assert_eq!(value(&env, "COWORK_TASK_ID"), Some("42"));
+    }
+
+    /// The file workspace's environment is unchanged, in both directions: this
+    /// is the test that would fail if the new branch were reached by mistake.
+    #[test]
+    fn a_file_session_is_told_nothing_about_github() {
+        let env = session_env(
+            Some(std::path::Path::new("/home/u/vault/cowork-deck-tasks/deck")),
+            "deck", "/opt/cowork_task", "sess-1", Some("01ABC"), None, None,
+        );
+        assert_eq!(value(&env, "COWORK_TASKS_DIR"), Some("/home/u/vault/cowork-deck-tasks/deck"));
+        assert_eq!(value(&env, "COWORK_PROJECT"), Some("deck"));
+        assert_eq!(value(&env, "COWORK_TASK_BIN"), Some("/opt/cowork_task"));
+        for k in ["COWORK_ISSUE_REPO", "COWORK_ISSUE_NUMBER"] {
+            assert!(value(&env, k).is_none(), "{k} must not be set for a file workspace");
+        }
+    }
+
+    /// Neither workspace kind gets both. A contradictory environment is the state
+    /// that should never occur, and the two branches are exclusive by
+    /// construction — `root` is `None` exactly when the tracker is GitHub.
+    #[test]
+    fn the_two_tracker_environments_are_never_both_present() {
+        let file = session_env(
+            Some(std::path::Path::new("/r")), "deck", "/b", "s", None, None, None,
+        );
+        let gh = session_env(None, "deck", "/b", "s", None, Some("o/n"), None);
+        assert!(value(&file, "COWORK_ISSUE_REPO").is_none());
+        assert!(value(&gh, "COWORK_TASKS_DIR").is_none());
     }
 
     #[test]
