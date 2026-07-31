@@ -65,6 +65,34 @@ export function taskPrompt(task: Task, cfg: BoardConfig): string {
   return lines.join("\n");
 }
 
+/** Initial prompt for a session launched from a GitHub issue.
+ *
+ *  Replaces `taskPrompt` wholesale on this path rather than branching inside it:
+ *  every one of `taskPrompt`'s three `"$COWORK_TASK_BIN"` references and its
+ *  `Card file:` line is wrong here, and a shared builder with two modes is a
+ *  builder one edit away from leaking either model into the other. The two
+ *  non-leak invariants are tested in both directions.
+ *
+ *  No steps line and no status command: the board has two steps, both named by
+ *  the close instruction, and nothing between them to move to. */
+export function issuePrompt(task: Task, repo: string): string {
+  const lines = [
+    `GitHub issue #${task.id} in ${repo}.`,
+    "",
+    `Title: ${task.title}`,
+    task.path,
+  ];
+  const body = task.body.trim();
+  if (body) lines.push("", body);
+  lines.push(
+    "",
+    `When the work is finished, close the issue: gh issue close ${task.id}`,
+    "Do not close it if the work is incomplete — a closed issue is visible to",
+    "everyone in the repository.",
+  );
+  return lines.join("\n");
+}
+
 export interface BoardColumn {
   step: BoardStep;
   tasks: Task[];

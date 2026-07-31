@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  taskPrompt, derivedStatus, liveSessionForTask, boardColumns, isStale, kindLabel,
+  taskPrompt, issuePrompt, derivedStatus, liveSessionForTask, boardColumns, isStale, kindLabel,
   type TaskSessionLink,
 } from "../src/tasks";
 import type { BoardConfig, Task } from "../src/ipc";
@@ -66,6 +66,101 @@ describe("taskPrompt", () => {
     expect(p).not.toContain("steps are");
     expect(p).not.toContain("steps lists it");
     expect(p).toContain(`"$COWORK_TASK_BIN" done 01AAA`);
+  });
+});
+
+describe("issuePrompt", () => {
+  const issue = (over: Partial<Task> = {}): Task => ({
+    id: "42", title: "Sidebar badge sticks after a rename", kind: "", status: "open",
+    project: "cowork-deck", created: "2026-07-01T10:00:00Z", resolved: null, origin: "human",
+    session: null, body: "It sticks.", path: "https://github.com/followLemmi/cowork-deck/issues/42",
+    damaged: null, conflict: false, labels: [], ...over,
+  });
+
+  it("names the issue, the repository, the URL and how to close it", () => {
+    const p = issuePrompt(issue(), "followLemmi/cowork-deck");
+    expect(p).toContain("GitHub issue #42 in followLemmi/cowork-deck");
+    expect(p).toContain("Title: Sidebar badge sticks after a rename");
+    expect(p).toContain("https://github.com/followLemmi/cowork-deck/issues/42");
+    expect(p).toContain("It sticks.");
+    expect(p).toContain("gh issue close 42");
+    // The warning is the point of the sentence, not decoration.
+    expect(p).toContain("visible to");
+  });
+
+  // No steps line and no status command: the board has two steps, both are
+  // named by the close instruction, and there is nothing between them to move
+  // to.
+  it("has no steps line, because there is nothing between open and closed", () => {
+    const p = issuePrompt(issue(), "o/n");
+    expect(p).not.toContain("steps");
+    expect(p).not.toContain("status");
+  });
+
+  // `\s*` between the newlines, not nothing: a builder that pushed the body
+  // without trimming would leave a stanza of spaces, which is the blank stanza
+  // this test is named for and which /\n\n\n/ alone would not catch.
+  it("omits the body when there is none rather than leaving a blank stanza", () => {
+    const p = issuePrompt(issue({ body: "   " }), "o/n");
+    expect(p).not.toMatch(/\n\s*\n\s*\n/);
+  });
+
+  // The non-leak invariant, stated so it can be tested. A session in a GitHub
+  // workspace is never told about the sidecar, a cards directory or board.json.
+  it("names no environment variable, no board.json and no filesystem path", () => {
+    const p = issuePrompt(issue(), "followLemmi/cowork-deck");
+    expect(p).not.toContain("COWORK_");
+    expect(p).not.toContain("board.json");
+    expect(p).not.toContain("Card file:");
+    // The only slash allowed is the one inside owner/name and the URL's own.
+    for (const line of p.split("\n")) {
+      if (line.includes("/")) {
+        expect(line.includes("followLemmi/") || line.startsWith("https://")).toBe(true);
+      }
+    }
+  });
+
+  // The spec's Testing section asks for this one under "TS, pure", and it is the
+  // only place the Rust and TypeScript halves of decision 3 meet: two synthesized
+  // steps, one terminal, against `boardColumns`' own `doneLimit = 20`
+  // (`tasks.ts:93`). Cheap, and it fails loudly if either half drifts.
+  it("columns a synthesized two-step board and caps the closed one at twenty", () => {
+    const cfg: BoardConfig = {
+      v: 1,
+      steps: [{ id: "open", label: "Open" }, { id: "closed", label: "Closed", terminal: true }],
+      kinds: [{ id: "issue", label: "Issue" }],
+    };
+    const issues = [
+      ...Array.from({ length: 3 }, (_, i) =>
+        issue({ id: `o${i}`, status: "open", created: `2026-07-0${i + 1}T00:00:00Z` })),
+      ...Array.from({ length: 25 }, (_, i) =>
+        issue({ id: `c${i}`, status: "closed", resolved: `2026-06-${10 + i}T00:00:00Z` })),
+    ];
+    const cols = boardColumns(issues, "cowork-deck", cfg);
+    expect(cols.columns.map((c) => c.step.id)).toEqual(["open", "closed"]);
+    expect(cols.columns[0].tasks).toHaveLength(3);
+    // The terminal column caps itself the way it always has; the open one never
+    // hides anything, because a non-terminal column hiding a card hides work.
+    expect(cols.columns[1].tasks).toHaveLength(20);
+    expect(cols.columns[1].hidden).toBe(5);
+    expect(cols.columns[0].hidden).toBe(0);
+    // Decision 4 sets every issue's `project` to the workspace name, so nothing
+    // is ever foreign and no step is ever unknown on this board.
+    expect(cols.foreign).toEqual([]);
+    expect(cols.unknown).toEqual([]);
+  });
+
+  // The other direction, and it matters as much: a shared prompt builder that
+  // grew a `gh` line would leak the network model into a folder-backed
+  // workspace, where there is no repository and no token.
+  it("taskPrompt names no gh command", () => {
+    const p = taskPrompt(
+      { ...issue({ id: "01ABC", path: "/r/01ABC-card.md", kind: "bug" }) },
+      { v: 1, steps: [{ id: "open", label: "open" }, { id: "done", label: "done", terminal: true }],
+        kinds: [{ id: "bug", label: "bug" }] },
+    );
+    expect(p).not.toContain("gh ");
+    expect(p).not.toContain("github.com");
   });
 });
 
