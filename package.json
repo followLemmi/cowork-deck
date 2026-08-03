@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "contrast": "node scripts/contrast.mjs",
     "tauri": "tauri",
     "stage:reporter": "bash scripts/stage-reporter.sh",
     "stage:task": "bash scripts/stage-sidecar.sh cowork_task"
