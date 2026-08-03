@@ -651,7 +651,6 @@ export class Deck {
       this.zoomTo(session);
     }
     for (const t of this.tiles.values()) t.el.classList.toggle("is-active", t === tile);
-    this.deckEl.classList.toggle("has-active", this.tiles.size > 0);
     tile.el.scrollIntoView?.({ block: "nearest" });
     tile.panel.focus();
     this.renderList();
@@ -802,7 +801,6 @@ export class Deck {
     this.applyLayout();
     this.usage.delete(session);
     if (this.tiles.size === 0) this.stopPolling();
-    if (this.tiles.size === 0) this.deckEl.classList.remove("has-active");
     this.renderList();
     void this.persistLayout();
   }

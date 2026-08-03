@@ -27,7 +27,13 @@ export class TerminalPanel {
         cursorAccent: "#1d1f21", selectionBackground: "rgba(97,175,239,0.28)",
         black: "#1d1f21", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
         blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#dcdfe4",
-        brightBlack: "#5c6370", brightRed: "#e06c75", brightGreen: "#98c379",
+        // #5c6370 measured 2.73:1 on this background — and this is the colour
+        // Claude Code uses for most of its secondary output: hints, timestamps,
+        // "esc to interrupt", diff context. It is the worst-placed failure in the
+        // app, on the surface the person actually reads, and already at 14px,
+        // which is the proof that size is not the lever. #8a919e is 5.09.
+        // Measured by `npm run contrast`, which reads this line.
+        brightBlack: "#8a919e", brightRed: "#e06c75", brightGreen: "#98c379",
         brightYellow: "#e5c07b", brightBlue: "#61afef", brightMagenta: "#c678dd",
         brightCyan: "#56b6c2", brightWhite: "#ffffff",
       },

@@ -34,6 +34,34 @@ function readTokens(css) {
   return tokens;
 }
 
+/** The declaration block for one *exact* selector — `.btn--icon` must not match
+ *  `.btn--icon:hover`. Returns null when the rule is absent. */
+function ruleBody(css, selector) {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = css.match(new RegExp(`(?:^|[\\n};])\\s*${esc}\\s*\\{([^}]*)\\}`));
+  return m ? m[1] : null;
+}
+
+/** Read a property out of a rule, so this file measures the stylesheet's values
+ *  rather than a copy of them that can quietly fall behind. Throws when the rule
+ *  or the property has gone — a case pointing at something that no longer exists
+ *  must fail loudly, not report a stale number. */
+function decl(css, selector, property) {
+  const body = ruleBody(css, selector);
+  if (body === null) throw new Error(`no rule for \`${selector}\` — has it been renamed or deleted?`);
+  const m = body.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`));
+  if (!m) throw new Error(`\`${selector}\` no longer declares \`${property}\``);
+  return m[1].trim();
+}
+
+/** Assert a rule is gone, for the two this phase deleted. A rule that comes back
+ *  brings its failure back with it, and silence is how that happens. */
+function assertNoRule(css, selector, why) {
+  if (ruleBody(css, selector) !== null) {
+    throw new Error(`\`${selector}\` is back in src/styles.css — ${why}`);
+  }
+}
+
 /** `#rgb`, `#rrggbb`, `rgba(r, g, b, a)`, or a `--token` naming one of those. */
 function parseColor(value, tokens) {
   let v = String(value).trim();
@@ -161,85 +189,121 @@ const EXEMPT = 0;   // measured and reported, but disabled controls are exempt
  *  board filter, which is where a user is most likely to be looking. */
 const ACTIVE_ROW = ["--bg-panel", "--accent-weak"];
 
+// Values read out of the rules they belong to, so this table cannot drift from
+// the stylesheet it describes.
+const ICON_REST = Number(decl(css, ".btn--icon", "opacity"));
+const DISABLED = Number(decl(css, "button:disabled, .sk-run:disabled", "opacity"));
+const GRAY = Number(decl(css, "button:disabled, .sk-run:disabled", "filter").match(/grayscale\(([\d.]+)\)/)[1]);
+const ERROR_FILL = decl(css, ".state-error", "background");
+const ENDED_FILL = decl(css, ".state-ended", "background");
+const IDLE_FILL = decl(css, ".state-idle", "background");
+const WORKING_FILL = decl(css, ".state-working", "background");
+const WAITING_FILL = decl(css, ".state-waitingInput", "background");
+const DONE_FILL = decl(css, ".state-done", "background");
+
+// Two rules this phase deleted, asserted absent rather than measured. Both dimmed
+// content to restate something the layout already said, and both took real
+// contrast to do it — 2.25:1 on a dimmed tile's terminal text, 2.66:1 on a closed
+// row's meta. If either returns, so does its failure.
+assertNoRule(css, "#deck.has-active .tile:not(.is-active)",
+  "it dimmed every non-active tile to 2.25:1 to restate an active border");
+assertNoRule(css, ".tk-row.done", "its opacity took a closed row's meta to 2.66:1");
+assertNoRule(css, ".tk-card.done", "its opacity took a closed card's meta to 2.64:1");
+
 const CASES = [
   {
     what: ".btn--icon at rest",
     where: "every icon control in the app, on a sidebar row",
-    fg: "--fg-muted", backdrop: ["--bg-panel"], opacity: 0.45,
+    fg: "--fg-muted", backdrop: ["--bg-panel"], opacity: ICON_REST,
     threshold: UI, sc: "1.4.11",
   },
   {
-    what: ".tk-row.done meta",
-    where: "a closed row in the issue list",
-    fg: "--fg-subtle", backdrop: ["--bg-panel"], opacity: 0.6,
+    what: "closed row meta",
+    where: "a closed row in the issue list, no longer dimmed",
+    fg: "--fg-subtle", backdrop: ["--bg-panel"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
-    what: ".tk-card.done meta",
-    where: "a closed card on the board",
-    fg: "--fg-subtle", backdrop: ["--bg-app"], group: ["--bg-panel"], opacity: 0.6,
+    what: "closed card meta",
+    where: "a closed card on the board, no longer dimmed",
+    fg: "--fg-subtle", backdrop: ["--bg-app"], group: ["--bg-panel"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "terminal brightBlack",
-    where: "most of Claude Code's secondary output, on the focused tile",
+    where: "most of Claude Code's secondary output — hints, timestamps, diff context",
     fg: termColor("brightBlack"), backdrop: [termColor("background")],
     threshold: TEXT, sc: "1.4.3",
   },
   {
-    what: "terminal brightBlack, dimmed tile",
-    where: "the same text on any tile that is not the active one",
-    fg: termColor("brightBlack"), backdrop: ["--bg-app"], group: [termColor("background")], opacity: 0.82,
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "--fg-subtle badge, dimmed tile",
-    where: "a tile head's badges while another tile is active",
-    fg: "--fg-subtle", backdrop: ["--bg-app"], group: ["--bg-panel"], opacity: 0.82,
+    what: "--fg-subtle badge on a tile head",
+    where: "no longer dimmed on the tiles that are not active",
+    fg: "--fg-subtle", backdrop: ["--bg-panel"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".state-error on panel",
     where: "a session row at rest",
-    fg: "--st-error", backdrop: ["--bg-panel"], group: ["rgba(224, 108, 117, 0.16)"],
+    fg: "--st-error", backdrop: ["--bg-panel"], group: [ERROR_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".state-error on raised",
     where: "a hovered session row",
-    fg: "--st-error", backdrop: ["--bg-raised"], group: ["rgba(224, 108, 117, 0.16)"],
+    fg: "--st-error", backdrop: ["--bg-raised"], group: [ERROR_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".state-error on active row",
-    where: "the selected session row — where the eye already is",
-    fg: "--st-error", backdrop: ACTIVE_ROW, group: ["rgba(224, 108, 117, 0.16)"],
+    where: "the selected session row — where the eye already is, and the worst case",
+    fg: "--st-error", backdrop: ACTIVE_ROW, group: [ERROR_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".state-ended on active row",
     where: "the selected session row",
-    fg: "--st-ended", backdrop: ACTIVE_ROW, group: ["rgba(86, 182, 194, 0.14)"],
+    fg: "--st-ended", backdrop: ACTIVE_ROW, group: [ENDED_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  // The whole chip set against its worst backdrop, not only the two the audit
+  // happened to name. They differ by hue and by alpha, so one passing says
+  // nothing about the others — and `.state-error` was found here, at 3.34.
+  {
+    what: ".state-idle on active row",
+    where: "the most common state label of all",
+    fg: "--fg-muted", backdrop: ACTIVE_ROW, group: [IDLE_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
-    what: ".state-idle on panel",
-    where: "the most common state label of all",
-    fg: "--fg-muted", backdrop: ["--bg-panel"], group: ["rgba(107, 114, 125, 0.14)"],
+    what: ".state-working on active row",
+    where: "a running session, selected",
+    fg: "--st-working", backdrop: ACTIVE_ROW, group: [WORKING_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-waitingInput on active row",
+    where: "the state a person is most likely to be looking for",
+    fg: "--st-waiting", backdrop: ACTIVE_ROW, group: [WAITING_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-done on active row",
+    where: "finished work, selected",
+    fg: "--st-working", backdrop: ACTIVE_ROW, group: [DONE_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "button:disabled",
-    where: "opacity 0.5 and grayscale(0.4) together",
-    fg: "--fg-muted", backdrop: ["--bg-panel"], opacity: 0.5,
-    filter: "grayscale", filterAmount: 0.4,
+    where: "opacity and grayscale together — exempt, raised anyway",
+    fg: "--fg-muted", backdrop: ["--bg-panel"], opacity: DISABLED,
+    filter: "grayscale", filterAmount: GRAY,
     threshold: EXEMPT, sc: "exempt (1.4.3 excludes inactive controls)",
   },
   {
-    what: ".pr-actions button:disabled",
-    where: "opacity 0.5 on the raised pull request row",
-    fg: "--fg-muted", backdrop: ["--bg-raised"], opacity: 0.5,
-    filter: "grayscale", filterAmount: 0.4,
+    what: "button:disabled on raised",
+    where: "the same rule on a pull request row",
+    fg: "--fg-muted", backdrop: ["--bg-raised"], opacity: DISABLED,
+    filter: "grayscale", filterAmount: GRAY,
     threshold: EXEMPT, sc: "exempt",
   },
   // Borders are a real 1.4.11 failure and deliberately not this phase's work:

@@ -33,11 +33,19 @@
   --accent: #61afef;
   --accent-weak: rgba(97, 175, 239, 0.14);
 
-  --st-idle: #6b727d;
   --st-working: #98c379;
   --st-waiting: #e5c07b;
   --st-ended: #56b6c2;
-  --st-error: #e06c75;
+  /* Was #e06c75. Lightened because `.state-error`'s tinted chip failed on all
+     three backgrounds it can sit on — worst 3.34:1 on the *selected* session row,
+     which is where a person is most likely looking. The fill alpha is not the
+     lever it looks like: a translucent fill moves the background towards the text,
+     so lowering it helps and raising it hurts, and even removing the fill entirely
+     left the old token at 4.07 on that row. The token had to move.
+     Only ever a `color`, a `border-color` or a `box-shadow` in this file — never a
+     background under dark text — so lightening it improves every other use too.
+     `.state-error` now measures 5.97 / 5.50 / 4.71 (`npm run contrast`). */
+  --st-error: #e78f96;
 
   --font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "CaskaydiaCove Nerd Font Mono", "Cascadia Code", ui-monospace, monospace;
@@ -172,11 +180,17 @@ html, body, #app { height: 100%; margin: 0; }
 .sk-run:hover { background: var(--accent-weak); border-color: var(--accent); transform: translateY(-1px); }
 .sk-run:active { transform: translateY(0); }
 
-.sk-del, .ws-del { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 6px; opacity: 0; transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+/* `color` and `opacity: 0` are gone from both rules below, and they were dead
+   rather than merely redundant: every one of these four buttons is built by
+   `iconButton` (icons.ts), which composes `btn--icon` — a single-class selector
+   of equal specificity, later in this file, setting `--fg-muted` and an opacity
+   that is not 0. The source read as though these controls were invisible at rest
+   and a different colour than they are. They were neither. */
+.sk-del, .ws-del { background: none; border: none; border-radius: var(--r-sm); cursor: pointer; padding: 0 6px; transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
 .sk-row:hover .sk-del, .ws-row:hover .ws-del { opacity: 1; }
 .sk-del:hover, .ws-del:hover { color: var(--st-error); }
 
-.ws-edit, .sk-edit { background: none; border: none; color: var(--fg-subtle); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; opacity: 0; transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+.ws-edit, .sk-edit { background: none; border: none; border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
 .ws-row:hover .ws-edit, .sk-row:hover .sk-edit { opacity: 1; }
 .ws-edit:hover, .sk-edit:hover { color: var(--accent); }
 
@@ -207,7 +221,13 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .tile-search-btn:hover { color: var(--accent); }
 
 .tile.is-active { border-color: var(--accent); box-shadow: var(--focus-ring), var(--shadow-tile); }
-#deck.has-active .tile:not(.is-active) { opacity: 0.82; transition: opacity var(--dur-2) var(--ease); }
+/* `#deck.has-active .tile:not(.is-active) { opacity: 0.82 }` was here and is gone.
+   It dimmed three terminals out of four to reinforce something `.tile.is-active`
+   already says twice, with a border *and* a shadow — and the cost was paid on the
+   dimmed tiles' content: terminal text fell to 2.25:1 and the tile heads'
+   `--fg-subtle` badges to 3.80:1. Emphasis by taking contrast away from the
+   majority of the screen is the wrong trade when the minority can be marked
+   instead. */
 
 #deck.is-zoomed { grid-template-columns: 1fr; grid-template-rows: 1fr auto; overflow: hidden; }
 #deck.is-zoomed > .tile.zoomed { grid-row: 1; grid-column: 1; min-height: 0; }
@@ -253,8 +273,20 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .form-error { font-size: var(--fs-sm); color: var(--st-error); }
 .palette-item { display: flex; justify-content: space-between; gap: var(--sp-3); align-items: baseline; }
 .palette-key { font-size: var(--fs-xs); color: var(--fg-subtle); white-space: nowrap; }
-.state-ended        { color: var(--st-ended);   background: rgba(86, 182, 194, 0.14); }
-.state-error        { color: var(--st-error);   background: rgba(224, 108, 117, 0.16); border-color: rgba(224, 108, 117, 0.4); }
+/* Both fills came down rather than up. A translucent tint pulls the chip's
+   background towards its own hue — which is also the text's hue — so every step
+   of alpha costs contrast, and the audit's "raise the fill alpha" moved the wrong
+   way. `.state-ended` needed nothing but this. `.state-error` needed the token
+   too; the reason is on `--st-error`.
+   That the five chips in this set do not share one alpha is deliberate: a lighter
+   hue washes the background further per unit of alpha, so the number that clears
+   4.5:1 differs by hue. One uniform alpha would fail for some of them. Each of
+   these is the measured value, worst case being the selected session row, where
+   both now sit at 4.77:1 — `.state-error` was 3.34 there and `.state-ended` 4.27.
+   All five are in `npm run contrast`, because one chip passing says nothing about
+   the next: that is how `.state-error` went unnoticed. */
+.state-ended        { color: var(--st-ended);   background: rgba(86, 182, 194, 0.08); }
+.state-error        { color: var(--st-error);   background: rgba(231, 143, 150, 0.08); border-color: rgba(231, 143, 150, 0.4); }
 
 .state-waitingInput::before { animation: pulse-dot 1.4s var(--ease) infinite; }
 /* transform + opacity only — GPU-composited, no per-frame repaint. Animating
@@ -378,16 +410,22 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .btn-primary:hover { filter: brightness(1.08); }
 .btn-primary:active { filter: brightness(0.92); }
 
-/* One reading of "icon button" instead of four. The key part is opacity .45
+/* One reading of "icon button" instead of four. The key part is opacity .7
    rather than 0: edit and delete stop being invisible until hover while staying
    muted, and stop being a trap for keyboard traversal. The 24×24 box is the
-   WCAG 2.2 minimum target; it used to be about 12×14. */
+   WCAG 2.2 minimum target; it used to be about 12×14.
+   .7 rather than the .45 this shipped with, because .45 composited `--fg-muted`
+   down to 2.67:1 against the panel — under the 3:1 of 1.4.11, on the resting
+   state of every icon control in the app. .7 measures 4.55, clearing even the
+   text threshold while staying visibly quieter than the hover state's 1.
+   `npm run contrast` is where that number comes from; no automated checker
+   reports this row, because none of them composite an ancestor's opacity. */
 .btn--icon {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 24px; min-height: 24px; padding: 0;
   background: none; border: none; border-radius: var(--r-sm);
   color: var(--fg-muted); font-size: var(--fs-base);
-  cursor: pointer; opacity: 0.45;
+  cursor: pointer; opacity: 0.7;
   transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
               background var(--dur-1) var(--ease);
 }
@@ -619,7 +657,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   box-sizing: border-box;
 }
 .tk-card.working { border-color: var(--st-working); }
-.tk-card.done { opacity: 0.6; }
+/* `.tk-card.done { opacity: 0.6 }` was here. It took a closed card's meta line to
+   2.64:1 — and closed-ness is already carried by the column the card is in, whose
+   heading names the step. Same trade as the dimmed tiles above: contrast taken
+   from the content to restate what the structure says. See `.tk-row.done`. */
 .tk-card.damaged { border-color: var(--st-error); }
 .tk-card.tk-dragging { opacity: 0.5; }
 .tk-col-over { outline: 1px dashed var(--accent); outline-offset: var(--sp-1); }
@@ -743,7 +784,18 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .tk-row:first-child { border-top: 0; }
 .tk-row:hover { background: var(--bg-raised); }
-.tk-row.done { opacity: 0.6; }
+/* `.tk-row.done { opacity: 0.6 }` was here, at 2.66:1 on every closed row's meta.
+   Deliberately replaced with nothing, which is a deviation from the plan — it
+   asked for a `"closed"` chip from `chips()` instead, on the grounds that the
+   function already does this for `working`, `damaged` and `stale`.
+   Those three carry information the layout does not: `working` is derived from a
+   live session link, not from the step, so a card in the "in progress" column with
+   nothing running on it is `open` and one in any other column with a session is
+   `working`. `done` is *exactly* the step — `derivedStatus` returns it when the
+   card's own step is terminal — so in the list, where one step group shows at a
+   time under its own selected filter, a "closed" chip would repeat the filter on
+   every row it appears beside. A carrier that says what the heading above it
+   already says is noise, not a second channel. */
 .tk-row.working { box-shadow: inset 2px 0 0 var(--st-working); }
 .tk-row.damaged { box-shadow: inset 2px 0 0 var(--st-error); }
 /* The hover border rule above is for a card, which has one; a row's neighbours

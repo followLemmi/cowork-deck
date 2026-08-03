@@ -92,7 +92,10 @@ describe("Deck.focusTile", () => {
 
     const activeTiles = deckEl.querySelectorAll(".tile.is-active");
     expect(activeTiles.length).toBe(1);
-    expect(deckEl.classList.contains("has-active")).toBe(true);
+    // `has-active` on the deck was asserted here too. It existed only to scope
+    // `opacity: 0.82` onto the tiles that were *not* active, and that rule is
+    // gone — it cost the dimmed tiles' terminal text 2.25:1 to restate a border.
+    // With no CSS reading the class, asserting it would guard nothing.
   });
 });
 
