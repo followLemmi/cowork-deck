@@ -301,8 +301,43 @@ See "The finding that splits this plan". A commit message that says the type rai
 - [x] **Task 11: `title` on `.ws-label`** — one line in `workspaces.ts`. Also on `.sess-group-name`, `.tile-head span:first-child` and `.tk-card-title`, which truncate the same way. (`.tk-card-title` already reaches AT through its `aria-label`; the `title` is for the sighted user.)
 - [x] **Task 12: `#sidebar { width: clamp(248px, 18vw, 340px) }`.** At 1970px that is 340px. Re-measure `.tk-views` before and after — its overflow is the thing this must not leave broken.
       **Re-measured, and the overflow was never as close as the audit said** — see the correction under "`.tk-views` will break navigation" above. The clamp's floor is the old fixed width, so at the narrow end this changes nothing at all, which is also what makes it safe: widening cannot be what overflows a switch that had 25px spare at 248px.
-- [ ] **Task 13: Move the three view tabs out of the sidebar** into a full-width bar above the three screens (`main.ts` currently prepends them into `#sidebar`). Then the sidebar's width is driven only by workspace names, and the tabs get a real size with real padding. Touches `index.html` and `main.ts`, and `tests/view-switch.test.ts` asserts against the switch — read it first.
+- [x] **Task 13: Move the three view tabs out of the sidebar** into a full-width bar above the three screens (`main.ts` currently prepends them into `#sidebar`). Then the sidebar's width is driven only by workspace names, and the tabs get a real size with real padding. Touches `index.html` and `main.ts`, and `tests/view-switch.test.ts` asserts against the switch — read it first.
       This is the structural answer rather than the stylesheet one, and it is separable: Tasks 10–12 stand without it.
+
+> **Executed 2026-08-03, in its own commit.** `#app` becomes the column; a new
+> `#stage` is the row that `#app` used to be; `<nav id="viewbar">` holds the switch.
+> Measured after:
+>
+> | | |
+> |---|---|
+> | `#viewbar` | full window width, 45.3px tall |
+> | `#stage` | fills exactly the rest — 654.8px of a 700px window |
+> | `.tk-views` | 247px, content-sized rather than stretched to the sidebar's 252px |
+> | tab height | **32.3px**, against 23px in the sidebar — which was under the 24px target minimum for the app's primary navigation |
+> | headroom | fits at a 13, 16, 20 **and 24px** base; the 17px cap is gone |
+>
+> **`min-height: 0` on `#stage` is the load-bearing declaration**, and the reason a
+> wrapper is not free: without it a flex item's floor is its content's height, so a
+> long board would push the row past the window instead of scrolling inside it.
+> Verified with 3384px of board content in a 655px row — `#app` stays exactly
+> 700px tall, the bar stays on screen, and the page scrolls in neither axis.
+>
+> Two things this changes that the plan did not mention:
+>
+> 1. **Three more test harnesses needed `#viewbar`.** `tests/pr-polling.test.ts`,
+>    `board-loading` and `board-launch` import the real `main.ts` against a
+>    hand-built `#app`, and `main.ts` asserts the mount point exists — all ten of
+>    their tests threw before any of the behaviour under test could run. All four
+>    harnesses (`view-switch` included) now mirror `index.html`.
+> 2. **F6's sidebar region now lands on a workspace, not on "Terminals".** The tabs
+>    are outside the region cycle rather than a third region, which is a net gain:
+>    they are first in the DOM, so plain Tab reaches them from the top, where
+>    previously the sidebar's own blocks sat behind them. `currentRegion()` reads
+>    focus on a tab as `"terminal"`, so F6 from a tab goes to the sidebar in both
+>    directions — no trap, and Task 25 still stands on its own.
+>
+> The cost, stated plainly: every screen is 45px shorter. The tab padding is what
+> buys the 24px target, and the target is not negotiable for primary navigation.
 
 ---
 

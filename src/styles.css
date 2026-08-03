@@ -114,9 +114,22 @@
    already claiming to be 13px and now enforces it. */
 :root { font-size: 13px; }
 html, body, #app { height: 100%; margin: 0; }
+/* A column of two: the view switch, then the row of screens. It was a single row
+   until the switch moved out of the sidebar. */
 #app {
-  display: flex; font-family: var(--font-ui); color: var(--fg); background: var(--bg-app);
+  display: flex; flex-direction: column;
+  font-family: var(--font-ui); color: var(--fg); background: var(--bg-app);
   line-height: var(--lh-tight);
+}
+/* The row that was `#app`. `min-height: 0` is what lets the children's
+   `overflow: auto` work: without it a flex item's floor is its content's height,
+   so a long board would push the row past the window instead of scrolling
+   inside it — the same reason `#board` needs `min-width: 0` in the other axis. */
+#stage { display: flex; flex: 1; min-height: 0; }
+/* Full width, and the app's first tab stop because it is first in the DOM. */
+#viewbar {
+  flex: none; display: flex; align-items: center; padding: var(--sp-1) var(--sp-2);
+  background: var(--bg-panel); border-bottom: 1px solid var(--border);
 }
 #sidebar {
   /* Workspace and session names are what this column is for, and 248px was
@@ -523,10 +536,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tile-auth.hidden { display: none; }
 
 /* --- Task board -------------------------------------------------------- */
-/* #app — flex row; without flex:1 here #board is content-sized and hugs the
-   left edge instead of taking the full width like #deck does. min-width: 0
-   lets it shrink below its content's intrinsic width so overflow:auto (and
-   the 1fr 1fr columns below) can actually do their job inside the flex row. */
+/* #stage — flex row (it was `#app` until the view switch moved above it);
+   without flex:1 here #board is content-sized and hugs the left edge instead of
+   taking the full width like #deck does. min-width: 0 lets it shrink below its
+   content's intrinsic width so overflow:auto (and the 1fr 1fr columns below)
+   can actually do their job inside the flex row. */
 #board { flex: 1; min-width: 0; overflow: auto; padding: var(--sp-3); background: var(--bg-app); }
 /* Deliberately two rules, not one grouped selector list. jsdom's
    getComputedStyle applies a group's highest specificity to every selector in
@@ -545,11 +559,20 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    the terminals instead of replacing them. */
 #deck.tk-hidden { display: none; }
 
+/* In `#viewbar` this is content-sized, which is the point of the move: as a
+   `flex-direction: column` child of `#sidebar` it stretched to the sidebar's
+   width whatever its `inline-flex` said, so the space it had was whatever the
+   workspace names left. Its buttons had 25px of slack at a 248px sidebar and
+   overflowed at an 18px base — measured, against the audit's claim of 15px. */
 .tk-views { display: inline-flex; gap: 2px; background: var(--bg-raised); border-radius: var(--r-sm); padding: 2px; }
+/* A step up from the sidebar's caption size, with the padding to match: at 12px
+   and 4px these were 23px tall, which is under the 24px target minimum for the
+   app's primary navigation. 13px × 1.25 leading + 16px is 32px, so the target is
+   cleared by the type and the padding rather than by a `min-height` asserting it. */
 .tk-views button {
-  font: inherit; font-size: var(--fs-sm); color: var(--fg-muted);
+  font: inherit; font-size: var(--fs-base); color: var(--fg-muted);
   background: transparent; border: 0; border-radius: var(--r-sm);
-  padding: var(--sp-1) var(--sp-2); cursor: pointer;
+  padding: var(--sp-2) var(--sp-3); cursor: pointer;
 }
 .tk-views button.active { background: var(--accent-weak); color: var(--fg); }
 .tk-views button:focus-visible { outline: none; box-shadow: var(--focus-ring); }

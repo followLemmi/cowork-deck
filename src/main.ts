@@ -55,6 +55,13 @@ const boardEl = document.querySelector<HTMLElement>("#board")!;
 // The "Terminals | Board | Pull requests" switch. Each screen takes the full
 // width because GitHub and Jira boards land here later, and those need room
 // rather than a strip.
+//
+// It mounts into `#viewbar` above the row of screens, not into `#sidebar`. In the
+// sidebar it was a flex-column child, so it stretched to whatever width the
+// workspace names left it and its buttons had nowhere to grow — which capped the
+// type scale at a 17px base before the app's primary navigation started
+// horizontally scrolling. Above the row it is content-sized and independent.
+const viewbar = document.querySelector<HTMLElement>("#viewbar")!;
 const views = document.createElement("div");
 views.className = "tk-views";
 const termBtn = document.createElement("button");
@@ -64,7 +71,7 @@ boardBtn.textContent = "Board";
 const prBtn = document.createElement("button");
 prBtn.textContent = "Pull requests";
 views.append(termBtn, boardBtn, prBtn);
-sidebar.prepend(views);
+viewbar.append(views);
 
 /** The next step for each of the three unavailabilities, shared by both GitHub
  *  screens: the board's source can be unavailable for exactly the same reasons as
@@ -1002,6 +1009,11 @@ function paletteCommands(): Command[] {
 type Region = "sidebar" | "terminal";
 const REGIONS: Region[] = ["sidebar", "terminal"];
 
+/** Focus on a `#viewbar` tab reads as "terminal" here, so F6 from a tab goes to
+ *  the sidebar in both directions. The tabs are deliberately outside the cycle
+ *  rather than a third region: they are the first thing in the DOM, so plain Tab
+ *  reaches them from the top, which the sidebar's own blocks never could — they
+ *  sat behind the tabs when the switch lived there. */
 function currentRegion(): Region {
   return sidebar.contains(document.activeElement) ? "sidebar" : "terminal";
 }

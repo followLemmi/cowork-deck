@@ -8,11 +8,17 @@ function mount(): ViewElements {
   const style = document.createElement("style");
   style.textContent = styles;
   document.head.append(style);
+  // Mirrors index.html, including the `#stage` row and the `#viewbar` above it:
+  // this is the one test that reads the real stylesheet, so a harness that does
+  // not match the real structure could pass against a rule the app never gets.
+  // The switch's buttons live in `#viewbar` in the app; here they stay detached
+  // (below), because `applyView` only toggles their `active` class.
   document.body.innerHTML =
-    '<div id="app"><aside id="sidebar"><div id="ws"></div><div id="sk"></div>' +
+    '<div id="app"><nav id="viewbar"></nav><div id="stage">' +
+    '<aside id="sidebar"><div id="ws"></div><div id="sk"></div>' +
     '<button id="new"></button><div id="list"></div></aside>' +
     '<main id="deck"></main><div id="board" class="hidden"></div>' +
-    '<div id="pr" class="hidden"></div></div>';
+    '<div id="pr" class="hidden"></div></div></div>';
   const pick = (sel: string) => document.querySelector<HTMLElement>(sel)!;
   return {
     deck: pick("#deck"),

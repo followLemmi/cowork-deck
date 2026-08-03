@@ -8,9 +8,18 @@
   </head>
   <body>
     <div id="app">
-      <aside id="sidebar"></aside>
-      <main id="deck"></main>
-      <div id="board" class="hidden"></div>
+      <!-- The three screens are siblings in a row, and the switch between them
+           sits above that row rather than inside the sidebar: it is navigation
+           for the whole window, not a sidebar block, and in the sidebar its
+           width was set by however long the workspace names were. `#stage` is
+           the row; `#app` is now the column holding the bar and the row. The
+           pull request screen joins the row from `main.ts`. -->
+      <nav id="viewbar" aria-label="Screens"></nav>
+      <div id="stage">
+        <aside id="sidebar"></aside>
+        <main id="deck"></main>
+        <div id="board" class="hidden"></div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

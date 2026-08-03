@@ -109,8 +109,10 @@ describe("▶ on a github issue", () => {
    *  that very issue is running two tiles away. */
   it("focuses the session it already has without preparing a worktree again", async () => {
     document.body.innerHTML =
-      '<div id="app"><div id="sidebar"></div><main id="deck"></main>'
-      + '<div id="board" class="hidden"></div></div>';
+      // Mirrors index.html — `main.ts` mounts the view switch into `#viewbar`.
+      '<div id="app"><nav id="viewbar"></nav><div id="stage">'
+      + '<div id="sidebar"></div><main id="deck"></main>'
+      + '<div id="board" class="hidden"></div></div></div>';
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     listTasksMock.mockResolvedValue([issue("42")]);
     issueWorktreeAddMock.mockResolvedValue("/p-wt/42-issue");

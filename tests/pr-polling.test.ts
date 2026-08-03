@@ -106,8 +106,12 @@ describe("pull request polling", () => {
   it("polls only while the view is open and the window focused", async () => {
     vi.useFakeTimers();
     document.body.innerHTML =
-      '<div id="app"><div id="sidebar"></div><main id="deck"></main>'
-      + '<div id="board" class="hidden"></div></div>';
+      // Mirrors index.html. `#viewbar` is not optional: `main.ts` mounts the view
+      // switch into it and asserts it exists, so a harness missing it throws
+      // before any of the polling under test here can run.
+      '<div id="app"><nav id="viewbar"></nav><div id="stage">'
+      + '<div id="sidebar"></div><main id="deck"></main>'
+      + '<div id="board" class="hidden"></div></div></div>';
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
 
     await import("../src/main");

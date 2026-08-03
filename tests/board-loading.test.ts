@@ -106,8 +106,10 @@ describe("a GitHub board's first read", () => {
   it("draws skeleton rows, and never claims no tracker is configured", async () => {
     capsMock.mockResolvedValue(CAPS);
     document.body.innerHTML =
-      '<div id="app"><div id="sidebar"></div><main id="deck"></main>'
-      + '<div id="board" class="hidden"></div></div>';
+      // Mirrors index.html — `main.ts` mounts the view switch into `#viewbar`.
+      '<div id="app"><nav id="viewbar"></nav><div id="stage">'
+      + '<div id="sidebar"></div><main id="deck"></main>'
+      + '<div id="board" class="hidden"></div></div></div>';
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
 
     await import("../src/main");
