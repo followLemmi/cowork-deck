@@ -295,9 +295,15 @@ export class PrView {
     const verdict = canMerge(pr);
     const merge = el("button", "pr-merge", "Merge");
     merge.disabled = !verdict.ok;
-    // The reason travels with the disabled button, so the refusal is readable
-    // before the click rather than after it.
-    merge.title = verdict.ok ? "Merge this pull request" : verdict.reason;
+    // The refusal used to live in `title` alone. This is the highest-stakes button
+    // in the app, and a `title` is reachable by neither keyboard nor touch — the
+    // two ways of using it that most need to know why it will not work. It is a
+    // visible line below the row now, tied to the button by `aria-describedby` so
+    // a screen reader reads the reason with the button rather than after hunting
+    // for it. `title` is left carrying only the affirmative case: duplicating the
+    // visible text there would have some readers announce it twice.
+    if (verdict.ok) merge.title = "Merge this pull request";
+    else merge.setAttribute("aria-describedby", `pr-refusal-${pr.number}`);
     merge.onclick = () => { if (verdict.ok) this.h.onMerge(pr); };
     actions.append(merge);
 
@@ -316,6 +322,13 @@ export class PrView {
     actions.append(link);
 
     row.append(actions);
+    // Under the buttons rather than beside them: the reason is a sentence, and a
+    // sentence in a row of three short controls sets the row's width.
+    if (!verdict.ok) {
+      const refusal = el("p", "pr-refusal", verdict.reason);
+      refusal.id = `pr-refusal-${pr.number}`;
+      row.append(refusal);
+    }
     // Inside the row, not after it: the panel belongs to this pull request, and a
     // sibling would drift away from it the moment the list re-sorts.
     if (open) row.append(this.panel(pr));

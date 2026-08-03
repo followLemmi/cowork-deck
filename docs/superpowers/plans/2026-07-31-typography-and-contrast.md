@@ -345,13 +345,67 @@ See "The finding that splits this plan". A commit message that says the type rai
 
 Independent of everything above. **Re-measure every ratio before and after** — and add the measuring script to the repository, because axe-core and Lighthouse pass every ancestor-`opacity` case in this list.
 
-- [ ] **Task 14: `.btn--icon { opacity: 0.45 → 0.7 }`** — 2.68 → 4.56, clearing even the text threshold while staying visibly quieter than hover. This is the resting state of every icon control in the app. Then **delete the dead declarations at `:88` and `:92`.**
-- [ ] **Task 15: `brightBlack: "#5c6370" → "#8a919e"`** in `src/terminal.ts` — 2.73 → ~5.1 on the surface the user actually reads. And **delete `#deck.has-active .tile:not(.is-active)`**: `.tile.is-active` already signals with a border *and* a shadow, so dimming three terminals out of four to reinforce a border is a bad trade that also drags `--fg-subtle` badges to 4.00.
-- [ ] **Task 16: Drop `opacity: 0.6` from `.tk-card.done` / `.tk-row.done`** and push a `"closed"` chip from `chips()` instead — that function already does exactly this for `working`, `damaged` and `stale`. Fixes 2.67:1 on every closed row's meta *and* gives closed-ness a carrier that is not presentational.
-- [ ] **Task 17: `.state-error` and `.state-ended`** — raise the fill alpha and the token, then **re-measure against all three backgrounds**, not just `--bg-panel`. `.state-error` is currently the weakest chip in the set and fails worst (3.36) on the selected session row, which is where a user is most likely looking.
-- [ ] **Task 18: `:disabled { opacity: 0.62 }`**, and move `.pr-merge`'s refusal reason out of `title` into a visible line with `aria-describedby` — it is the highest-stakes button in the app and its refusal is currently unreachable by keyboard and by touch.
-- [ ] **Task 19: `min-width`/`min-height: 24px` on `.pr-toggle` and `.pr-refresh`.** Neither benefits from the type raise: the first hard-codes `width: 16px`, the second has no padding. The disclosure is the only way to read a description and is currently 224px² against a 576px² requirement.
-- [ ] **Task 20: Delete `--st-idle`** and `.tile-close`'s three inert declarations.
+> **Executed 2026-08-03, in three commits: the script, tasks 14–17, tasks 18–20.**
+> `scripts/contrast.mjs` (`npm run contrast`) is the script this section asked for —
+> plain Node ESM, no dependencies, reading `src/styles.css` and `src/terminal.ts`
+> rather than restating them, exiting non-zero on any case below threshold. It went
+> in **before any colour changed**, reporting the 10 failures the phase inherited,
+> and it now reports **18 measured, 0 below**.
+>
+> It reproduces the audit closely enough to trust it — `.btn--icon` 2.67 against the
+> reported 2.68, `brightBlack` 2.73 against 2.73, `.state-error` on the selected row
+> 3.34 against 3.36 — with one number **worse** than reported: the `--fg-subtle`
+> badges on a dimmed tile were **3.80**, not 4.00.
+>
+> **Three corrections to this section, all measured:**
+>
+> 1. **"Raise the fill alpha" (Task 17) is backwards.** A translucent fill pulls the
+>    chip's background towards its own hue, which is also its text's hue, so alpha
+>    costs contrast rather than buying it. With `--st-error` untouched: alpha 0.24
+>    gives 2.99 on the selected row, 0.16 gives 3.34, and **removing the fill
+>    entirely still only reaches 4.07**. The fill cannot fix this in either
+>    direction; the token had to move, and it did — `#e06c75` → `#e78f96`.
+> 2. **The five state chips cannot share one alpha.** A lighter hue washes the
+>    background further per unit of alpha, so the value clearing 4.5:1 differs by
+>    hue. All five are measured now rather than the two named here;
+>    `.state-working`, `.state-waitingInput` and `.state-done` pass at 4.88, 5.30
+>    and 5.30. Worth confirming rather than assuming — one chip passing is exactly
+>    what let `.state-error` sit at 3.34 unnoticed.
+> 3. **`.state-idle` needs nothing**, at 6.77. The 2.98 in its own comment is what
+>    it was before `--fg-muted` replaced the old colour.
+>
+> **One deliberate deviation, Task 16.** The `opacity: 0.6` is gone from both
+> `.tk-card.done` and `.tk-row.done`; the `"closed"` chip is **not** added, and the
+> analogy the task rests on is what fails. `working`, `damaged` and `stale` each
+> carry information the layout does not — `working` comes from a live session link,
+> so a card in the "in progress" column with nothing running on it is `open`, and
+> one in any other column with a session is `working`. `done` is *exactly* the step:
+> `derivedStatus` returns it when the card's own step is terminal. In the list view
+> one step group shows at a time under its own selected filter, so the chip would
+> repeat that filter on every row beside it, and in the card view the column heading
+> already names it. A carrier that says only what the heading above it says is noise
+> rather than a second channel — and it is the same trade the deleted tile-dimming
+> rule was making. **If closed work should read as finished at a glance across the
+> whole board, that is a design decision worth taking on its own rather than inside
+> a contrast fix.**
+>
+> Two pieces of dead code removed beyond what was listed, both by the same argument
+> the listed ones rest on: the `has-active` class (`sessions.ts` in two places, plus
+> the test asserting it — with its only CSS consumer deleted by Task 15, the
+> assertion guarded nothing), and `.tile-close`'s `color`, which lost to
+> `.btn--icon`'s exactly as `.sk-del`'s did.
+>
+> The script also reads `.btn--icon`'s opacity and every chip's fill out of the
+> rules themselves, and asserts the two deleted rules stay deleted. A table that
+> restates the values it claims to measure is a table that drifts from them.
+
+- [x] **Task 14: `.btn--icon { opacity: 0.45 → 0.7 }`** — 2.68 → 4.56, clearing even the text threshold while staying visibly quieter than hover. This is the resting state of every icon control in the app. Then **delete the dead declarations at `:88` and `:92`.** *(measured 2.67 → 4.54)*
+- [x] **Task 15: `brightBlack: "#5c6370" → "#8a919e"`** in `src/terminal.ts` — 2.73 → ~5.1 on the surface the user actually reads. And **delete `#deck.has-active .tile:not(.is-active)`**: `.tile.is-active` already signals with a border *and* a shadow, so dimming three terminals out of four to reinforce a border is a bad trade that also drags `--fg-subtle` badges to 4.00. *(measured 2.73 → 5.22; the badges were 3.80, not 4.00)*
+- [~] **Task 16: Drop `opacity: 0.6` from `.tk-card.done` / `.tk-row.done`** and push a `"closed"` chip from `chips()` instead — that function already does exactly this for `working`, `damaged` and `stale`. Fixes 2.67:1 on every closed row's meta *and* gives closed-ness a carrier that is not presentational. *(the opacity is gone — 2.66 → 5.00; the chip deliberately is not, see the deviation above)*
+- [x] **Task 17: `.state-error` and `.state-ended`** — raise the fill alpha and the token, then **re-measure against all three backgrounds**, not just `--bg-panel`. `.state-error` is currently the weakest chip in the set and fails worst (3.36) on the selected session row, which is where a user is most likely looking. *(both now 4.77 on the selected row; the alphas came **down**, see correction 1)*
+- [x] **Task 18: `:disabled { opacity: 0.62 }`**, and move `.pr-merge`'s refusal reason out of `title` into a visible line with `aria-describedby` — it is the highest-stakes button in the app and its refusal is currently unreachable by keyboard and by touch. *(2.98 → 3.86; `.pr-refusal` carries the reason, and `.pr-actions button:disabled` is deleted rather than updated — it outranked the app-wide rule and set the same two values, so its only effect was to pin these buttons at the old opacity and hide the global `grayscale`)*
+- [x] **Task 19: `min-width`/`min-height: 24px` on `.pr-toggle` and `.pr-refresh`.** Neither benefits from the type raise: the first hard-codes `width: 16px`, the second has no padding. The disclosure is the only way to read a description and is currently 224px² against a 576px² requirement.
+- [x] **Task 20: Delete `--st-idle`** and `.tile-close`'s three inert declarations. *(`--st-idle` landed with Task 17's token edit; `.tile-close` lost a fourth declaration, its `color`)*
 
 ---
 

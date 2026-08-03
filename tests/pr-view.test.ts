@@ -71,14 +71,35 @@ describe("PrView", () => {
     expect(seen.size).toBe(4);
   });
 
-  it("disables merge and names the reason", () => {
+  it("disables merge and names the reason where it can be reached", () => {
     const { view, h } = mk();
     view.render(state({ prs: [pr({ isDraft: true })] }), NOW);
     const btn = document.querySelector<HTMLButtonElement>(".pr-merge")!;
     expect(btn.disabled).toBe(true);
-    expect(btn.title).toContain("draft");
     btn.click();
     expect(h.onMerge).not.toHaveBeenCalled();
+
+    // This asserted `btn.title` until the reason moved out of it. A `title` is
+    // reachable by neither keyboard nor touch, which are the two ways of using
+    // the app that most need to know why its highest-stakes button is refused.
+    const refusal = document.querySelector<HTMLElement>(".pr-refusal")!;
+    expect(refusal.textContent).toContain("draft");
+    // The link is the whole point: without it the sentence is on screen but not
+    // attached to the control it explains.
+    expect(btn.getAttribute("aria-describedby")).toBe(refusal.id);
+    expect(refusal.id).not.toBe("");
+  });
+
+  it("has no refusal line, and no dangling description, when merge is allowed", () => {
+    const { view } = mk();
+    view.render(state(), NOW);
+    expect(document.querySelector(".pr-refusal")).toBeNull();
+    const btn = document.querySelector<HTMLButtonElement>(".pr-merge")!;
+    expect(btn.disabled).toBe(false);
+    // An `aria-describedby` pointing at an element that is not rendered is worse
+    // than none: a screen reader announces the button with no description and the
+    // markup claims otherwise.
+    expect(btn.getAttribute("aria-describedby")).toBeNull();
   });
 
   it("hands merge the pull request when it is allowed", () => {

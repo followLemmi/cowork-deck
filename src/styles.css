@@ -210,7 +210,15 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .tile-head { display: flex; align-items: center; gap: var(--sp-2); padding: 6px 10px; background: var(--bg-panel); border-bottom: 1px solid var(--border); color: var(--fg); font-size: var(--fs-sm); font-weight: var(--fw-medium); user-select: none; }
 .tile-head span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-muted); }
 .tile-body { flex: 1; min-height: 0; background: var(--bg-terminal); padding: var(--sp-2); }
-.tile-close { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; background: none; border: none; border-radius: var(--r-sm); color: var(--fg-subtle); cursor: pointer; font-size: 13px; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+/* `width: 22px`, `height: 22px`, `font-size: 13px` and `color: var(--fg-subtle)`
+   are gone from here. All four were inert or losing: every `.tile-close` is built
+   by `iconButton`, which composes `btn--icon` — so `min-width`/`min-height: 24px`
+   clamped the box past 22px (`min-width` beats `width`), the button holds an SVG
+   rather than text so `font-size` reached nothing, and `--fg-muted` from the later
+   equal-specificity rule won the colour. What is left duplicates `.btn--icon`
+   rather than contradicting it, so the source no longer describes a 22px subtle
+   button that never existed. */
+.tile-close { display: inline-flex; align-items: center; justify-content: center; background: none; border: none; border-radius: var(--r-sm); cursor: pointer; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
 .tile-close:hover { background: var(--bg-raised); color: var(--fg); }
 
 .tile-search { display: flex; gap: 4px; padding: 4px 8px; background: var(--bg-panel); border-bottom: 1px solid var(--border); }
@@ -444,8 +452,13 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 /* Pressing and being disabled had no feedback at all: one :active rule for the
    whole app and not a single :disabled. */
 button:active:not(:disabled) { transform: translateY(1px); }
+/* .62 rather than .5. A disabled control is exempt from 1.4.3, so this is not a
+   conformance fix — but "exempt" means nobody can be made to fix it, not that
+   2.89:1 is readable, and a person who cannot read *why* a button is refused is
+   left guessing. The grayscale stays: with the opacity raised it is what still
+   says "inactive" rather than "quiet". */
 button:disabled, .sk-run:disabled {
-  opacity: 0.5; cursor: not-allowed; filter: grayscale(0.4);
+  opacity: 0.62; cursor: not-allowed; filter: grayscale(0.4);
 }
 
 /* Focus was visible on button only. The schedule editor's fields — a select and
@@ -975,7 +988,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    13px for the same job. Both are `--fs-xl` now. */
 .pr-title-head { margin: 0; flex: 1; font-size: var(--fs-xl); }
 .pr-age { color: var(--fg-subtle); font-size: var(--fs-xs); }
-.pr-refresh { background: none; border: 0; color: var(--fg-muted); cursor: pointer; }
+/* Had no padding at all, so the type raise in Phase 1 could not reach it: 24px is
+   asserted here rather than derived, because there is no padding for the type to
+   act on. */
+.pr-refresh {
+  background: none; border: 0; color: var(--fg-muted); cursor: pointer;
+  min-width: 24px; min-height: 24px;
+}
 .pr-row {
   display: flex; flex-direction: column; gap: 4px;
   padding: var(--sp-2); margin-bottom: var(--sp-2);
@@ -991,10 +1010,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* The disclosure. A fixed width so the number beside it does not move as the
-   glyph changes, and first in the row so its own position never does. */
+   glyph changes, and first in the row so its own position never does.
+   That fixed width was 16px — a 224px² target against the 576px² of SC 2.5.8, on
+   the only control that opens a description. `min-width` beats `width`, so 24px
+   here both clears the minimum and keeps the width fixed, which is what the
+   paragraph above is about. */
 .pr-toggle {
   background: none; border: 0; padding: 0; margin: 0;
-  width: 16px; flex: 0 0 auto; text-align: left;
+  width: 16px; min-width: 24px; min-height: 24px; flex: 0 0 auto; text-align: left;
   font: inherit; font-size: var(--fs-sm); color: var(--fg-muted); cursor: pointer;
 }
 .pr-toggle:hover { color: var(--fg); }
@@ -1018,7 +1041,19 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   min-height: 24px;
 }
 .pr-actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.pr-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* `.pr-actions button:disabled { opacity: 0.5; cursor: not-allowed }` was here.
+   It outranked the app-wide `button:disabled` and set the same two values, so its
+   only effect was to hold these buttons at the old opacity while the global rule
+   moved — and to hide the `grayscale` the global adds. Deleted rather than
+   updated: one reading of "disabled" for the whole app. */
+/* Why the Merge button is refused, in the row rather than in a `title` nobody can
+   reach from a keyboard. `max-width` in `ch` because it is prose; `--st-waiting`
+   rather than `--st-error` because a refusal is a "not yet", and the errors in
+   this view are red already. */
+.pr-refusal {
+  margin: var(--sp-1) 0 0; color: var(--st-waiting); font-size: var(--fs-sm);
+  line-height: var(--lh-body); max-width: 60ch;
+}
 .pr-open { color: var(--fg-muted); font-size: var(--fs-xs); align-self: center; }
 .pr-open:hover { color: var(--accent); }
 .pr-error { color: var(--st-error); font-size: var(--fs-sm); margin: 0 0 var(--sp-2); }
