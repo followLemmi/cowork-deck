@@ -118,7 +118,8 @@ export class WorkspacesPanel {
     this.mount.innerHTML = "<h3>Workspaces</h3>";
     for (const w of this.items) {
       const row = document.createElement("div");
-      row.className = "ws-row" + (w.id === this.activeId ? " active" : "");
+      const isActive = w.id === this.activeId;
+      row.className = "ws-row" + (isActive ? " active" : "");
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = w.color;
       const label = document.createElement("button");
@@ -127,6 +128,11 @@ export class WorkspacesPanel {
       // while the two that had them are what caused it. Reaches AT through the
       // button's own text; this is for the sighted user reading "co…".
       label.title = w.name;
+      // Which workspace is active was carried by `.ws-row.active`'s tint and inset
+      // border alone — nothing a screen reader reports. On the button rather than
+      // on the row, because the button is what the person lands on and what a
+      // reader announces.
+      if (isActive) label.setAttribute("aria-current", "true");
       label.onclick = () => this.select(w.id);
       const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
       edit.onclick = () => this.edit(w.id);

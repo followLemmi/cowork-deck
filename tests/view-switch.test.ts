@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from "vitest";
 import styles from "../src/styles.css?raw";
-import { applyView, type ViewElements } from "../src/view";
+import { applyView, firstFocusable, type ViewElements } from "../src/view";
 
 function mount(): ViewElements {
   document.head.replaceChildren();
@@ -99,5 +99,67 @@ describe("applyView", () => {
     expect(el.prBtn.classList.contains("active")).toBe(true);
     expect(el.boardBtn.classList.contains("active")).toBe(false);
     expect(el.termBtn.classList.contains("active")).toBe(false);
+  });
+
+  it("names the current screen for a reader, not only for the eye", () => {
+    const btns = () => [el.termBtn, el.boardBtn, el.prBtn];
+    const current = () => btns().filter((b) => b.getAttribute("aria-current") === "page");
+    for (const [view, expected] of [["deck", el.termBtn], ["board", el.boardBtn], ["pr", el.prBtn]] as const) {
+      applyView(el, view);
+      expect(current()).toEqual([expected]);
+    }
+  });
+
+  it("drops aria-current instead of setting it to false", () => {
+    applyView(el, "board");
+    applyView(el, "deck");
+    // `aria-current="false"` is announced by some readers; the absent state here
+    // is "not this one", which is what no attribute means.
+    expect(el.boardBtn.hasAttribute("aria-current")).toBe(false);
+  });
+});
+
+/** F6's second region used to be the deck whatever was on screen, so from a board
+ *  row it called `focus()` on an xterm inside a `display: none` `#deck` — a no-op,
+ *  leaving focus where it was. This is the part of that fix worth pinning: what
+ *  counts as focusable has to exclude anything the app has hidden. */
+describe("firstFocusable", () => {
+  let el: ViewElements;
+  beforeEach(() => { el = mount(); });
+
+  it("finds nothing inside the screen that is hidden", () => {
+    el.deck.innerHTML = '<button id="term">terminal</button>';
+    el.board.innerHTML = '<button id="row">a board row</button>';
+    applyView(el, "board");
+    expect(firstFocusable(el.deck)).toBeNull();
+    expect(firstFocusable(el.board)?.id).toBe("row");
+
+    applyView(el, "deck");
+    expect(firstFocusable(el.deck)?.id).toBe("term");
+    expect(firstFocusable(el.board)).toBeNull();
+  });
+
+  it("skips a hidden block and keeps looking rather than stopping at it", () => {
+    // Both of the app's hide classes, and the candidate it must reach is after
+    // them: returning the first match and testing it afterwards would hand back a
+    // control that cannot take focus.
+    const root = document.createElement("div");
+    root.innerHTML =
+      '<div class="tk-hidden"><button id="a">no</button></div>' +
+      '<div class="hidden"><button id="b">also no</button></div>' +
+      '<div><button id="c">yes</button></div>';
+    expect(firstFocusable(root)?.id).toBe("c");
+  });
+
+  it("ignores a disabled control, which cannot take focus", () => {
+    el.board.innerHTML = '<button disabled>no</button><button id="yes">yes</button>';
+    applyView(el, "board");
+    expect(firstFocusable(el.board)?.id).toBe("yes");
+  });
+
+  it("returns null when there is genuinely nothing, so the caller can fall back", () => {
+    el.board.innerHTML = "<p>an empty board</p>";
+    applyView(el, "board");
+    expect(firstFocusable(el.board)).toBeNull();
   });
 });

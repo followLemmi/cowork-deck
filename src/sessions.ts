@@ -889,7 +889,14 @@ export class Deck {
         const row = document.createElement("button");
         row.dataset.focusKey = `session:${t.session}`;
         row.setAttribute("aria-label", `${t.name} — ${LABEL[t.state]}`);
-        row.className = "sess-row" + (live?.el.classList.contains("is-active") ? " active" : "");
+        const isActive = !!live?.el.classList.contains("is-active");
+        row.className = "sess-row" + (isActive ? " active" : "");
+        // The `active` class was the only carrier: a background tint and a left
+        // border, both invisible to a screen reader, on the row telling the person
+        // which of a dozen sessions they are looking at. `aria-current` rather than
+        // `aria-selected` — this is a list of things to go to, not a widget with a
+        // selection, and it is the same reading as `.ws-label` below.
+        if (isActive) row.setAttribute("aria-current", "true");
         row.style.borderLeftColor = color;
         row.onclick = () => this.focusSessionAnywhere(t.session);
         const stateSpan = document.createElement("span");

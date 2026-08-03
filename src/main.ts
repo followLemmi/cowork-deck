@@ -1,7 +1,7 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
-import { applyView } from "./view";
+import { applyView, firstFocusable } from "./view";
 import type { ViewName } from "./view";
 import { claudeAvailable, loadLayout, onScheduledFire, onSchedulerBroken, scheduleAck, schedulerReady } from "./ipc";
 import type { Skill, Workspace } from "./ipc";
@@ -1006,29 +1006,38 @@ function paletteCommands(): Command[] {
  *  (they go to the PTY), so once focus landed in a tile — which happens
  *  automatically on launch — the sidebar, the scenario buttons and the
  *  run-now button were unreachable by keyboard entirely. */
-type Region = "sidebar" | "terminal";
-const REGIONS: Region[] = ["sidebar", "terminal"];
+type Region = "sidebar" | "screen";
+const REGIONS: Region[] = ["sidebar", "screen"];
 
-/** Focus on a `#viewbar` tab reads as "terminal" here, so F6 from a tab goes to
- *  the sidebar in both directions. The tabs are deliberately outside the cycle
- *  rather than a third region: they are the first thing in the DOM, so plain Tab
- *  reaches them from the top, which the sidebar's own blocks never could — they
- *  sat behind the tabs when the switch lived there. */
+/** Focus on a `#viewbar` tab reads as "screen" here, so F6 from a tab goes to the
+ *  sidebar in both directions. The tabs are deliberately outside the cycle rather
+ *  than a third region: they are the first thing in the DOM, so plain Tab reaches
+ *  them from the top, which the sidebar's own blocks never could — they sat behind
+ *  the tabs when the switch lived there. */
 function currentRegion(): Region {
-  return sidebar.contains(document.activeElement) ? "sidebar" : "terminal";
+  return sidebar.contains(document.activeElement) ? "sidebar" : "screen";
 }
 
 function focusRegion(r: Region): void {
-  if (r === "terminal") {
-    if (deck.focusActiveTerminal()) return;
-    // No session to go to — stay where something is focusable.
+  if (r === "screen") {
+    // Whichever screen is showing, not the deck unconditionally. It was the deck:
+    // from a board row, F6 called `focus()` on an xterm inside a `display: none`
+    // `#deck`, which does nothing at all, so focus stayed put and the key looked
+    // broken. Plain Tab still worked, which is what made this a degraded shortcut
+    // rather than a trap — but "the second region" has meant three different
+    // things since the board and the pull request screen arrived.
+    if (currentView === "deck") {
+      if (deck.focusActiveTerminal()) return;
+    } else {
+      const target = firstFocusable(currentView === "board" ? boardEl : prEl);
+      if (target) { target.focus(); return; }
+    }
+    // Nothing to go to — no session yet, or a board still loading. Stay somewhere
+    // focusable rather than dropping focus on the floor.
     focusRegion("sidebar");
     return;
   }
-  const first = sidebar.querySelector<HTMLElement>(
-    'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  );
-  first?.focus();
+  firstFocusable(sidebar)?.focus();
 }
 
 function cycleRegion(step: number): void {

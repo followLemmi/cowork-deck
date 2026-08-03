@@ -14,7 +14,19 @@ import { openDialog } from "./dialog-shell";
 import { confirmModal } from "./modal";
 import { icon, SCENARIO_ICONS, type IconName } from "./icons";
 
-const COLORS = ["#61afef", "#98c379", "#e5c07b", "#c678dd", "#e06c75", "#56b6c2"];
+/** Named, not a bare list of hexes. Six buttons carrying nothing but
+ *  `style.background` announced as "button, button, button, button, button,
+ *  button" — colour was the only carrier and there was no text alternative
+ *  anywhere, which is 1.4.1 and 4.1.2, both Level A. The name lives beside the
+ *  value so the two cannot drift; `#e06c75` is not a name a person can act on. */
+const COLORS = [
+  { value: "#61afef", name: "blue" },
+  { value: "#98c379", name: "green" },
+  { value: "#e5c07b", name: "yellow" },
+  { value: "#c678dd", name: "purple" },
+  { value: "#e06c75", name: "red" },
+  { value: "#56b6c2", name: "cyan" },
+];
 
 /** Shows a validation message where the user is looking, instead of the OK
  *  button quietly doing nothing — the original behaviour for an empty name. */
@@ -123,17 +135,29 @@ export function workspaceForm(
     pathRow.className = "form-pathrow";
     pathRow.append(path, pick);
 
-    let color = initial?.color ?? COLORS[0];
+    let color = initial?.color ?? COLORS[0].value;
     const swatches = document.createElement("div");
     swatches.className = "form-swatches";
+    // The same treatment as the scenario icon picker below, which already got this
+    // right: a radiogroup with a name per option and the selection exposed through
+    // `aria-checked` rather than through a CSS ring only.
+    swatches.setAttribute("role", "radiogroup");
+    swatches.setAttribute("aria-label", "Workspace colour");
     for (const c of COLORS) {
       const dot = document.createElement("button");
-      dot.type = "button"; dot.className = "form-swatch"; dot.style.background = c;
-      dot.classList.toggle("selected", c === color);
+      dot.type = "button"; dot.className = "form-swatch"; dot.style.background = c.value;
+      dot.setAttribute("role", "radio");
+      dot.setAttribute("aria-label", c.name);
+      dot.setAttribute("aria-checked", String(c.value === color));
+      dot.classList.toggle("selected", c.value === color);
       dot.onclick = () => {
-        color = c;
-        swatches.querySelectorAll(".form-swatch").forEach((s) => s.classList.remove("selected"));
+        color = c.value;
+        for (const s of swatches.querySelectorAll(".form-swatch")) {
+          s.classList.remove("selected");
+          s.setAttribute("aria-checked", "false");
+        }
         dot.classList.add("selected");
+        dot.setAttribute("aria-checked", "true");
       };
       swatches.append(dot);
     }

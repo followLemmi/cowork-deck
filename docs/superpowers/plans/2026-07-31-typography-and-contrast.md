@@ -411,11 +411,56 @@ Independent of everything above. **Re-measure every ratio before and after** —
 
 ## Phase 6 — Level A and reflow
 
-- [ ] **Task 21: Name the colour swatches** (`forms.ts`) — `aria-label` per colour plus `role="radio"`/`aria-checked`, copying the icon picker beside it.
-- [ ] **Task 22: Expose selected state** — `role="tablist"`/`aria-selected` on `.tk-views`, `aria-current` on `.ws-label` and `.sess-row`.
-- [ ] **Task 23: The modals at 400% zoom.** `.modal-box--form`'s `min-width: 480px` overrides its own `width: min(560px, 92vw)`; `.palette-box` and `.gh-screen` are 420px, `.modal-box` 340px. Inside a centred `position: fixed` overlay a 480px box at a 320px equivalent overflows *both* edges with nothing scrollable. Cap each with `min(…, 100vw − 32px)` and add `overflow: auto` to `.modal-overlay`.
-- [ ] **Task 24: Widen the focus ring** to `0 0 0 2px var(--accent), 0 0 0 4px var(--bg-app)`. On `.tk-filter.selected` the current 1px accent ring sits 1px outside an accent border, so focus adds no new information to a keyboard user tabbing across Open/Closed.
-- [ ] **Task 25: Make `REGIONS` view-aware** (`main.ts`). `currentRegion()` returns `"terminal"` for anything outside the sidebar, so from a board row F6 twice calls `focus()` on an xterm inside a `display: none` `#deck` and strands focus. Plain Tab still works, so this is a degraded shortcut rather than a trap.
+> **Executed 2026-08-03, one commit.** Task 23 was measured against the real
+> stylesheet at a 320px viewport — a 1280px window at 400% zoom, which is what
+> SC 1.4.10 asks about — and the failure is worse than this section describes.
+>
+> | at 320×260 | before | after |
+> |---|---|---|
+> | `.modal-box--form` | 480px wide at `left: -80`, `right: 400` | 288px at `left: 16`, `right: 304` |
+> | box top | `-62`, and **`scrollTop` cannot move it** | reachable at `scrollTop: 0` |
+> | the title | not visible | visible |
+> | Cancel / Delete | **not visible** | visible after scrolling |
+>
+> So it was not only "overflows both edges": the overlay had `overflow: visible`, so
+> setting `scrollTop` was a no-op and the box's top 62px were unreachable by any
+> means. On a confirm dialog that means a person at 400% zoom could neither read
+> what they were confirming nor reach the button to decline it. All five boxes —
+> plain, form, wide, palette and the GitHub screen — now land at 288px inside the
+> overlay's 16px padding, which is where the `100vw - 32px` in each cap comes from.
+>
+> **`align-items: center` had to go with it.** Capping the width alone would have
+> left the taller-than-viewport case broken: centring a flex item taller than its
+> container pushes the overflow off *both* ends, and the top stays unreachable even
+> once the overlay scrolls. `align-items: flex-start` with `margin: auto` on the box
+> centres when there is room and collapses to zero when there is not.
+>
+> **One deviation, Task 22.** `aria-current="page"` on the view tabs rather than
+> `role="tablist"`/`aria-selected`. `role="tab"` promises a tab widget — arrow-key
+> traversal, a roving tabindex, and panels — and the panel for the terminals screen
+> is `<main id="deck">`. Putting `role="tabpanel"` on it overwrites the document's
+> only `main` landmark, which is a worse trade than the role is worth; omitting the
+> panels makes the `tab` roles a promise the markup does not keep. These are primary
+> screens reached from a `nav`, so `aria-current` is the idiom — and it is then the
+> same reading the workspace list and the session list get, which is worth more than
+> three patterns for one idea. Set and *removed* rather than set to `"false"`, which
+> some readers announce.
+>
+> Task 25 gained a seam so it could be tested: `firstFocusable` moved into `view.ts`
+> and is covered by four cases in `tests/view-switch.test.ts`, including the one that
+> was the bug — that nothing inside a hidden screen counts. The hidden check is by
+> class rather than by layout because jsdom computes none, so an `offsetParent` test
+> would reject every candidate in the tests covering it.
+>
+> Also fixed in passing, on a line this change was already editing: a Russian
+> comment above `.gh-screen` in `styles.css`. Not the language sweep that is still
+> out of scope — one comment, on a rule being modified.
+
+- [x] **Task 21: Name the colour swatches** (`forms.ts`) — `aria-label` per colour plus `role="radio"`/`aria-checked`, copying the icon picker beside it. *(`COLORS` now carries a name beside each value, so the two cannot drift — `#e06c75` is not a name a person can act on)*
+- [~] **Task 22: Expose selected state** — `role="tablist"`/`aria-selected` on `.tk-views`, `aria-current` on `.ws-label` and `.sess-row`. *(all three carry `aria-current`; the tablist role deliberately not — see the deviation above)*
+- [x] **Task 23: The modals at 400% zoom.** `.modal-box--form`'s `min-width: 480px` overrides its own `width: min(560px, 92vw)`; `.palette-box` and `.gh-screen` are 420px, `.modal-box` 340px. Inside a centred `position: fixed` overlay a 480px box at a 320px equivalent overflows *both* edges with nothing scrollable. Cap each with `min(…, 100vw − 32px)` and add `overflow: auto` to `.modal-overlay`. *(and the centring, without which the caps alone leave the tall case broken)*
+- [x] **Task 24: Widen the focus ring** to `0 0 0 2px var(--accent), 0 0 0 4px var(--bg-app)`. On `.tk-filter.selected` the current 1px accent ring sits 1px outside an accent border, so focus adds no new information to a keyboard user tabbing across Open/Closed. *(checked for clipping too: `.tk-rows` sets `overflow: hidden`, and a row's 8px padding leaves the 4px ring room)*
+- [x] **Task 25: Make `REGIONS` view-aware** (`main.ts`). `currentRegion()` returns `"terminal"` for anything outside the sidebar, so from a board row F6 twice calls `focus()` on an xterm inside a `display: none` `#deck` and strands focus. Plain Tab still works, so this is a degraded shortcut rather than a trap. *(the region is `"screen"` now, and resolves to whichever of the three is showing)*
 
 ---
 

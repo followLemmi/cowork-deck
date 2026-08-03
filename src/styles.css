@@ -106,7 +106,16 @@
   --dot-size: 9px;
 
   --shadow-tile: 0 2px 8px rgba(0, 0, 0, 0.35);
-  --focus-ring: 0 0 0 1px var(--accent), 0 0 12px rgba(97, 175, 239, 0.25);
+  /* 2px of accent with 4px of the app background outside it, replacing 1px of
+     accent and a soft glow. The glow was decorative and the 1px was the problem:
+     on `.tk-filter.selected` it landed one pixel outside an *accent border*, so
+     tabbing across Open/Closed moved focus without showing a keyboard user
+     anything new. The outer ring is what separates the inner one from whatever it
+     sits on, which a glow cannot do against a light-tinted row.
+     Also inherited by `.tile.is-active`, which pairs it with `--shadow-tile` —
+     a crisper edge there too, and it matters more since the non-active tiles
+     stopped being dimmed. */
+  --focus-ring: 0 0 0 2px var(--accent), 0 0 0 4px var(--bg-app);
 
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --dur-1: 120ms; --dur-2: 220ms;
@@ -327,8 +336,18 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .sess-tokens-sum { font-size: var(--fs-xs); color: var(--fg-subtle); margin: 4px 0 8px; }
 
 /* --- Modal dialogs (replace webview prompt/confirm/alert) --- */
-.modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: flex; align-items: center; justify-content: center; z-index: 1000; animation: modal-fade var(--dur-1) var(--ease); }
-.modal-box { background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: var(--r-md); padding: var(--sp-4); min-width: 340px; max-width: 90vw; box-shadow: var(--shadow-tile); display: flex; flex-direction: column; gap: var(--sp-3); }
+/* `overflow: auto` and a padding, because a centred `position: fixed` overlay had
+   nothing scrollable in it: at a 320px-equivalent viewport — which is what 400%
+   zoom on a 1280px window is, and what SC 1.4.10 asks about — a box wider than the
+   window overflowed *both* edges with no way to reach either.
+   `align-items: flex-start` with `margin: auto` on the box rather than
+   `align-items: center`: centring a flex item that is taller than its container
+   pushes the overflow off both ends and the top becomes unreachable, whereas auto
+   margins centre when there is room and collapse to zero when there is not.
+   The 16px padding is why the caps below subtract 32px — the box's containing
+   block is `100vw - 32px`, so that is the width that means "as wide as it can be". */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-start; justify-content: center; padding: var(--sp-4); overflow: auto; z-index: 1000; animation: modal-fade var(--dur-1) var(--ease); }
+.modal-box { margin: auto; background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: var(--r-md); padding: var(--sp-4); min-width: min(340px, 100vw - 32px); max-width: 90vw; box-shadow: var(--shadow-tile); display: flex; flex-direction: column; gap: var(--sp-3); }
 .modal-title { color: var(--fg); font-family: var(--font-ui); font-size: var(--fs-base); line-height: var(--lh-body); }
 .modal-input { background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--fg); font: inherit; font-size: var(--fs-base); padding: 8px 10px; outline: none; }
 .modal-input:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
@@ -383,7 +402,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 }
 
 /* --- Command palette (Cmd+K) --- */
-.palette-box { min-width: 420px; gap: var(--sp-2); }
+.palette-box { min-width: min(420px, 100vw - 32px); gap: var(--sp-2); }
 .palette-input { width: 100%; }
 .palette-list { display: flex; flex-direction: column; max-height: 300px; overflow: auto; }
 .palette-item { padding: 8px 10px; border-radius: var(--r-sm); color: var(--fg); font-size: var(--fs-base); cursor: pointer; }
@@ -506,7 +525,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 
 /* The scenario form carries a long task, a row of icons and a whole schedule
    section. At 340px all of it is squeezed into a column of narrow fields. */
-.modal-box--form { min-width: 480px; width: min(560px, 92vw); }
+/* The `min-width` outranks the `width` beside it, so 480px was the real floor and
+   the 92vw cap never applied below a 522px window. Both are capped now. */
+.modal-box--form { min-width: min(480px, 100vw - 32px); width: min(560px, 92vw); }
 .modal-box--form .form-prompt { min-height: 110px; }
 
 /* Checkbox beside its label rather than under it, and not the 13px system size.
@@ -552,8 +573,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .form-sched-time { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
 
-/* --- Экран «GitHub» ------------------------------------------------------ */
-.gh-screen { min-width: 420px; max-width: 560px; }
+/* --- The GitHub screen --------------------------------------------------- */
+.gh-screen { min-width: min(420px, 100vw - 32px); max-width: 560px; }
 .gh-block { display: flex; flex-direction: column; gap: var(--sp-2); margin: var(--sp-2) 0; }
 .gh-note { margin: 0; color: var(--fg-muted); font-size: var(--fs-sm); line-height: var(--lh-body); max-width: 64ch; }
 .gh-hint { margin: 0; color: var(--fg-subtle); font-size: var(--fs-xs); line-height: var(--lh-body); max-width: 64ch; }
