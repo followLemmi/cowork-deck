@@ -91,6 +91,12 @@
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
   --r-sm: 6px; --r-md: 10px;
 
+  /* The workspace-colour dot. A token because `.ws-account`'s second line is
+   * indented by exactly this plus a gap, to align under the workspace name —
+   * two places that must agree, and repeating the 9px in the second would be
+   * one magic number justifying another. */
+  --dot-size: 9px;
+
   --shadow-tile: 0 2px 8px rgba(0, 0, 0, 0.35);
   --focus-ring: 0 0 0 1px var(--accent), 0 0 12px rgba(97, 175, 239, 0.25);
 
@@ -113,7 +119,15 @@ html, body, #app { height: 100%; margin: 0; }
   line-height: var(--lh-tight);
 }
 #sidebar {
-  width: 248px; background: var(--bg-panel); border-right: 1px solid var(--border);
+  /* Workspace and session names are what this column is for, and 248px was
+     enough for neither. The floor is the old fixed width, so nothing changes on
+     a narrow window and the low end of this clamp is today's layout exactly —
+     which is also why widening cannot be what overflows `.tk-views`: at 248px
+     the switch has the room it has now, and above it, more.
+     The ceiling stops the column eating a 4K window for names it does not have;
+     the number of characters to aim for is a preference, not a measurement. */
+  width: clamp(248px, 18vw, 340px);
+  background: var(--bg-panel); border-right: 1px solid var(--border);
   color: var(--fg); padding: var(--sp-3) var(--sp-2); overflow: auto;
   display: flex; flex-direction: column; gap: var(--sp-2);
 }
@@ -124,12 +138,21 @@ html, body, #app { height: 100%; margin: 0; }
 #sidebar h3:first-child { margin-top: 0; }
 #deck { flex: 1; display: grid; gap: var(--sp-2); padding: var(--sp-2); background: var(--bg-app); position: relative; }
 
-.ws-row { display: flex; align-items: center; gap: var(--sp-2); padding: 6px var(--sp-2); border-radius: var(--r-sm); transition: background var(--dur-1) var(--ease); }
+/* Two lines, not one. The bound GitHub login used to sit on the name's line
+   behind a fixed 90px cap, which took 40% of a 216px content row and left
+   `.ws-label` 14px — a workspace called "cowork-deck" read as "co…". Wrapping
+   the login below returns the cap plus its gap to the label at the unchanged
+   248px, so the truncation is fixed before any width change and the two stay
+   reviewable apart.
+   `row-gap: 2px` against the 8px column gap: the second line continues the
+   first rather than being a sibling row, and 8px of leading between them reads
+   as two entries. */
+.ws-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--sp-2); padding: 6px var(--sp-2); border-radius: var(--r-sm); transition: background var(--dur-1) var(--ease); }
 .ws-row:hover { background: var(--bg-raised); }
 .ws-row.active { background: var(--accent-weak); box-shadow: inset 2px 0 0 var(--accent); }
 .ws-label { flex: 1; text-align: left; background: none; border: none; color: var(--fg); font: inherit; font-size: var(--fs-base); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-row.active .ws-label { color: var(--accent); font-weight: var(--fw-medium); }
-.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.25); }
+.dot { width: var(--dot-size); height: var(--dot-size); border-radius: 50%; flex: none; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.25); }
 
 .sk-row { display: flex; gap: 6px; margin: var(--sp-1) 0; }
 .sk-run { flex: 1; text-align: left; padding: 7px var(--sp-2); background: var(--bg-raised); color: var(--fg); border: 1px solid var(--border); border-radius: var(--r-sm); font: inherit; font-size: var(--fs-base); cursor: pointer; transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease); }
@@ -482,8 +505,17 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .gh-acc-warn { color: var(--st-waiting); font-size: var(--fs-xs); }
 .form-hint { margin: 0 0 var(--sp-1); color: var(--fg-subtle); font-size: var(--fs-xs); line-height: var(--lh-body); }
 .gh-missing { color: var(--st-error); }
+/* A line of its own under the workspace name — see `.ws-row`. `flex-basis: 100%`
+   is what forces the wrap: at full width the item cannot share a line with
+   anything, whatever else the row holds. The indent puts the login under the
+   name rather than under the dot; `padding` rather than `margin` because
+   `box-sizing: border-box` keeps the box exactly 100% wide, where a margin on
+   top of a 100% basis would push the ellipsis past the row's padding edge.
+   No `max-width` any more: with the row to itself the login needs no cap, and
+   the ellipsis stays as the fallback for one longer than a sidebar. */
 .ws-account {
-  max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex-basis: 100%; padding-left: calc(var(--dot-size) + var(--sp-2));
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--fg-subtle); font-size: var(--fs-xs);
 }
 .tile-auth { color: var(--st-error); font-size: var(--fs-xs); white-space: nowrap; }

@@ -123,19 +123,16 @@ export class WorkspacesPanel {
       dot.className = "dot"; dot.style.background = w.color;
       const label = document.createElement("button");
       label.className = "ws-label"; label.textContent = w.name;
+      // The one element in the row that truncates was the one without a tooltip,
+      // while the two that had them are what caused it. Reaches AT through the
+      // button's own text; this is for the sighted user reading "co…".
+      label.title = w.name;
       label.onclick = () => this.select(w.id);
       const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
       edit.onclick = () => this.edit(w.id);
       const x = iconButton("trash", `Delete workspace: ${w.name}`, "ws-del btn--icon--danger");
       x.onclick = () => this.del(w.id);
       row.append(dot, label);
-      if (w.github) {
-        const acc = document.createElement("span");
-        acc.className = "ws-account";
-        acc.textContent = w.github.login;
-        acc.title = `GitHub: ${w.github.login}`;
-        row.append(acc);
-      }
       const n = this.counts.get(w.id) ?? 0;
       if (n > 0) {
         const count = document.createElement("span");
@@ -145,6 +142,17 @@ export class WorkspacesPanel {
         row.append(count);
       }
       row.append(edit, x);
+      // Appended last because `.ws-account` now wraps onto the row's second
+      // line, and the DOM order is what a screen reader follows: `order: 1`
+      // would put it last visually while it still read between the name and
+      // the count (1.3.2, meaningful sequence).
+      if (w.github) {
+        const acc = document.createElement("span");
+        acc.className = "ws-account";
+        acc.textContent = w.github.login;
+        acc.title = `GitHub: ${w.github.login}`;
+        row.append(acc);
+      }
       this.mount.appendChild(row);
     }
     const addBtn = document.createElement("button");

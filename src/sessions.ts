@@ -357,6 +357,10 @@ export class Deck {
     head.className = "tile-head";
     const title = document.createElement("span");
     title.textContent = titleText;
+    // `.tile-head span:first-child` truncates with an ellipsis, and a tile head
+    // is as narrow as the deck's grid makes it. Set beside the text so the two
+    // cannot drift — nothing rewrites either after this.
+    title.title = titleText;
     const schedMark = opts.scheduled ? icon("clock", 12) : null;
     if (schedMark) {
       schedMark.classList.add("tile-sched-mark");
@@ -865,7 +869,9 @@ export class Deck {
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = color;
       const nm = document.createElement("span");
-      nm.className = "sess-group-name"; nm.textContent = name;
+      // Truncates the same way `.ws-label` does, and for the same reason: a
+      // workspace name against a sidebar's width.
+      nm.className = "sess-group-name"; nm.textContent = name; nm.title = name;
       head.append(toggle, dot, nm);
       if (groupWaiting > 0) {
         const badge = document.createElement("span");

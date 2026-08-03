@@ -667,6 +667,10 @@ export class BoardView {
     const openBtn = el("button", "tk-card-title tk-card-open", t.title);
     openBtn.type = "button";
     openBtn.setAttribute("aria-label", `Open card: ${t.title}`);
+    // The `aria-label` above already carries the full title to AT; the two-line
+    // clamp cuts it for everyone else, and this is the half of the truncation
+    // that only a sighted user hits.
+    openBtn.title = t.title;
     box.append(openBtn);
 
     const meta = el("div", "tk-meta");

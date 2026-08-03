@@ -116,9 +116,21 @@ Raising `--fs-xs` from 11 to 12px narrows `.ws-account`'s fixed 90px cap from ~1
 
 The sibling `.pr-detail-files` already carries `max-width: 72ch` with a comment explaining why. **The fix existed one rule up and was not applied to the body.**
 
-### `.tk-views` will break navigation before anyone sees a benefit (unverified arithmetic)
+### `.tk-views` will break navigation before anyone sees a benefit (~~unverified arithmetic~~ **re-measured 2026-08-03: the number was wrong by three steps**)
 
 `.tk-views` (`:458`) is an `inline-flex` with no wrap holding "Terminals | Board | Pull requests" at `--fs-sm`, inside a 248px `#sidebar` whose own padding leaves 232px. The audit measures it at roughly 230px today and overflowing at 15px — and `#sidebar { overflow: auto }` turns the app's primary navigation into a horizontal scroll. Re-measure before relying on the numbers; the direction is not in doubt.
+
+> **Re-measured while executing Phase 4, and the audit's ~230px is an artefact of measuring the wrong box.** `.tk-views` is a child of a `flex-direction: column` `#sidebar`, so it stretches to the full content width whatever its own `inline-flex` says: its box *is* ~231px at 248px and ~323px at 340px, by definition, and comparing that to the space available always reads as "1px from overflowing". What can actually overflow is the three buttons inside it. Measured against the real stylesheet:
+>
+> | `:root` base | buttons + gaps | box at the 248px floor | |
+> |---|---|---|---|
+> | 13px (today) | 206.2px | 231px | fits, 25px spare |
+> | 15px | 227.0px | 231px | fits |
+> | 17px | 227.0px | 231px | fits |
+> | **18px** | 233.4px | 231px | **overflows** |
+> | 19px | 243.3px | 231px | overflows, and `#sidebar` gains a horizontal scroll |
+>
+> So the switch is not one pixel from breaking; it has 12% slack today and survives to a 17px base. **Task 13 is still worth doing, but not for the reason given above** — the honest reason is that it caps any future text-size control (Phase 7) at 17px, and that the app's primary navigation does not belong in a column sized by workspace names. Measured in headless Chromium against `src/styles.css`, so the exact threshold is indicative: the Tauri WebView resolves `system-ui` to a different face. The 25px of slack is a margin, not a rounding error.
 
 ### Level A gaps (verified)
 
@@ -251,9 +263,44 @@ See "The finding that splits this plan". A commit message that says the type rai
 
 ## Phase 4 — The sidebar and the view switch
 
-- [ ] **Task 10: `.ws-account` onto a second row** of a two-row `.ws-row` grid, at `--fs-xs`/`--fg-subtle`, indented past the dot. Returns ~98px to the label **at 248px, with no width change** — this is the whole of the truncation bug, and it is worth landing before any width change so the two are reviewable apart.
-- [ ] **Task 11: `title` on `.ws-label`** — one line in `workspaces.ts`. Also on `.sess-group-name`, `.tile-head span:first-child` and `.tk-card-title`, which truncate the same way. (`.tk-card-title` already reaches AT through its `aria-label`; the `title` is for the sighted user.)
-- [ ] **Task 12: `#sidebar { width: clamp(248px, 18vw, 340px) }`.** At 1970px that is 340px. Re-measure `.tk-views` before and after — its overflow is the thing this must not leave broken.
+> **Tasks 10–12 executed 2026-08-03**, one commit, measured against the real
+> stylesheet on a static harness rather than estimated. `.ws-label`, holding
+> "cowork-deck" in a row with a bound account and an open-task count:
+>
+> | window | `#sidebar` | `.ws-label` | |
+> |---|---|---|---|
+> | before, any width | 248px | **28.2px** | "c…" |
+> | after, 1000px (clamp floor) | 248px | **119.8px** | full, **at the unchanged width** |
+> | after, 1400px | 252px | 123.8px | full |
+> | after, 1970px (clamp ceiling) | 340px | 212px | full, and `lemsoft-internal-tooling` stops clipping too |
+>
+> The second line lands where it was meant to: `.ws-account`'s text starts at 25px
+> from the row's left edge, the same as `.ws-label`'s, so the login sits under the
+> name rather than under the dot. Rows with a bound account grow from 36px to
+> 51.8px — the cost of the fix, and the reason `row-gap` is 2px against the row's
+> 8px column gap.
+>
+> **Two deviations from the plan as written:**
+>
+> 1. **Not a two-row grid — `flex-wrap` plus `flex-basis: 100%`.** `.ws-row` holds
+>    two conditional children (the account and the count), and `grid-template-areas`
+>    cannot place a child that may not exist without a rule per combination. Wrapping
+>    needs one declaration on the row and one on the account, and stays correct for
+>    all four combinations.
+> 2. **`.ws-account` is appended last in the DOM, not reordered with `order: 1`.**
+>    `order` would have left it reading between the name and the count while
+>    displaying below both — a 1.3.2 meaningful-sequence mismatch, in a plan half of
+>    which is an accessibility plan. `workspaces.ts` appends it after the two icon
+>    buttons instead; neither is focusable, so nothing moves in the tab order.
+>
+> Also: the 9px dot became `--dot-size`, because the account's indent is that plus a
+> gap and the two must agree — the plan's own constraint forbids a second magic
+> number justifying the first.
+
+- [x] **Task 10: `.ws-account` onto a second row** of a two-row `.ws-row` grid, at `--fs-xs`/`--fg-subtle`, indented past the dot. Returns ~98px to the label **at 248px, with no width change** — this is the whole of the truncation bug, and it is worth landing before any width change so the two are reviewable apart.
+- [x] **Task 11: `title` on `.ws-label`** — one line in `workspaces.ts`. Also on `.sess-group-name`, `.tile-head span:first-child` and `.tk-card-title`, which truncate the same way. (`.tk-card-title` already reaches AT through its `aria-label`; the `title` is for the sighted user.)
+- [x] **Task 12: `#sidebar { width: clamp(248px, 18vw, 340px) }`.** At 1970px that is 340px. Re-measure `.tk-views` before and after — its overflow is the thing this must not leave broken.
+      **Re-measured, and the overflow was never as close as the audit said** — see the correction under "`.tk-views` will break navigation" above. The clamp's floor is the old fixed width, so at the narrow end this changes nothing at all, which is also what makes it safe: widening cannot be what overflows a switch that had 25px spare at 248px.
 - [ ] **Task 13: Move the three view tabs out of the sidebar** into a full-width bar above the three screens (`main.ts` currently prepends them into `#sidebar`). Then the sidebar's width is driven only by workspace names, and the tabs get a real size with real padding. Touches `index.html` and `main.ts`, and `tests/view-switch.test.ts` asserts against the switch — read it first.
       This is the structural answer rather than the stylesheet one, and it is separable: Tasks 10–12 stand without it.
 
