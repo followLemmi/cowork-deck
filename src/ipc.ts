@@ -36,7 +36,25 @@ export interface SessionEntry {
    *  on restore, so catch-up cannot duplicate a run that is already back. */
   scheduledSkillId?: string;
 }
-export interface UiState { activeWorkspaceId: string | null; }
+export interface UiState {
+  activeWorkspaceId: string | null;
+  /** A multiplier on the base in `styles.css`, not a pixel size — see `ui-scale.ts`.
+   *  Required rather than optional: the Rust side fills it from a `serde` default, so
+   *  a reader that treats it as possibly-absent is guarding against a case that
+   *  cannot happen and would hide a real one. */
+  uiScale: number;
+}
+
+/** A change to the stored state, which is what `save_ui_state` takes.
+ *
+ *  Separate from `UiState` on purpose. The backend used to write the file from a
+ *  whole `UiState`, and the one caller sends the active workspace alone — so the
+ *  moment a second field existed, every workspace switch would have wiped the text
+ *  size. An absent key here means "leave it alone". */
+export interface UiStatePatch {
+  activeWorkspaceId?: string;
+  uiScale?: number;
+}
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
  *  a session actually started. Epoch millis. */
@@ -51,7 +69,7 @@ export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");
 export const saveWorkspace = (ws: Workspace) => invoke<Workspace[]>("save_workspace", { ws });
 export const removeWorkspace = (id: string) => invoke<Workspace[]>("remove_workspace", { id });
 export const loadUiState = () => invoke<UiState>("load_ui_state");
-export const saveUiState = (ui: UiState) => invoke<void>("save_ui_state", { ui });
+export const saveUiState = (ui: UiStatePatch) => invoke<void>("save_ui_state", { ui });
 export const listSkills = () => invoke<Skill[]>("list_skills");
 export const saveSkill = (sk: Skill) => invoke<Skill[]>("save_skill", { sk });
 export const removeSkill = (id: string) => invoke<Skill[]>("remove_skill", { id });

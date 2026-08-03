@@ -468,6 +468,57 @@ Independent of everything above. **Re-measure every ratio before and after** —
 
 Worth doing only if the base chosen in Phase 1 turns out to be a matter of taste rather than a fix. The `rem` architecture exists so that this is possible, not so that it is mandatory.
 
+> **Executed 2026-08-03, one commit.** Built on the reading that the 13px base *is* a
+> matter of taste — it is listed under "Taste, collected so it can be discounted"
+> below — and that the honest resolution is to hand the choice over rather than keep
+> guessing at it. It is also the only way to resize text here at all: a Tauri window
+> has no browser zoom to fall back on.
+>
+> **The scale is a multiplier, not a pixel size.** Two bases have to move together —
+> the chrome's 13px on `:root` and xterm's own 14px, set from JS because xterm reads
+> no CSS token — and one number scales both where two pixel values would drift. The
+> `f32` in `UiState` and Task 26's note about rounding `terminalFontPx` both only make
+> sense this way: `14 × 1.15` is 16.1, which is exactly the case that would give xterm
+> fractional cells.
+>
+> **The steps are 0.85 / 1 / 1.15 / 1.3 / 1.45**, and each was measured against the
+> layout rather than assumed to work because the scale is in `rem`:
+>
+> | step | root | `#sidebar` | `.ws-label` | switch | page scrolls X | name clipped |
+> |---|---|---|---|---|---|---|
+> | 0.85 | 11.05px | 211px | 84px | 218/1400 | no | no |
+> | 1.00 | 13px | 248px | 120px | 243/1400 | no | no |
+> | 1.15 | 14.95px | 285px | 156px | 268/1400 | no | no |
+> | 1.30 | 16.9px | 322px | 192px | 293/1400 | no | no |
+> | 1.45 | 18.85px | 360px | 229px | 318/1400 | no | no |
+>
+> **`#sidebar`'s `clamp()` had to become `rem`, and that is an addition to this
+> phase.** At a fixed 248px the control would have been self-defeating: raising the
+> scale makes the names longer inside a box that does not move, so it would have
+> brought back exactly the truncation Phase 4 fixed. `clamp(19.0769rem, 18vw,
+> 26.1538rem)` is the same 248px floor at the 13px base, expressed against the thing
+> that now moves. The `vw` term is deliberately left alone — it tracks the window,
+> which is a different question from how big the type is. At 900px and 1.45 the
+> sidebar takes 40% of the window, which is the right trade when the type is 45%
+> larger: the number of characters it holds is roughly unchanged.
+>
+> **The ceiling is 1.45 and not the 2.0 that SC 1.4.4 would ask for**, stated plainly
+> in `ui-scale.ts`: the modal caps and the deck's grid minimums are still pixels, and
+> claiming 200% would be claiming something unmeasured. Raising it is the geometry
+> sweep's job.
+>
+> Task 29's warning was worth its length — both halves of it are now covered by Rust
+> tests that fail without the fix, including one that writes a pre-upgrade
+> `ui_state.json` by hand and one asserting a workspace switch does not reset the
+> size.
+
+- [x] **Task 26: `src/ui-scale.ts`**, pure and unit-tested, following `pr.ts`/`issues.ts`: the steps, `clampScale`, `nextScale`/`prevScale`, `applyScale(scale, root)` writing the root's inline `fontSize`, and `terminalFontPx(scale)` **rounded to an integer** — xterm renders on a cell grid and 16.1px gives sub-pixel cells and blurry glyphs. *(one deliberate impurity: a module-level `current`, because `TerminalPanel`'s constructor needs it and `Deck` builds panels from four places — threading it would leave a new call site free to forget it)*
+- [x] **Task 27: `terminal.setFontSize(px)`** — sets `this.term.options.fontSize` and calls `this.fit()`. **The refit is the load-bearing half:** it changes cols/rows, which fires the existing `onResize` handler and pushes `resizeSession` to the PTY. Omitting it leaves every PTY on stale dimensions with no symptom until the agent's output wraps wrong. Two xterm mocks (`tests/terminal-passthrough.test.ts`, `tests/terminal-search.test.ts`) have no `options` property and need one.
+- [x] **Task 28: Deliver the change as a `window` `CustomEvent("ui-scale")`**, subscribed in `TerminalPanel`'s constructor and removed in `dispose()` — **not** as a `Deck` fan-out. Five test files hand-roll a `TerminalPanel` mock with a fixed method list and every one would throw on a new method; an event costs one listener and leaves all five untouched. It is also the fan-out shape the app already uses for `pill://count`.
+- [x] **Task 29: Persist it.** `UiState` gains `ui_scale: f32` — **non-`Option`, with `#[serde(default)]`.** *(and `save_ui_state` now takes a `UiStatePatch`, with `UiStatePatch` separate from `UiState` on the TS side too, so the existing single-field call site stays correct instead of merely compiling)*
+- [x] **Task 30: A settings dialog** on `openDialog`, opened from the palette, plus two direct palette entries for larger/smaller. *(every step previews live and Cancel puts it back — a chooser that only applies on OK asks a person to imagine each option, which is what they opened it to stop doing)*
+- [x] **Task 31: Apply at boot *before* `boot()` runs**, not as a `runBoot` step — `runBoot` stops at the first failing step, so a failed preference read would take the layout restore and the scheduler wiring with it. A preference that cannot be read is a preference at its default, not a dead app. *(awaited rather than fired alongside: `boot()` restores the session layout, and terminals built during it read the scale in their constructor)*
+
 - [ ] **Task 26: `src/ui-scale.ts`**, pure and unit-tested, following `pr.ts`/`issues.ts`: the steps, `clampScale`, `nextScale`/`prevScale`, `applyScale(scale, root)` writing the root's inline `fontSize`, and `terminalFontPx(scale)` **rounded to an integer** — xterm renders on a cell grid and 16.1px gives sub-pixel cells and blurry glyphs.
 - [ ] **Task 27: `terminal.setFontSize(px)`** — sets `this.term.options.fontSize` and calls `this.fit()`. **The refit is the load-bearing half:** it changes cols/rows, which fires the existing `onResize` handler and pushes `resizeSession` to the PTY. Omitting it leaves every PTY on stale dimensions with no symptom until the agent's output wraps wrong. Two xterm mocks (`tests/terminal-passthrough.test.ts`, `tests/terminal-search.test.ts`) have no `options` property and need one.
 - [ ] **Task 28: Deliver the change as a `window` `CustomEvent("ui-scale")`**, subscribed in `TerminalPanel`'s constructor and removed in `dispose()` — **not** as a `Deck` fan-out. Five test files hand-roll a `TerminalPanel` mock with a fixed method list and every one would throw on a new method; an event costs one listener and leaves all five untouched. It is also the fan-out shape the app already uses for `pill://count`.

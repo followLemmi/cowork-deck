@@ -37,7 +37,9 @@
 
 use crate::gh;
 use crate::hooks::build_settings_json;
-use crate::model::{GitStatus, SessionEntry, Skill, TokenUsage, UiState, Workspace, WorkspaceGithub};
+use crate::model::{
+    GitStatus, SessionEntry, Skill, TokenUsage, UiState, UiStatePatch, Workspace, WorkspaceGithub,
+};
 use crate::pty::PtyManager;
 use crate::store::Store;
 use base64::Engine;
@@ -1274,7 +1276,7 @@ pub fn load_ui_state(state: State<AppState>) -> UiState {
 }
 
 #[tauri::command]
-pub fn save_ui_state(state: State<AppState>, ui: UiState) -> Result<(), String> {
+pub fn save_ui_state(state: State<AppState>, ui: UiStatePatch) -> Result<(), String> {
     state.store.lock().unwrap().save_ui_state(&ui).map_err(|e| e.to_string())
 }
 

@@ -1,4 +1,4 @@
-use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, Workspace};
+use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, UiStatePatch, Workspace};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -89,8 +89,22 @@ impl Store {
             Err(_) => UiState::default(),
         }
     }
-    pub fn save_ui_state(&self, st: &UiState) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(st)
+    /// Merge a patch into what is on disk rather than replacing the file.
+    ///
+    /// This took a whole `UiState` and wrote it out, which was safe while there was
+    /// exactly one field and exactly one caller sending it. With a second field it
+    /// would have meant every workspace switch writing `uiScale` back to whatever
+    /// the caller happened to have — in practice the default, since the only caller
+    /// sends the active workspace and nothing else.
+    pub fn save_ui_state(&self, patch: &UiStatePatch) -> std::io::Result<()> {
+        let mut st = self.ui_state();
+        if patch.active_workspace_id.is_some() {
+            st.active_workspace_id = patch.active_workspace_id.clone();
+        }
+        if let Some(scale) = patch.ui_scale {
+            st.ui_scale = scale;
+        }
+        let json = serde_json::to_string_pretty(&st)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(self.ui_path(), json)
     }
@@ -174,7 +188,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::model::{
-        SessionEntry, TrackerProvider, UiState, Workspace, SCHEDULE_STATE_VERSION,
+        SessionEntry, TrackerProvider, UiState, UiStatePatch, Workspace, SCHEDULE_STATE_VERSION,
     };
 
     fn tmp() -> std::path::PathBuf {
@@ -299,10 +313,49 @@ mod tests {
     #[test]
     fn ui_state_round_trips_and_defaults_empty() {
         let s = Store::new(tmp());
-        assert_eq!(s.ui_state(), UiState::default()); // NotFound -> default (None)
-        let st = UiState { active_workspace_id: Some("w-1".into()) };
-        s.save_ui_state(&st).unwrap();
-        assert_eq!(Store::new(s.dir.clone()).ui_state(), st);
+        assert_eq!(s.ui_state(), UiState::default()); // NotFound -> default
+        assert_eq!(UiState::default().ui_scale, 1.0); // not 0.0, which derive would give
+        let patch = UiStatePatch {
+            active_workspace_id: Some("w-1".into()),
+            ui_scale: Some(1.3),
+        };
+        s.save_ui_state(&patch).unwrap();
+        let reloaded = Store::new(s.dir.clone()).ui_state();
+        assert_eq!(reloaded.active_workspace_id, Some("w-1".into()));
+        assert_eq!(reloaded.ui_scale, 1.3);
+    }
+
+    /// The migration case, and the reason `ui_scale` carries `#[serde(default)]`.
+    /// Every `ui_state.json` written before the field existed looks like this, and
+    /// without the default the whole parse fails — which `ui_state()` swallows with
+    /// `unwrap_or_default()`, so the symptom is not an error but the active
+    /// workspace being silently forgotten on the first launch after upgrade.
+    #[test]
+    fn ui_state_reads_a_file_written_before_ui_scale_existed() {
+        let s = Store::new(tmp());
+        std::fs::write(s.ui_path(), r#"{"activeWorkspaceId":"w-7"}"#).unwrap();
+        let st = s.ui_state();
+        assert_eq!(st.active_workspace_id, Some("w-7".into()));
+        assert_eq!(st.ui_scale, 1.0);
+    }
+
+    /// The other half of the same bug. `save_ui_state` used to write the file from a
+    /// whole `UiState`, and its only caller sends the active workspace alone — so a
+    /// workspace switch would have reset the text size every time.
+    #[test]
+    fn saving_one_field_leaves_the_other_alone() {
+        let s = Store::new(tmp());
+        s.save_ui_state(&UiStatePatch { active_workspace_id: None, ui_scale: Some(1.45) })
+            .unwrap();
+        // Exactly what `workspaces.ts` sends, and nothing else.
+        s.save_ui_state(&UiStatePatch {
+            active_workspace_id: Some("w-2".into()),
+            ui_scale: None,
+        })
+        .unwrap();
+        let st = Store::new(s.dir.clone()).ui_state();
+        assert_eq!(st.active_workspace_id, Some("w-2".into()));
+        assert_eq!(st.ui_scale, 1.45, "a workspace switch must not reset the text size");
     }
 
     #[test]

@@ -324,11 +324,50 @@ pub struct SessionEntry {
     pub scheduled_skill_id: Option<String>,
 }
 
-/// A little UI state that survives a restart (for now: the active workspace).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+/// A little UI state that survives a restart: the active workspace and the text
+/// size the person chose.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiState {
     #[serde(rename = "activeWorkspaceId")]
     pub active_workspace_id: Option<String>,
+    /// Not an `Option`, and `#[serde(default)]` is what makes that safe. Every
+    /// `ui_state.json` written before this field existed has no key for it, and a
+    /// missing field on a non-`Option` fails the *whole* parse — which
+    /// `Store::ui_state` swallows with `unwrap_or_default()`, so the symptom would
+    /// not be an error but the active workspace being silently forgotten on the
+    /// first launch after upgrade.
+    #[serde(rename = "uiScale", default = "default_ui_scale")]
+    pub ui_scale: f32,
+}
+
+/// 1.0 is the base declared in `styles.css`, not zero — which is what `derive`d
+/// `Default` would give, and a zero scale is an invisible interface.
+fn default_ui_scale() -> f32 {
+    1.0
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self { active_workspace_id: None, ui_scale: default_ui_scale() }
+    }
+}
+
+/// A change to `UiState`, not a replacement for it.
+///
+/// `save_ui_state` used to take a whole `UiState` and write the file from it, and
+/// its only caller passes the active workspace alone — so the moment a second field
+/// existed, every workspace switch would have wiped the text size. `None` here means
+/// "leave it alone".
+///
+/// `active_workspace_id` is `Option<Option<String>>`-shaped in principle, since the
+/// stored value is itself optional; it is not, because nothing in the app ever sets
+/// it back to null — it is only ever pointed at a real workspace.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UiStatePatch {
+    #[serde(rename = "activeWorkspaceId")]
+    pub active_workspace_id: Option<String>,
+    #[serde(rename = "uiScale")]
+    pub ui_scale: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

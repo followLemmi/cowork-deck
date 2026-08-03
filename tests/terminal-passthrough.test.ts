@@ -12,6 +12,9 @@ vi.mock("@xterm/xterm", () => ({
     loadAddon() {} open() {} onData() {} onResize() {} focus() {} write() {} clear() {} dispose() {}
     attachCustomKeyEventHandler(fn: (e: any) => boolean) { captured = fn; }
     cols = 80; rows = 24;
+    // `setFontSize` reads and writes this, and the constructor now sets `fontSize`
+    // from the current scale rather than a literal.
+    options: Record<string, unknown> = {};
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));

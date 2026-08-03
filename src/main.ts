@@ -2,8 +2,12 @@ import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { applyView, firstFocusable } from "./view";
+import { settingsDialog } from "./settings";
+import {
+  applyScale, broadcastScale, clampScale, currentScale, nextScale, prevScale, scaleLabel,
+} from "./ui-scale";
 import type { ViewName } from "./view";
-import { claudeAvailable, loadLayout, onScheduledFire, onSchedulerBroken, scheduleAck, schedulerReady } from "./ipc";
+import { claudeAvailable, loadLayout, loadUiState, onScheduledFire, onSchedulerBroken, saveUiState, scheduleAck, schedulerReady } from "./ipc";
 import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
 import {
@@ -982,6 +986,27 @@ function hotkeyLabel(letter: string): string {
   return isMacPlatform() ? `Cmd+${letter}` : `Ctrl+Shift+${letter}`;
 }
 
+/** Apply a scale everywhere and remember it.
+ *
+ *  Three things, and none of them is optional: the root's font size, from which every
+ *  `rem` in the stylesheet resolves; the broadcast, which is how live terminals learn
+ *  their new pixel size, since xterm reads no CSS; and the write, sent as a patch so
+ *  it cannot take the active workspace with it. A failed write leaves the size applied
+ *  — a preference that will not persist is still a preference for this session. */
+function setScale(scale: number): void {
+  applyScale(scale, document.documentElement);
+  broadcastScale(currentScale());
+  saveUiState({ uiScale: currentScale() })
+    .catch((e) => console.debug("ui scale save failed", e));
+}
+
+async function chooseScale(): Promise<void> {
+  // `settingsDialog` previews live and puts the old value back on cancel, so there
+  // is nothing to undo here — only something to persist.
+  const picked = await settingsDialog();
+  if (picked !== null) setScale(picked);
+}
+
 function paletteCommands(): Command[] {
   return [
     { id: "new-session", title: "New session", hotkey: hotkeyLabel("N"), run: () => { void newSession(); } },
@@ -997,6 +1022,13 @@ function paletteCommands(): Command[] {
     { id: "prs", title: "Open pull requests", run: () => setView("pr") },
     { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
     { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
+    // The two steps are direct commands because stepping is what a person wants
+    // most often and it needs nothing on screen to do; the dialog exists for
+    // choosing, which needs the current value visible. Titles carry the value so
+    // the palette is not silent about where you already are.
+    { id: "text-larger", title: `Text size: larger (now ${scaleLabel(currentScale())})`, run: () => setScale(nextScale(currentScale())) },
+    { id: "text-smaller", title: `Text size: smaller (now ${scaleLabel(currentScale())})`, run: () => setScale(prevScale(currentScale())) },
+    { id: "settings", title: "Text size…", run: () => void chooseScale() },
   ];
 }
 
@@ -1079,4 +1111,26 @@ claudeAvailable().then((ok) => {
   if (!ok) alertModal("The claude executable was not found. Set its path via the COWORK_CLAUDE_PATH environment variable and restart the app.");
 });
 
-void boot();
+/** Read the stored text size and apply it, then boot.
+ *
+ *  Before `boot()` and deliberately not a step inside it: `runBoot` stops at the first
+ *  failing step, so a preference that could not be read would take the layout restore
+ *  and the scheduler handshake down with it. A preference that cannot be read is a
+ *  preference at its default, not a dead app — hence the catch here and the `finally`
+ *  below.
+ *
+ *  Awaited rather than fired alongside, because `boot()` restores the session layout:
+ *  terminals built during it read the current scale in their constructor, and a race
+ *  would give them the default and leave them there until the next change. */
+async function bootWithStoredScale(): Promise<void> {
+  let scale = currentScale();
+  try {
+    scale = clampScale((await loadUiState()).uiScale);
+  } catch (e) {
+    console.debug("ui scale read failed, using the default", e);
+  }
+  applyScale(scale, document.documentElement);
+  await boot();
+}
+
+void bootWithStoredScale();

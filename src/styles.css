@@ -155,8 +155,15 @@ html, body, #app { height: 100%; margin: 0; }
      which is also why widening cannot be what overflows `.tk-views`: at 248px
      the switch has the room it has now, and above it, more.
      The ceiling stops the column eating a 4K window for names it does not have;
-     the number of characters to aim for is a preference, not a measurement. */
-  width: clamp(248px, 18vw, 340px);
+     the number of characters to aim for is a preference, not a measurement.
+     In `rem` rather than px, because this column exists to hold text and the text
+     size is now the person's to choose: at 248 fixed pixels, raising the scale
+     made the names *longer* inside a box that stayed the same, so the text-size
+     control would have made the truncation Phase 4 fixed come back. 19.0769rem is
+     248px at the 13px base — the same floor, expressed against the thing that
+     moves. The `vw` term is deliberately not converted: it tracks the window,
+     which is a different question from how big the type is. */
+  width: clamp(19.0769rem, 18vw, 26.1538rem);
   background: var(--bg-panel); border-right: 1px solid var(--border);
   color: var(--fg); padding: var(--sp-3) var(--sp-2); overflow: auto;
   display: flex; flex-direction: column; gap: var(--sp-2);
@@ -529,6 +536,22 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    the 92vw cap never applied below a 522px window. Both are capped now. */
 .modal-box--form { min-width: min(480px, 100vw - 32px); width: min(560px, 92vw); }
 .modal-box--form .form-prompt { min-height: 110px; }
+
+/* --- Settings: text size ------------------------------------------------- */
+/* A column rather than a row of chips: the labels are "115% · 14.95px", which is a
+   sentence-length thing, and they must stay readable at the step being previewed —
+   including the largest, where a row of five would wrap mid-label. */
+.settings-sizes { display: flex; flex-direction: column; gap: var(--sp-1); }
+.settings-size {
+  font: inherit; font-size: var(--fs-base); color: var(--fg-muted); text-align: left;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: var(--sp-2) var(--sp-3);
+  min-height: 24px; cursor: pointer;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.settings-size:hover { color: var(--fg); border-color: var(--border-strong); }
+.settings-size.selected { border-color: var(--accent); color: var(--fg); background: var(--accent-weak); }
+.settings-size:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 /* Checkbox beside its label rather than under it, and not the 13px system size.
    accent-color themes the native control — no custom rendering needed here. */

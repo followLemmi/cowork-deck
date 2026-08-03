@@ -5,6 +5,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { startSession, startCommandSession, writeSession, resizeSession, type SessionAuth } from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
+import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
 
 export class TerminalPanel {
   private term: Terminal;
@@ -13,10 +14,18 @@ export class TerminalPanel {
   private lastSearch = "";
   private ro: ResizeObserver | null = null;
   private rafId: number | null = null;
+  /** Bound once so `dispose` can remove the same reference it added. */
+  private onScaleEvent = (e: Event) => {
+    this.setFontSize((e as CustomEvent<number>).detail);
+  };
   constructor(private session: string, private mount: HTMLElement) {
     this.term = new Terminal({
       fontFamily: '"CaskaydiaCove Nerd Font Mono", "Cascadia Code", ui-monospace, monospace',
-      fontSize: 14,
+      // Not a literal 14: a panel built while a larger scale is in force has to be
+      // born at that size. The broadcast only reaches terminals that already exist,
+      // so a session opened after the preference was changed would otherwise come
+      // up at the default and stay there until the next change.
+      fontSize: terminalFontPx(currentScale()),
       lineHeight: 1.2,
       cursorBlink: true,
       cursorStyle: "block",
@@ -69,6 +78,7 @@ export class TerminalPanel {
     this.ro.observe(mount);
     this.term.onData((d) => { void writeSession(this.session, d); });
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
+    window.addEventListener(UI_SCALE_EVENT, this.onScaleEvent);
   }
   /** Возвращает исход привязки GitHub-аккаунта: вызывающий решает, вешать ли
    *  бейдж на тайл. Окружение фиксируется здесь, при рождении процесса. */
@@ -94,6 +104,19 @@ export class TerminalPanel {
   findNext() { if (this.lastSearch) this.searchAddon.findNext(this.lastSearch); }
   findPrevious() { if (this.lastSearch) this.searchAddon.findPrevious(this.lastSearch); }
   clear() { this.term.clear(); }
+  /** Resize the terminal's own type.
+   *
+   *  **The refit is the load-bearing half.** Changing the font size changes how many
+   *  columns and rows fit, and it is `fit()` that recomputes them — which fires the
+   *  `onResize` handler wired in the constructor, which pushes `resizeSession` to the
+   *  PTY. Set the option without refitting and every PTY keeps the dimensions it had:
+   *  nothing looks wrong until the agent draws a box or wraps a line, and then it
+   *  wraps against a width the terminal no longer has. */
+  setFontSize(px: number) {
+    if (this.term.options.fontSize === px) return;
+    this.term.options.fontSize = px;
+    this.fit();
+  }
   fit() {
     if (this.mount.clientWidth === 0 || this.mount.clientHeight === 0) return;
     try {
@@ -107,6 +130,10 @@ export class TerminalPanel {
     this.rafId = null;
     this.ro?.disconnect();
     this.ro = null;
+    // A listener on `window` outlives the panel unless it is taken off: a closed
+    // session would keep a disposed terminal alive and touch it on the next scale
+    // change.
+    window.removeEventListener(UI_SCALE_EVENT, this.onScaleEvent);
     this.term.dispose();
   }
 }

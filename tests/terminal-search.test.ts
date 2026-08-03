@@ -24,6 +24,9 @@ vi.mock("@xterm/xterm", () => ({
     write() {}
     dispose() {}
     cols = 80; rows = 24;
+    // See the note in terminal-passthrough.test.ts: the panel reads and writes
+    // `options.fontSize` now.
+    options: Record<string, unknown> = {};
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
