@@ -1,5 +1,6 @@
 import type { PrDetail, PullRequest } from "./ipc";
 import { ghUnavailable, type GhUnavailable } from "./gh-unavailable";
+import { renderMarkdown } from "./markdown";
 import { ago, canMerge, checksLabel, reviewLabel, sortPrs } from "./pr";
 
 export type PrUnavailable = GhUnavailable;
@@ -266,11 +267,13 @@ export class PrView {
       `${d.changedFiles} file${d.changedFiles === 1 ? "" : "s"} changed · `
       + `+${d.additions} −${d.deletions}`,
     ));
-    // As written, in a <pre>, never parsed. The description is Markdown and this
-    // app has no Markdown renderer; the two honest options were plain text and a
-    // dependency, and a hand-rolled subset that turns `[x](javascript:…)` into an
-    // anchor is not a third. `el` sets textContent, so a body containing markup
-    // arrives as characters — and anyone who can open a pull request writes it.
+    // Parsed now, into nodes rather than into HTML. The comment that used to be here
+    // said the two honest options were plain text and a dependency, and that a
+    // hand-rolled subset turning `[x](javascript:…)` into an anchor was not a third.
+    // It was right about the danger and wrong about the count — see `markdown.ts`,
+    // which uses a real lexer and builds the tree with `createElement`/`textContent`,
+    // so there is no HTML string for a sanitiser to have to get right. Markup in a
+    // description still arrives as characters, exactly as it did in the <pre>.
     // The description and the file list side by side rather than stacked. Both are
     // capped in `ch` for readability — 80 and 72 — so stacking them left a 1970px
     // window mostly empty to the right of a column of text, which is what the owner
@@ -278,8 +281,13 @@ export class PrView {
     // what changes is that the width it does not use now holds the file list instead
     // of nothing. They wrap back to a column when the row is too narrow for both.
     const panels = el("div", "pr-detail-panels");
-    if (d.body.trim()) panels.append(el("pre", "pr-detail-body", d.body));
-    else panels.append(el("p", "pr-detail-note", "No description."));
+    if (d.body.trim()) {
+      const body = el("div", "pr-detail-body");
+      body.append(renderMarkdown(d.body));
+      panels.append(body);
+    } else {
+      panels.append(el("p", "pr-detail-note", "No description."));
+    }
 
     if (d.files.length) {
       const files = el("ul", "pr-detail-files");

@@ -1120,7 +1120,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   border-top: 1px solid var(--border);
   display: flex; flex-direction: column; gap: var(--sp-2);
 }
-.pr-detail p { margin: 0; }
+/* `> p`, not `p`. The descendant form was written when this panel held nothing but
+   its own few paragraphs; it now contains rendered Markdown, and `.pr-detail p` beats
+   `.pr-detail-body > * + *` on specificity — (0,1,1) against (0,1,0) — so every
+   authored paragraph came out flush against the one above it. Measured in the harness
+   with `getComputedStyle`, which reported `margin-top: 0px` where 8px was intended.
+   Narrowing the selector is the fix; adding a class to out-specify it would have left
+   the trap in place for the next thing rendered in here. */
+.pr-detail > p { margin: 0; }
 /* The description and the file list abreast, wrapping back to a column when the row
    cannot hold both. Both children are capped in `ch` for readability — 80 and 72 —
    and stacked, that left most of a 1970px window empty beside a column of text.
@@ -1147,42 +1154,99 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   min-height: 24px;  /* see `.tk-fix` */
 }
 .pr-detail-retry:hover { border-color: var(--accent); color: var(--accent); }
-/* Monospace and `pre-wrap`, because the description is Markdown shown as written
-   (see pr-view.ts's own note on why it is not parsed): the fences, tables and lists
-   in it only line up in a fixed pitch, and its own line breaks are the only
-   structure it has here. Capped and scrolled — a long description must not push the
-   next pull request off the screen — and `overflow-wrap` so an unbroken URL scrolls
-   the block rather than the page. */
+/* Rendered Markdown now, not a monospace transcript — `markdown.ts` parses it into
+   nodes. The previous rule held the whole description in a fixed pitch at 80 columns,
+   and its own comment named the cost: an ASCII table wider than 80 columns wrapped
+   and was destroyed. That comment ended "the honest answer to that is a Markdown
+   renderer, which this app deliberately does not have". It has one.
+
+   So the type flips: prose in `--font-ui` at `--lh-body`, and `--font-mono` kept for
+   the two things that need a fixed pitch, `.md-pre` and `.md-code` below.
+
+   `ch` still, but it now measures the *UI* face, which is narrower than the mono one
+   — 72ch of proportional text is about the measure 80ch of CaskaydiaCove was, so the
+   number moves and the line length does not. Capped and scrolled, because a long
+   description must not push the next pull request off the screen. */
 .pr-detail-body {
   margin: 0; max-height: 40vh; overflow: auto;
-  font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--fg-muted);
-  line-height: var(--lh-code);
-  /* Was unbounded, which at a 1970px window is 252 characters a line — three times
-     a comfortable measure, in the smallest size in the app, in the typeface least
-     suited to prose. `ch` because 1ch *is* the loaded face's advance, so this is
-     exactly 80 columns whatever CaskaydiaCove's metrics are; the sibling
-     `.pr-detail-files` below already used the idiom, and the fix simply never
-     reached the body one rule up.
-     80 rather than 96 is a judgement: prose dominates these descriptions, and 80 is
-     also the conventional code column. It costs a wrapped — and so destroyed —
-     ASCII table wider than 80 columns. The honest answer to that is a Markdown
-     renderer, which this app deliberately does not have (see pr-view.ts). */
-  max-width: 80ch;
-  /* A flex item now. `min-width` is the load-bearing half and a `flex-basis` alone
-     will not do it: a basis is a starting size that flex is free to shrink past, and
+  font-family: var(--font-ui); font-size: var(--fs-sm); color: var(--fg-muted);
+  line-height: var(--lh-body);
+  max-width: 72ch;
+  /* A flex item. `min-width` is the load-bearing half and a `flex-basis` alone will
+     not do it: a basis is a starting size that flex is free to shrink past, and
      measured at a 900px window that is exactly what happened — the description was
      crushed to 48 columns beside a file list at its full width, rather than the two
      wrapping. `min-width` is a floor flex must respect, so the pair drops to a column
      instead.
-     56ch rather than 44: below that, prose in a fixed pitch is a column of fragments,
-     and a wrapped stack where each block gets the full row beats two cramped ones.
      `min()` with `100%` so the floor never becomes an overflow on a narrow window —
-     that is the pattern the modal caps use for the same reason. */
-  flex: 1 1 56ch;
-  min-width: min(56ch, 100%);
-  white-space: pre-wrap; overflow-wrap: anywhere;
+     the pattern the modal caps already use for the same reason. */
+  flex: 1 1 48ch;
+  min-width: min(48ch, 100%);
+  overflow-wrap: anywhere;
   background: var(--bg-app); border: 1px solid var(--border);
   border-radius: var(--r-sm); padding: var(--sp-2);
+}
+
+/* The rendered tree. One block spacing rule rather than a margin per element: these
+   are author-controlled and arrive in any order, so `* + *` is the only form that
+   cannot be defeated by a heading following a table following a list. */
+.pr-detail-body > * { margin: 0; }
+.pr-detail-body > * + * { margin-top: var(--sp-2); }
+/* Brighter than the prose around them, which is the hierarchy the `<pre>` could not
+   express at all. Sized by their level rather than all alike — a description's `##`
+   sections are how a long one is skimmed. `h4` is where `markdown.ts` starts, because
+   the screen's own title is an `h3`. */
+.md-head { color: var(--fg); font-weight: var(--fw-bold); line-height: var(--lh-tight); }
+h4.md-head { font-size: var(--fs-lg); }
+h5.md-head { font-size: var(--fs-base); }
+/* The deepest level cannot get its own size — the body is already `--fs-sm` and
+   there is no step below it that is not a caption. Weight and colour carry it. */
+h6.md-head { font-size: var(--fs-sm); }
+.md-head + * { margin-top: var(--sp-1); }
+.md-list { padding-left: 1.4em; }
+.md-item + .md-item { margin-top: 2px; }
+/* A task list in a description is a record, not a control — `markdown.ts` disables
+   the box. `--fg-subtle` on it would read as broken rather than as read-only. */
+.md-task { margin-right: var(--sp-1); vertical-align: baseline; accent-color: var(--accent); }
+.md-link { color: var(--accent); text-decoration: none; }
+.md-link:hover { text-decoration: underline; }
+.md-link:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: 2px; }
+/* Inline code and fenced code, the two places the fixed pitch is the point. `--fs-sm`
+   inside prose already at `--fs-sm` would leave mono looking larger — it has a bigger
+   x-height here — so it steps down one. */
+.md-code {
+  font-family: var(--font-mono); font-size: 0.92em;
+  background: var(--bg-raised); border-radius: 2px; padding: 0 4px;
+}
+.md-pre {
+  font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-code);
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  /* The one place horizontal scroll is right: a fenced block is code, and wrapping
+     code is what the old whole-description `pre-wrap` was criticised for. It scrolls
+     inside itself so the page never does. */
+  overflow-x: auto; white-space: pre;
+}
+.md-quote {
+  padding-left: var(--sp-2); border-left: 2px solid var(--border-strong);
+  color: var(--fg-subtle);
+}
+.md-hr { border: 0; border-top: 1px solid var(--border); }
+/* Tables are the reason the renderer was worth having: an ASCII table in a
+   proportional face is noise, and the old rule kept it legible only by holding the
+   entire description in a fixed pitch. The wrapper scrolls, not the table, so a wide
+   table does not set the width of the panel it sits in. */
+.md-table-wrap { overflow-x: auto; }
+.md-table { border-collapse: collapse; font-size: var(--fs-xs); }
+.md-table th, .md-table td {
+  border: 1px solid var(--border); padding: 3px var(--sp-2); text-align: left;
+}
+.md-table th { color: var(--fg); font-weight: var(--fw-medium); background: var(--bg-raised); }
+/* Raw HTML in a description, shown as its own source. `markdown.ts` never turns it
+   into markup; this is what makes that visible rather than looking like a gap. */
+.md-raw {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--fg-subtle);
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
 /* Capped in characters rather than left to fill the row: across a 1280px window
    the counts end up a hand's width from the path they belong to, and reading which
