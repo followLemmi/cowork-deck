@@ -47,6 +47,26 @@
      `.state-error` now measures 5.97 / 5.50 / 4.71 (`npm run contrast`). */
   --st-error: #e78f96;
 
+  /* The diff drawer's two line bands, and the `--accent-weak` idiom above applied to
+     the two hues this view already spends on added and removed: `.pr-detail-plus` and
+     `.pr-detail-minus` are `--st-working`/`--st-error` in this same screen, and that
+     file list is what the drawer navigates. Giving the bands a hue of their own would
+     have meant added being one green in the list and another in the diff.
+     Literal `rgba()` and *not* `color-mix()`: `parseColor` in `scripts/contrast.mjs`
+     reads `#rgb`, `#rrggbb`, `rgba()` and tokens naming one of those, and nothing
+     else — a colour that script cannot parse is a colour nobody can check.
+     0.13 is deliberately low, and low is the whole point: the tint sits *under* code,
+     so every point of alpha is contrast taken off `--fg`. Measured, 0.22 costs two
+     full points of text contrast and moves the two bands 0.03 further apart from
+     each other, which buys nothing — at 0.13 they are already only **1.03** against
+     each other where 1.4.11 asks 3.0. (The design document says 1.30 for this row;
+     `npm run contrast` measures 1.03 on the same two colours, and the script is the
+     one that can be re-run.) Colour does not distinguish added from removed here
+     and no alpha makes it. That is why `.dv-mark` is a real character in a column of
+     its own rather than a tint doing the work. */
+  --diff-add-weak: rgba(152, 195, 121, 0.13);
+  --diff-del-weak: rgba(231, 143, 150, 0.13);
+
   --font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "CaskaydiaCove Nerd Font Mono", "Cascadia Code", ui-monospace, monospace;
 
@@ -1029,8 +1049,21 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tk-e-add-step:hover, .tk-e-add-kind:hover { border-color: var(--accent); color: var(--accent); }
 
 /* --- Pull requests ------------------------------------------------------ */
-.pr-view { flex: 1; min-width: 0; overflow: auto; padding: var(--sp-3); }
+/* A flex **row** now — the list, then the diff drawer beside it — where it used to be
+   the scrolling box itself. `overflow: auto` and `padding: var(--sp-3)` have moved
+   down to `.pr-list`, and that move is the point rather than a tidy-up: left here,
+   the drawer would scroll up out of the window along with the list it is meant to sit
+   beside, and the padding would put a 12px gutter between the drawer and the window
+   edge that the sidebar's own column does not have.
+   DOM order is list-then-drawer so reading order matches visual order (SC 1.3.2). */
+.pr-view { flex: 1; min-width: 0; display: flex; }
+/* Two class names on one element, so this outranks the `display: flex` above
+   whatever the source order — the same reason `#board.hidden` has a rule of its own. */
 .pr-view.hidden { display: none; }
+/* `min-width: 0` for the reason `#board` documents: without it a flex item's floor is
+   its content's intrinsic width, so a wide pull request row would push the drawer off
+   the window instead of the list scrolling inside itself. */
+.pr-list { flex: 1; min-width: 0; overflow: auto; padding: var(--sp-3); }
 .pr-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
 /* Was a bare <h3> inheriting the UA's 1.17em of a base nobody declared: 18.7px,
    which made this the largest text in the app and the board's own `.tk-title`
@@ -1271,3 +1304,380 @@ h6.md-head { font-size: var(--fs-sm); }
 .pr-detail-path { color: var(--fg-muted); flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .pr-detail-plus { color: var(--st-working); flex: 0 0 auto; }
 .pr-detail-minus { color: var(--st-error); flex: 0 0 auto; }
+
+/* --- The diff drawer ------------------------------------------------------ */
+/* Design: docs/superpowers/specs/2026-08-04-pr-diff-drawer-design.md. Every colour
+   below was measured through `scripts/contrast.mjs` before it was written here; the
+   ratios in the comments are that script's numbers, not estimates. */
+
+/* It mirrors `#sidebar` — `--bg-panel` and a one-pixel border on the edge it meets —
+   and deliberately not `.bcast-panel`. `.bcast-panel` is an overlay: absolute, a
+   `z-index`, and a shadow to say it floats. This column squeezes the list rather than
+   covering it, so it has none of the three. A shadow would assert an elevation it does
+   not have, and a `z-index` would invite the overlay the accessibility review refused
+   (a drawer over a still-focusable list fails SC 2.4.11 Focus Not Obscured).
+   The seam measures 1.06 against the list and its border 1.36 — under the 3.0 of
+   1.4.11, and knowingly so: this is the app's existing surface palette, which
+   `contrast.mjs` records as out of scope. Matching that level is the decision. A
+   border bright enough to pass here and nowhere else would just look broken.
+
+   A grid rather than a column of flex items, because the grip is a full-height
+   column beside the head *and* the body — two rows in one — and absolute positioning
+   it against the drawer's edge would have it overlap whatever the head puts there. */
+.pr-drawer {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  /* The code face and the code size, declared here and not only on `.dv-file`,
+     because `ch` resolves against the *element's own* font and the two widths below
+     are the only reason this pane has a width at all. Without this the drawer
+     inherits `--font-ui` from `#app` and `62ch` silently means 62 columns of the
+     system sans — a different number of code columns, which is the one question a
+     diff pane answers. `.pr-drawer-head` opts back into `--font-ui` for its chrome. */
+  font-family: var(--font-mono); font-size: var(--fs-sm);
+  /* A fallback only: `main.ts` writes the persisted width inline, in `ch`.
+     `ch` and not px, because `ui-scale.ts` moves the root between 11.05px and
+     18.85px and a px pane shows *fewer* code columns at 145% — the regression the
+     sidebar's `rem` clamp exists to prevent. Not percent either: 40% of 1970px and
+     40% of 900px are different column counts, and "does this line fit" is the only
+     question a diff pane answers. */
+  width: 62ch;
+  /* The floor. Below it the marker and the two number columns crowd out the code and
+     the pane stops answering that question. `min()` with `100%` so the floor can
+     never itself become an overflow on a narrow window — the pattern the modal caps
+     and `.pr-detail-body` already use. */
+  min-width: min(40ch, 100%);
+  /* `100%` minus `.pr-list`'s own horizontal padding, and the subtraction is a real
+     measurement rather than a fudge: `box-sizing: border-box` floors a padded box at
+     its padding, so `.pr-list` cannot shrink below 24px however far `min-width: 0`
+     invites it to. At a 900px window and the 18.85px text step the drawer's 62ch is
+     wider than the 540.4px left over, and a flat `max-width: 100%` gave the page
+     itself 24px of horizontal scroll — measured, and the one thing this design says
+     must never happen. Reset under `--narrow` below, where the list is gone and there
+     is no padding to leave room for. */
+  max-width: calc(100% - 2 * var(--sp-3));
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+}
+
+/* When the list can no longer keep its `rem` floor, it goes — `display: none`, never
+   an overlay, never `visibility: hidden`. A drawer covering a list whose rows are
+   still focusable fails SC 2.4.11; keeping them focusable behind it would need `inert`
+   applied at the same instant from the same place, and that synchronisation drifts.
+   `main.ts` toggles this class from a `ResizeObserver`. It is not an edge case: at the
+   18.85px ceiling on a 1280px window `#sidebar` holds 359.6px and a realistic diff row
+   needs ~900px of the 905.4px left over, so an ordinary use of a control the app ships
+   reaches it.
+   `flex: 1 1 auto` rather than a width: the inline width JS wrote is an author-level
+   declaration this rule cannot outrank, so the drawer is grown past it instead of
+   fighting it — a `flex-basis: auto` takes that same width as its starting size and
+   then fills what the list left. */
+.pr-view--narrow .pr-list { display: none; }
+.pr-view--narrow .pr-drawer { flex: 1 1 auto; max-width: 100%; border-left: 0; }
+
+/* The resize handle. `role="separator"`, `aria-orientation="vertical"`, arrow keys —
+   without those the pane width is a mouse-only setting, and the width is the whole
+   point of the pane.
+   24px literal, and this is the one kind of value in this stylesheet that must *not*
+   be type-relative: SC 2.5.8 is written in CSS pixels, so a `rem` here would fall
+   under the minimum at the 0.85 step of the text-size control — the opposite of what
+   the rule asks. Same number and same reasoning as `.pr-toggle` above.
+   The 24px is a hit area, not a drawing: the bar below is 2px wide. It is spent out
+   of the drawer's own width rather than hung over the list, because half a
+   transparent handle lying across the list would swallow clicks on the rows under it. */
+.pr-drawer-grip {
+  grid-column: 1; grid-row: 1 / -1;
+  width: 24px; min-width: 24px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; background: none; border: 0;
+  cursor: col-resize;
+  /* A drag handle that scrolls the pane under the finger is not a drag handle. */
+  touch-action: none;
+  /* `--fg-subtle` measures 5.00 on `--bg-panel`; `--border-strong`, the colour a
+     seam would ordinarily take here, is 1.62 and fails. This one is an interactive
+     control, so 1.4.11 applies to it for real — unlike the surface seams around it. */
+  color: var(--fg-subtle);
+  transition: color var(--dur-1) var(--ease);
+}
+/* Drawn as a short centred bar rather than a full-height rule: a `--fg-subtle` line
+   the height of the drawer would be the loudest edge on the screen, and it would
+   compete with the `border-left` a millimetre away that is the actual seam. A bar
+   says "grab here", which is what the control is for. Sized in `rem` so it keeps its
+   proportion to the type at every step of the scale. */
+.pr-drawer-grip::before {
+  content: ""; width: 2px; height: 2.4rem; border-radius: 1px;
+  background: currentColor;
+}
+.pr-drawer-grip:hover { color: var(--accent); }             /* 7.07 */
+/* `outline: none` plus the ring, the idiom `.pr-toggle` and `.tk-filter` already use
+   — and here it also outranks the app-wide `[tabindex]:focus-visible` outline this
+   element would otherwise pick up from carrying a `tabindex`.
+   The ring goes on the **bar**, not on the 24px column, and that is a fix rather than
+   a preference: on the column the ring is 24px wide and the drawer's full height, and
+   the head and the body — later grid items with opaque backgrounds — paint straight
+   over its inner half, leaving a 2px sliver at the far left as the whole of the
+   indicator. Measured in the harness. Around the bar it is a ~10px lozenge with
+   nothing over it, inside the column's own 24px. */
+.pr-drawer-grip:focus-visible { outline: none; color: var(--accent); }
+.pr-drawer-grip:focus-visible::before { box-shadow: var(--focus-ring); }
+
+.pr-drawer-head {
+  grid-column: 2; grid-row: 1;
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  /* Back to the UI face the rest of the app's chrome uses — the drawer declares mono
+     for the sake of `ch`, not because its buttons and counts are code. The path
+     re-declares mono below, because a path is. */
+  font-family: var(--font-ui);
+}
+/* Directory quiet, basename bright, so the eye lands on the filename in a path long
+   enough to wrap. Keyed on "the one child element" rather than on a class of its own:
+   the split is all this element contains — the directory is the bare text node and the
+   basename is the element — so a class would be a second name for "the child".
+   `--font-mono` because it is a path, `overflow-wrap: anywhere` because a path has no
+   spaces to break at and the alternative is it setting the width of the drawer.
+   `flex-basis: 100%` forces the path onto a line of its own, the way `.ws-account`
+   does under a workspace name and for the same reason: sharing a line with the counts
+   and three buttons left it about 190px in a 435px drawer, and what it did with them
+   was wrap mid-*basename* — the one part of a path that has to stay readable in one
+   piece. Given the whole width it usually does not wrap at all. Measured in a harness
+   at 1970px and at 900px, at both ends of the text-size scale. */
+.pr-drawer-path {
+  flex: 1 1 100%; min-width: 0;
+  font-family: var(--font-mono); font-size: var(--fs-sm);
+  color: var(--fg-subtle); overflow-wrap: anywhere;
+}
+.pr-drawer-path > * { color: var(--fg); font-weight: var(--fw-medium); }
+/* A container, not a leaf: `+n −m` reads best as `.pr-detail-plus` and
+   `.pr-detail-minus` — the same two classes the file list above already uses for the
+   same two numbers — so this rule lays them out and lets them keep their own colours.
+   It carries a colour anyway for the case where the module puts plain text in it. */
+.pr-drawer-counts {
+  display: inline-flex; gap: var(--sp-2); flex: none;
+  color: var(--fg-muted); font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* "3 of 62". `--fg-subtle` on `--bg-panel` is 5.00. Tabular figures because this is
+   re-rendered in place on every Prev/Next and proportional digits make it jitter —
+   the reason `.tile-tokens` and the rest of that group have them. */
+.pr-drawer-pos {
+  flex: none; color: var(--fg-subtle); font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+/* The same button as `.pr-actions button`, and deliberately so — these three sit two
+   inches from that row and a second reading of "quiet bordered button" on the same
+   screen would read as two kinds of control. Not merged into that selector because
+   these are not inside `.pr-actions` and never will be.
+   `min-height: 24px` carries the target: `--fs-sm` at `--lh-tight` plus 8px of
+   padding is 23px, so the type alone does not reach it. In the collapsed mode above,
+   Prev and Next stop being a convenience and become the only way to change file. */
+.pr-drawer-prev, .pr-drawer-next, .pr-drawer-close {
+  flex: none;
+  background: none; border: 1px solid var(--border); border-radius: var(--r-sm);
+  color: var(--fg-muted); font: inherit; font-size: var(--fs-sm);
+  padding: 4px var(--sp-2); min-width: 24px; min-height: 24px; cursor: pointer;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.pr-drawer-close { margin-left: auto; }
+.pr-drawer-prev:hover:not(:disabled),
+.pr-drawer-next:hover:not(:disabled),
+.pr-drawer-close:hover { border-color: var(--accent); color: var(--accent); }
+.pr-drawer-prev:focus-visible, .pr-drawer-next:focus-visible,
+.pr-drawer-close:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* The code surface is `--bg-app`, not the drawer's `--bg-panel`, and that is not
+   decoration: every measurement in the design — 8.33 for context, 11.13 and 11.48 for
+   the two bands, 5.31 for the line numbers — is taken against `#16181d`. The tints
+   below are translucent, so the ground they are painted on is part of every one of
+   those numbers. `.pr-detail-body` sets its own `--bg-app` inside a `--bg-raised` row
+   for the same reason: code gets the app's ground, chrome gets the panel's.
+   `overflow-x: hidden` is a guard rather than a style. Horizontal scroll belongs to
+   `.dv-file` and to nothing else; if a stray wide child ever escapes it, it must be
+   clipped here rather than handed up to the page. No horizontal padding: a file
+   scrolls edge to edge, and a gutter that stops 12px short of the frame reads as the
+   content having ended. */
+.pr-drawer-body {
+  grid-column: 2; grid-row: 2;
+  min-height: 0; overflow-y: auto; overflow-x: hidden;
+  padding: var(--sp-2) 0;
+  background: var(--bg-app);
+}
+
+/* One file. The horizontal scroll container, and the only one — never the page.
+   `tabindex="0"` and an accessible name belong on this element: a scroll container is
+   not keyboard-operable unless it is focusable, and without that a keyboard-only user
+   cannot reach the right-hand end of a long line (SC 2.1.1).
+
+   The grid is the whole layout: old number, new number, marker, content. Alignment
+   lives on the container and never on cell widths, so nothing has to agree with
+   anything. `max-content` on the three gutter tracks because it re-measures at every
+   step of `SCALE_STEPS` and at every digit count — a hand-set gutter would be correct
+   for one file at one text size.
+
+   `1fr` on the content track does not stop the file scrolling, which is worth saying
+   because it looks as though it should: `1fr` is `minmax(auto, 1fr)`, and with
+   `white-space: pre` the `auto` minimum is the longest line in the file. The track
+   grows to it, the grid overflows, and this box scrolls. Change `pre` and that stops
+   being true — which is exactly what `--wrap` below is. */
+.dv-file {
+  display: grid;
+  grid-template-columns: max-content max-content max-content 1fr;
+  overflow-x: auto;
+  font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-code);
+  /* The width of one number cell, and the one thing here CSS cannot work out for
+     itself. The sticky offsets below are the sum of the tracks to a cell's left, and
+     there is no way to read a `max-content` track's used size from CSS — so the
+     number cells are given a `min-width` in digits, which makes that sum knowable
+     without giving up `max-content` (the tracks still grow past it, and past that
+     point the offsets under-shoot and the two number columns overlap by the excess
+     *while horizontally scrolled*).
+     Five digits is the default because it covers a 99,999-line file, and a gutter
+     two characters wider than it needs to be is a far smaller loss than a marker
+     column that scrolls away — the marker is the only channel that tells added from
+     removed. **The module can make it exact**: set `--dv-digits` on the `.dv-file`
+     element to the digit count of the largest line number it just rendered, which it
+     knows because it rendered them. Then the gutter is as narrow as the file allows
+     and the offsets are right at any length. */
+  --dv-digits: 5;
+  --dv-num-w: calc(var(--dv-digits) * 1ch + var(--sp-2));
+}
+.dv-file + .dv-file { margin-top: var(--sp-3); }
+/* `display: contents` so the four cells are grid items of the file, not of the row.
+   A per-row grid would align each line against itself, which is the one thing a diff
+   must not do. The cost is that `.dv-line` has no box of its own, so the band is
+   painted on the cells below rather than here — see `.dv-line--add`. */
+.dv-line { display: contents; }
+
+/* The gutter survives horizontal scroll. This works *because* the two number cells
+   are opaque `--bg-app` and the marker composites its tint over an opaque base: the
+   visual review's objection to horizontal scroll was that a sticky gutter under a
+   translucent tint shows the scrolling code through it, and an opaque gutter has
+   nothing to show through. The two decisions hold each other up — untint the gutter
+   and the numbers fail contrast; make it translucent and the sticky breaks.
+   No `z-index`: a positioned element paints after in-flow content in the same
+   stacking context, so these already cover `.dv-text` when they overtake it. */
+.dv-old, .dv-new, .dv-mark {
+  position: sticky;
+  background-color: var(--bg-app);
+  padding: 0 var(--sp-1);
+}
+.dv-old { left: 0; }
+.dv-new { left: var(--dv-num-w); }
+.dv-mark { left: calc(var(--dv-num-w) * 2); }
+/* Two number columns, not one: a single column cannot answer "what line is this now"
+   for a removed line. Real elements with `user-select: none` and `aria-hidden="true"`
+   rather than `::before` with `attr()` — generated content's copy behaviour differs
+   across engines and some readers announce it.
+   `--fg-subtle` on the untinted ground is 5.31. On the added band it is 4.16 and on
+   the removed band 4.29, both of which fail 4.5 — that pair of numbers is the reason
+   the band starts at the marker and not at the frame. */
+.dv-old, .dv-new {
+  min-width: var(--dv-num-w);
+  text-align: right; color: var(--fg-subtle); user-select: none;
+}
+/* **Not `user-select: none`.** The marker is the leading character sliced off the
+   patch line and relocated into its own column, not a copy of it, so a selection
+   dragged across the diff still reassembles into a valid patch. Excluding it from
+   selection would silently break that, and nothing would notice until someone pasted
+   a patch that would not apply. */
+.dv-mark { text-align: center; }
+
+/* `pre`, and the reason is the whole feature: a wrapped `−` line and its `+`
+   counterpart stop lining up, which is the one thing a diff is for. */
+.dv-text { white-space: pre; padding: 0 var(--sp-2); color: var(--fg-muted); }
+
+/* The bands. Painted on `.dv-mark` and `.dv-text` — never on the two number cells,
+   see the contrast note above — so the tint starts at the marker column and the
+   gutter keeps the ground its 5.31 was measured on.
+   The marker's tint arrives as a `linear-gradient` of one colour rather than as a
+   `background-color`, because that cell is sticky and needs an opaque base under the
+   tint; the base is the `--bg-app` in the sticky rule above and the gradient is a
+   second layer over it. The composite is identical to the text cell's — the same
+   `#272e29` and `#31272d` the design measured. */
+.dv-line--add .dv-text { background-color: var(--diff-add-weak); }
+.dv-line--del .dv-text { background-color: var(--diff-del-weak); }
+.dv-line--add .dv-mark { background-image: linear-gradient(var(--diff-add-weak), var(--diff-add-weak)); }
+.dv-line--del .dv-mark { background-image: linear-gradient(var(--diff-del-weak), var(--diff-del-weak)); }
+/* 6.89 and 5.98 on their own bands. The colour is a third channel, not the channel:
+   the two bands measure 1.03 against *each other*, so a reader who cannot separate
+   the hues has the literal `+` and `−` and nothing is lost. */
+.dv-line--add .dv-mark { color: var(--st-working); }
+.dv-line--del .dv-mark { color: var(--st-error); }
+/* Changed is brighter than unchanged, which is a fourth channel and costs nothing:
+   `--fg` on either band is over 11, `--fg-muted` on the untinted ground is 8.33. */
+.dv-line--add .dv-text, .dv-line--del .dv-text { color: var(--fg); }
+/* `\ No newline at end of file`, and anything else the patch says about itself rather
+   than about the code. Untinted, because it is neither added nor removed, and
+   `--fg-subtle` (5.31 here) because it is a note in a column of code. */
+.dv-line--meta .dv-text { color: var(--fg-subtle); font-style: italic; }
+
+/* The toggle is one class, which is what makes it cheap: flipping 2507 rows to
+   `pre-wrap` was measured at 42 ms, so there is nothing to schedule and nothing to
+   virtualise. `anywhere` rather than `break-word` because minified source and long
+   URLs have no break opportunity at all, and a token wider than the pane would
+   reintroduce the horizontal scroll this modifier exists to remove. */
+.dv-file--wrap .dv-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* "Hunk 2 of 5, lines 91 to 99" — the parsed `@@` header as a sentence, never the raw
+   `@@ -91,7 +91,9 @@`. An `<h4>` because the screen's own title is an `<h3>`, and a
+   heading rather than a styled div because the reader's heading key is how a
+   62-file diff is actually moved through.
+   `--fg-muted` on `--bg-raised` is 7.22. The band itself is 1.15 against `--bg-app`
+   and does not reach 1.4.11 — it does not have to: the sentence inside it carries the
+   information, and the band is grouping. `--font-ui`, because it is a sentence
+   sitting in a column of code and the fixed pitch is what tells the two apart. */
+.dv-hunk-head {
+  grid-column: 1 / -1;
+  margin: 0; padding: 3px var(--sp-2);
+  background: var(--bg-raised); color: var(--fg-muted);
+  font-family: var(--font-ui); font-size: var(--fs-xs); font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+}
+/* What the drawer says instead of a diff: too large upstream, too large for our own
+   cap, or nothing changed. Prose, so `--font-ui` and a measure in characters — the
+   `60ch` the rest of this file uses for a sentence. `--fg-muted` and not
+   `--fg-subtle`: this is the only content the file has, not a caption under other
+   content. */
+.dv-note {
+  grid-column: 1 / -1;
+  margin: 0; padding: var(--sp-2);
+  font-family: var(--font-ui); font-size: var(--fs-sm); line-height: var(--lh-body);
+  color: var(--fg-muted); max-width: 60ch;
+}
+
+/* The per-line word — "Added", "Removed", nothing — that makes a reader say
+   "Added, const x = 1". This is why the diff is not one giant `<pre>`: the prefix
+   would have nowhere to live. The `clip-path`/1px idiom rather than `display: none`
+   or `visibility: hidden`, both of which take the text out of the accessibility tree
+   along with the pixels, which is the opposite of the point. */
+.dv-sr {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* The first `forced-colors` block in this stylesheet, and the diff is what earns it.
+   Under Windows high contrast every `background-color` is replaced by a system
+   colour, so `--diff-add-weak` and `--diff-del-weak` become the same colour and the
+   two bands become indistinguishable — not merely harder to tell apart, identical.
+   The marker character is the only differentiator that survives, so these rules give
+   it the weight the tint used to carry and put a border where a vanished band was
+   doing the grouping. Nothing here re-states what forced colours already do; each
+   rule replaces a channel the mode takes away. */
+@media (forced-colors: active) {
+  /* The sticky gutter's opacity is what makes it work, and `Canvas` is the only
+     opaque ground there is in this mode. */
+  .dv-old, .dv-new, .dv-mark { background: Canvas; }
+  /* Both tints are gone; the character does the whole job now. */
+  .dv-mark { font-weight: var(--fw-bold); }
+  /* The `--bg-raised` band that segmented the file has collapsed into the page, so
+     the hunk heading is given rules instead. */
+  .dv-hunk-head { border-top: 1px solid CanvasText; border-bottom: 1px solid CanvasText; }
+  /* `currentColor` on the bar resolves to a forced colour that may or may not differ
+     from the ground; naming the system colours makes the handle and its states
+     explicit rather than incidental. */
+  .pr-drawer-grip::before { background: CanvasText; }
+  .pr-drawer-grip:hover::before, .pr-drawer-grip:focus-visible::before { background: Highlight; }
+}

@@ -172,6 +172,22 @@ function resolve(c, tokens) {
 const css = readFileSync(join(root, "src/styles.css"), "utf8");
 const tokens = readTokens(css);
 
+// The diff drawer's two tints. Read from `:root` like every other token — but the
+// drawer's cases must be measurable before the stylesheet catches up, so these
+// literals stand in when the token is absent. A fallback that kept quiet would be
+// worse than no case at all: the table would report a number for a colour the
+// stylesheet does not contain. It says so instead, once, above the table.
+const PENDING = new Map([
+  ["--diff-add-weak", "rgba(152, 195, 121, 0.13)"],
+  ["--diff-del-weak", "rgba(231, 143, 150, 0.13)"],
+]);
+const fellBack = [];
+for (const [name, literal] of PENDING) {
+  if (tokens.has(name)) continue;
+  tokens.set(name, literal);
+  fellBack.push(`${name}: ${literal}`);
+}
+
 // The terminal's palette is set from JS, not from a token, so it is read from
 // there: xterm owns its own theme (see src/terminal.ts).
 const termSrc = readFileSync(join(root, "src/terminal.ts"), "utf8");
@@ -188,6 +204,12 @@ const EXEMPT = 0;   // measured and reported, but disabled controls are exempt
 /** `--accent-weak` over the panel: the selected session row and the selected
  *  board filter, which is where a user is most likely to be looking. */
 const ACTIVE_ROW = ["--bg-panel", "--accent-weak"];
+
+/** The two diff bands: a tint at 0.13 painted straight onto the list's own ground.
+ *  The tint sits *under* code, so every point of alpha is contrast taken off `--fg`
+ *  — which is why the cases below are worth keeping rather than assuming. */
+const ADDED_BAND = ["--bg-app", "--diff-add-weak"];
+const REMOVED_BAND = ["--bg-app", "--diff-del-weak"];
 
 // Values read out of the rules they belong to, so this table cannot drift from
 // the stylesheet it describes.
@@ -327,6 +349,114 @@ const CASES = [
     fg: "--bg-app", backdrop: ["--bg-panel"],
     threshold: EXEMPT, sc: "1.4.11 (out of scope)",
   },
+
+  // --- the pull request diff drawer ---------------------------------------
+  // Three grounds, not one: context sits on `--bg-app`, changed lines on a tinted
+  // band, hunk headings on `--bg-raised`. A colour cleared on one of them says
+  // nothing about the other two, and the drawer puts all three on screen at once.
+  {
+    what: "diff context text",
+    where: "the unchanged lines, most of any diff",
+    fg: "--fg-muted", backdrop: ["--bg-app"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "diff added text",
+    where: "code on the added band — brighter than context, which is the third channel",
+    fg: "--fg", backdrop: ADDED_BAND,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "diff removed text",
+    where: "code on the removed band",
+    fg: "--fg", backdrop: REMOVED_BAND,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "+ marker",
+    where: "a real text node in its own column — the only channel that survives forced colours",
+    fg: "--st-working", backdrop: ADDED_BAND,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "- marker",
+    where: "the same, on the removed band",
+    fg: "--st-error", backdrop: REMOVED_BAND,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "line numbers, untinted gutter",
+    where: "why the gutter keeps `--bg-app` under it — see the two rejected rows below",
+    fg: "--fg-subtle", backdrop: ["--bg-app"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "hunk heading",
+    where: "the parsed `@@` line, on the raised band that segments the file",
+    fg: "--fg-muted", backdrop: ["--bg-raised"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "drawer header path",
+    where: "the file path at the top of the drawer",
+    fg: "--fg", backdrop: ["--bg-panel"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "drawer header meta",
+    where: "the counts beside it — file 3 of 62, 24 added, 7 removed",
+    fg: "--fg-subtle", backdrop: ["--bg-panel"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "resize grip at rest",
+    where: "a control, not text: it must be findable before it is used",
+    fg: "--fg-subtle", backdrop: ["--bg-panel"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "resize grip on hover/focus",
+    where: "the focused state of the same control",
+    fg: "--accent", backdrop: ["--bg-panel"],
+    threshold: UI, sc: "1.4.11",
+  },
+
+  // Four colours the drawer rejected, kept as cases rather than as a comment, and
+  // marked `rejected` so they document the decision without failing the run. Each
+  // one is a design constraint that reads as arbitrary the moment its number is
+  // gone — and the number is the only part that a palette edit can invalidate. A
+  // rejected case that starts *passing* stops the run too: the reason it was
+  // rejected has expired and the decision above it is owed a second look.
+  {
+    what: "--fg-subtle on the added band", rejected: true,
+    where: "rejected — this is why the gutter is untinted",
+    fg: "--fg-subtle", backdrop: ADDED_BAND,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "--fg-subtle on the removed band", rejected: true,
+    where: "rejected — the same, and the worse of the pair",
+    fg: "--fg-subtle", backdrop: REMOVED_BAND,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "--fg-subtle on the open file row", rejected: true,
+    where: "rejected — why the whole file list is `--fg-muted`, selected row included",
+    fg: "--fg-subtle", backdrop: ["--bg-raised", "--accent-weak"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "--border-strong as the drawer seam", rejected: true,
+    where: "rejected — no brighter border than the rest of the app has; the seam is not a control",
+    fg: "--border-strong", backdrop: ["--bg-app"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "added band against removed band", rejected: true,
+    where: "rejected — tint alone cannot tell the two apart, which is why the marker is a character",
+    fg: "--diff-add-weak", backdrop: ["--bg-app"], group: ["--diff-del-weak"],
+    threshold: UI, sc: "1.4.11",
+  },
 ];
 
 // --- self-check -----------------------------------------------------------
@@ -364,7 +494,10 @@ function main() {
   const rows = CASES.map((c) => {
     const { fg, bg } = resolve(c, tokens);
     const r = ratio(fg, bg);
-    return { c, r, fg, bg, fails: c.threshold > 0 && r < c.threshold };
+    const below = c.threshold > 0 && r < c.threshold;
+    // A rejected case is expected to be below its threshold, so being below it is
+    // not news and clearing it is.
+    return { c, r, fg, bg, fails: below && !c.rejected, revived: c.rejected && !below };
   });
 
   const w = (key, min) => Math.max(min, ...rows.map((x) => String(key(x)).length));
@@ -372,31 +505,47 @@ function main() {
   const wSc = w((x) => x.c.sc, 2);
 
   console.log(`\nComposited contrast — ${rows.length} cases, from src/styles.css and src/terminal.ts\n`);
+  for (const t of fellBack) {
+    console.log(`  note: ${t} is not in :root yet — measured against the literal above.`);
+  }
+  if (fellBack.length) console.log("");
   console.log(
     "  " + "case".padEnd(wWhat) + "  ratio   need   " + "SC".padEnd(wSc) + "  effective fg / bg",
   );
   console.log("  " + "-".repeat(wWhat + 20 + wSc + 20));
-  for (const { c, r, fg, bg, fails } of rows) {
+  for (const { c, r, fg, bg, fails, revived } of rows) {
     const need = c.threshold > 0 ? c.threshold.toFixed(1) : "  — ";
+    const mark = fails ? "   <<< FAILS" : revived ? "   <<< NOW PASSES" : c.rejected ? "   (rejected)" : "";
     console.log(
       "  " + c.what.padEnd(wWhat) +
       "  " + r.toFixed(2).padStart(5) +
       "  " + need.padStart(5) +
       "  " + c.sc.padEnd(wSc) +
       "  " + hex(fg) + " on " + hex(bg) +
-      (fails ? "   <<< FAILS" : ""),
+      mark,
     );
     console.log("  " + " ".repeat(wWhat) + "  " + c.where);
   }
 
   const failed = rows.filter((x) => x.fails);
+  const revived = rows.filter((x) => x.revived);
+  const rejected = rows.filter((x) => x.c.rejected);
   console.log("");
-  if (failed.length === 0) {
-    console.log(`  every case with a threshold clears it (${rows.length - failed.length} measured).`);
+  if (failed.length === 0 && revived.length === 0) {
+    const held = rows.length - rejected.length;
+    console.log(`  every case with a threshold clears it (${held} measured).`);
+    console.log(`  ${rejected.length} rejected case${rejected.length === 1 ? " stays" : "s stay"} below threshold, as documented.`);
     return 0;
   }
-  console.log(`  ${failed.length} case${failed.length === 1 ? "" : "s"} below threshold:`);
-  for (const { c, r } of failed) console.log(`    ${c.what} — ${r.toFixed(2)} against ${c.threshold}`);
+  if (failed.length) {
+    console.log(`  ${failed.length} case${failed.length === 1 ? "" : "s"} below threshold:`);
+    for (const { c, r } of failed) console.log(`    ${c.what} — ${r.toFixed(2)} against ${c.threshold}`);
+  }
+  for (const { c, r } of revived) {
+    console.log(`  \`${c.what}\` now clears ${c.threshold} at ${r.toFixed(2)} — it was rejected for failing it.`);
+    console.log(`    ${c.where}`);
+    console.log("    That reason has expired. Re-decide it, then update or drop this case.");
+  }
   return 1;
 }
 
