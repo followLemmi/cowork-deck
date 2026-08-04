@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>cowork-deck — Pull requests</title>
+<link rel="stylesheet" href="assets/deck-ui.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="mark">
+      <span class="mark-glyph"><i data-ic="deck"></i></span>
+      <span class="mark-text">cowork<span>·deck</span></span>
+    </div>
+
+    <nav class="seg" aria-label="Screen">
+      <button type="button" aria-selected="false" data-nav="terminals-screen.html">
+        <i data-ic="terminal"></i> Terminals
+      </button>
+      <button type="button" aria-selected="false" data-nav="board-screen.html">
+        <i data-ic="columns"></i> Board
+      </button>
+      <button type="button" aria-selected="true" data-od-id="view-pr">
+        <i data-ic="git-merge"></i> Pull requests
+        <span class="seg-badge">2</span>
+      </button>
+    </nav>
+
+    <span class="topbar-spacer"></span>
+
+    <button type="button" class="ws-chip">
+      <span class="dot" style="background:#7bd77f"></span>
+      cowork-deck
+      <span class="ws-chip-login">followLemmi</span>
+      <i data-ic="chevron" class="ic--down"></i>
+    </button>
+    <button type="button" class="btn--icon" title="Command palette · Ctrl+Shift+K"
+            aria-label="Command palette"><i data-ic="search"></i></button>
+    <button type="button" class="btn--icon" title="Settings" aria-label="Settings"><i data-ic="sliders"></i></button>
+  </header>
+
+  <div class="stage">
+
+    <aside class="side">
+      <section class="island">
+        <header class="island-head"><h2 class="caps">Workspaces</h2></header>
+        <div class="island-body">
+          <div class="row rail" aria-current="true" style="--rail:var(--accent)">
+            <span class="dot" style="background:#7bd77f"></span>
+            <span class="row-main">
+              <span class="row-title">cowork-deck</span>
+              <span class="row-sub">followLemmi · 4 open</span>
+            </span>
+          </div>
+          <div class="row rail">
+            <span class="dot" style="background:#efc845"></span>
+            <span class="row-main">
+              <span class="row-title">lemsoft-api</span>
+              <span class="row-sub">evgeny-jvl · 7 open</span>
+            </span>
+          </div>
+          <div class="row rail">
+            <span class="dot" style="background:#d5eaf3"></span>
+            <span class="row-main">
+              <span class="row-title">vault-index</span>
+              <span class="row-sub">followLemmi · none open</span>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section class="island">
+        <header class="island-head"><h2 class="caps">Needs you</h2></header>
+        <div class="island-body">
+          <div class="row rail is-error">
+            <span class="row-main">
+              <span class="row-title">#155 Typography and contrast</span>
+              <span class="row-sub">2 checks failed</span>
+            </span>
+          </div>
+          <div class="row rail is-waiting">
+            <span class="row-main">
+              <span class="row-title">#149 Restore the deck on launch</span>
+              <span class="row-sub">Review requested from you</span>
+            </span>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- The list and the drawer are siblings in a row: the drawer squeezes the
+         list rather than covering it, so a still-focusable row can never end up
+         behind it. DOM order is list-then-drawer so reading order matches. -->
+    <div class="pr-view" id="pr-view" data-od-id="pr-view">
+
+      <div class="pr-list" data-od-id="pr-list">
+        <div class="screen-head">
+          <h1 class="screen-title">Pull requests</h1>
+          <span class="chip chip--plain"><i data-ic="clock"></i> updated 1m ago</span>
+          <span class="head-spacer"></span>
+          <button type="button" class="btn--icon" title="Refresh" aria-label="Refresh"><i data-ic="rotate"></i></button>
+        </div>
+
+        <div class="island" data-od-id="pr-rows">
+
+          <!-- ---------- #158, expanded ---------- -->
+          <article class="pr-row rail is-open" data-od-id="pr-158">
+            <div class="pr-main">
+              <button type="button" class="pr-toggle" aria-expanded="true"
+                      aria-label="Hide the description and the changed files" data-toggle>
+                <i data-ic="chevron"></i>
+              </button>
+              <span class="pr-num">#158</span>
+              <span class="pr-title">The diff drawer</span>
+              <span class="chip chip--mono"><i data-ic="git-branch"></i> feat/drawer</span>
+            </div>
+
+            <div class="meta">
+              <span class="meta-item checks--passed"><i data-ic="check"></i> 6 checks passed</span>
+              <span class="meta-item"><i data-ic="user"></i> followLemmi</span>
+              <span class="meta-item"><i data-ic="clock"></i> updated 22m ago</span>
+              <span class="meta-item"><span class="plus">+829</span> <span class="minus">−32</span> in 5 files</span>
+            </div>
+
+            <div class="pr-detail">
+              <div class="pr-body md" data-od-id="pr-158-body">
+                <h4>What this is</h4>
+                <p>
+                  A column beside the pull request list that shows one file's patch at a time.
+                  It squeezes the list rather than covering it, because a drawer over a list
+                  whose rows are still focusable fails <code>SC 2.4.11</code>.
+                </p>
+                <h4>Decisions worth arguing with</h4>
+                <ul>
+                  <li>
+                    The pane is sized in <code>ch</code>, not pixels or percent. The one question
+                    a diff pane answers is "does this line fit", and that is a column count — so
+                    it must not shrink when the text-size control grows.
+                  </li>
+                  <li>
+                    Colour is the <em>third</em> channel for added and removed, not the channel.
+                    The two bands measure 1.03 against each other, so the literal
+                    <code>+</code> and <code>−</code> live in a column of their own.
+                  </li>
+                  <li>
+                    The band starts at the marker column, never at the frame: on the tint the
+                    line-number gutter fell to 4.16, and the gutter has to stay opaque anyway
+                    or <code>position: sticky</code> shows the scrolling code through it.
+                  </li>
+                </ul>
+                <h4>Not in this branch</h4>
+                <p>
+                  Word-level highlighting inside a changed line, and a side-by-side mode. Both
+                  want a real diff algorithm on the client; this reads the patch GitHub already
+                  produced.
+                </p>
+                <pre><code>npm test -- tests/diff-drawer.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml</code></pre>
+              </div>
+
+              <ul class="pr-files" data-od-id="pr-158-files">
+                <li><button type="button" class="file-row" data-file="0">
+                  <span class="file-path">src/diff-drawer.ts</span>
+                  <span class="plus">+268</span><span class="minus">−0</span>
+                </button></li>
+                <li><button type="button" class="file-row" data-file="1">
+                  <span class="file-path">src/diff.ts</span>
+                  <span class="plus">+96</span><span class="minus">−0</span>
+                </button></li>
+                <li><button type="button" class="file-row" data-file="2" aria-current="true">
+                  <span class="file-path">src/pr-view.ts</span>
+                  <span class="plus">+64</span><span class="minus">−19</span>
+                </button></li>
+                <li><button type="button" class="file-row" data-file="3">
+                  <span class="file-path">src/styles.css</span>
+                  <span class="plus">+187</span><span class="minus">−13</span>
+                </button></li>
+                <li><button type="button" class="file-row" data-file="4">
+                  <span class="file-path">tests/diff-drawer.test.ts</span>
+                  <span class="plus">+214</span><span class="minus">−0</span>
+                </button></li>
+              </ul>
+            </div>
+
+            <div class="pr-acts">
+              <button type="button" class="btn btn--primary"><i data-ic="git-merge"></i> Merge</button>
+              <button type="button" class="btn btn--quiet" data-open-drawer>
+                <i data-ic="list"></i> Diff
+              </button>
+              <button type="button" class="btn btn--quiet"><i data-ic="external"></i> Open in browser</button>
+            </div>
+          </article>
+
+          <!-- ---------- #157, a draft ---------- -->
+          <article class="pr-row rail" data-od-id="pr-157">
+            <div class="pr-main">
+              <button type="button" class="pr-toggle" aria-expanded="false"
+                      aria-label="Show the description and the changed files" data-toggle>
+                <i data-ic="chevron"></i>
+              </button>
+              <span class="pr-num">#157</span>
+              <span class="pr-title">Board editor moves the cards a rename would strand</span>
+              <span class="chip">draft</span>
+              <span class="chip chip--mono"><i data-ic="git-branch"></i> feat/board-editor</span>
+            </div>
+            <div class="meta">
+              <span class="meta-item checks--running"><i data-ic="clock"></i> 3 of 6 checks running</span>
+              <span class="meta-item"><i data-ic="user"></i> followLemmi</span>
+              <span class="meta-item"><i data-ic="clock"></i> updated 4h ago</span>
+              <span class="meta-item"><span class="plus">+412</span> <span class="minus">−88</span> in 5 files</span>
+            </div>
+            <div class="pr-acts">
+              <button type="button" class="btn btn--quiet" disabled><i data-ic="git-merge"></i> Merge</button>
+              <button type="button" class="btn btn--quiet"><i data-ic="list"></i> Diff</button>
+              <button type="button" class="btn btn--quiet"><i data-ic="external"></i> Open in browser</button>
+            </div>
+            <!-- Why Merge is refused, in the row rather than in a tooltip no keyboard
+                 can reach. Amber, because a refusal is a "not yet". -->
+            <p class="pr-refusal">
+              Still a draft, and 3 checks have not finished. Mark it ready for review on GitHub
+              and this button becomes live.
+            </p>
+          </article>
+
+          <!-- ---------- #155, checks failed ---------- -->
+          <article class="pr-row rail is-error" data-od-id="pr-155">
+            <div class="pr-main">
+              <button type="button" class="pr-toggle" aria-expanded="false"
+                      aria-label="Show the description and the changed files" data-toggle>
+                <i data-ic="chevron"></i>
+              </button>
+              <span class="pr-num">#155</span>
+              <span class="pr-title">Typography and contrast: the second pass</span>
+              <span class="chip chip--mono"><i data-ic="git-branch"></i> fix/type-contrast</span>
+            </div>
+            <div class="meta">
+              <span class="meta-item checks--failed"><i data-ic="alert"></i> 2 checks failed</span>
+              <span class="meta-item"><i data-ic="user"></i> followLemmi</span>
+              <span class="meta-item"><i data-ic="clock"></i> updated 1d ago</span>
+              <span class="meta-item"><span class="plus">+96</span> <span class="minus">−121</span> in 3 files</span>
+            </div>
+            <div class="pr-acts">
+              <button type="button" class="btn btn--quiet" disabled><i data-ic="git-merge"></i> Merge</button>
+              <button type="button" class="btn btn--quiet"><i data-ic="list"></i> Diff</button>
+              <button type="button" class="btn btn--quiet"><i data-ic="external"></i> Open in browser</button>
+            </div>
+            <p class="pr-refusal">
+              <code>contrast</code> and <code>vitest</code> failed on this head. The branch is
+              behind <code>main</code> by 4 commits, so a rerun may be all it needs.
+            </p>
+          </article>
+
+          <!-- ---------- #149, no checks at all ---------- -->
+          <article class="pr-row rail is-waiting" data-od-id="pr-149">
+            <div class="pr-main">
+              <button type="button" class="pr-toggle" aria-expanded="false"
+                      aria-label="Show the description and the changed files" data-toggle>
+                <i data-ic="chevron"></i>
+              </button>
+              <span class="pr-num">#149</span>
+              <span class="pr-title">Restore the deck on launch</span>
+              <span class="chip chip--mono"><i data-ic="git-branch"></i> feat/restore</span>
+              <span class="chip">needs your review</span>
+            </div>
+            <div class="meta">
+              <!-- Four states, four appearances: "no checks" must not read as "passed". -->
+              <span class="meta-item checks--none"><i data-ic="clear"></i> no checks configured</span>
+              <span class="meta-item"><i data-ic="user"></i> followLemmi</span>
+              <span class="meta-item"><i data-ic="clock"></i> updated 2d ago</span>
+              <span class="meta-item"><span class="plus">+204</span> <span class="minus">−17</span> in 6 files</span>
+            </div>
+            <div class="pr-acts">
+              <button type="button" class="btn btn--quiet"><i data-ic="git-merge"></i> Merge</button>
+              <button type="button" class="btn btn--quiet"><i data-ic="list"></i> Diff</button>
+              <button type="button" class="btn btn--quiet"><i data-ic="external"></i> Open in browser</button>
+            </div>
+          </article>
+
+        </div>
+
+        <p class="form-hint" style="margin-top:16px">
+          4 open pull requests. 4,286 of 5,000 GitHub requests left this hour.
+        </p>
+      </div>
+
+      <!-- ---------------- The diff drawer ---------------- -->
+      <aside class="drawer" id="drawer" data-od-id="diff-drawer" aria-label="Diff">
+        <button type="button" class="drawer-grip" id="grip" role="separator"
+                aria-orientation="vertical" tabindex="0"
+                aria-label="Resize the diff pane"></button>
+
+        <header class="drawer-head">
+          <span class="drawer-path" id="drawer-path">src/<b>pr-view.ts</b></span>
+          <span class="drawer-counts" id="drawer-counts">
+            <span class="plus">+64</span><span class="minus">−19</span>
+          </span>
+          <span class="pr-pos" id="drawer-pos">3 of 5</span>
+          <button type="button" class="btn btn--quiet" id="wrap-btn" aria-pressed="false"
+                  title="Wrap long lines"><i data-ic="wrap"></i> Wrap</button>
+          <button type="button" class="btn btn--quiet" id="prev-btn"
+                  aria-label="Previous file"><i data-ic="chevron" class="ic--left"></i></button>
+          <button type="button" class="btn btn--quiet" id="next-btn"
+                  aria-label="Next file"><i data-ic="chevron"></i></button>
+          <button type="button" class="btn--icon" id="drawer-close" style="margin-left:auto"
+                  aria-label="Close the diff"><i data-ic="x"></i></button>
+        </header>
+
+        <div class="drawer-body" id="drawer-body"></div>
+      </aside>
+
+    </div>
+  </div>
+</div>
+
+<script src="assets/icons.js"></script>
+<script>
+(function () {
+  document.querySelectorAll("[data-nav]").forEach((b) => {
+    b.addEventListener("click", () => { location.href = b.dataset.nav; });
+  });
+
+  /* ---- Expand / collapse a pull request -------------------------------
+     A description and its file list are fetched when the row is opened, not with
+     the list — so the first expand shows skeleton rows rather than a blank panel
+     that might be an empty description. */
+  const DETAILS = {
+    "pr-157": {
+      md: "<h4>Why</h4><p>Renaming a step used to leave every card standing in it "
+        + "naming a step the configuration no longer had. The cards stayed visible in "
+        + "their own column, which was honest but useless.</p>"
+        + "<h4>What changed</h4><p>The editor treats the cards as part of the "
+        + "configuration rather than as its casualties: a rename rewrites them, and a "
+        + "removal asks where they should go. It says how many cards a change affects "
+        + "<em>before</em> you commit to it.</p>"
+        + "<h4>Still open</h4><p>An undo for a save that rewrote 40 cards. The backend "
+        + "writes card by card, so a half-applied rename is reachable.</p>",
+      files: [["src/board-editor.ts", 188, 41], ["src/board-config.ts", 64, 12],
+              ["src/board.ts", 39, 21], ["src/styles.css", 74, 6],
+              ["tests/board-editor.test.ts", 47, 8]],
+    },
+    "pr-155": {
+      md: "<h4>What</h4><p>The second pass over the type scale and the palette. Six "
+        + "steps in <code>rem</code> off a declared base, three line heights, and one "
+        + "tracking token for uppercase micro-headings.</p>"
+        + "<h4>Why the checks are red</h4><p><code>npm run contrast</code> reports two "
+        + "new failures the branch introduced: <code>--fg-subtle</code> on the selected "
+        + "session row at 3.44, and the same token on the added diff band at 4.16. Both "
+        + "want the token to move rather than the alpha.</p>",
+      files: [["src/styles.css", 61, 96], ["scripts/contrast.mjs", 28, 9],
+              ["src/ui-scale.ts", 7, 16]],
+    },
+    "pr-149": {
+      md: "<h4>What</h4><p>Reopen yesterday's tiles on launch: window size, position and "
+        + "the active workspace are persisted alongside them.</p>"
+        + "<h4>What it does not do</h4><p>It does not resume the app's own tracked state "
+        + "from before the restart. A restored tile starts a fresh session in the same "
+        + "workspace with the same opening prompt, resuming Claude Code's context where "
+        + "it can.</p>",
+      files: [["src/sessions.ts", 96, 8], ["src/boot.ts", 44, 3],
+              ["src-tauri/src/state.rs", 38, 2], ["src/main.ts", 12, 4],
+              ["tests/boot.test.ts", 11, 0], ["tests/sessions.test.ts", 3, 0]],
+    },
+  };
+
+  /* Directory quiet, basename bright — the same split the drawer's own path uses,
+     so the eye lands on the filename in a path long enough to wrap.
+     These rows are deliberately NOT wired to the drawer in this mockup: only #158
+     carries a real patch, and pointing every PR's file list at that one patch
+     would show you a diff belonging to a different branch. */
+  function detailHtml(d) {
+    const files = d.files.map(([p, a, r]) => {
+      const cut = p.lastIndexOf("/") + 1;
+      return '<li><span class="file-row" style="cursor:default">'
+        + '<span class="file-path"><span style="color:var(--fg-dim)">'
+        + p.slice(0, cut) + "</span>" + p.slice(cut) + "</span>"
+        + '<span class="plus">+' + a + '</span><span class="minus">−' + r + "</span></span></li>";
+    }).join("");
+    return '<div class="pr-body md">' + d.md + "</div>"
+      + '<ul class="pr-files">' + files + "</ul>";
+  }
+
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-toggle]");
+    if (!t) return;
+    const row = t.closest(".pr-row");
+    const open = t.getAttribute("aria-expanded") === "true";
+    t.setAttribute("aria-expanded", String(!open));
+    t.setAttribute("aria-label", open
+      ? "Show the description and the changed files"
+      : "Hide the description and the changed files");
+    row.classList.toggle("is-open", !open);
+
+    let detail = row.querySelector(".pr-detail");
+    if (detail) { detail.hidden = open; return; }
+    if (open) return;
+
+    const d = DETAILS[row.dataset.odId];
+    if (!d) return;
+    detail = document.createElement("div");
+    detail.className = "pr-detail";
+    detail.innerHTML = '<div class="skeleton" style="flex:1"><p class="form-hint">'
+      + "Loading the description and the changed files…</p>"
+      + '<div class="skeleton-row"></div><div class="skeleton-row"></div>'
+      + '<div class="skeleton-row"></div></div>';
+    row.querySelector(".pr-acts").before(detail);
+    setTimeout(() => {
+      detail.innerHTML = detailHtml(d);
+      hydrateIcons(detail);
+    }, 420);
+  });
+
+  /* ---- The files, and what the drawer shows for each ------------------
+     Each entry is a real unified-diff shape: two line numbers, the marker
+     sliced off the patch line into its own column, and the text. The marker is
+     RELOCATED rather than duplicated, so a selection dragged across the diff
+     still reassembles into a patch that applies. */
+  const FILES = [
+    {
+      path: ["src/", "diff-drawer.ts"], plus: 268, minus: 0, digits: 3,
+      hunks: [{
+        head: "Hunk 1 of 6 · lines 1–14, a new file",
+        lines: [
+          ["", "1", "+", "/** The diff drawer: one file's patch, beside the list. */"],
+          ["", "2", "+", "import { icon, iconButton } from \"./icons\";"],
+          ["", "3", "+", "import { parsePatch } from \"./diff\";"],
+          ["", "4", "+", ""],
+          ["", "5", "+", "const MIN_CH = 42;"],
+          ["", "6", "+", "const DEFAULT_CH = 64;"],
+          ["", "7", "+", "const STORE = \"pr:drawer:ch\";"],
+        ],
+      }],
+    },
+    {
+      path: ["src/", "diff.ts"], plus: 96, minus: 0, digits: 3,
+      hunks: [{
+        head: "Hunk 1 of 3 · lines 1–9, a new file",
+        lines: [
+          ["", "1", "+", "/** Parse a unified patch into hunks and lines. */"],
+          ["", "2", "+", "export type Mark = \" \" | \"+\" | \"-\" | \"\\\\\";"],
+          ["", "3", "+", ""],
+          ["", "4", "+", "export interface DiffLine {"],
+          ["", "5", "+", "  old: number | null;"],
+          ["", "6", "+", "  new: number | null;"],
+          ["", "7", "+", "  mark: Mark;"],
+          ["", "8", "+", "}"],
+        ],
+      }],
+    },
+    {
+      path: ["src/", "pr-view.ts"], plus: 64, minus: 19, digits: 3,
+      hunks: [
+        {
+          head: "Hunk 1 of 4 · lines 88–99",
+          lines: [
+            ["88", "88", " ", "  const files = document.createElement(\"ul\");"],
+            ["89", "89", " ", "  files.className = \"pr-files\";"],
+            ["90", "90", " ", ""],
+            ["91", "", "-", "  for (const f of pr.files) {"],
+            ["92", "", "-", "    const li = document.createElement(\"li\");"],
+            ["93", "", "-", "    li.textContent = `${f.path} +${f.additions} -${f.deletions}`;"],
+            ["", "91", "+", "  for (const [i, f] of pr.files.entries()) {"],
+            ["", "92", "+", "    const li = document.createElement(\"li\");"],
+            ["", "93", "+", "    // A real button: the row is the way into the drawer, and the"],
+            ["", "94", "+", "    // <li> around it is what keeps the list a list."],
+            ["", "95", "+", "    const row = document.createElement(\"button\");"],
+            ["", "96", "+", "    row.type = \"button\";"],
+            ["", "97", "+", "    row.className = \"file-row\";"],
+          ],
+        },
+        {
+          head: "Hunk 2 of 4 · lines 104–112",
+          lines: [
+            ["104", "108", " ", "    li.append(row);"],
+            ["105", "", "-", "    files.append(li);"],
+            ["", "109", "+", "    row.addEventListener(\"click\", () => openDrawer(pr, i));"],
+            ["", "110", "+", "    files.append(li);"],
+            ["106", "111", " ", "  }"],
+            ["107", "112", " ", ""],
+            ["", "", "\\", "\\ No newline at end of file"],
+          ],
+        },
+      ],
+    },
+    {
+      path: ["src/", "styles.css"], plus: 187, minus: 13, digits: 4,
+      hunks: [{
+        head: "Hunk 1 of 8 · lines 1516–1524",
+        lines: [
+          ["1516", "1516", " ", ".pr-drawer-body {"],
+          ["1517", "", "-", "  background: var(--bg-panel);"],
+          ["", "1517", "+", "  /* Code gets the app's ground; chrome gets the panel's. Every"],
+          ["", "1518", "+", "     ratio in the design is measured against this surface. */"],
+          ["", "1519", "+", "  background: var(--bg-app);"],
+          ["", "1520", "+", "  overflow-y: auto; overflow-x: hidden;"],
+          ["1518", "1521", " ", "}"],
+        ],
+      }],
+    },
+    {
+      path: ["tests/", "diff-drawer.test.ts"], plus: 214, minus: 0, digits: 3,
+      /* A file the drawer has nothing to draw for is NOT disabled: that removes it
+         from the tab order and takes its own explanation with it. */
+      note: "GitHub did not return a patch for this file — it is larger than the "
+        + "upstream limit. Open it in the browser to read the diff.",
+    },
+  ];
+
+  const body = document.getElementById("drawer-body");
+  const pathEl = document.getElementById("drawer-path");
+  const countsEl = document.getElementById("drawer-counts");
+  const posEl = document.getElementById("drawer-pos");
+  const prevBtn = document.getElementById("prev-btn");
+  const nextBtn = document.getElementById("next-btn");
+  const wrapBtn = document.getElementById("wrap-btn");
+  const drawer = document.getElementById("drawer");
+  const view = document.getElementById("pr-view");
+  let at = 2;
+  let wrap = false;
+
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  function render() {
+    const f = FILES[at];
+    pathEl.innerHTML = esc(f.path[0]) + "<b>" + esc(f.path[1]) + "</b>";
+    countsEl.innerHTML = '<span class="plus">+' + f.plus + '</span>'
+      + '<span class="minus">−' + f.minus + "</span>";
+    posEl.textContent = (at + 1) + " of " + FILES.length;
+    prevBtn.disabled = at === 0;
+    nextBtn.disabled = at === FILES.length - 1;
+
+    if (f.note) {
+      body.innerHTML = '<div class="dv-file"><p class="dv-note">' + esc(f.note) + "</p></div>";
+    } else {
+      let html = '<div class="dv-file' + (wrap ? " dv-file--wrap" : "")
+        + '" style="--dv-digits:' + f.digits + '" tabindex="0" aria-label="Diff of '
+        + esc(f.path.join("")) + '">';
+      for (const h of f.hunks) {
+        html += '<h4 class="dv-hunk">' + esc(h.head) + "</h4>";
+        for (const [o, n, m, text] of h.lines) {
+          const kind = m === "+" ? " dv-line--add" : m === "-" ? " dv-line--del"
+            : m === "\\" ? " dv-line--meta" : "";
+          /* The per-line word that makes a reader say "Added, const x = 1". It sits
+             inside .dv-text and is excluded from selection, or a paste would carry
+             it and the patch would stop applying. */
+          const said = m === "+" ? "Added, " : m === "-" ? "Removed, " : "";
+          html += '<div class="dv-line' + kind + '">'
+            + '<span class="dv-old" aria-hidden="true">' + o + "</span>"
+            + '<span class="dv-new" aria-hidden="true">' + n + "</span>"
+            + '<span class="dv-mark">' + esc(m === " " ? " " : m) + "</span>"
+            + '<span class="dv-text"><span class="sr-only">' + said + "</span>"
+            + (esc(text) || "&nbsp;") + "</span></div>";
+        }
+      }
+      body.innerHTML = html + "</div>";
+    }
+    document.querySelectorAll(".file-row").forEach((r) => {
+      if (Number(r.dataset.file) === at) r.setAttribute("aria-current", "true");
+      else r.removeAttribute("aria-current");
+    });
+    body.scrollTop = 0;
+  }
+
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest(".file-row");
+    if (row) { at = Number(row.dataset.file); drawer.hidden = false; render(); }
+    if (e.target.closest("[data-open-drawer]")) { drawer.hidden = false; render(); }
+  });
+  prevBtn.addEventListener("click", () => { if (at > 0) { at--; render(); } });
+  nextBtn.addEventListener("click", () => { if (at < FILES.length - 1) { at++; render(); } });
+  wrapBtn.addEventListener("click", () => {
+    wrap = !wrap;
+    wrapBtn.setAttribute("aria-pressed", String(wrap));
+    render();
+  });
+  document.getElementById("drawer-close").addEventListener("click", () => {
+    drawer.hidden = true;
+    view.classList.remove("pr-view--narrow");
+    document.querySelectorAll(".file-row").forEach((r) => r.removeAttribute("aria-current"));
+  });
+
+  /* ---- Resize, in ch ---------------------------------------------------
+     The persisted width is a column count, not a pixel count, for the reason in
+     the drawer's own comment: `ui-scale.ts` moves the root between 11 and 19px
+     and a pixel pane shows FEWER code columns at the larger steps. */
+  const grip = document.getElementById("grip");
+  function oneCh() {
+    const probe = document.createElement("span");
+    probe.style.cssText = "position:absolute;visibility:hidden;font:inherit";
+    probe.textContent = "0".repeat(50);
+    drawer.append(probe);
+    const w = probe.getBoundingClientRect().width / 50;
+    probe.remove();
+    return w || 8;
+  }
+  function setCh(px) {
+    const ch = Math.max(42, px / oneCh());
+    drawer.style.width = ch.toFixed(1) + "ch";
+    maybeNarrow();
+  }
+  let dragging = false;
+  grip.addEventListener("mousedown", (e) => { dragging = true; e.preventDefault(); });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    setCh(view.getBoundingClientRect().right - e.clientX);
+  });
+  window.addEventListener("mouseup", () => { dragging = false; });
+  /* Arrow keys, because the pane width is the whole point of the pane and a
+     mouse-only setting is not a setting. */
+  grip.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 8 : 2;
+    const now = drawer.getBoundingClientRect().width;
+    if (e.key === "ArrowLeft") { e.preventDefault(); setCh(now + step * oneCh()); }
+    if (e.key === "ArrowRight") { e.preventDefault(); setCh(now - step * oneCh()); }
+  });
+
+  /* ---- Below the floor the list goes entirely -------------------------
+     Never an overlay: a drawer covering a list whose rows are still focusable
+     fails SC 2.4.11, and keeping them focusable behind it would need `inert`
+     applied at the same instant from the same place. */
+  const LIST_FLOOR = 420;
+  function maybeNarrow() {
+    if (drawer.hidden) return;
+    /* Measured against the width the drawer WANTS, not the width it currently has:
+       once `--narrow` is on, the drawer is `flex: 1 1 auto` and fills the row, so
+       reading its rendered width would keep the condition true forever and the
+       list could never come back. */
+    const want = parseFloat(drawer.style.width || "0") * oneCh() || drawer.offsetWidth;
+    view.classList.toggle("pr-view--narrow",
+      view.getBoundingClientRect().width - want < LIST_FLOOR);
+  }
+  new ResizeObserver(maybeNarrow).observe(view);
+
+  render();
+})();
+</script>
+</body>
+</html>
