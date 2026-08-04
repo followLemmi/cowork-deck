@@ -4,14 +4,36 @@
 // their own DOM here rather than extending modal.ts's single-field helpers.
 
 import { pickFolder } from "./dialog";
-import { trackerRootPreview } from "./ipc";
-import type { BoardConfig, KindId, Schedule, SchedulePreset, TaskDraft, TrackerConfig, TrackerRootPreview } from "./ipc";
+import { ghStatus, trackerOpenCount, trackerRootPreview } from "./ipc";
+import type { BoardConfig, KindId, MergeOptions, Schedule, SchedulePreset, TaskDraft, TrackerConfig, TrackerRootPreview, WorkspaceGithub } from "./ipc";
+import { accountChoices } from "./github";
+import { closeConfirmText, fsRootOf } from "./issues";
 import { parsePlaceholders } from "./placeholders";
 import { validateSchedule, schedulePreview } from "./schedule";
 import { openDialog } from "./dialog-shell";
+import { confirmModal } from "./modal";
 import { icon, SCENARIO_ICONS, type IconName } from "./icons";
 
-const COLORS = ["#61afef", "#98c379", "#e5c07b", "#c678dd", "#e06c75", "#56b6c2"];
+/** Named, not a bare list of hexes. Six buttons carrying nothing but
+ *  `style.background` announced as "button, button, button, button, button,
+ *  button" — colour was the only carrier and there was no text alternative
+ *  anywhere, which is 1.4.1 and 4.1.2, both Level A. The name lives beside the
+ *  value so the two cannot drift; `#e06c75` is not a name a person can act on. */
+/* Moved onto the Slate & Ember palette: a workspace dot sits two pixels from a state
+ * chip on the same row, so a dot in the old blue-cyan family read as a sixth signal
+ * competing with the four that mean something. Three of these ARE the state hues,
+ * which is deliberate — a dot is a 9px circle with no text and no border, and nothing
+ * in the app treats it as a state, so reusing the hues keeps the screen to one set of
+ * colours instead of two. `ice` and `stone` replace `purple` and `cyan`, both of which
+ * the new palette does not contain. */
+const COLORS = [
+  { value: "#7bd77f", name: "green" },
+  { value: "#efc845", name: "amber" },
+  { value: "#fb817a", name: "red" },
+  { value: "#d5eaf3", name: "ice" },
+  { value: "#bab7b2", name: "stone" },
+  { value: "#9a9690", name: "slate" },
+];
 
 /** Shows a validation message where the user is looking, instead of the OK
  *  button quietly doing nothing — the original behaviour for an empty name. */
@@ -59,13 +81,15 @@ function selectWrap(select: HTMLSelectElement): HTMLElement {
   return wrap;
 }
 
-function actions(): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButtonElement } {
+/** `okLabel` names the action where "OK" would not: a dialog whose confirmation
+ *  is public wants its button to say what it does. */
+function actions(okLabel = "OK"): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButtonElement } {
   const row = document.createElement("div");
   row.className = "modal-actions";
   const cancel = document.createElement("button");
   cancel.className = "modal-cancel"; cancel.textContent = "Cancel";
   const ok = document.createElement("button");
-  ok.className = "modal-ok"; ok.textContent = "OK";
+  ok.className = "modal-ok"; ok.textContent = okLabel;
   row.append(cancel, ok);
   return { row, ok, cancel };
 }
@@ -73,15 +97,24 @@ function actions(): { row: HTMLElement; ok: HTMLButtonElement; cancel: HTMLButto
 /** Create/edit form for a workspace: name, native folder-pick path field, and
  *  a color swatch picker. Resolves the collected values on OK, or null on
  *  Cancel/backdrop click. */
-type WorkspaceFormResult = { name: string; path: string; color: string; tracker: TrackerConfig | null };
+type WorkspaceFormResult = {
+  name: string; path: string; color: string;
+  github: WorkspaceGithub | null; tracker: TrackerConfig | null;
+};
 
 export function workspaceForm(
-  initial?: { name: string; path: string; color: string; tracker?: TrackerConfig | null },
+  initial?: {
+    /** The workspace being edited, so the switch-away warning can count the cards
+     *  still in its folder. Absent for a new workspace, which has none. */
+    id?: string;
+    name: string; path: string; color: string;
+    github?: WorkspaceGithub | null; tracker?: TrackerConfig | null;
+  },
 ): Promise<WorkspaceFormResult | null> {
   return new Promise((resolve) => {
     const { box, close: closeDialog } = openDialog({
       onCancel: () => close(null),
-      onAccept: () => submit(),
+      onAccept: () => void submit(),
     });
     box.classList.add("modal-box--form");
     const title = document.createElement("div");
@@ -109,17 +142,29 @@ export function workspaceForm(
     pathRow.className = "form-pathrow";
     pathRow.append(path, pick);
 
-    let color = initial?.color ?? COLORS[0];
+    let color = initial?.color ?? COLORS[0].value;
     const swatches = document.createElement("div");
     swatches.className = "form-swatches";
+    // The same treatment as the scenario icon picker below, which already got this
+    // right: a radiogroup with a name per option and the selection exposed through
+    // `aria-checked` rather than through a CSS ring only.
+    swatches.setAttribute("role", "radiogroup");
+    swatches.setAttribute("aria-label", "Workspace colour");
     for (const c of COLORS) {
       const dot = document.createElement("button");
-      dot.type = "button"; dot.className = "form-swatch"; dot.style.background = c;
-      dot.classList.toggle("selected", c === color);
+      dot.type = "button"; dot.className = "form-swatch"; dot.style.background = c.value;
+      dot.setAttribute("role", "radio");
+      dot.setAttribute("aria-label", c.name);
+      dot.setAttribute("aria-checked", String(c.value === color));
+      dot.classList.toggle("selected", c.value === color);
       dot.onclick = () => {
-        color = c;
-        swatches.querySelectorAll(".form-swatch").forEach((s) => s.classList.remove("selected"));
+        color = c.value;
+        for (const s of swatches.querySelectorAll(".form-swatch")) {
+          s.classList.remove("selected");
+          s.setAttribute("aria-checked", "false");
+        }
         dot.classList.add("selected");
+        dot.setAttribute("aria-checked", "true");
       };
       swatches.append(dot);
     }
@@ -130,6 +175,53 @@ export function workspaceForm(
     colorLabel.className = "form-label";
     colorLabel.textContent = "Colour";
     colorRow.append(colorLabel, swatches);
+
+    // --- GitHub: аккаунт и идентичность коммитов ---
+    const account = document.createElement("select");
+    account.className = "modal-input form-gh-account";
+    // gh может отсутствовать — тогда останется единственный пункт «не привязан».
+    // Promise.resolve оборачивает вызов: падение самого IPC (а не его промиса)
+    // иначе роняет построение формы целиком, и пользователь не видит ни одного
+    // поля из-за недоступного gh.
+    void Promise.resolve()
+      .then(() => ghStatus())
+      .then((st) => {
+        for (const c of accountChoices(st, initial?.github?.login ?? null)) {
+          const opt = document.createElement("option");
+          opt.value = c.value;
+          opt.textContent = c.label;
+          if (c.missing) opt.classList.add("gh-missing");
+          account.append(opt);
+        }
+        account.value = initial?.github?.login ?? "";
+      })
+      .catch((e) => {
+        console.debug("ghStatus failed", e);
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "— gh недоступен —";
+        account.append(opt);
+      });
+
+    const gitName = document.createElement("input");
+    gitName.className = "modal-input"; gitName.type = "text";
+    gitName.placeholder = "как в глобальном .gitconfig";
+    gitName.value = initial?.github?.gitName ?? "";
+
+    const gitEmail = document.createElement("input");
+    gitEmail.className = "modal-input"; gitEmail.type = "text";
+    gitEmail.placeholder = "как в глобальном .gitconfig";
+    gitEmail.value = initial?.github?.gitEmail ?? "";
+
+    const sshKey = document.createElement("input");
+    sshKey.className = "modal-input"; sshKey.type = "text";
+    sshKey.placeholder = "ключ для ssh-ремоутов (необязательно)";
+    sshKey.value = initial?.github?.sshKey ?? "";
+
+    const ghHint = document.createElement("p");
+    ghHint.className = "form-hint";
+    ghHint.textContent =
+      "Применится к новым и перезапущенным сессиям — у живых окружение уже зафиксировано.";
 
     // --- Task tracker ---
     // The checkbox is a single control, so `labeledCheck` fits. Each radio
@@ -142,7 +234,7 @@ export function workspaceForm(
 
     const rootRow = document.createElement("div");
     rootRow.className = "form-row";
-    const mkRadio = (value: "project" | "path", text: string) => {
+    const mkRadio = (value: "project" | "path" | "github", text: string) => {
       const l = document.createElement("label");
       const i = document.createElement("input");
       i.type = "radio";
@@ -155,6 +247,18 @@ export function workspaceForm(
     };
     const projectRadio = mkRadio("project", "in the project (.cowork/tasks)");
     const pathRadio = mkRadio("path", "a folder of my own");
+    const githubRadio = mkRadio("github", "the repository's GitHub issues");
+
+    // Shown only for a source this build cannot name — a record a newer build
+    // wrote. The checkbox is on because there *is* a tracker, and no radio is
+    // checked because none of them describes it; without this line that would
+    // read as a form that lost its selection.
+    const unknownNote = document.createElement("p");
+    unknownNote.className = "form-hint tk-f-unknown";
+    unknownNote.textContent =
+      "This workspace uses a task source this version does not recognise. It is kept exactly as "
+      + "it is unless you choose one of the options above.";
+    unknownNote.classList.add("tk-hidden");
 
     const trackerPath = document.createElement("input");
     trackerPath.className = "modal-input tk-f-path";
@@ -245,7 +349,9 @@ export function workspaceForm(
     const syncTracker = () => {
       rootRow.classList.toggle("tk-hidden", !onInput.checked);
       // Hide the row, not just the input: the pick button lives beside it and
-      // would otherwise stay behind on its own.
+      // would otherwise stay behind on its own. Keyed on `pathRadio` rather than
+      // on "not project", so the GitHub choice hides the folder controls too —
+      // a picker for a source with no folder is a control that does nothing.
       trackerPathRow.classList.toggle("tk-hidden", !onInput.checked || !pathRadio.checked);
       // Hidden with the block it explains, not merely emptied by the guard
       // below. Both are true today; only this one is structural, and an
@@ -256,16 +362,29 @@ export function workspaceForm(
     onInput.onchange = syncTracker;
     projectRadio.onchange = syncTracker;
     pathRadio.onchange = syncTracker;
+    githubRadio.onchange = syncTracker;
 
     // Prefill: editing a workspace's name must not silently wipe its tracker
-    // configuration.
-    const initialRoot = initial?.tracker?.providers[0]?.root ?? null;
-    if (initialRoot) {
+    // configuration — which is exactly what keying this on the presence of a
+    // `root` used to do to the two variants that have none. The switch is on the
+    // provider *variant*, and its last arm is the one that matters: a source this
+    // build cannot name is left unselected and carried through by `submit`,
+    // because reconstructing it would mean guessing what a newer build meant.
+    const initialProvider = initial?.tracker?.providers[0] ?? null;
+    const initialRoot = fsRootOf(initialProvider);
+    if (initialProvider === null) {
+      projectRadio.checked = true;              // a new or tracker-less workspace
+    } else if (initialProvider.type === "github") {
+      onInput.checked = true;
+      githubRadio.checked = true;
+    } else if (initialRoot) {
       onInput.checked = true;
       if (initialRoot.kind === "path") { pathRadio.checked = true; trackerPath.value = initialRoot.path; }
       else projectRadio.checked = true;
     } else {
-      projectRadio.checked = true;
+      // Present, configured, and unreadable to this build. No radio can say so.
+      onInput.checked = true;
+      unknownNote.classList.remove("tk-hidden");
     }
     syncTracker();
 
@@ -273,27 +392,102 @@ export function workspaceForm(
     error.className = "form-error"; error.style.display = "none";
     const { row, ok, cancel } = actions();
     box.append(title, labeled("Name", name), labeled("Folder", pathRow), colorRow,
-      onRow, rootRow, trackerPathRow, trackerPreview, error, row);
+      labeled("Аккаунт GitHub", account),
+      labeled("Имя в коммитах", gitName),
+      labeled("Почта в коммитах", gitEmail),
+      labeled("SSH-ключ", sshKey),
+      ghHint,
+      onRow, rootRow, unknownNote, trackerPathRow, trackerPreview, error, row);
 
     const close = (v: WorkspaceFormResult | null) => { closeDialog(); resolve(v); };
-    const submit = () => {
+    // `submit` awaits a confirmation now, and both OK and Enter reach it. Without
+    // this the second of two quick clicks would raise a second confirmation over
+    // the first, for one form.
+    let submitting = false;
+    const submit = async () => {
+      if (submitting) return;
+      submitting = true;
+      try { await run(); } finally { submitting = false; }
+    };
+    const run = async () => {
       const n = name.value.trim(); const p = path.value.trim();
       if (!n) return showError(error, "Enter a workspace name.");
       if (!p) return showError(error, "Choose a project folder.");
+      const login = account.value.trim();
+      const opt = (el: HTMLInputElement) => { const v = el.value.trim(); return v ? v : undefined; };
+      // Пустой логин снимает привязку целиком: git-идентичность без аккаунта —
+      // отдельная фича, которой мы не обещали.
+      const github: WorkspaceGithub | null = login
+        ? {
+            host: initial?.github?.host ?? "github.com",
+            login,
+            gitName: opt(gitName),
+            gitEmail: opt(gitEmail),
+            sshKey: opt(sshKey),
+          }
+        : null;
       let tracker: TrackerConfig | null = null;
       if (onInput.checked) {
-        if (pathRadio.checked) {
+        if (githubRadio.checked) {
+          // Asked before the save, and only when a folder is being left behind:
+          // afterwards the deck no longer knows the old root, and renaming the
+          // workspace in the same save loses the pointer to it as well — the old
+          // folder is named after the slug of the old name — so this sentence is
+          // then the only thing that says where the cards are.
+          if (initialRoot !== null) {
+            const ok = await confirmModal(await abandonFolderWarning());
+            if (!ok) return;   // the form stays open, the radio stays where it is
+          }
+          tracker = { providers: [{ type: "github" }] };
+        } else if (pathRadio.checked) {
           const tp = trackerPath.value.trim();
           // An empty path is not "off", it is a typo: keep the form open.
           if (!tp) { trackerPath.focus(); return showError(error, "Enter the tracker folder."); }
           tracker = { providers: [{ type: "fs", root: { kind: "path", path: tp } }] };
-        } else {
+        } else if (projectRadio.checked) {
           tracker = { providers: [{ type: "fs", root: { kind: "project" } }] };
+        } else {
+          // No radio is checked and the tracker is on: the only way to reach this
+          // is the source this build cannot name, left exactly as it was found.
+          // Written before the `else` arms above were made explicit, a stray
+          // `else` here would have replaced it with a project folder.
+          tracker = initial?.tracker ?? null;
         }
       }
-      close({ name: n, path: p, color, tracker });
+      close({ name: n, path: p, color, github, tracker });
     };
-    ok.onclick = submit;
+
+    /** The sentence for leaving a folder behind. Every clause is load-bearing: how
+     *  much is there, where it is, that nothing is deleted, that nothing is copied
+     *  to GitHub, and that the switch is reversible.
+     *
+     *  Both facts are best-effort. The count needs a directory read and the path
+     *  needs the preview's answer; neither may block a save, so each has a wording
+     *  that is true when it is missing — "any cards there", "its previous folder". */
+    async function abandonFolderWarning(): Promise<string> {
+      const id = initial?.id;
+      const n = id ? await trackerOpenCount(id).catch(() => null) : null;
+      const what = n === null ? "any cards there" : `${n} open card${n === 1 ? "" : "s"}`;
+      // Resolved from `initial` every time rather than read off the preview the
+      // form is already showing. The preview follows the *editable* name and path
+      // fields, so on a form where either was changed before the switch it names
+      // where the cards *would have* gone — not where they are. The old name and
+      // the old path are the only two inputs that answer this question.
+      let where: string | null = null;
+      if (initialRoot?.kind === "path" && initial) {
+        where = await trackerRootPreview(initial.name, initialRoot.path)
+          .then((r) => r.root).catch(() => null);
+      } else if (initialRoot?.kind === "project" && initial) {
+        // The same location the radio above names, and the workspace's own folder
+        // is a fact this form already has.
+        where = `${initial.path} (.cowork/tasks)`;
+      }
+      return `This workspace has ${what} in ${where ?? "its previous folder"}. Switching to GitHub `
+        + "issues leaves every one of them on disk, untouched — this board will stop showing them, "
+        + "and nothing will copy them to GitHub. Switching back later brings them back.";
+    }
+
+    ok.onclick = () => void submit();
     cancel.onclick = () => close(null);
     name.focus();
   });
@@ -562,7 +756,14 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
 
 /** Quick capture of a card. The title is required: a nameless card is useless
  *  in a backlog, so an empty input does not close the dialog. */
-export function taskForm(cfg: BoardConfig): Promise<TaskDraft | null> {
+export function taskForm(
+  cfg: BoardConfig,
+  /** Whether to offer the kind row. False for a synthesized board — one synthetic
+   *  kind is not a choice — and the draft then carries that kind unchanged, which
+   *  the GitHub provider ignores anyway. Default true: the file board's own
+   *  callers and tests predate the flag. */
+  showKind = true,
+): Promise<TaskDraft | null> {
   return new Promise((resolve) => {
     const { box, close: closeDialog } = openDialog({
       onCancel: () => close(null),
@@ -616,7 +817,10 @@ export function taskForm(cfg: BoardConfig): Promise<TaskDraft | null> {
     const error = document.createElement("div");
     error.className = "form-error"; error.style.display = "none";
     const { row, ok, cancel } = actions();
-    box.append(title, labeled("Title", titleInput), kindRow,
+    // The row is withheld, not emptied: `kind` still carries `cfg.kinds[0]`, which
+    // is the synthetic kind on a board that has only one, and the GitHub provider
+    // ignores it. A kind row with one button would be a choice that is not one.
+    box.append(title, labeled("Title", titleInput), ...(showKind ? [kindRow] : []),
       labeled("Description", bodyInput), error, row);
 
     const close = (v: TaskDraft | null) => { closeDialog(); resolve(v); };
@@ -629,5 +833,175 @@ export function taskForm(cfg: BoardConfig): Promise<TaskDraft | null> {
     ok.onclick = submit;
     cancel.onclick = () => close(null);
     titleInput.focus();
+  });
+}
+
+/** The close confirmation for an issue, which is a confirmation *and* a choice.
+ *
+ *  `confirmModal` cannot carry the choice, and `gh issue close` takes a reason
+ *  that is visible on the issue forever, so this is its own dialog: the sentence
+ *  from `closeConfirmText` — the same one the rule's test pins, so the warning
+ *  exists once — and the two reasons `gh` accepts, `completed` preselected.
+ *
+ *  Exactly two reasons, in that order: `gh_issues::close_reason` drops anything
+ *  else, and a third option here would be a close that quietly lost its reason.
+ *  No comment field — a comment is a conversation, and conversations are the next
+ *  spec.
+ *
+ *  Resolves the chosen reason, or `null` on Cancel, Escape or the backdrop.
+ *  Never a default reason on refusal: an unanswered confirmation closes nothing. */
+export function closeIssueModal(
+  number: number | string, title: string,
+): Promise<"completed" | "not planned" | null> {
+  return new Promise((resolve) => {
+    const { box, close: closeDialog } = openDialog({
+      onCancel: () => close(null),
+      onAccept: () => submit(),
+    });
+    const heading = document.createElement("div");
+    heading.className = "modal-title";
+    // textContent, not innerHTML: the title is the repository's text and anyone
+    // who can open an issue on a repository the user can read chooses it.
+    heading.textContent = closeConfirmText(number, title);
+
+    // Built like mergeForm's strategy row: a span label plus the radios in a
+    // <div>, never `labeled()` — a <label> wrapping the whole group forwards a
+    // click on its text to the first control and would silently change the answer.
+    const row = document.createElement("div");
+    row.className = "form-row";
+    const label = document.createElement("span");
+    label.className = "form-label";
+    label.textContent = "Reason";
+    const group = document.createElement("div");
+    group.className = "ci-reasons";
+    group.setAttribute("role", "radiogroup");
+    group.setAttribute("aria-label", "Close reason");
+    const REASONS = ["completed", "not planned"] as const;
+    const radios: HTMLInputElement[] = [];
+    for (const r of REASONS) {
+      const l = document.createElement("label");
+      const i = document.createElement("input");
+      i.type = "radio"; i.name = "closeReason"; i.className = "ci-reason"; i.value = r;
+      i.checked = r === "completed";
+      l.append(i, document.createTextNode(` ${r}`));
+      group.append(l);
+      radios.push(i);
+    }
+    row.append(label, group);
+
+    const { row: acts, ok, cancel } = actions("Close issue");
+    box.append(heading, row, acts);
+
+    const close = (v: "completed" | "not planned" | null) => { closeDialog(); resolve(v); };
+    const submit = () => {
+      // Found among the radios rather than read off an index: the checked one is
+      // whichever the person left checked.
+      const chosen = radios.find((r) => r.checked)?.value;
+      close(chosen === "not planned" ? "not planned" : "completed");
+    };
+    ok.onclick = submit;
+    cancel.onclick = () => close(null);
+    ok.focus();
+  });
+}
+
+/** Confirmation for the one irreversible action in the feature.
+ *
+ *  Shows what is being merged, into what, and at which commit — the same commit
+ *  the caller pins with `--match-head-commit`, so the dialog and the merge can
+ *  never disagree. Only the strategies the repository permits are offered: a
+ *  button for a forbidden one could do nothing but fail. */
+export function mergeForm(
+  pr: { number: number; title: string; headRefName: string; baseRefName: string; headRefOid: string },
+  opts: MergeOptions,
+): Promise<{ strategy: string; deleteBranch: boolean } | null> {
+  return new Promise((resolve) => {
+    const { box, close: closeDialog } = openDialog({
+      onCancel: () => close(null),
+      onAccept: () => submit(),
+    });
+    box.classList.add("modal-box--form");
+
+    const title = document.createElement("div");
+    title.className = "modal-title";
+    title.textContent = `Merge #${pr.number}`;
+
+    // Two paragraphs, not one with a newline in it: a "\n" inside a <p> renders
+    // as a space, and the pull request title would run into the branch pair.
+    const what = document.createElement("p");
+    what.className = "form-hint mg-what";
+    what.textContent = pr.title;
+
+    const at = document.createElement("p");
+    at.className = "form-hint mg-at";
+    at.textContent =
+      `${pr.headRefName} → ${pr.baseRefName}, at commit ${pr.headRefOid.slice(0, 7)}`;
+
+    // The pin is the whole reason the commit is on screen; a refusal later is
+    // easier to read as a guarantee than as a fault if it was named up front.
+    const pinNote = document.createElement("p");
+    pinNote.className = "form-hint mg-pin-note";
+    pinNote.textContent =
+      "The merge is pinned to that commit: if the branch moves first, it is refused.";
+
+    // Built like kindRow in taskForm: a span label plus the controls in a
+    // <div>, NOT labeled() — a <label> wraps one control, and a click on the
+    // text of one wrapping the whole group would change the selection.
+    const strategyRow = document.createElement("div");
+    strategyRow.className = "form-row";
+    const strategyLabel = document.createElement("span");
+    strategyLabel.className = "form-label";
+    strategyLabel.textContent = "Strategy";
+    const strategyBox = document.createElement("div");
+    strategyBox.className = "mg-strategies";
+    strategyBox.setAttribute("role", "radiogroup");
+    strategyBox.setAttribute("aria-label", "Merge strategy");
+    const radios: HTMLInputElement[] = [];
+    for (const s of opts.strategies) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio"; input.name = "mergeStrategy";
+      input.className = "mg-strategy"; input.value = s;
+      input.checked = s === opts.default;
+      label.append(input, document.createTextNode(` ${s}`));
+      strategyBox.append(label);
+      radios.push(input);
+    }
+    strategyRow.append(strategyLabel, strategyBox);
+
+    const deleteBox = document.createElement("input");
+    deleteBox.type = "checkbox";
+    deleteBox.className = "mg-delete";
+    const deleteRow = opts.repoDeletesBranch
+      ? (() => {
+          const p = document.createElement("p");
+          p.className = "form-hint mg-delete-note";
+          p.textContent = "This repository deletes merged branches itself.";
+          return p;
+        })()
+      : labeledCheck("Delete the branch after merging", deleteBox);
+
+    const { row, ok, cancel } = actions();
+    // Named, not "OK": the one button in the app that cannot be undone says
+    // what it does.
+    ok.textContent = "Merge";
+    box.append(title, what, at, pinNote, strategyRow, deleteRow, row);
+
+    const close = (v: { strategy: string; deleteBranch: boolean } | null) => {
+      closeDialog(); resolve(v);
+    };
+    const submit = () => {
+      const picked = radios.find((r) => r.checked)?.value ?? opts.default;
+      close({
+        strategy: picked,
+        // Never true when the repository does it anyway: `deleteBox` is not in
+        // the tree then, and an unticked box would be reported as a choice.
+        deleteBranch: opts.repoDeletesBranch ? false : deleteBox.checked,
+      });
+    };
+    ok.onclick = submit;
+    cancel.onclick = () => close(null);
+    // Focus lands on the choice rather than on the button that merges.
+    (radios.find((r) => r.checked) ?? radios[0])?.focus();
   });
 }

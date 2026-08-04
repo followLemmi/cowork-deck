@@ -42,6 +42,15 @@ const PATHS: Record<string, string> = {
     + '<path d="M11.5 5 v1.4 a2.6 2.6 0 0 1-2.6 2.6 H7.1 a2.6 2.6 0 0 0-2.6 2.6"/>',
   play: '<path d="M5.8 3.6 l7 4.4 -7 4.4 z" fill="currentColor" stroke="none"/>',
   plus: '<path d="M8 3.5 V12.5"/><path d="M3.5 8 H12.5"/>',
+  // The wordmark's glyph: two stacked tiles, which is what a deck is. Drawn
+  // dark-on-light inside `.mark-glyph`, the one place in the app an icon inverts.
+  deck: '<rect x="2.8" y="3" width="10.4" height="4.2" rx="1.3"/>'
+    + '<rect x="2.8" y="8.8" width="10.4" height="4.2" rx="1.3"/>',
+  // Settings. Two rails and two knobs rather than a gear: at 16px a gear's teeth
+  // collapse into a circle, and the same shape already has to read at 12px in the
+  // tile heads.
+  sliders: '<path d="M2.5 5.2 H13.5"/><path d="M2.5 10.8 H13.5"/>'
+    + '<circle cx="6" cy="5.2" r="1.8"/><circle cx="10.4" cy="10.8" r="1.8"/>',
 
   // --- Scenario icons -----------------------------------------------------
   // Offered in the scenario form instead of free-text emoji. Same grid and

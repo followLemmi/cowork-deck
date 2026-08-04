@@ -5,7 +5,21 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
  *  `done` — the agent finished its turn and the prompt is free: nothing is
  *  blocked, but work got done, which is worth a notification. */
 export type SessionState = "idle" | "working" | "waitingInput" | "done" | "ended" | "error";
-export interface Workspace { id: string; name: string; path: string; color: string; tracker?: TrackerConfig | null; }
+/** Привязка воркспейса к GitHub-аккаунту. Здесь только имя аккаунта —
+ *  публичное значение. Токены приложение не хранит: они читаются из keyring
+ *  `gh` на старте сессии и живут лишь в памяти дочернего процесса. */
+export interface WorkspaceGithub {
+  host: string;
+  login: string;
+  gitName?: string;
+  gitEmail?: string;
+  sshKey?: string;
+}
+export interface Workspace {
+  id: string; name: string; path: string; color: string;
+  github?: WorkspaceGithub | null;
+  tracker?: TrackerConfig | null;
+}
 export type SchedulePreset =
   | { kind: "hourly"; minute: number }
   | { kind: "daily"; hour: number; minute: number }
@@ -22,7 +36,32 @@ export interface SessionEntry {
    *  on restore, so catch-up cannot duplicate a run that is already back. */
   scheduledSkillId?: string;
 }
-export interface UiState { activeWorkspaceId: string | null; }
+export interface UiState {
+  activeWorkspaceId: string | null;
+  /** A multiplier on the base in `styles.css`, not a pixel size — see `ui-scale.ts`.
+   *  Required rather than optional: the Rust side fills it from a `serde` default, so
+   *  a reader that treats it as possibly-absent is guarding against a case that
+   *  cannot happen and would hide a real one. */
+  uiScale: number;
+  /** How wide the diff drawer is, in `ch` of the mono face — not pixels.
+   *  `ui-scale.ts` moves the root between 11.05px and 18.85px, so a px width
+   *  would show *fewer* code columns at 145%, which is the one thing a diff pane
+   *  is for. Required for the same reason as `uiScale`: Rust fills it from a
+   *  `serde` default, so an optional here would guard a case that cannot happen. */
+  prDiffCols: number;
+}
+
+/** A change to the stored state, which is what `save_ui_state` takes.
+ *
+ *  Separate from `UiState` on purpose. The backend used to write the file from a
+ *  whole `UiState`, and the one caller sends the active workspace alone — so the
+ *  moment a second field existed, every workspace switch would have wiped the text
+ *  size. An absent key here means "leave it alone". */
+export interface UiStatePatch {
+  activeWorkspaceId?: string;
+  uiScale?: number;
+  prDiffCols?: number;
+}
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
  *  a session actually started. Epoch millis. */
@@ -37,16 +76,220 @@ export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");
 export const saveWorkspace = (ws: Workspace) => invoke<Workspace[]>("save_workspace", { ws });
 export const removeWorkspace = (id: string) => invoke<Workspace[]>("remove_workspace", { id });
 export const loadUiState = () => invoke<UiState>("load_ui_state");
-export const saveUiState = (ui: UiState) => invoke<void>("save_ui_state", { ui });
+export const saveUiState = (ui: UiStatePatch) => invoke<void>("save_ui_state", { ui });
 export const listSkills = () => invoke<Skill[]>("list_skills");
 export const saveSkill = (sk: Skill) => invoke<Skill[]>("save_skill", { sk });
 export const removeSkill = (id: string) => invoke<Skill[]>("remove_skill", { id });
 export const claudeAvailable = () => invoke<boolean>("claude_available");
 
+export interface GhAccount { host: string; login: string; active: boolean; scopes: string[]; state: string; }
+export interface GhStatus { path: string | null; version: string | null; accounts: GhAccount[]; }
+export interface HostPlatform { os: "macos" | "windows" | "linux"; distro: string | null; }
+
+export const ghStatus = () => invoke<GhStatus>("gh_status");
+export const hostPlatform = () => invoke<HostPlatform>("host_platform");
+
+/** Four distinct check states. `none` is not `passed`: nothing has built this.
+ *  Mirrors `gh_pr::ChecksSummary`, tagged on `kind`. */
+export type ChecksSummary =
+  | { kind: "none" }
+  | { kind: "running"; done: number; total: number }
+  | { kind: "passed"; total: number }
+  | { kind: "failed"; failed: number; total: number };
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  /** Empty when the author's account is gone. */
+  author: string;
+  isDraft: boolean;
+  headRefName: string;
+  /** What a merge is pinned to — see `prMerge`. */
+  headRefOid: string;
+  baseRefName: string;
+  isCrossRepository: boolean;
+  reviewDecision: string | null;
+  checks: ChecksSummary;
+  mergeable: string;
+  mergeStateStatus: string;
+  updatedAt: string;
+  url: string;
+  labels: string[];
+}
+
+export interface MergeOptions {
+  /** Only what this repository permits. Can be empty — a repository may allow
+   *  no strategy at all, and then `default` carries nothing usable either. */
+  strategies: ("merge" | "squash" | "rebase")[];
+  default: "merge" | "squash" | "rebase";
+  /** The repository deletes merged branches itself; the dialog says so rather
+   *  than offering a checkbox that misdescribes what happens. */
+  repoDeletesBranch: boolean;
+}
+
+export interface ChangedFile { path: string; additions: number; deletions: number }
+
+/** What a pull request holds, beyond what a row shows. */
+export interface PrDetail {
+  /** The description as written, Markdown and all. Empty is a legal answer — a
+   *  pull request opened without one — and reads as "no description". */
+  body: string;
+  additions: number;
+  deletions: number;
+  /** GitHub's own count, which is why it sits beside `files` rather than being
+   *  derived from its length: `files` is itself a page. */
+  changedFiles: number;
+  files: ChangedFile[];
+}
+
+/** Why a file arrived with no lines to show. Mirrors `gh_pr::Omission`, tagged on
+ *  `kind` and serialised camelCase.
+ *
+ *  Four states counting the absent one, and they are not interchangeable —
+ *  each earns a different sentence and a different escape hatch:
+ *
+ *  - `null` with hunks — an ordinary file.
+ *  - `null` with no hunks — a rename. The row names two paths and nothing is
+ *    withheld.
+ *  - `tooLargeUpstream` — counts kept, no patch. Re-fetching cannot help;
+ *    measured on #151's 5290-change plan, which has no patch even on a page of one.
+ *  - `unreported` — counts **zeroed**, no patch. Could be a binary file, a
+ *    mode-only change, or the response hitting a budget; one response cannot tell
+ *    them apart, and a narrower page resolves it — measured, where the same file
+ *    read 0/0/0 on a page of 62 and 163/3 with a patch on a page of three.
+ *  - `tooLargeLocal` — over our own cap. The bytes arrived and were dropped in
+ *    Rust, so the count is exact and the refusal is ours. */
+export type Omission =
+  | { kind: "tooLargeUpstream" }
+  | { kind: "unreported" }
+  | { kind: "tooLargeLocal"; lines: number };
+
+/** One hunk of one file's patch. Mirrors `gh_pr::Hunk`.
+ *
+ *  `header` is the `@@` line verbatim, kept for its trailing section context —
+ *  `@@ -89,6 +91,9 @@ fn main() {` — which git writes and nothing else does.
+ *  It is material for a heading, never a row to print. `oldStart`/`newStart` are
+ *  parsed in Rust; the single-number form `@@ -1 +1 @@` is real and is already
+ *  handled there, so nothing on this side re-parses a header. */
+export interface Hunk {
+  header: string;
+  oldStart: number;
+  newStart: number;
+  /** Patch lines as written, leading `+`, `-`, ` ` or `\` kept. */
+  lines: string[];
+}
+
+/** One changed file, as far as GitHub will describe it. Mirrors `gh_pr::DiffFile`.
+ *
+ *  **The identity of a file is its index in `PrDiff.files`, never `path`.** Two of
+ *  549 measured responses name the same `filename` twice, as a `removed` + `added`
+ *  pair — a file replaced by a symlink. Anything keyed by path silently merges
+ *  those two rows into one, which is why the drawer is opened at an index. */
+export interface DiffFile {
+  path: string;
+  /** Set only on a rename or a copy, where the row names two paths. */
+  previousPath: string | null;
+  status: string;
+  additions: number;
+  deletions: number;
+  /** The permalink at this head — the escape hatch for everything the drawer
+   *  cannot draw, so it is carried even when `hunks` is full. */
+  blobUrl: string;
+  hunks: Hunk[];
+  omitted: Omission | null;
+}
+
+export interface PrDiff {
+  /** The commit this diff actually describes — read by the backend out of the
+   *  rows' `blob_url`, not taken from whatever the caller asked for.
+   *
+   *  This closes a hole worth naming, because the natural design has it. The
+   *  files endpoint is addressed by pull request *number*, so it serves whatever
+   *  HEAD is when it runs, and a slot keyed on the head believed at request time
+   *  can hold a diff labelled with a commit that is not the one in it. Keying on
+   *  this instead means the label is what arrived.
+   *
+   *  Empty when the response had no rows to read it from — a pull request that
+   *  changes nothing, where there is also nothing to go stale. */
+  headRefOid: string;
+  files: DiffFile[];
+  /** How many files the pull request touches, kept beside `files` rather than
+   *  derived from its length: `files` is a capped page. */
+  totalFiles: number;
+}
+
+export const prList = (workspaceId: string) =>
+  invoke<PullRequest[]>("pr_list", { workspaceId });
+/** One pull request's contents, fetched only when a row is opened. Never part of
+ *  the list call: a description and a per-path diffstat on a fifty-row page that
+ *  re-polls every 15 s is payload for rows nobody looked at. */
+export const prDetail = (workspaceId: string, number: number) =>
+  invoke<PrDetail>("pr_detail", { workspaceId, number });
+/** Every file of one pull request, in one response.
+ *
+ *  Not addressed by file: all 62 files of #151 arrive in a single fetch, so a
+ *  per-file call would be 62 round trips slicing it. What makes handing over the
+ *  lot affordable is that the backend applies its line cap *before* serialising,
+ *  so a patch the drawer would refuse to draw never crosses. Fetched when the
+ *  drawer opens and never on the list poll. */
+export const prDiff = (workspaceId: string, number: number) =>
+  invoke<PrDiff>("pr_diff", { workspaceId, number });
+/** One file of the diff, on a page of its own and with no cap applied.
+ *
+ *  The exception to the rule above, and it exists because of a measurement. GitHub
+ *  zeroes a file's counts and drops its patch when the *whole response* hits a
+ *  budget, so the cure for a file it declined to describe is a response small
+ *  enough that it cannot: on #151 `tests/tasks.test.ts` is index 60, reads 0/0/0
+ *  with no patch in the 62-file response, and comes back 163/3 with a patch on a
+ *  page of one.
+ *
+ *  The same call is "show anyway" for a file our own cap dropped — one mechanism
+ *  for both refusals, which is why `pr_diff` has no per-file exemption. `fileIndex`
+ *  is the position in `PrDiff.files` and becomes the one-based page number; a path
+ *  would not do, since 2 of 549 measured responses name the same path twice. */
+export const prFilePatch = (workspaceId: string, number: number, fileIndex: number) =>
+  invoke<DiffFile>("pr_file_patch", { workspaceId, number, fileIndex });
+export const prMergeOptions = (workspaceId: string) =>
+  invoke<MergeOptions>("pr_merge_options", { workspaceId });
+/** `headOid` pins the merge to the commit that was reviewed: the backend passes
+ *  it to `gh pr merge --match-head-commit`, so a push that lands mid-review
+ *  makes this fail rather than merge something nobody looked at. */
+export const prMerge = (
+  workspaceId: string, number: number, strategy: string, headOid: string, deleteBranch: boolean,
+) => invoke<void>("pr_merge", { workspaceId, number, strategy, headOid, deleteBranch });
+export const prClose = (workspaceId: string, number: number) =>
+  invoke<void>("pr_close", { workspaceId, number });
+export const prReopen = (workspaceId: string, number: number) =>
+  invoke<void>("pr_reopen", { workspaceId, number });
+/** Resolves to the path of the worktree that now holds the PR's branch. */
+export const prWorktreePath = (workspaceId: string, number: number, branch: string) =>
+  invoke<string | null>("pr_worktree_path", { workspaceId, number, branch });
+/** Where a worktree was prepared, and whether it was already there. */
+export interface WorktreeAdded { path: string; reused: boolean }
+/** `crossRepository` is required, not inferred: for a fork the head is not a
+ *  local branch, so the backend must not go looking for a worktree already on
+ *  it. Pass the pull request's own `isCrossRepository`. */
+export const prWorktreeAdd = (
+  workspaceId: string, number: number, branch: string, crossRepository: boolean,
+) => invoke<WorktreeAdded>("pr_worktree_add", { workspaceId, number, branch, crossRepository });
+export const prWorktreeRemove = (workspaceId: string, number: number, branch: string) =>
+  invoke<void>("pr_worktree_remove", { workspaceId, number, branch });
+
+/** Исход привязки аккаунта для стартовавшей сессии. Токена тут нет: только имя
+ *  аккаунта и, если резолв не удался, причина — её показывает бейдж на тайле. */
+export interface SessionAuth { account: string | null; degraded: string | null; }
+
 export const startSession = (
   session: string, cwd: string, workspaceId: string | null, initialPrompt: string | null,
   taskId: string | null, cols: number, rows: number, resume: boolean,
-) => invoke<void>("start_session", { session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume });
+) => invoke<SessionAuth>("start_session", {
+  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
+});
+/** Разовый запуск пользовательской команды в тайле-терминале (установка gh,
+ *  `gh auth login`). Не сессия агента: хуков состояния нет. */
+export const startCommandSession = (
+  session: string, cwd: string, command: string, cols: number, rows: number,
+) => invoke<void>("start_command_session", { session, cwd, command, cols, rows });
 export const writeSession = (session: string, data: string) => invoke<void>("write_session", { session, data });
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
@@ -114,6 +357,10 @@ export interface Task {
   damaged: string | null;
   /** More than one file carries this id. */
   conflict: boolean;
+  /** Issue labels, as chips in the meta row. Empty for a card file, which has
+   *  none — never a `kind`: an issue can carry two labels and `kind` is a
+   *  single-valued select. */
+  labels: string[];
 }
 // project/origin are set by the backend (workspace name / "human") and are
 // deliberately not settable from here — see tasks_cmd::TaskDraftInput.
@@ -121,7 +368,12 @@ export interface TaskDraft { title: string; kind: KindId; body: string; }
 /** Which fields of a card to write. Every field optional: Save applies only
  *  what the person touched, and a step-only move (drag-and-drop, `‹`/`›`) is a
  *  patch carrying only `status` — see tasks_cmd::tasks_update. */
-export interface TaskPatch { title?: string; kind?: KindId; status?: StepId; body?: string }
+export interface TaskPatch {
+  title?: string; kind?: KindId; status?: StepId; body?: string;
+  /** Why a card is being closed, where closing takes a reason
+   *  (`completed` / `not planned`). Ignored by the file provider. */
+  reason?: string;
+}
 /** Capabilities and the board configuration arrive together, flattened into one
  *  object by `tasks_cmd::BoardCapabilities`: the board, the card modal and the
  *  ⚙ editor all read the same thing, so there is no second channel to fall out
@@ -134,11 +386,47 @@ export interface ProviderCapabilities {
   /** Why `board.json` could not be used, when it could not. The board draws
    *  either way; the person has to be told which they are looking at. */
   boardError: string | null;
+  /** Whether ⚙ is offered. False for a synthesized board: there is no
+   *  `board.json` to write, and one synthetic kind is not a choice. */
+  boardEditable: boolean;
 }
 export type TrackerRoot = { kind: "project" } | { kind: "path"; path: string };
-export interface TrackerConfig { providers: { type: "fs"; root: TrackerRoot }[] }
+/** The two sources this build writes. Every *writer* builds one of these, so a
+ *  mistyped `type` is still a compile error where it matters. */
+export type KnownTrackerProviderConfig =
+  | { type: "fs"; root: TrackerRoot }
+  | { type: "github" };
+/** A workspace's task source, as *read*. One element, never merged:
+ *  `TrackerConfig.providers` is a list so a second kind arrives as an added
+ *  variant, and every reader takes the first.
+ *
+ *  **The open tail is not laziness — it is #117's whole point in the type.** A
+ *  store file written by a newer build can carry a `type` this build has never
+ *  heard of, and Rust's `TrackerProvider::Unknown` keeps such a record rather than
+ *  dropping it. Without the tail that record is representable at runtime and
+ *  unrepresentable here, so every `switch` on `.type` would look exhaustive to
+ *  `tsc` while the unrecognised case fell into whichever arm satisfied the
+ *  compiler. With it, `type === "fs"` no longer proves there is a `root` either —
+ *  which is honest: a damaged record can carry the one without the other, and
+ *  `fsRootOf` is where that is checked once. */
+export type TrackerProviderConfig = KnownTrackerProviderConfig | { type: string };
+export interface TrackerConfig { providers: TrackerProviderConfig[] }
 
-export const listTasks = (workspaceId: string) => invoke<Task[]>("tasks_list", { workspaceId });
+export interface IssueTotals {
+  open: number;
+  closed: number;
+  /** GraphQL points left this hour, read from the response headers. Null when
+   *  the headers said nothing — never 0, which means exhausted. */
+  rateRemaining: number | null;
+}
+
+/** `limit` is how many rows per state to ask a paging source for; omitted, the
+ *  provider uses its own defaults (50 open, 20 closed). A folder ignores it —
+ *  `read_dir` returns all of it, so a page size there would be a fiction. The
+ *  backend clamps whatever arrives (`tasks_cmd.rs`'s `MAX_PAGE_LIMIT`), because
+ *  this number reaches `gh issue list -L` on a poll that repeats every 30 s. */
+export const listTasks = (workspaceId: string, limit?: number) =>
+  invoke<Task[]>("tasks_list", { workspaceId, limit: limit ?? null });
 export const createTask = (workspaceId: string, draft: TaskDraft) =>
   invoke<Task>("tasks_create", { workspaceId, draft });
 export const resolveTask = (workspaceId: string, id: string) =>
@@ -184,6 +472,21 @@ export interface TrackerRootPreview {
 
 export const trackerRootPreview = (workspaceName: string, pickedPath: string) =>
   invoke<TrackerRootPreview>("tracker_root_preview", { workspaceName, pickedPath });
+
+export const issueTotals = (workspaceId: string) =>
+  invoke<IssueTotals>("issue_totals", { workspaceId });
+/** The branch is derived in Rust from the number and the title, so the frontend
+ *  never has to know the naming rule — and cannot get it wrong. */
+export const issueWorktreeAdd = (workspaceId: string, number: number, title: string) =>
+  invoke<string>("issue_worktree_add", { workspaceId, number, title });
+export const issueWorktreePath = (workspaceId: string, number: number, title: string) =>
+  invoke<string | null>("issue_worktree_path", { workspaceId, number, title });
+export const issueWorktreeRemove = (workspaceId: string, number: number, title: string) =>
+  invoke<void>("issue_worktree_remove", { workspaceId, number, title });
+/** The sidebar's open count for whichever source this workspace reads. Null when
+ *  there is no count to show — no tracker, or a source that could not answer. */
+export const trackerOpenCount = (workspaceId: string) =>
+  invoke<number | null>("tracker_open_count", { workspaceId });
 
 export const onTasksChanged = (cb: (workspaceId: string) => void): Promise<UnlistenFn> =>
   listen<{ workspaceId: string }>("tasks://changed", (e) => cb(e.payload.workspaceId));

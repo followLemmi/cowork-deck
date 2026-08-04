@@ -34,4 +34,12 @@ describe("serializeTiles", () => {
     expect(result).toEqual([{ sessionId: "s2", cwd: "/b", name: "N" }]);
     expect(Object.keys(result[0])).not.toContain("workspaceId");
   });
+  it("никогда не сохраняет служебные тайлы команд", () => {
+    // Восстановление такого тайла молча перезапустило бы sudo-команду установки.
+    const result = serializeTiles([
+      { session: "s1", workspacePath: "/w", name: "проект", workspaceId: "w1" },
+      { session: "cmd1", workspacePath: "/w", name: "установка gh", workspaceId: "w1", kind: "command" },
+    ]);
+    expect(result.map((e) => e.sessionId)).toEqual(["s1"]);
+  });
 });

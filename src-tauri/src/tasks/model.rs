@@ -27,6 +27,11 @@ pub struct Task {
     pub damaged: Option<String>,
     #[serde(default)]
     pub conflict: bool,
+    /// Issue labels, as chips in the meta row. Never a `kind`: an issue can
+    /// carry two labels and `kind` is a single-valued select. `default` because
+    /// every card file ever written lacks the key, and a file card has none.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 /// What a caller supplies to create a card; everything else is derived.
@@ -46,6 +51,16 @@ pub enum TaskError {
     NotConfigured,
     RootMissing(String),
     Io(String),
+    /// The remote source refused, or answered with something no parser can read.
+    ///
+    /// Separate from `Io` because the string reaches the user unmodified —
+    /// `main.ts:352` assigns it to `error`, `board.ts:148` renders it as
+    /// `.tk-error` — and "filesystem error: API rate limit exceeded" names the
+    /// wrong culprit entirely. `Io` was not reworded instead: `fs.rs` raises it
+    /// for eleven genuine `std::fs` failures, where "filesystem error:" is
+    /// exactly right, and degrading the honest sender to fix the dishonest one
+    /// trades one wrong message for eleven.
+    Remote(String),
     NotFound(String),
     Conflict(String),
     /// The card has an `id` but is otherwise incomplete (see
@@ -67,6 +82,11 @@ impl std::fmt::Display for TaskError {
             TaskError::NotConfigured => write!(f, "no task tracker is configured for this workspace"),
             TaskError::RootMissing(p) => write!(f, "the task folder is unreachable: {p}"),
             TaskError::Io(e) => write!(f, "filesystem error: {e}"),
+            // Names GitHub rather than "the task source", because GitHub is the
+            // only remote source there is and a vaguer sentence helps nobody. A
+            // second provider is the moment the variant has to carry its own
+            // name — not the moment to reword this one.
+            TaskError::Remote(e) => write!(f, "GitHub: {e}"),
             TaskError::NotFound(id) => write!(f, "card not found: {id}"),
             TaskError::Conflict(id) => {
                 write!(f, "more than one file carries id {id} — fix it by hand")
@@ -78,8 +98,12 @@ impl std::fmt::Display for TaskError {
                 f,
                 "the card is damaged and must be repaired by hand: {path}"
             ),
-            TaskError::UnknownStep(s) => write!(f, "no step named {s} in board.json"),
-            TaskError::UnknownKind(s) => write!(f, "no kind named {s} in board.json"),
+            // "in this board", not "in board.json": a GitHub board has no
+            // `board.json` at all, and naming a file the user cannot find is
+            // worse than naming none. The `boardError` banner already names the
+            // file wherever there is one to name.
+            TaskError::UnknownStep(s) => write!(f, "no step named {s} in this board"),
+            TaskError::UnknownKind(s) => write!(f, "no kind named {s} in this board"),
         }
     }
 }

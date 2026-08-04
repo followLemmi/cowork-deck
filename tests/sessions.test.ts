@@ -92,7 +92,10 @@ describe("Deck.focusTile", () => {
 
     const activeTiles = deckEl.querySelectorAll(".tile.is-active");
     expect(activeTiles.length).toBe(1);
-    expect(deckEl.classList.contains("has-active")).toBe(true);
+    // `has-active` on the deck was asserted here too. It existed only to scope
+    // `opacity: 0.82` onto the tiles that were *not* active, and that rule is
+    // gone — it cost the dimmed tiles' terminal text 2.25:1 to restate a border.
+    // With no CSS reading the class, asserting it would guard nothing.
   });
 });
 
@@ -299,7 +302,7 @@ function card(over: Partial<Task> = {}): Task {
   return {
     id: "01AAA", title: "Fix", kind: "bug", status: "open", project: "P",
     created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
-    body: "", path: "/p/01AAA-fix.md", damaged: null, conflict: false,
+    body: "", path: "/p/01AAA-fix.md", damaged: null, conflict: false, labels: [],
     ...over,
   };
 }
@@ -437,5 +440,141 @@ describe("Deck.launchFromTask", () => {
     const prompt = startMock.mock.calls[0][2] as string;
     expect(prompt).toContain('"open"');
     expect(prompt).not.toContain('"doing"');
+  });
+});
+
+describe("Deck.launchOnWorktree", () => {
+  const WT = "/p-pr/7-fix-thing";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.innerHTML = "";
+    startMock.mockResolvedValue(undefined);
+  });
+
+  // The session runs in the worktree, but belongs to the workspace: `cwd` and
+  // `workspaceId` are deliberately not about the same directory.
+  it("starts in the worktree while staying bound to the workspace", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+    const [cwd, workspaceId, prompt] = startMock.mock.calls[0];
+    expect(cwd).toBe(WT);
+    expect(workspaceId).toBe(WS.id);
+    expect(prompt).toBe("PR #7");
+  });
+
+  // Grouping and filtering follow `workspaceId`, not the directory — otherwise a
+  // PR session would read as an orphan and stay visible in every workspace.
+  it("is filtered with the workspace, not with its own directory", async () => {
+    const WS2 = { id: "w2", name: "Q", path: "/q", color: "#000" };
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS, WS2]);
+
+    await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+
+    deck.setActiveWorkspace(WS.id);
+    expect(deckEl.querySelector(".tile")!.classList.contains("ws-hidden")).toBe(false);
+    deck.setActiveWorkspace(WS2.id);
+    expect(deckEl.querySelector(".tile")!.classList.contains("ws-hidden")).toBe(true);
+  });
+
+  // Deleting the `if (alive) { ...; return "focused"; }` guard inside
+  // `launchOnWorktree` must fail this test. It is not redundant with the board
+  // hiding ▶: `derivedStatus` reads "in progress" only while the session is
+  // *busy*, so an idle session still linked to the issue leaves ▶ on screen —
+  // which is exactly the click that would otherwise put a second agent in the
+  // same worktree, on the same branch, editing the same files.
+  it("focuses the session an issue already has instead of launching a second one", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    const first = await deck.launchOnWorktree(WT, WS.id, "☑ #42", "issue #42", "42");
+    expect(first).toBe("launched");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+
+    const second = await deck.launchOnWorktree(WT, WS.id, "☑ #42", "issue #42", "42");
+
+    expect(second).toBe("focused");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+    expect(startMock).toHaveBeenCalledTimes(1);
+  });
+
+  // The other half of the condition: with no card to apply it to there is nothing
+  // to compare, and a pull request session must still be launchable a second time
+  // — the guard is keyed on the issue, not on the worktree.
+  it("does not apply the guard to a session with no card behind it", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+    const second = await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+
+    expect(second).toBe("launched");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(2);
+  });
+
+  // Two GitHub-backed workspaces whose repositories both have an open #42. The
+  // guard used to compare the issue number alone, so B's #42 found A's session
+  // and focused it: the person landed in a terminal attached to another
+  // repository, with a worktree just created in B and nothing running in it.
+  it("launches a second workspace's issue of the same number instead of focusing the first", async () => {
+    const WS2 = { id: "w2", name: "Q", path: "/q", color: "#000" };
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS, WS2]);
+
+    const first = await deck.launchOnWorktree("/p-wt/42", WS.id, "☑ #42", "issue #42", "42");
+    expect(first).toBe("launched");
+
+    const second = await deck.launchOnWorktree("/q-wt/42", WS2.id, "☑ #42", "issue #42", "42");
+
+    expect(second).toBe("launched");
+    expect(deckEl.querySelectorAll(".tile").length).toBe(2);
+    expect(startMock).toHaveBeenCalledTimes(2);
+    // The second session runs in B's worktree, not in A's.
+    expect(startMock.mock.calls[1][0]).toBe("/q-wt/42");
+  });
+
+  // What the board is handed for one workspace never mentions another's tiles —
+  // the rules match on the card id, so the scoping has to happen before they see
+  // the list.
+  it("reports links for the named workspace only", async () => {
+    const WS2 = { id: "w2", name: "Q", path: "/q", color: "#000" };
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS, WS2]);
+
+    await deck.launchOnWorktree("/p-wt/42", WS.id, "☑ #42", "issue #42", "42");
+
+    expect(deck.taskLinks(WS.id).map((l) => l.taskId)).toEqual(["42"]);
+    expect(deck.taskLinks(WS2.id)).toEqual([]);
+  });
+
+  // Removing a worktree under a live session would leave it restarting in a
+  // directory that no longer exists, so removal has to be able to ask first.
+  it("reports a live session inside a worktree path", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    expect(deck.hasSessionIn(WT)).toBe(false);
+
+    await deck.launchOnWorktree(WT, WS.id, "⑂ #7", "PR #7");
+
+    expect(deck.hasSessionIn(WT)).toBe(true);
+    expect(deck.hasSessionIn("/p-pr/8-other")).toBe(false);
   });
 });

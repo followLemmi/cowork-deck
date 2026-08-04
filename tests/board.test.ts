@@ -12,13 +12,14 @@ const CFG: BoardConfig = {
 const handlers = {
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
   onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove: vi.fn(), onEditBoard: vi.fn(),
+  onFixUnavailable: vi.fn(), onShowMore: vi.fn(),
 };
 
 function card(over: Partial<Task> = {}): Task {
   return {
     id: "01AAA", title: "The pill keeps blinking", kind: "bug", status: "open", project: "deck",
     created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
-    body: "body", path: "/r/01AAA-pill.md", damaged: null, conflict: false, ...over,
+    body: "body", path: "/r/01AAA-pill.md", damaged: null, conflict: false, labels: [], ...over,
   };
 }
 
@@ -30,14 +31,18 @@ describe("emptyStateMessage", () => {
   });
 
   it("shows the failing path verbatim so a typo is findable", () => {
-    const m = emptyStateMessage({ canCreate: true, canResolve: true, statuses: [], board: CFG, boardError: null },
+    const m = emptyStateMessage(
+      { canCreate: true, canResolve: true, statuses: [], board: CFG, boardError: null, boardEditable: true },
       "the task folder is unreachable: /home/u/typo");
     expect(m.text).toContain("/home/u/typo");
   });
 });
 
 describe("BoardView", () => {
-  const caps = { canCreate: true, canResolve: true, statuses: ["open", "done"], board: CFG, boardError: null };
+  const caps = {
+    canCreate: true, canResolve: true, statuses: ["open", "done"], board: CFG, boardError: null,
+    boardEditable: true,
+  };
 
   it("renders titles as text, never as markup", () => {
     const v = new BoardView({ ...handlers });
@@ -104,7 +109,11 @@ describe("BoardView", () => {
   it("hides create and close when the provider says it cannot", () => {
     const v = new BoardView({ ...handlers });
     v.render({
-      project: "deck", caps: { canCreate: false, canResolve: false, statuses: [], board: CFG, boardError: null },
+      project: "deck",
+      caps: {
+        canCreate: false, canResolve: false, statuses: [], board: CFG, boardError: null,
+        boardEditable: true,
+      },
       error: null, links: [], tasks: [card()],
     });
     expect(v.mount.querySelector(".tk-new")).toBeNull();
@@ -153,7 +162,26 @@ describe("BoardView", () => {
     expect(onOpen).not.toHaveBeenCalled();
   });
 
-  it("offers ⚙ only once a tracker is configured — there is nothing to edit before then", () => {
+  // A regression pin, and it passes against the code as it stands: the point is
+  // that it keeps passing. A failure with nothing left to show must not become
+  // empty columns plus "No tasks." — that reads as a folder with no cards in it,
+  // and it would also drop the one button that can fix an unreachable root.
+  // Task 21 stops `error` returning early so a GitHub board can keep its last
+  // good list; a board with no list at all keeps this screen.
+  it("shows the error and the way out when a failure leaves nothing to draw", () => {
+    const v = new BoardView({ ...handlers });
+    v.render({ project: "deck", caps, error: "the task folder is unreachable: /home/u/typo",
+               links: [], tasks: [] });
+    expect(v.mount.querySelector(".tk-empty")!.textContent).toContain("/home/u/typo");
+    expect(v.mount.querySelector(".tk-configure")).not.toBeNull();
+    expect(v.mount.querySelector(".tk-cols")).toBeNull();
+  });
+
+  // Not "only once a tracker is configured" — that stopped being the rule when the
+  // GitHub source arrived: a GitHub tracker *is* configured and still gets no ⚙,
+  // because there is no board.json behind it. The rule is `caps.boardEditable`, and
+  // `caps: null` fails it for the plainer reason that there is no board at all.
+  it("withholds ⚙ when there is no board to edit", () => {
     const v = new BoardView({ ...handlers });
     v.render({ project: "deck", caps: null, error: null, tasks: [], links: [] });
     expect(v.mount.querySelector(".tk-board-edit")).toBeNull();
@@ -263,7 +291,10 @@ describe("BoardView columns from configuration", () => {
   };
 
   function capsWith(cfg: BoardConfig): ProviderCapabilities {
-    return { canCreate: true, canResolve: true, statuses: cfg.steps.map((s) => s.id), board: cfg, boardError: null };
+    return {
+      canCreate: true, canResolve: true, statuses: cfg.steps.map((s) => s.id), board: cfg,
+      boardError: null, boardEditable: true,
+    };
   }
 
   let view: BoardView;
@@ -330,7 +361,7 @@ describe("BoardView columns from configuration", () => {
 describe("BoardView board configuration error", () => {
   const errCaps: ProviderCapabilities = {
     canCreate: true, canResolve: true, statuses: ["open", "done"], board: CFG,
-    boardError: "steps[1]: missing id",
+    boardError: "steps[1]: missing id", boardEditable: true,
   };
 
   it("shows the fallback message when caps.boardError is set", () => {
@@ -343,6 +374,14 @@ describe("BoardView board configuration error", () => {
     // The part that stops a person trusting the columns while the fallback is
     // active — the opening words alone would not.
     expect(banner.textContent).toContain("so cards may appear in the wrong column. The file was left alone.");
+    // The whole sentence, punctuation included. A second sender now shares this
+    // field (the GitHub source's own message, which takes no wrapper at all), so
+    // the file board's wording is only "unchanged" if something checks the join
+    // between the message and the wrapper — three `toContain`s above cannot see
+    // a lost full stop.
+    expect(banner.textContent).toBe(
+      "board.json could not be used: steps[1]: missing id. The default two-step board is shown "
+      + "instead, so cards may appear in the wrong column. The file was left alone.");
   });
 
   it("still renders the columns underneath the board-error banner", () => {

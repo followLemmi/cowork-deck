@@ -34,12 +34,14 @@ memory footprint kept under ~100 MB.
 - **Multi-session deck** — run many `claude` sessions as tiles in one window, each a full interactive terminal.
 - **Live state tracking** — per-tile `idle` / `working` / `finished a turn` / `waiting for a decision` / `ended` / `error`, driven by Claude Code hooks, with optional desktop notifications. Click a notification to focus that session. "Finished a turn" and "waiting for a decision" are separate on purpose: an interactive `claude` parks at the prompt when it is done, which is not the same as being blocked on a permission request.
 - **Floating status pill** — an always-on-top pill counting the sessions blocked on a decision, so you can step away from the app and still know when one needs you. A session that merely finished its task announces itself with a notification instead.
+- **GitHub-аккаунт на воркспейс** — привяжите воркспейс к аккаунту `gh`, и его сессии стартуют уже с нужным доступом: `gh pr list`, `git push` и авторство коммитов идут от правильного лица. Разные воркспейсы работают на разных аккаунтах **одновременно** — приложение не переключает активный аккаунт `gh` и не трогает `~/.config/gh`.
 - **Workspaces** — group sessions by workspace in a color-coded sidebar, and switch the deck to show only one workspace's terminals.
 - **Zoom / juggle** — double-click a tile header to expand one terminal near-full while the rest shrink to a filmstrip; click a shrunken tile to juggle focus (animated).
 - **Scenarios** — launch sessions with canned prompts, parameterized with `{{name}}` placeholders filled in at start.
 - **Scheduled scenarios** — attach a schedule (hourly / daily at `HH:MM` / weekly) to a scenario and it fires unattended into a fresh session, using stored defaults for its placeholders. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra cost, full local context and permissions.
 - **Run a schedule now** — a ⏰ button on a scheduled scenario runs it immediately, exactly as the schedule would, without consuming the upcoming scheduled run.
 - **Task tracker** — a per-workspace backlog of markdown cards (`.cowork/tasks/` in the project, or any folder you point at — a dedicated repo, an Obsidian vault — where the cards go into a `cowork-deck-tasks/<workspace>/` folder the app creates, one container however many workspaces you point there). A Board screen next to Terminals, `Cmd/Ctrl+Shift+T` to file one without leaving the deck, and ▶ on a card launches a session with the card as its prompt. Sessions file their own tickets via a bundled `cowork_task` CLI, so a side finding becomes a card instead of scope creep. "In progress" is derived from live sessions, never stored, so nothing gets stuck.
+- **Or the repository's issues** — a workspace's board can read the open and closed GitHub issues of the repository its folder is, instead of local card files, under the workspace's own account. ▶ on an issue opens a session on a new branch in a worktree of its own; ✓ closes the issue, after asking. One source per workspace, chosen in its settings, never both at once. See [The board's second source](#the-boards-second-source-github-issues).
 - **A board each project configures** — the steps (columns) and card kinds live in a `board.json` beside the cards, so one project can run `backlog / todo / doing / shipped` and the next just `open / done`. Edit them from the board's ⚙ editor, which also moves the cards a rename or a removal would otherwise strand. Cards open as documents to read and edit, and move between steps by drag or by the ‹ › on the card. See [The board](#the-board).
 - **Context-preserving restart** — restart an ended/errored tile and resume its Claude Code context (`claude --resume`).
 - **Auto-restore** — reopen yesterday's tiles on launch; window size, position, and active workspace are persisted.
@@ -68,6 +70,10 @@ npm run tauri build    # produces a release bundle for your platform
 npm test                                            # frontend (vitest)
 cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
 ```
+
+> В свежем клоне (или git worktree) перед `cargo test` выполните один раз
+> `npm install && npm run build && npm run stage:reporter` — `dist/` и `src-tauri/binaries/`
+> не в git, а без них падает build-скрипт Tauri.
 
 ## Sessions and the app window
 
@@ -128,6 +134,10 @@ reject anyway — so a broken board is caught in the form, not after the save.
 Hand-editing the file still works; the backend validates independently either
 way.
 
+None of this applies to a board reading GitHub issues: its two columns are given
+rather than configured, and ⚙ is not offered there. See
+[The board's second source](#the-boards-second-source-github-issues).
+
 If `board.json` is missing, the app creates it with today's default
 `open`/`done` configuration. If it exists but cannot be parsed or fails
 validation (no terminal step, a duplicate id, and so on), the board falls back
@@ -171,6 +181,87 @@ the offer is dismissed — the board carries a banner for the ones still sitting
 the previous root. `board.json` travels with them, so a project does not lose its
 columns by changing where its cards live.
 
+### The board's second source: GitHub issues
+
+A workspace's board reads either a folder of markdown cards or **the GitHub
+issues of the repository its folder is** — one source, chosen in the workspace
+settings (✎), never both at once. The GitHub source needs `gh` on the PATH, an
+account bound to the workspace, and a folder that is **already a clone** of the
+repository; each missing piece says so on the board and points at the fix. There
+is no field for `owner/name` anywhere in the app: `gh` resolves the repository
+from the folder, so a workspace pointing at anything that is not a clone cannot
+be configured into a GitHub board.
+
+The board is then two columns, `Open` and `Closed`, and they are **not
+editable**: there is no `board.json` to edit, so ⚙ is not offered. Labels show as
+chips; nothing on an issue maps to a card kind, so no kind chip is drawn. Closed
+issues are fetched rather than accumulated, twenty at a time, so an issue you
+close stays visible where you closed it.
+
+**▶ opens a session on a new branch in a worktree of its own**, at
+`<parent>/<workspace>-issue/<number>-<title>` — beside the workspace, never
+inside it, so the workspace's own working copy and the sessions running in it are
+untouched. The branch is `issue-<number>-<title>`, cut from the repository's
+default branch rather than from whatever you happen to have checked out. When the
+issue closes, the app offers to remove the worktree; it never removes one that is
+dirty or that has a session in it. If you later open a pull request from that
+branch, ▶ on the pull request reuses that directory rather than making a second
+copy of the same commits.
+
+Both the directory and the branch carry a slug of the issue's title, fixed at the
+moment ▶ ran. **Rename the issue — on GitHub, or by editing the card — and the
+app stops recognising that worktree**: no cleanup is offered for it, and a later ▶
+builds a second one beside it. Nothing is lost and nothing is overwritten — the
+`<number>-` prefix keeps the orphan next to its replacement — but that one you
+remove by hand.
+
+**✓ closes the issue, and asks first** — unlike the file board's ✓, which writes a
+local file. A close is visible to everyone in the repository, so the confirmation
+offers the reason GitHub records: "Completed" or "Not planned". Reopening does not
+ask: it restores the state of a moment ago. A drag onto `Closed` asks the same
+question; a drag onto `Open` does not.
+
+**+ task files an issue** under the workspace's own account.
+
+The list refreshes every 30 seconds, and only while the board is on screen and
+the window is focused. The age of the data is always on screen, and the count line
+says "Showing 50 of 63 open issues." when a page is capped — both numbers real. A
+page that came back short is the whole truth and says nothing.
+
+**The API-budget warning has one source, and it is conditional.** Only `gh api`
+reports how much of the hourly budget is left, and the only `gh api` call the
+board makes is the one behind that count line — which runs only when a page came
+back full. **So in a repository with fewer than 50 open issues the board never
+warns about the budget.** A repository that small costs two calls a tick and is
+not the one that exhausts a budget, and asking for the figure every tick would
+raise the board's own cost by half in order to report it. Known and accepted
+rather than worked around.
+
+A session in a GitHub workspace is told the repository and, if it was launched
+from an issue, that issue — and nothing about folders, `board.json` or the
+`cowork_task` CLI, none of which exist there. It files an issue with `gh issue
+create` and closes one with `gh issue close`. Nothing holds a session open until
+an issue is closed: closing one is a public action, and a hook that demanded it
+would be pressuring an agent into a public write.
+
+The sidebar badge for a GitHub workspace shows what its board last saw, and
+nothing at all before you have opened it once this run. That is deliberate: the
+badge is drawn for every workspace after every card edit, and making it accurate
+would mean spending API budget on screens nobody is looking at.
+
+**One warning about downgrading.** A workspace configured for GitHub issues is
+stored in `workspaces.json` as `{"type":"github"}`. A build from this release
+onwards that does not recognise a task source keeps the workspace and says so on
+its board — the name, folder, account and colour are all intact, and saving it
+does not destroy a configuration that build cannot read.
+
+**A build older than that reads the whole file as unreadable, shows an empty
+sidebar, and overwrites the file the next time you add a workspace.** The
+destructive write happens in whichever build is running, so this release fixes it
+from here on and can do nothing for a copy already installed. That is
+[#117](https://github.com/followLemmi/cowork-deck/issues/117): running a build
+that carries the fix is what avoids it.
+
 ## Locating the `claude` binary
 
 By default cowork-deck looks for `claude` (or `claude.cmd` on Windows) on `PATH`. If Claude Code isn't on
@@ -183,6 +274,63 @@ COWORK_CLAUDE_PATH=/usr/local/bin/claude npm run tauri dev
 
 If neither `COWORK_CLAUDE_PATH` nor a `claude` on `PATH` can be found, the app shows an alert on startup
 telling you to set `COWORK_CLAUDE_PATH` and restart.
+
+## GitHub-аккаунты воркспейсов
+
+Требуется [GitHub CLI](https://cli.github.com/) (`gh`), залогиненный в нужные аккаунты
+(`gh auth login`). Экран «GitHub» в палитре команд показывает статус, список аккаунтов и
+помогает установить `gh`, если его нет: команда установки подставляется под вашу платформу
+в **редактируемое** поле и выполняется в обычном тайле-терминале, так что вывод виден
+целиком, а `sudo`-пароль вводите вы сами.
+
+Аккаунт и идентичность коммитов задаются в свойствах пространства. Токены приложение
+**не хранит**: в настройках лежит только имя аккаунта, а токен читается из keyring `gh`
+в момент старта сессии и передаётся дочернему процессу через переменные окружения
+(`GH_TOKEN`, `GIT_AUTHOR_*` и, при необходимости, `GIT_SSH_COMMAND`).
+
+Переключений (`gh auth switch`) приложение не делает никогда — именно поэтому сессии на
+разных аккаунтах не мешают друг другу, а ваш собственный терминал вне приложения остаётся
+на прежнем активном аккаунте. Больше того, с выставленным `GH_TOKEN` сам `gh` отказывается
+менять аккаунт, так что сессия не может испортить окружение соседей, даже если попытается.
+
+Если `gh` лежит не на `PATH`, укажите путь через `COWORK_GH_PATH`.
+
+Смена аккаунта у пространства действует на новые и перезапущенные сессии: окружение
+процесса фиксируется при запуске и на лету не меняется. Живые сессии в этом случае
+помечаются на тайле значком `GitHub ⟳`.
+
+Если аккаунт не удалось подключить (нет `gh`, аккаунт разлогинен, залочен keyring), сессия
+всё равно стартует — но с пустым `GH_CONFIG_DIR`, чтобы `gh` честно сообщил «не залогинен»
+вместо тихой работы под чужим аккаунтом. На тайле появляется значок `GitHub ✕` с причиной.
+
+## Pull requests
+
+The third view lists the open pull requests of the workspace's repository, read
+under the workspace's own GitHub account. It needs `gh` on the PATH, an account
+bound to the workspace, and a GitHub remote; each missing piece says so and
+points at the fix.
+
+Each row shows the checks, the review verdict and how long ago it moved. Four
+check states are distinguished, and "no checks" is not shown as success.
+
+**▶ opens a session on the pull request's branch in a worktree of its own**, at
+`<parent>/<workspace>-pr/<number>-<branch>` — beside the workspace, never inside
+it, so the workspace's own working copy and the sessions running in it are
+untouched. When the pull request is merged or closed, the app offers to remove
+that worktree; it never removes one that is dirty or that has a session in it.
+
+**Merge is pinned to the commit that was on screen.** If the branch moved
+between the last refresh and the click, the merge is refused and you are asked
+to look again.
+
+The list refreshes itself only while this view is open and the window is
+focused — faster while a job is running, slower once everything has settled.
+The age of the data is always on screen.
+
+Note on tokens: to avoid asking `gh` for a token on every poll — a locked
+keyring can make that slow — account tokens are held in memory while the app
+runs, keyed by host and login, and dropped whenever a workspace's binding
+changes. They are never written to disk or into a log.
 
 ## Graceful degradation
 
@@ -198,7 +346,7 @@ the tile's state label stays on `idle` instead of reflecting the actual state.
 
 - **Scheduling v2** — cron expressions, more than one schedule per scenario, and last-run info in the ⏰ tooltip (all deliberately left out of the first cut).
 - **UI localization** — a language switch and translated strings; the interface is English-only today.
-- **Tracker providers** — GitHub Issues and Jira boards inside the deck, configured per workspace on top of the existing `TaskProvider` port (needs system-keychain token storage).
+- **Tracker providers** — Jira boards inside the deck, configured per workspace on the same `TaskProvider` port the GitHub issues board arrived on (needs token storage of its own; GitHub's comes from `gh`).
 
 **Later**
 

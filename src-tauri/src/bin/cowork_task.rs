@@ -195,6 +195,16 @@ fn run() -> Result<String, String> {
 /// non-zero `Stop` hook blocks the session, so `guard` must not inherit that
 /// refusal. It resolves what it can and allows on anything missing.
 fn guard() -> i32 {
+    // Dispatched first, deliberately. A GitHub-backed workspace has no tracker
+    // directory and must never have one described to it; putting this after the
+    // directory read would make a contradictory environment resolve by statement
+    // order, and a future edit could reorder it without noticing.
+    let repo = std::env::var("COWORK_ISSUE_REPO").ok().filter(|r| !r.trim().is_empty());
+    if let Some(repo) = repo {
+        let issue = std::env::var("COWORK_ISSUE_NUMBER").ok().filter(|s| !s.trim().is_empty());
+        return github_guard(&repo, issue.as_deref());
+    }
+
     // The tracker directory is read first, ahead of the card id, because it is
     // the one thing both paths below need: without it there is neither a card to
     // resolve nor a tracker to describe. Empty counts as unset — `session_env`
@@ -315,6 +325,49 @@ fn guard() -> i32 {
         }
         _ => 0,
     }
+}
+
+/// The GitHub half of the guard: it reports, every turn, and never blocks.
+///
+/// No `Stop` handling at all, and that is the decision rather than an omission.
+/// The file guard blocks a `Stop` that leaves a card open because moving a card
+/// is cheap, local and reversible. Closing a GitHub issue is none of those: it is
+/// visible to everyone in the repository and undoing it is a second public
+/// action. **Cost:** an agent can finish with the issue still open and nothing
+/// stops it — which is what the board's ✓ and the person are for.
+///
+/// Nothing here reads `COWORK_TASKS_DIR`, constructs a provider, or names a
+/// path: this workspace has no folder, and the whole promise of decision 5 is
+/// that a session in it is never told otherwise.
+fn github_guard(repo: &str, issue: Option<&str>) -> i32 {
+    let mut payload = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload);
+    let event = serde_json::from_str::<serde_json::Value>(&payload)
+        .ok()
+        .and_then(|v| v["hook_event_name"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    if event != "UserPromptSubmit" {
+        return 0;
+    }
+    let ctx = match issue {
+        Some(n) => format!(
+            "Tracker card: issue #{n} in {repo}. Close it with: gh issue close {n} --repo {repo}. \
+             Do not close it unless the work is finished — closing is visible to everyone in the \
+             repository."
+        ),
+        None => format!(
+            "This workspace's tracker is the GitHub issues of {repo}. File one with: \
+             gh issue create --repo {repo} --title \"…\" --body \"…\". Only file an issue for \
+             something you are not going to fix in this session."
+        ),
+    };
+    println!(
+        "{}",
+        serde_json::json!({
+            "hookSpecificOutput": { "hookEventName": "UserPromptSubmit", "additionalContext": ctx }
+        })
+    );
+    0
 }
 
 fn main() {

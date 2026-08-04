@@ -1,0 +1,269 @@
+import type {
+  BoardConfig, StepId, TrackerConfig, TrackerProviderConfig, TrackerRoot,
+} from "./ipc";
+import { isTerminal } from "./board-config";
+import type { GhUnavailable } from "./gh-unavailable";
+
+/** Which source a workspace's board reads. */
+export type TaskSource = "fs" | "github";
+
+/** One interval, not two. Nothing on an issue changes on its own the way a check
+ *  run does, so the PR view's two-speed poll has no analogue here. Faster than
+ *  that view's settled 60 s because a board is the screen you sit on while
+ *  triaging; far slower than the board's current blind 5 s, which at 720 calls an
+ *  hour is 14.4% of the GraphQL budget for one workspace. */
+export const ISSUE_POLL_MS = 30_000;
+/** The file board's own cadence, unchanged. It reads a directory, so it costs
+ *  nothing but a stat — what changes in Task 22 is that it is finally gated. */
+export const FILE_POLL_MS = 5_000;
+
+export function boardPollMs(source: TaskSource): number {
+  return source === "github" ? ISSUE_POLL_MS : FILE_POLL_MS;
+}
+
+/** All open issues in one page, and the number the count line is measured
+ *  against. Mirrors `gh_issues::OPEN_PAGE_LIMIT`. */
+export const OPEN_PAGE_LIMIT = 50;
+/** The closed page's own default. Mirrors `gh_issues::CLOSED_PAGE_LIMIT`. */
+export const CLOSED_PAGE_LIMIT = 20;
+
+/** How much one press of "Show more" adds. */
+export const PAGE_STEP = 50;
+/** The ceiling the backend clamps to (`tasks_cmd::MAX_PAGE_LIMIT`). Repeated
+ *  rather than fetched because the button has to stop offering itself at the same
+ *  number the backend stops honouring — a button that silently returns the same
+ *  page is worse than no button. Pinned to the Rust constant by
+ *  `tasks_cmd`'s `the_page_sizes_agree_with_the_frontend`, which reads this file:
+ *  the three shared numbers are load-bearing on both sides, and a comment saying
+ *  "mirrors X" is not a check. */
+export const MAX_PAGE_LIMIT = 500;
+
+/** The page size a state starts at, before anybody has pressed "Show more".
+ *
+ *  Two numbers rather than one because the backend's own defaults are two, and
+ *  the frontend has to know which one a short page is being measured against: an
+ *  eighteen-row closed page is the whole of it, while an eighteen-row open page
+ *  is not evidence of anything. */
+export function initialPageLimit(terminal: boolean): number {
+  return terminal ? CLOSED_PAGE_LIMIT : OPEN_PAGE_LIMIT;
+}
+
+/** The next page size to ask for, never past the ceiling. */
+export function nextPageLimit(limit: number): number {
+  return Math.min(MAX_PAGE_LIMIT, limit + PAGE_STEP);
+}
+
+/** Whether "Show more" has anything left to fetch.
+ *
+ *  Three refusals, in the order that makes each of them cheap. A page shorter
+ *  than what was asked for *is* the whole of that state, so there is nothing
+ *  behind it — this is the common case and it needs no total. A total that has
+ *  been fetched and is already on screen is the same answer with a number behind
+ *  it. And at the ceiling the button would ask for a page the backend clamps back
+ *  to the one already shown, which reads as a button that does nothing.
+ *
+ *  `total === null` — the totals call failed, or was never worth making — leaves
+ *  the button offered on a full page. That is the honest direction: the cost of
+ *  offering it wrongly is one wasted request, and the cost of withholding it
+ *  wrongly is issues nobody can reach. */
+export function canShowMore(shown: number, total: number | null, limit: number): boolean {
+  if (shown < limit) return false;
+  if (total !== null && shown >= total) return false;
+  return limit < MAX_PAGE_LIMIT;
+}
+
+/** Whether the totals query can still change the answer. A page shorter than the
+ *  cap *is* the total, so the only moment worth a second call is a capped page —
+ *  which is what makes the count both honest and free. */
+export function needsTotals(openOnPage: number, limit = OPEN_PAGE_LIMIT): boolean {
+  return openOnPage >= limit;
+}
+
+/** "Showing 50 of 63 open issues.", "Showing the first 50 open issues.", or
+ *  nothing at all.
+ *
+ *  Absent on a short page: the list is the whole truth there, and a line saying so
+ *  is noise on every render.
+ *
+ *  `capped` is passed in rather than inferred from `shown`, because the two are
+ *  different facts and only the caller holds the second one: how many rows came
+ *  back is not, on its own, whether the page was cut short. Without it a capped
+ *  page whose totals call failed was silent — `issue_totals` is a separate
+ *  `gh api` call that fails on its own, and 50 cards with nothing said about them
+ *  is indistinguishable from a repository with exactly 50 open issues. On any
+ *  repository with a triage backlog that is the common case, so the honest answer
+ *  is one number and no second claim.
+ *
+ *  The same sentence covers a total that has fallen below what is on screen: an
+ *  issue closed between the two calls is a moment's inconsistency at GitHub,
+ *  "showing 50 of 49" would read as a bug in the app, and silence would assert the
+ *  one thing already known to be false — that this is all of them. */
+export function countLine(
+  shown: number, total: number | null, capped: boolean,
+  /** Which issues are being counted. Defaulted to the open ones because that is
+   *  what the line counted when there was only one column it could describe; the
+   *  list view shows one state at a time and passes the state's own noun, and
+   *  "showing the first 20 open issues" under a list of closed ones would be a
+   *  sentence about a different set of rows. */
+  noun = "open issues",
+): string | null {
+  if (!capped) return null;
+  if (total !== null && total > shown) return `Showing ${shown} of ${total} ${noun}.`;
+  return `Showing the first ${shown} ${noun}.`;
+}
+
+/** Whether a move needs confirming before it is sent.
+ *
+ *  Only for a GitHub board, and only in the closing direction. A close is visible
+ *  to the whole repository and undoing it is a second public action; a reopen
+ *  restores the state of a moment ago. The same asymmetry, for the same reason,
+ *  as the pull request view's merge confirmation. */
+export function needsCloseConfirmation(
+  cfg: BoardConfig, from: StepId, to: StepId, source: TaskSource = "github",
+): boolean {
+  if (source !== "github") return false;
+  return from !== to && isTerminal(cfg, to) && !isTerminal(cfg, from);
+}
+
+export function closeConfirmText(number: number | string, title: string): string {
+  return `Close issue #${number}, “${title}”? A closed issue is visible to everyone in the `
+    + "repository.";
+}
+
+/** GraphQL points below which the board says so. At the worst steady rate — a
+ *  capped page, so three points every 30 s — the board spends 360 points an hour,
+ *  so this is under an hour of headroom: late enough not to be permanent noise on
+ *  a shared token, early enough that "wait" is still actionable. */
+export const RATE_WARN_BELOW = 250;
+
+/** One sentence, because the fix is "wait", not "retry".
+ *
+ *  Driven by `X-Ratelimit-Remaining` from the totals call's own response headers,
+ *  never by matching the refusal's text: that text is unverified, and a handler
+ *  keyed on it would be a guess dressed as a check. `null` means the headers said
+ *  nothing and must never read as exhausted. */
+export function rateLimitBanner(remaining: number | null): string | null {
+  if (remaining === null || remaining >= RATE_WARN_BELOW) return null;
+  return "GitHub's hourly API budget is nearly used up — the board will stop refreshing shortly.";
+}
+
+/** The markers that name an unavailability, as data rather than an if-chain, and
+ *  matched with `includes` because the message arrives wrapped: a board's GitHub
+ *  failure reaches the frontend through `TaskError::Remote`, whose Display
+ *  prefixes "GitHub: " — and matching inside the message rather than on the whole
+ *  of it is what let that prefix be corrected from `TaskError::Io`'s "filesystem
+ *  error: " without touching this table. `gh-not-found` and `no-account` are the
+ *  backend's own words (`commands.rs:424-425`); the three `no-repo` markers are
+ *  `gh`'s. */
+const UNAVAILABLE_MARKERS: { marker: string; state: GhUnavailable }[] = [
+  { marker: "gh-not-found", state: "no-gh" },
+  { marker: "no-account", state: "no-account" },
+  { marker: "no git remotes", state: "no-repo" },
+  { marker: "not a git repository", state: "no-repo" },
+  { marker: "none of the git remotes", state: "no-repo" },
+];
+
+/** Which unavailability an error names, or null for everything else.
+ *
+ *  One table for both GitHub views: the pull request list grew this mapping first
+ *  and read it as an if-chain of its own, which is one place for the two to
+ *  disagree about what "no repository" looks like.
+ *
+ *  **`gh`'s exit code arrives here as a marker, never as a number.** Exit 4 is
+ *  `gh`'s own "authentication required" and is a far better signal than any string.
+ *  It used to be dropped — the runner returned the redacted stderr and nothing
+ *  else, so no status reached the frontend at all — and `gh_failure`
+ *  (`commands.rs`) now appends `no-account` to the message on that status alone.
+ *  The nearest of the three states rather than an exact one: it also covers a
+ *  workspace with no account bound, and "Bind an account" is the right action for
+ *  both that and a bound account whose credentials `gh` refuses.
+ *
+ *  Keying on a guessed *phrase* for that state instead is still refused: the
+ *  message is unobserved, and a match on an unobserved message is a guess that
+ *  fails on the one day it matters. Everything else unrecognised stays an ordinary
+ *  error, which keeps the last good list on screen beside it — the conservative
+ *  outcome. A missing *scope* is exit 1 with nothing on stdout and belongs in that
+ *  group too. */
+export function unavailableFrom(message: string): GhUnavailable | null {
+  return UNAVAILABLE_MARKERS.find((m) => message.includes(m.marker))?.state ?? null;
+}
+
+/** `owner/name` from an issue's own URL, or `""`.
+ *
+ *  The launch needs the repository for the prompt, and the issue's `path` is
+ *  already that URL — so this replaces a second IPC command and its failure mode
+ *  with a pure read of a value the board already has.
+ *
+ *  The segments are found by searching for `issues` from the end rather than by
+ *  taking positions 1 and 2: a repository may legitimately be called `issues`,
+ *  and the host is not assumed to be github.com. Anything unreadable — a card
+ *  file's filesystem path, a truncated URL — is `""` rather than a throw or a
+ *  guess; `issuePrompt` says nothing about the repository in that case. */
+export function repoFromIssueUrl(url: string): string {
+  let pathname: string;
+  try { pathname = new URL(url).pathname; } catch { return ""; }
+  const parts = pathname.split("/").filter(Boolean);
+  const at = parts.lastIndexOf("issues");
+  if (at < 2) return "";
+  return `${parts[at - 2]}/${parts[at - 1]}`;
+}
+
+/** A workspace's one task source. `TrackerConfig.providers` is a list so a second
+ *  kind arrives as an added variant, and every reader — here and in Rust — takes
+ *  the first. Anything unrecognised reads as file-backed: the conservative
+ *  answer, since that path polls slowly and asks for no token. */
+export function sourceOf(tracker: TrackerConfig | null | undefined): TaskSource {
+  return tracker?.providers[0]?.type === "github" ? "github" : "fs";
+}
+
+/** The root of a file-backed provider, or `null` for anything else.
+ *
+ *  A function rather than a `.type === "fs" ? p.root : null` at each call site,
+ *  because `TrackerProviderConfig` has an open tail: `type === "fs"` does not prove
+ *  there is a `root`, and a record from a newer build — or a half-written one — can
+ *  carry the one without the other. The shape is checked rather than asserted, so
+ *  `{ type: "fs", root: { kind: "elsewhere" } }` reads as "no root this build
+ *  understands" instead of becoming a folder nobody named. */
+export function fsRootOf(p: TrackerProviderConfig | null | undefined): TrackerRoot | null {
+  if (!p || p.type !== "fs") return null;
+  const root = (p as { root?: TrackerRoot }).root;
+  if (!root) return null;
+  if (root.kind === "project") return root;
+  return root.kind === "path" && typeof root.path === "string" ? root : null;
+}
+
+/** One line of an issue body, for the list.
+ *
+ *  A list of bare titles cannot be triaged: "Refund webhook retries forever" and
+ *  "Refund webhook retries on a 410" are the same line at a glance, and the body that
+ *  tells them apart is already fetched — the card dialog uses it — and was being
+ *  thrown away here.
+ *
+ *  Markdown furniture is skipped rather than rendered: a heading, a quote, a fence, an
+ *  image or a table row says nothing on one line. A body that is *nothing but* a
+ *  checklist still gets a line, with the marker stripped — "no description" and "a
+ *  list of tasks" are different facts and the row must not report the first when it
+ *  means the second. */
+export function bodyExcerpt(body: string, max = 160): string {
+  const lines = body.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+  const isFurniture = (l: string) => /^(#{1,6}\s|>|```|<!--|!\[|\|)/.test(l);
+  const isListItem = (l: string) => /^([-*+]\s|\d+\.\s)/.test(l);
+  const chosen = lines.find((l) => !isFurniture(l) && !isListItem(l))
+    ?? lines.find((l) => !isFurniture(l));
+  if (!chosen) return "";
+  const flat = chosen
+    .replace(/^([-*+]|\d+\.)\s+/, "")
+    .replace(/^\[[ xX]\]\s*/, "")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  // Cut on a word boundary: a mid-word cut reads as a rendering bug rather than as an
+  // excerpt. Only a single token longer than the cap is cut through — a URL or a
+  // minified line, where there is no boundary to prefer.
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return (space > 0 ? cut.slice(0, space) : cut).trimEnd() + "…";
+}

@@ -2,6 +2,8 @@
 
 mod model;
 mod store;
+mod gh;
+mod gh_pr;
 mod hooks;
 mod listener;
 mod pty;
@@ -89,6 +91,9 @@ fn main() {
                 task_bin_path: task_bin_path(),
                 scheduler_ready: scheduler_ready.clone(),
                 watchers: std::sync::Arc::new(tasks::watch::TaskWatchers::new()),
+                gh_tokens: Mutex::new(std::collections::HashMap::new()),
+                gh_repos: Mutex::new(std::collections::HashMap::new()),
+                issue_open_counts: Mutex::new(std::collections::HashMap::new()),
             });
 
             // Scheduled scenarios: the backend decides *when* and emits
@@ -146,6 +151,24 @@ fn main() {
             commands::scheduler_ready,
             commands::schedule_ack,
             commands::load_schedule_state,
+            commands::start_command_session,
+            commands::gh_status,
+            commands::pr_list,
+            commands::pr_detail,
+            commands::pr_diff,
+            commands::pr_file_patch,
+            commands::pr_merge_options,
+            commands::pr_merge,
+            commands::pr_close,
+            commands::pr_reopen,
+            commands::pr_worktree_path,
+            commands::pr_worktree_add,
+            commands::pr_worktree_remove,
+            commands::host_platform,
+            commands::issue_totals,
+            commands::issue_worktree_add,
+            commands::issue_worktree_path,
+            commands::issue_worktree_remove,
             tasks_cmd::tasks_list,
             tasks_cmd::tasks_create,
             tasks_cmd::tasks_resolve,
@@ -157,6 +180,7 @@ fn main() {
             tasks_cmd::tasks_migrate,
             tasks_cmd::tasks_migration_dismiss,
             tasks_cmd::tracker_root_preview,
+            tasks_cmd::tracker_open_count,
             tasks_cmd::board_config_save,
             tasks_cmd::board_step_rewrite,
             tasks_cmd::board_step_usage,

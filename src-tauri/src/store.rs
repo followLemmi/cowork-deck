@@ -1,4 +1,4 @@
-use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, Workspace};
+use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, UiStatePatch, Workspace};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -14,16 +14,31 @@ impl Store {
     fn ws_path(&self) -> PathBuf { self.dir.join("workspaces.json") }
     fn sk_path(&self) -> PathBuf { self.dir.join("skills.json") }
 
-    /// Reads and parses a JSON array file. A missing file is a normal,
-    /// expected case (first run) and yields an empty Vec. Any other read
-    /// error (permission denied, I/O error, etc.) is transient/abnormal and
-    /// is propagated as `Err` rather than silently swallowed — callers that
-    /// are about to overwrite the file (upsert/delete) must treat that as a
-    /// hard stop instead of proceeding with an empty in-memory list, which
-    /// would otherwise truncate an existing, populated file on save.
+    /// Reads and parses a JSON array file. A missing file is a normal, expected
+    /// case (first run) and yields an empty Vec. Every other outcome — an io
+    /// error *or a parse error* — is propagated, so a caller about to overwrite
+    /// the file stops instead of proceeding with an empty in-memory list.
+    ///
+    /// The parse error used to be swallowed here by `unwrap_or_default()`, which
+    /// made one unreadable record indistinguishable from an empty store and let
+    /// the next `upsert` write that emptiness back over a populated file (#117).
+    /// The doc comment below already required the hard stop; it only ever got it
+    /// for the io half.
     fn try_read_vec<T: serde::de::DeserializeOwned>(path: &PathBuf) -> std::io::Result<Vec<T>> {
         match std::fs::read_to_string(path) {
-            Ok(s) => Ok(serde_json::from_str(&s).unwrap_or_default()),
+            // An empty file is a first run, not a corrupt one: `write_vec`
+            // truncates before it writes, so this is what a crash mid-write
+            // leaves behind, and refusing it would wedge every save with no
+            // recovery inside the app. A *non-empty* file we cannot parse still
+            // refuses — half an array is evidence of records a save would
+            // destroy, and an empty one is evidence of nothing.
+            Ok(s) if s.trim().is_empty() => Ok(Vec::new()),
+            Ok(s) => serde_json::from_str(&s).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} is not readable as JSON: {e}", path.display()),
+                )
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(e),
         }
@@ -38,7 +53,7 @@ impl Store {
             Ok(items) => items,
             Err(e) => {
                 eprintln!(
-                    "warning: failed to read {} ({e}); treating as empty for this listing",
+                    "warning: failed to read or parse {} ({e}); treating as empty for this listing",
                     path.display()
                 );
                 Vec::new()
@@ -74,8 +89,25 @@ impl Store {
             Err(_) => UiState::default(),
         }
     }
-    pub fn save_ui_state(&self, st: &UiState) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(st)
+    /// Merge a patch into what is on disk rather than replacing the file.
+    ///
+    /// This took a whole `UiState` and wrote it out, which was safe while there was
+    /// exactly one field and exactly one caller sending it. With a second field it
+    /// would have meant every workspace switch writing `uiScale` back to whatever
+    /// the caller happened to have — in practice the default, since the only caller
+    /// sends the active workspace and nothing else.
+    pub fn save_ui_state(&self, patch: &UiStatePatch) -> std::io::Result<()> {
+        let mut st = self.ui_state();
+        if patch.active_workspace_id.is_some() {
+            st.active_workspace_id = patch.active_workspace_id.clone();
+        }
+        if let Some(scale) = patch.ui_scale {
+            st.ui_scale = scale;
+        }
+        if let Some(cols) = patch.pr_diff_cols {
+            st.pr_diff_cols = cols;
+        }
+        let json = serde_json::to_string_pretty(&st)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(self.ui_path(), json)
     }
@@ -158,7 +190,9 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{SessionEntry, UiState, Workspace, SCHEDULE_STATE_VERSION};
+    use crate::model::{
+        SessionEntry, TrackerProvider, UiState, UiStatePatch, Workspace, SCHEDULE_STATE_VERSION,
+    };
 
     fn tmp() -> std::path::PathBuf {
         // Unique per call, even under parallel test threads: SystemTime alone
@@ -180,7 +214,7 @@ mod tests {
     fn empty_store_reads_empty_then_upserts_and_deletes() {
         let s = Store::new(tmp());
         assert!(s.workspaces().is_empty());
-        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into(), tracker: None };
+        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into(), github: None, tracker: None };
         let after = s.upsert_workspace(w.clone()).unwrap();
         assert_eq!(after.len(), 1);
         // reload from disk
@@ -219,6 +253,7 @@ mod tests {
             name: "First".into(),
             path: "/tmp/a".into(),
             color: "#111111".into(),
+            github: None,
             tracker: None,
         };
         s.upsert_workspace(w1.clone()).unwrap();
@@ -241,6 +276,7 @@ mod tests {
             name: "Second".into(),
             path: "/tmp/b".into(),
             color: "#222222".into(),
+            github: None,
             tracker: None,
         };
         let result = s.upsert_workspace(w2);
@@ -280,10 +316,74 @@ mod tests {
     #[test]
     fn ui_state_round_trips_and_defaults_empty() {
         let s = Store::new(tmp());
-        assert_eq!(s.ui_state(), UiState::default()); // NotFound -> default (None)
-        let st = UiState { active_workspace_id: Some("w-1".into()) };
-        s.save_ui_state(&st).unwrap();
-        assert_eq!(Store::new(s.dir.clone()).ui_state(), st);
+        assert_eq!(s.ui_state(), UiState::default()); // NotFound -> default
+        // Not 0.0, which derive would give, and not 1.0 — the shipped default is a
+        // step above the stylesheet's base. Must match `DEFAULT_SCALE` in `ui-scale.ts`.
+        assert_eq!(UiState::default().ui_scale, 1.15);
+        // Must match the `width` on `.pr-drawer` in `styles.css`, which is what the
+        // drawer is drawn at until JS writes a width to it.
+        assert_eq!(UiState::default().pr_diff_cols, 62);
+        let patch = UiStatePatch {
+            active_workspace_id: Some("w-1".into()),
+            ui_scale: Some(1.3),
+            pr_diff_cols: Some(80),
+        };
+        s.save_ui_state(&patch).unwrap();
+        let reloaded = Store::new(s.dir.clone()).ui_state();
+        assert_eq!(reloaded.active_workspace_id, Some("w-1".into()));
+        assert_eq!(reloaded.ui_scale, 1.3);
+        assert_eq!(reloaded.pr_diff_cols, 80);
+    }
+
+    /// The migration case, and the reason `ui_scale` carries `#[serde(default)]`.
+    /// Every `ui_state.json` written before the field existed looks like this, and
+    /// without the default the whole parse fails — which `ui_state()` swallows with
+    /// `unwrap_or_default()`, so the symptom is not an error but the active
+    /// workspace being silently forgotten on the first launch after upgrade.
+    #[test]
+    fn ui_state_reads_a_file_written_before_ui_scale_existed() {
+        let s = Store::new(tmp());
+        std::fs::write(s.ui_path(), r#"{"activeWorkspaceId":"w-7"}"#).unwrap();
+        let st = s.ui_state();
+        assert_eq!(st.active_workspace_id, Some("w-7".into()));
+        // Such a file migrates *up*: its owner never chose a size, so they get the
+        // shipped default rather than the base the field did not exist to record.
+        assert_eq!(st.ui_scale, 1.15);
+        // And the same again for the field added after *that*. Every file on disk
+        // today is missing this key, so it is not a hypothetical migration.
+        assert_eq!(st.pr_diff_cols, 62);
+    }
+
+    /// The other half of the same bug. `save_ui_state` used to write the file from a
+    /// whole `UiState`, and its only caller sends the active workspace alone — so a
+    /// workspace switch would have reset the text size every time.
+    #[test]
+    fn saving_one_field_leaves_the_other_alone() {
+        let s = Store::new(tmp());
+        s.save_ui_state(&UiStatePatch {
+            active_workspace_id: None,
+            ui_scale: Some(1.45),
+            pr_diff_cols: None,
+        })
+        .unwrap();
+        // Exactly what the drawer's `pointerup` sends, and nothing else.
+        s.save_ui_state(&UiStatePatch {
+            active_workspace_id: None,
+            ui_scale: None,
+            pr_diff_cols: Some(96),
+        })
+        .unwrap();
+        // Exactly what `workspaces.ts` sends, and nothing else.
+        s.save_ui_state(&UiStatePatch {
+            active_workspace_id: Some("w-2".into()),
+            ui_scale: None,
+            pr_diff_cols: None,
+        })
+        .unwrap();
+        let st = Store::new(s.dir.clone()).ui_state();
+        assert_eq!(st.active_workspace_id, Some("w-2".into()));
+        assert_eq!(st.ui_scale, 1.45, "a workspace switch must not reset the text size");
+        assert_eq!(st.pr_diff_cols, 96, "nor the width of the diff drawer");
     }
 
     #[test]
@@ -298,6 +398,178 @@ mod tests {
             last_outcome: Some("launched".into()), preset: None, version: SCHEDULE_STATE_VERSION });
         s.save_schedule_state(&st).unwrap();
         assert_eq!(Store::new(s.dir.clone()).schedule_state(), st);
+    }
+
+    /// The test that fails today, and the whole of #117 in one assertion: a
+    /// populated file with one unreadable record must not be overwritten by the
+    /// next save. `try_read_vec` returning `Ok(vec![])` for a parse error is
+    /// indistinguishable from "no workspaces yet", so the upsert wrote one record
+    /// over ten.
+    ///
+    /// The unreadable record is one **missing a required field**, not one with an
+    /// unknown provider tag: since #117's second half an unknown tag is legal by
+    /// design and parses as `TrackerProvider::Unknown`, so a `{"type":"jira"}`
+    /// fixture here would assert the exact opposite of
+    /// `a_workspace_with_an_unreadable_source_still_appears_in_the_list` below.
+    /// `color` has no serde default, so this stays unreadable through every
+    /// provider variant still to come.
+    #[test]
+    fn an_upsert_refuses_rather_than_truncating_a_file_it_could_not_parse() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        let original = r##"[{"id":"w1","name":"A","path":"/a","color":"#fff"},
+                            {"id":"w2","name":"B","path":"/b"}]"##;
+        std::fs::write(s.ws_path(), original).unwrap();
+
+        let err = s
+            .upsert_workspace(Workspace {
+                id: "w3".into(), name: "C".into(), path: "/c".into(), color: "#fff".into(),
+                github: None, tracker: None,
+            })
+            .expect_err("a file we could not parse must never be overwritten");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        // The bytes are what matter: not "the list still has two entries" (the
+        // read cannot produce them yet), but "nothing was lost".
+        assert_eq!(std::fs::read_to_string(s.ws_path()).unwrap(), original);
+    }
+
+    /// `delete_workspace` reads through the same function and would truncate the
+    /// same way. Both write paths, because a fix applied to one of them is a fix
+    /// somebody will assume covers the other.
+    #[test]
+    fn a_delete_refuses_on_an_unparseable_file_too() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.ws_path(), "[{ not json at all }]").unwrap();
+        assert!(s.delete_workspace("w1").is_err());
+    }
+
+    /// All four write paths, not two. `try_read_vec`'s callers are `store.rs:124`
+    /// (upsert workspace), `:134` (delete workspace), `:141` (upsert skill) and
+    /// `:151` (delete skill), and a fix applied to some of them is a fix somebody
+    /// will assume covers the rest.
+    #[test]
+    fn the_refusal_covers_both_skill_write_paths_as_well() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.sk_path(), "[{ not json }]").unwrap();
+        assert!(s
+            .upsert_skill(Skill {
+                id: "s1".into(), name: "S".into(), icon: "play".into(),
+                prompt: "p".into(), workspace_id: None, schedule: None,
+            })
+            .is_err());
+        assert!(s.delete_skill("s1").is_err());
+    }
+
+    /// A listing still degrades to empty — `list_workspaces` returns `Vec`, not
+    /// `Result` (`commands.rs:89-92`), so there is no channel to the UI and
+    /// inventing one is out of this task's scope. What changes is that it is no
+    /// longer *silent*: the warning `read_vec` already prints for an io error now
+    /// covers the parse error that was being discarded one level below it.
+    #[test]
+    fn a_listing_still_degrades_to_empty_but_no_longer_silently() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.ws_path(), "[{ not json }]").unwrap();
+        assert!(s.workspaces().is_empty());
+    }
+
+    /// The four cases that must keep working, or start working: a missing file is
+    /// a first run, an empty array is an empty list, a good file parses — and a
+    /// **zero-byte** file is a first run too.
+    ///
+    /// That last one is not pedantry. `read_to_string` gives `Ok("")`,
+    /// `from_str::<Vec<_>>("")` errors, and the refusal this task introduces would
+    /// then make every write fail permanently with no way back from inside the
+    /// app. And a zero-byte `workspaces.json` is exactly what `write_vec`'s bare
+    /// `fs::write` leaves behind if the process dies between the truncate and the
+    /// write — the crash case this task's own reasoning names.
+    ///
+    /// **A truncated-but-non-empty file keeps the refusal**, and the difference is
+    /// deliberate: empty carries no information, so treating it as "nothing yet"
+    /// loses nothing, while half a JSON array is evidence of records that a save
+    /// would destroy. Do not "simplify" this into a general parse-failure
+    /// fallback; that is the bug this task exists to fix.
+    #[test]
+    fn a_missing_or_empty_file_is_a_first_run_and_a_good_one_still_parses() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        assert!(s.workspaces().is_empty());
+        std::fs::write(s.ws_path(), "").unwrap();
+        assert!(s.workspaces().is_empty(), "a zero-byte file must not wedge every write");
+        assert!(s.delete_workspace("nobody").is_ok(), "and must not be a hard stop either");
+        std::fs::write(s.ws_path(), "   \n").unwrap();
+        assert!(s.workspaces().is_empty(), "whitespace only, same thing");
+        // The line above cannot fail on its own: `workspaces()` reads through
+        // `read_vec`, which returns an empty Vec on *any* `Err`, so it is true
+        // whether or not `try_read_vec` trims. The save path is what actually
+        // distinguishes the two — change `s.trim().is_empty()` to
+        // `s.is_empty()` and only this assertion notices.
+        assert!(
+            s.delete_workspace("nobody").is_ok(),
+            "whitespace only must not wedge the save path either",
+        );
+        std::fs::write(s.ws_path(), "[]").unwrap();
+        assert!(s.workspaces().is_empty());
+        std::fs::write(
+            s.ws_path(),
+            r##"[{"id":"w1","name":"A","path":"/a","color":"#fff"}]"##,
+        )
+        .unwrap();
+        assert_eq!(s.workspaces().len(), 1);
+    }
+
+    /// Task 1 stops the truncation; this is the other half of #117 — the record
+    /// is not merely safe on disk, it is on screen.
+    #[test]
+    fn a_workspace_with_an_unreadable_source_still_appears_in_the_list() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(
+            s.ws_path(),
+            r##"[{"id":"w1","name":"A","path":"/a","color":"#fff"},
+                 {"id":"w2","name":"B","path":"/b","color":"#fff",
+                  "tracker":{"providers":[{"type":"jira"}],"v":3}}]"##,
+        )
+        .unwrap();
+        let all = s.workspaces();
+        assert_eq!(all.len(), 2, "neither record is dropped");
+        assert_eq!(all[1].name, "B");
+    }
+
+    /// Decision 2's open question, answered against the fixed store rather than
+    /// the broken one. A `{"type":"github"}` record read by a build that has the
+    /// tolerance but not the variant costs that workspace its *tracker* and
+    /// nothing else — not the workspace, and not the file.
+    ///
+    /// What remains is not a hole in the fix, it is the reach of it: a build
+    /// older than Task 1 empties the list, and its own `upsert_workspace` — not
+    /// this one — then writes that emptiness back (#117). The destructive write
+    /// always happens in whichever binary is running, which is exactly why the
+    /// tolerance works from here on and exactly why it does nothing for a version
+    /// already installed. Hence the release order in "Phases and barriers", and
+    /// hence the README's warning for the builds behind that line.
+    #[test]
+    fn a_github_source_read_by_a_build_without_it_costs_one_tracker_not_the_file() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        // What an intermediate build sees: a variant it does not know, through
+        // Task 2's tolerance. `jira` stands in for it, because this build *does*
+        // know `github` now and cannot play the older one against itself.
+        std::fs::write(
+            s.ws_path(),
+            r##"[{"id":"w1","name":"A","path":"/a","color":"#fff",
+                  "tracker":{"providers":[{"type":"jira"}],"v":3}},
+                 {"id":"w2","name":"B","path":"/b","color":"#fff"}]"##,
+        )
+        .unwrap();
+        let all = s.workspaces();
+        assert_eq!(all.len(), 2, "both records survive");
+        assert!(matches!(
+            all[0].tracker.as_ref().and_then(|c| c.providers.first()),
+            Some(TrackerProvider::Unknown(_)),
+        ));
     }
 
     /// Files written before the record existed hold a bare epoch-millis number

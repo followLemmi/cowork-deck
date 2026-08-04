@@ -8,9 +8,27 @@
   </head>
   <body>
     <div id="app">
-      <aside id="sidebar"></aside>
-      <main id="deck"></main>
-      <div id="board" class="hidden"></div>
+      <!-- The three screens are siblings in a row, and the switch between them
+           sits above that row rather than inside the sidebar: it is navigation
+           for the whole window, not a sidebar block, and in the sidebar its
+           width was set by however long the workspace names were. `#stage` is
+           the row; `#app` is now the column holding the bar and the row. The
+           pull request screen joins the row from `main.ts`. -->
+      <!-- The bar is a `header`, not the `nav` it used to be: it holds the app's
+           mark and its global actions as well as the screen switch, and only the
+           switch is navigation. `#viewbar` keeps its id and its `nav` — `main.ts`
+           mounts the switch into it, and the test fixtures mirror it. -->
+      <header class="topbar">
+        <div class="mark" id="mark" data-od-id="wordmark"></div>
+        <nav id="viewbar" aria-label="Screens"></nav>
+        <span class="topbar-spacer"></span>
+        <div id="topbar-actions"></div>
+      </header>
+      <div id="stage">
+        <aside id="sidebar"></aside>
+        <main id="deck"></main>
+        <div id="board" class="hidden"></div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

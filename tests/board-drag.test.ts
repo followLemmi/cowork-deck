@@ -15,7 +15,8 @@ const CFG: BoardConfig = {
 };
 
 const caps: ProviderCapabilities = {
-  canCreate: true, canResolve: true, statuses: ["backlog", "todo", "doing", "done"], board: CFG, boardError: null,
+  canCreate: true, canResolve: true, statuses: ["backlog", "todo", "doing", "done"], board: CFG,
+  boardError: null, boardEditable: true,
 };
 
 // The title doubles as the id: a plain, unique string that cardEl() can find
@@ -25,7 +26,7 @@ function card(over: Partial<Task> = {}): Task {
   return {
     id, title: id, kind: "task", status: "todo", project: "deck",
     created: "2026-07-27T10:00:00Z", resolved: null, origin: "human", session: null,
-    body: "body", path: `/r/${id}.md`, damaged: null, conflict: false, ...over,
+    body: "body", path: `/r/${id}.md`, damaged: null, conflict: false, labels: [], ...over,
   };
 }
 
@@ -33,6 +34,7 @@ const onMove = vi.fn();
 const handlers = {
   onLaunch: vi.fn(), onResolve: vi.fn(), onNew: vi.fn(), onConfigure: vi.fn(),
   onMigrate: vi.fn(), onDismissMigration: vi.fn(), onOpen: vi.fn(), onMove, onEditBoard: vi.fn(),
+  onFixUnavailable: vi.fn(), onShowMore: vi.fn(),
 };
 
 let view: BoardView;
@@ -42,8 +44,11 @@ beforeEach(() => {
   view = new BoardView({ ...handlers });
 });
 
-function render(tasks: Task[]) {
-  view.render({ project: "deck", caps, error: null, links: [], tasks });
+function render(tasks: Task[], capsOverride?: Partial<ProviderCapabilities>) {
+  view.render({
+    project: "deck", caps: capsOverride ? { ...caps, ...capsOverride } : caps,
+    error: null, links: [], tasks,
+  });
 }
 
 function cardEl(id: string): HTMLElement {
@@ -87,10 +92,33 @@ function dragCardTo(id: string, step: StepId) {
 }
 
 describe("BoardView — dragging and the keyboard equivalent", () => {
-  it("gives a card in a known step both arrows in the middle of the board", () => {
+  it("gives a card in a known step both arrows, each naming where it goes", () => {
+    // The labels used to be "Move to the previous/next step", which is board vocabulary
+    // rather than an answer: on a two-step board — what the GitHub source synthesizes —
+    // "the next step" names nothing a person can act on.
     render([card({ id: "a", status: "todo" })]);
-    expect(btn("a", ".tk-prev")!.getAttribute("aria-label")).toBe("Move to the previous step");
-    expect(btn("a", ".tk-next")!.getAttribute("aria-label")).toBe("Move to the next step");
+    expect(btn("a", ".tk-prev")!.getAttribute("aria-label")).toBe("Move to backlog");
+    expect(btn("a", ".tk-next")!.getAttribute("aria-label")).toBe("Move to doing");
+  });
+
+  it("withholds › from the last non-terminal step, where it would only do what ✓ does", () => {
+    // `doing` is the last step before the terminal one, so `stepAfter` is exactly where
+    // ✓ sends a card. Two controls for one transition is the defect; ✓ is the one that
+    // names it, so › goes. ‹ stays — nothing else moves a card backwards.
+    render([card({ id: "a", status: "doing" })]);
+    expect(btn("a", ".tk-next")).toBeNull();
+    expect(btn("a", ".tk-done")).not.toBeNull();
+    expect(btn("a", ".tk-prev")!.getAttribute("aria-label")).toBe("Move to todo");
+  });
+
+  it("keeps › when ✓ is not on offer to duplicate it", () => {
+    // A damaged card gets no ✓ (its write would be refused) — but it gets no arrows
+    // either, for the same reason, so the pair that proves the rule is a board with no
+    // closing step at all: then ✓ has nowhere to send anything and › is the only way on.
+    render([card({ id: "a", status: "doing" })], {
+      board: { ...CFG, steps: CFG.steps.map((st) => ({ ...st, terminal: false })) },
+    });
+    expect(btn("a", ".tk-next")!.getAttribute("aria-label")).toBe("Move to done");
   });
 
   it("omits the back arrow in the first step and the forward arrow in the last", () => {
@@ -185,6 +213,19 @@ describe("BoardView — dragging and the keyboard equivalent", () => {
     render([card({ id: "x", status: "legacy" })]);
     dragCardTo("x", "todo");
     expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "x" }), "todo");
+  });
+
+  // The board hands the move up; whether it needs confirming is
+  // `needsCloseConfirmation`'s decision and main.ts's modal. The view must not
+  // grow a modal of its own — a confirmation raised inside the renderer is a
+  // confirmation no test of the rule can see. `.modal-overlay` is where every
+  // dialog in the app lands (dialog-shell.ts), so its absence is the assertion.
+  it("reports a drop onto the terminal step as an ordinary move, and raises no dialog", () => {
+    render([card({ id: "a", status: "todo" })]);
+    dragCardTo("a", "done");
+    expect(onMove).toHaveBeenCalledTimes(1);
+    expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }), "done");
+    expect(document.querySelector(".modal-overlay")).toBeNull();
   });
 
   it("refuses the drop itself for a damaged card, not only the affordance", () => {

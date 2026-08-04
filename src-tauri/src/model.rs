@@ -87,12 +87,37 @@ pub fn parse_schedule_state(
     Ok(raw.into_iter().map(|(k, v)| (k, v.into())).collect())
 }
 
+/// Привязка воркспейса к GitHub-аккаунту.
+///
+/// Здесь лежит ТОЛЬКО имя аккаунта — публичное значение. Токен не хранится
+/// ни тут, ни где-либо ещё в приложении: он читается из keyring `gh` в момент
+/// старта сессии и живёт лишь в памяти дочернего процесса.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkspaceGithub {
+    /// Хост GitHub. В UI всегда "github.com"; поле существует, чтобы GHES
+    /// можно было добавить без миграции файла.
+    pub host: String,
+    /// Имя аккаунта в gh (как в `gh auth status`).
+    pub login: String,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "gitName")]
+    pub git_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "gitEmail")]
+    pub git_email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "sshKey")]
+    pub ssh_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: String,
     pub name: String,
     pub path: String,
     pub color: String,
+    /// Привязка к GitHub-аккаунту. Отсутствует в файлах, записанных до
+    /// появления фичи; None не сериализуется, поэтому непривязанные
+    /// воркспейсы сохраняют прежнюю форму на диске.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<WorkspaceGithub>,
     /// Absent for every workspace created before the tracker existed, and for
     /// any workspace the user never configured. `default` is what keeps an old
     /// settings file readable — a failed read would let the next upsert
@@ -139,10 +164,88 @@ fn tracker_v1() -> u8 { 1 }
 
 pub const TRACKER_CONFIG_VERSION: u8 = 3;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Debug, Clone)]
 pub enum TrackerProvider {
     Fs { root: TrackerRoot },
+    /// The workspace's board is the GitHub issues of the repository its folder
+    /// *is*. No fields: `owner/name` comes from `gh` itself, once per app run
+    /// (decision 11), and storing it here would be a second source of truth.
+    ///
+    /// A build predating this variant reads it as `Unknown` and keeps the rest of
+    /// the workspace (#117, Task 2). A build predating *that* empties the whole
+    /// list, and its own next save makes it permanent — the write happens in
+    /// whichever binary is running, so the fix is effective from here on and
+    /// inert for anything already installed. The README warns about that half.
+    GitHub,
+    /// A source this build cannot read — written by a newer version, or damaged.
+    ///
+    /// Carries the original JSON and is serialized back verbatim, so opening an
+    /// older build and editing an unrelated field does not destroy a
+    /// configuration it merely does not understand (#117). A unit catch-all
+    /// variant would round-trip to `{"type":"unknown"}` and do exactly that.
+    ///
+    /// Every reader treats it as "no usable tracker": `resolve_root` yields
+    /// `None`, `is_project_root` is false, and the board says so in words rather
+    /// than showing "no tracker configured", which would be a different claim.
+    Unknown(serde_json::Value),
+}
+
+/// The on-disk shape, accepted tolerantly. The same pattern as
+/// `ScheduleRunOnDisk` above: an untagged helper that tries the known shapes and
+/// keeps the raw value rather than failing the document.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TrackerProviderOnDisk {
+    Known(KnownTrackerProvider),
+    Raw(serde_json::Value),
+}
+
+/// The tag spelling lives here and nowhere else. **Both directions are derived**,
+/// so they cannot disagree about it.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum KnownTrackerProvider {
+    Fs { root: TrackerRoot },
+    GitHub,
+}
+
+impl From<TrackerProviderOnDisk> for TrackerProvider {
+    fn from(v: TrackerProviderOnDisk) -> Self {
+        match v {
+            TrackerProviderOnDisk::Known(KnownTrackerProvider::Fs { root }) => {
+                TrackerProvider::Fs { root }
+            }
+            TrackerProviderOnDisk::Known(KnownTrackerProvider::GitHub) => TrackerProvider::GitHub,
+            TrackerProviderOnDisk::Raw(v) => TrackerProvider::Unknown(v),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TrackerProvider {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(TrackerProviderOnDisk::deserialize(d)?.into())
+    }
+}
+
+impl Serialize for TrackerProvider {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            // Delegated, never hand-rolled: writing `{"type":"fs", …}` by hand
+            // here would put the tag spelling in a second place, and the one
+            // failure this whole task exists to prevent is a silent change to the
+            // wire format of every user's workspaces.json.
+            TrackerProvider::Fs { root } => {
+                KnownTrackerProvider::Fs { root: root.clone() }.serialize(s)
+            }
+            TrackerProvider::GitHub => KnownTrackerProvider::GitHub.serialize(s),
+            // Verbatim in *value*, not in bytes: `serde_json::Value`'s object is a
+            // BTreeMap, so keys come back alphabetised and whitespace is the
+            // writer's. Nothing anywhere compares these bytes, so this is
+            // harmless — said out loud because a re-ordered key list looks like a
+            // bug to whoever diffs the file next.
+            TrackerProvider::Unknown(v) => v.serialize(s),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,11 +324,79 @@ pub struct SessionEntry {
     pub scheduled_skill_id: Option<String>,
 }
 
-/// A little UI state that survives a restart (for now: the active workspace).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+/// A little UI state that survives a restart: the active workspace and the text
+/// size the person chose.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiState {
     #[serde(rename = "activeWorkspaceId")]
     pub active_workspace_id: Option<String>,
+    /// Not an `Option`, and `#[serde(default)]` is what makes that safe. Every
+    /// `ui_state.json` written before this field existed has no key for it, and a
+    /// missing field on a non-`Option` fails the *whole* parse — which
+    /// `Store::ui_state` swallows with `unwrap_or_default()`, so the symptom would
+    /// not be an error but the active workspace being silently forgotten on the
+    /// first launch after upgrade.
+    #[serde(rename = "uiScale", default = "default_ui_scale")]
+    pub ui_scale: f32,
+    /// How wide the diff drawer is, in `ch` of the mono face rather than in
+    /// pixels — see `UiState.prDiffCols` in `src/ipc.ts` for why the unit is the
+    /// decision and not an implementation detail.
+    ///
+    /// `#[serde(default)]` for exactly the reason spelled out above, and this is
+    /// the field that proves the note was worth writing: every `ui_state.json`
+    /// on disk predates it.
+    #[serde(rename = "prDiffCols", default = "default_pr_diff_cols")]
+    pub pr_diff_cols: u32,
+}
+
+/// Must agree with the `width` on `.pr-drawer` in `src/styles.css`, which is the
+/// fallback the drawer draws at before JS has written a width to it. 62 columns
+/// holds a 62-character line plus the gutter without the pane taking over the
+/// window on a first run.
+fn default_pr_diff_cols() -> u32 {
+    62
+}
+
+/// Must agree with `DEFAULT_SCALE` in `src/ui-scale.ts` — this is the value a person
+/// who has never opened the size chooser gets, and the two sides both claim to own it:
+/// the frontend when the read fails, this when the file has no key.
+///
+/// 1.15, not 1.0 and not zero. Zero is what a `derive`d `Default` would give, and a
+/// zero scale is an invisible interface. 1.0 is the 13px base in `styles.css`, which
+/// is the size that prompted the typography work in the first place; a file written
+/// before this field existed therefore migrates *up*, which is the intent.
+fn default_ui_scale() -> f32 {
+    1.15
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            active_workspace_id: None,
+            ui_scale: default_ui_scale(),
+            pr_diff_cols: default_pr_diff_cols(),
+        }
+    }
+}
+
+/// A change to `UiState`, not a replacement for it.
+///
+/// `save_ui_state` used to take a whole `UiState` and write the file from it, and
+/// its only caller passes the active workspace alone — so the moment a second field
+/// existed, every workspace switch would have wiped the text size. `None` here means
+/// "leave it alone".
+///
+/// `active_workspace_id` is `Option<Option<String>>`-shaped in principle, since the
+/// stored value is itself optional; it is not, because nothing in the app ever sets
+/// it back to null — it is only ever pointed at a real workspace.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UiStatePatch {
+    #[serde(rename = "activeWorkspaceId")]
+    pub active_workspace_id: Option<String>,
+    #[serde(rename = "uiScale")]
+    pub ui_scale: Option<f32>,
+    #[serde(rename = "prDiffCols")]
+    pub pr_diff_cols: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -405,5 +576,124 @@ mod tests {
         let old_entry = r#"{"sessionId":"s4","cwd":"/c","name":"K"}"#;
         let e: SessionEntry = serde_json::from_str(old_entry).unwrap();
         assert_eq!(e.scheduled_skill_id, None);
+    }
+
+    /// The record stays visible: one unreadable *provider* must not cost the
+    /// workspace its name, its folder or its account.
+    #[test]
+    fn a_workspace_with_an_unknown_provider_keeps_every_other_field() {
+        let json = r##"{"id":"w1","name":"A","path":"/a","color":"#fff",
+            "github":{"host":"github.com","login":"me"},
+            "tracker":{"providers":[{"type":"jira","site":"acme.atlassian.net"}],"v":3}}"##;
+        let w: Workspace = serde_json::from_str(json).expect("the workspace survives");
+        assert_eq!(w.name, "A");
+        assert_eq!(w.github.unwrap().login, "me");
+        assert!(matches!(
+            w.tracker.unwrap().providers.first(),
+            Some(TrackerProvider::Unknown(_))
+        ));
+    }
+
+    /// And saving it does not destroy it. A unit catch-all variant would write
+    /// `{"type":"unknown"}` here and the configuration would be gone on the first
+    /// edit of an unrelated field.
+    #[test]
+    fn an_unknown_provider_is_written_back_verbatim() {
+        let json = r#"{"providers":[{"type":"jira","site":"acme.atlassian.net"}],"v":3}"#;
+        let cfg: TrackerConfig = serde_json::from_str(json).unwrap();
+        let back = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(back["providers"][0]["type"], "jira");
+        assert_eq!(back["providers"][0]["site"], "acme.atlassian.net");
+    }
+
+    /// The known shapes are unaffected, in both directions — this is the test
+    /// that would catch an untagged helper enum silently swallowing a *typo* in a
+    /// known variant's own fields, which would be the tolerance going too far.
+    #[test]
+    fn the_known_providers_still_parse_as_themselves() {
+        let cfg: TrackerConfig =
+            serde_json::from_str(r#"{"providers":[{"type":"fs","root":{"kind":"project"}}],"v":3}"#)
+                .unwrap();
+        assert!(matches!(cfg.providers.first(), Some(TrackerProvider::Fs { .. })));
+        let back = serde_json::to_string(&cfg).unwrap();
+        assert!(back.contains(r#""type":"fs""#), "{back}");
+    }
+
+    /// An `fs` provider missing its `root` is *not* an unknown source, it is a
+    /// damaged one — but it must still not cost the workspace. Kept as
+    /// `Unknown`, which is the honest reading: this build cannot use it.
+    #[test]
+    fn a_malformed_known_provider_is_kept_rather_than_fatal() {
+        let cfg: TrackerConfig =
+            serde_json::from_str(r#"{"providers":[{"type":"fs"}],"v":3}"#).unwrap();
+        assert!(matches!(cfg.providers.first(), Some(TrackerProvider::Unknown(_))));
+    }
+
+    /// `{"type":"github"}` is the whole encoding: the repository is resolved
+    /// from the workspace's folder (decision 11), so a field for it here would
+    /// be a second source of truth that can disagree with the git remote.
+    #[test]
+    fn the_github_tracker_provider_carries_no_fields() {
+        let cfg: TrackerConfig =
+            serde_json::from_str(r#"{"providers":[{"type":"github"}],"v":3}"#).expect("parses");
+        // THIS is the line that guards against the variant being added to
+        // `TrackerProvider` but not to `KnownTrackerProvider` — the one mistake
+        // Task 2's two-enum shape makes possible. Do not trim it as redundant.
+        assert!(matches!(cfg.providers.first(), Some(TrackerProvider::GitHub)));
+        let back = serde_json::to_string(&cfg).unwrap();
+        // And this line guards nothing of the sort, which is worth knowing: with
+        // the variant missing from `KnownTrackerProvider` the value deserializes
+        // to `Unknown` and is re-emitted verbatim, so this assertion passes in
+        // exactly the scenario it looks like it is checking. It is here for the
+        // encoding, not for the wiring.
+        assert!(back.contains(r#"{"type":"github"}"#), "round trip: {back}");
+    }
+
+    /// A card file has no labels, and every record written before this change
+    /// has no such key. `#[serde(default)]` is what keeps them all readable.
+    #[test]
+    fn a_task_without_labels_still_deserializes() {
+        let json = r#"{"id":"01A","title":"t","kind":"bug","status":"open","project":"deck",
+            "created":"2026-01-01T00:00:00Z","resolved":null,"origin":"human","session":null,
+            "body":"","path":"/r/01A.md","damaged":null,"conflict":false}"#;
+        let t: crate::tasks::model::Task = serde_json::from_str(json).expect("parses");
+        assert!(t.labels.is_empty());
+    }
+
+    #[test]
+    fn old_workspace_without_github_deserializes_to_none() {
+        let old = r##"{"id":"w1","name":"proj","path":"/tmp/proj","color":"#61afef"}"##;
+        let ws: Workspace = serde_json::from_str(old).unwrap();
+        assert!(ws.github.is_none());
+    }
+
+    #[test]
+    fn workspace_without_github_serializes_without_the_field() {
+        let ws = Workspace {
+            id: "w1".into(), name: "proj".into(), path: "/tmp/proj".into(),
+            color: "#61afef".into(), github: None, tracker: None,
+        };
+        let json = serde_json::to_string(&ws).unwrap();
+        assert!(!json.contains("github"), "старая форма файла должна остаться байт-в-байт: {json}");
+    }
+
+    #[test]
+    fn workspace_github_round_trips_with_camel_case_keys() {
+        let ws = Workspace {
+            id: "w1".into(), name: "proj".into(), path: "/tmp/proj".into(), color: "#61afef".into(),
+            github: Some(WorkspaceGithub {
+                host: "github.com".into(),
+                login: "followLemmi".into(),
+                git_name: Some("Evgeny".into()),
+                git_email: Some("e@example.com".into()),
+                ssh_key: None,
+            }),
+            tracker: None,
+        };
+        let json = serde_json::to_string(&ws).unwrap();
+        assert!(json.contains(r#""gitName":"Evgeny""#), "{json}");
+        assert!(!json.contains("sshKey"), "пустые поля не сериализуются: {json}");
+        let back: Workspace = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.github, ws.github);
     }
 }

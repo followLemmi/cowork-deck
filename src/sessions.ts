@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type Task, type BoardConfig } from "./ipc";
+import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
 import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -11,15 +11,27 @@ import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
 import { icon, iconButton } from "./icons";
-import { liveSessionForTask, taskPrompt } from "./tasks";
+import { linksInWorkspace, liveSessionForTask, taskPrompt, type TaskSessionLink } from "./tasks";
 import { workingStep } from "./board-config";
+
+/** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
+ *  команды (установка gh, `gh auth login`): без хуков состояния, без
+ *  перезапуска и, главное, без автовосстановления. */
+export type TileKind = "claude" | "command";
 
 interface Tile {
   session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  authBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
+  /** Исход привязки GitHub-аккаунта на момент СТАРТА процесса. Живой сессии
+   *  окружение не поменять, поэтому значение не обновляется до перезапуска. */
+  auth?: SessionAuth;
+  /** Привязка воркспейса изменилась после старта — окружение устарело. */
+  authStale?: boolean;
+  kind?: TileKind;
   /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
   taskId?: string;
 }
@@ -129,6 +141,51 @@ export class Deck {
     });
   }
 
+  /** Бейдж рисуется ТОЛЬКО когда что-то не так: аккаунт не подключился или
+   *  окружение устарело после смены привязки. В норме шапка тайла чистая. */
+  private renderAuthBadge(tile: Tile) {
+    const { authBadge: b } = tile;
+    if (tile.authStale) {
+      b.textContent = "GitHub ⟳";
+      b.title = "Привязка воркспейса изменилась — окружение подхватится после перезапуска сессии";
+      b.className = "tile-auth stale";
+      return;
+    }
+    if (tile.auth?.degraded) {
+      b.textContent = "GitHub ✕";
+      b.title = `Аккаунт ${tile.auth.account ?? "?"} не подключён: ${tile.auth.degraded}`;
+      b.className = "tile-auth";
+      return;
+    }
+    b.textContent = "";
+    b.className = "tile-auth hidden";
+  }
+
+  /** Привязка воркспейса изменилась: у живых сессий окружение уже зафиксировано
+   *  при fork, поменять его нельзя — честно помечаем как устаревшее. */
+  markAuthStale(workspaceId: string) {
+    for (const t of this.tiles.values()) {
+      if (t.workspaceId !== workspaceId || t.kind === "command") continue;
+      t.authStale = true;
+      this.renderAuthBadge(t);
+    }
+  }
+
+  /** Открывает тайл с разовой пользовательской командой (установка gh,
+   *  `gh auth login`). Такой тайл не сохраняется в layout: восстановление
+   *  молча перезапустило бы sudo-команду на следующем старте приложения. */
+  async openCommandTile(titleText: string, command: string, cwd: string) {
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd,
+      titleText,
+      prompt: null,
+      resume: false,
+      kind: "command",
+      command,
+    });
+  }
+
   /** Fire a scheduled scenario as a fresh tile. Returns false (and does not
    *  launch) if this scenario's previous scheduled session is still active.
    *
@@ -175,8 +232,7 @@ export class Deck {
   async launchFromTask(
     workspace: Workspace, task: Task, cfg: BoardConfig,
   ): Promise<"launched" | "focused"> {
-    const alive = liveSessionForTask(task.id, this.taskLinks());
-    if (alive) { this.focusTile(alive); return "focused"; }
+    if (this.focusTaskSession(task.id, workspace.id)) return "focused";
     // ▶ writes the step itself, so the card moves whether or not the agent
     // remembers to. A failure must not block the launch: the work matters more
     // than the bookkeeping, and the board's stale marker will show the mismatch.
@@ -203,6 +259,54 @@ export class Deck {
       taskId: task.id,
     });
     return "launched";
+  }
+
+  /** A session for a pull request, in the worktree prepared for it.
+   *
+   *  `cwd` is deliberately not the workspace path: the worktree keeps the
+   *  branch out of the workspace's own working copy, where other sessions are
+   *  running. `workspaceId` still points at the workspace, so the tile groups,
+   *  filters and inherits its account exactly like any other. */
+  async launchOnWorktree(
+    cwd: string, workspaceId: string, titleText: string, prompt: string,
+    /** Set for an issue, absent for a pull request. An issue session is both in a
+     *  worktree and linked to a card: without the link `derivedStatus` cannot
+     *  show "in progress" and a second ▶ would raise a duplicate session rather
+     *  than focus the first. */
+    taskId?: string,
+  ): Promise<"launched" | "focused"> {
+    // The same guard `launchFromTask` applies, and only where there is a card to
+    // apply it to. It is not redundant with the board hiding ▶: `derivedStatus`
+    // reads "in progress" only while the session is *busy*, so an idle session
+    // still linked to the issue leaves ▶ on screen — which is precisely the case
+    // that would otherwise put a second session in the same worktree.
+    //
+    // Asked of this workspace's links only. An issue number belongs to one
+    // repository, so a session on another workspace's #42 is a different piece of
+    // work; focusing it would hand the person a terminal in the wrong repository
+    // and leave the worktree just prepared here with nothing running in it.
+    //
+    // Still asked here even though the board now asks it before preparing the
+    // worktree: this is the last line before a second agent lands in the same
+    // directory, and it also covers callers that never went through the board.
+    if (taskId !== undefined && this.focusTaskSession(taskId, workspaceId)) return "focused";
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd,
+      workspaceId,
+      titleText,
+      prompt,
+      resume: false,
+      taskId,
+    });
+    return "launched";
+  }
+
+  /** Whether any live tile is running inside `path`. Removal of a worktree
+   *  asks first: a session whose directory disappears comes back on the next
+   *  restore pointing at nothing. */
+  hasSessionIn(path: string): boolean {
+    return [...this.tiles.values()].some((t) => t.workspacePath === path);
   }
 
   setActiveWorkspace(id: string | null) {
@@ -240,15 +344,33 @@ export class Deck {
      *  False for unattended work: a scheduled run announces itself through a
      *  notification, not by yanking the caret out of whatever is being typed. */
     grabAttention?: boolean;
+    /** "command" — разовый запуск `command` вместо сессии claude. */
+    kind?: TileKind;
+    command?: string;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const grabAttention = opts.grabAttention ?? true;
+    const isCommand = opts.kind === "command";
     const el = document.createElement("div");
     el.className = "tile";
+    // The state rail's carrier. A data attribute rather than a class for the reason
+    // the session row documents: `.state-*` already means "a chip with this fill",
+    // and one of those names on the tile would paint a chip across the whole thing.
+    el.dataset.state = "idle";
     const head = document.createElement("div");
     head.className = "tile-head";
     const title = document.createElement("span");
+    // A class, because the selector this used to rely on could not work. The rule was
+    // `.tile-head span:first-child`, and `head.insertBefore(bcastCheck, title)` below
+    // puts an `<input>` in front of the title on every tile — so the title is never
+    // `:first-child` and never got the `flex: 1` or the ellipsis that rule grants. A
+    // long session name pushed the badges out of the head instead of truncating.
+    title.className = "tile-name";
     title.textContent = titleText;
+    // The tooltip is for the sighted reader of a truncated name; the accessible name
+    // comes from the text itself. Set beside the text so the two cannot drift —
+    // nothing rewrites either after this.
+    title.title = titleText;
     const schedMark = opts.scheduled ? icon("clock", 12) : null;
     if (schedMark) {
       schedMark.classList.add("tile-sched-mark");
@@ -269,7 +391,12 @@ export class Deck {
     // of the two ways to do the same thing: one stray click killed a live
     // session outright, while the keyboard asked first.
     close.onclick = () => { void this.requestClose(session); };
-    head.append(...(schedMark ? [schedMark] : []), title, gitBadge, tokenBadge, label, clearBtn, close);
+    const authBadge = document.createElement("span");
+    authBadge.className = "tile-auth hidden";
+    head.append(
+      ...(schedMark ? [schedMark] : []),
+      title, gitBadge, authBadge, tokenBadge, label, clearBtn, close,
+    );
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
@@ -280,7 +407,11 @@ export class Deck {
       restart.style.display = "none";
       tile.panel.write("\r\n[restarting session...]\r\n");
       try {
-        await tile.panel.start(tile.workspacePath, tile.workspaceId ?? null, null, tile.taskId ?? null, true);
+        tile.auth = await tile.panel.start(
+          tile.workspacePath, tile.workspaceId ?? null, null, tile.taskId ?? null, true,
+        );
+        tile.authStale = false;
+        this.renderAuthBadge(tile);
         this.setState(session, "idle");
         void this.persistLayout();
       } catch (e) {
@@ -322,15 +453,22 @@ export class Deck {
     const tile: Tile = {
       session, name: title.textContent!, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId, taskId: opts.taskId,
+      gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
+      kind: opts.kind, taskId: opts.taskId,
     };
     this.tiles.set(session, tile);
     if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
     try {
-      await panel.start(cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume);
-      void this.persistLayout();
+      if (isCommand) {
+        await panel.startCommand(cwd, opts.command ?? "");
+        // Командный тайл в layout не попадает — persistLayout не зовём.
+      } else {
+        tile.auth = await panel.start(cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume);
+        this.renderAuthBadge(tile);
+        void this.persistLayout();
+      }
     } catch (e) {
       this.setState(session, "error");
       const raw = String((e as { message?: string })?.message ?? e);
@@ -379,9 +517,42 @@ export class Deck {
     void this.persistLayout();
   }
 
-  /** Live tiles in the shape the board needs. */
-  taskLinks(): { session: string; taskId?: string; state: SessionState }[] {
-    return [...this.tiles.values()].map((t) => ({ session: t.session, taskId: t.taskId, state: t.state }));
+  /** Focus the session already running on this card, if there is one.
+   *
+   *  The guard `launchFromTask` and `launchOnWorktree` apply, exposed because the
+   *  board's issue path has to ask it *before* preparing a worktree: the check is
+   *  worthless behind a fallible IPC call, which is precisely the position it used
+   *  to be in. One implementation, so the three callers cannot come to disagree
+   *  about what "already running" means. */
+  focusTaskSession(taskId: string, workspaceId: string): boolean {
+    const alive = liveSessionForTask(taskId, this.taskLinks(workspaceId));
+    if (alive === null) return false;
+    this.focusTile(alive);
+    return true;
+  }
+
+  /** Live tiles in the shape the board needs, for one workspace.
+   *
+   *  The workspace is a required argument, not a filter a caller may forget: a
+   *  card id is unique only inside its own tracker (a GitHub issue number is the
+   *  first id two repositories can share), and every rule reading these links
+   *  matches on the id alone. Handing out the whole app's tiles is what let a
+   *  session on A's #42 speak for B's #42 — see `linksInWorkspace`. */
+  taskLinks(workspaceId: string): TaskSessionLink[] {
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    return linksInWorkspace(
+      [...this.tiles.values()].map((t) => ({
+        session: t.session,
+        taskId: t.taskId,
+        // The tile's own id wins, and is never discarded merely because the
+        // workspace list has not loaded yet — that would silently stop the launch
+        // guard matching. Only a tile without one (an older layout entry) falls
+        // back to being placed by its directory, exactly as the sidebar places it.
+        workspaceId: t.workspaceId ?? resolveWorkspaceId(undefined, t.workspacePath, ws) ?? undefined,
+        state: t.state,
+      })),
+      workspaceId,
+    );
   }
 
   get activeSession(): string | null {
@@ -431,6 +602,10 @@ export class Deck {
   toggleBroadcast() {
     this.broadcasting = !this.broadcasting;
     for (const t of this.tiles.values()) t.bcastCheck.classList.toggle("hidden", !this.broadcasting);
+    // The deck makes room for the bar rather than letting it float over the bottom
+    // tile's last rows — which is the output a person is about to type at. The
+    // padding lives in the stylesheet; this only says when it applies.
+    this.deckEl.classList.toggle("has-bcast", this.broadcasting);
     if (this.broadcasting) this.showBroadcastPanel();
     else this.hideBroadcastPanel();
   }
@@ -490,7 +665,6 @@ export class Deck {
       this.zoomTo(session);
     }
     for (const t of this.tiles.values()) t.el.classList.toggle("is-active", t === tile);
-    this.deckEl.classList.toggle("has-active", this.tiles.size > 0);
     tile.el.scrollIntoView?.({ block: "nearest" });
     tile.panel.focus();
     this.renderList();
@@ -502,8 +676,13 @@ export class Deck {
     const prev = tile.state;
     tile.state = state;
     tile.label.className = `tile-state state-${state}`;
+    // Keeps the tile's rail in step with its chip. Two carriers, one source.
+    tile.el.dataset.state = state;
     tile.label.textContent = LABEL[state];
-    tile.restartBtn.style.display = (state === "ended" || state === "error") ? "inline" : "none";
+    // У командного тайла перезапуск не предлагаем: он поднял бы claude, а не
+    // повторил команду. Разовое действие повторяется из своего экрана.
+    const restartable = tile.kind !== "command" && (state === "ended" || state === "error");
+    tile.restartBtn.style.display = restartable ? "inline" : "none";
     this.renderList();
     if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       const id = this.notify.register(session);
@@ -638,7 +817,6 @@ export class Deck {
     this.applyLayout();
     this.usage.delete(session);
     if (this.tiles.size === 0) this.stopPolling();
-    if (this.tiles.size === 0) this.deckEl.classList.remove("has-active");
     this.renderList();
     void this.persistLayout();
   }
@@ -647,6 +825,7 @@ export class Deck {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
       session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
+      kind: t.kind,
       scheduledSkillId: t.scheduledSkillId,
       taskId: t.taskId,
     })));
@@ -704,7 +883,9 @@ export class Deck {
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = color;
       const nm = document.createElement("span");
-      nm.className = "sess-group-name"; nm.textContent = name;
+      // Truncates the same way `.ws-label` does, and for the same reason: a
+      // workspace name against a sidebar's width.
+      nm.className = "sess-group-name"; nm.textContent = name; nm.title = name;
       head.append(toggle, dot, nm);
       if (groupWaiting > 0) {
         const badge = document.createElement("span");
@@ -724,8 +905,24 @@ export class Deck {
         const row = document.createElement("button");
         row.dataset.focusKey = `session:${t.session}`;
         row.setAttribute("aria-label", `${t.name} — ${LABEL[t.state]}`);
-        row.className = "sess-row" + (live?.el.classList.contains("is-active") ? " active" : "");
-        row.style.borderLeftColor = color;
+        const isActive = !!live?.el.classList.contains("is-active");
+        row.className = "sess-row" + (isActive ? " active" : "");
+        // The `active` class was the only carrier: a background tint and a left
+        // border, both invisible to a screen reader, on the row telling the person
+        // which of a dozen sessions they are looking at. `aria-current` rather than
+        // `aria-selected` — this is a list of things to go to, not a widget with a
+        // selection, and it is the same reading as `.ws-label` below.
+        if (isActive) row.setAttribute("aria-current", "true");
+        // The left edge used to be a 3px border in the WORKSPACE's colour, which the
+        // group heading three lines up already carries as a dot — so it was a second
+        // rendering of the grouping and said nothing about the row. It is a state
+        // rail now: the one thing a list of a dozen sessions exists to answer, and
+        // readable in a single sweep instead of by reading a dozen small chips.
+        //
+        // A data attribute rather than a class: `.state-*` already means "a chip with
+        // this fill and this text colour", and putting one of those names on the row
+        // would paint a chip's background across the whole line.
+        row.dataset.state = t.state;
         row.onclick = () => this.focusSessionAnywhere(t.session);
         const stateSpan = document.createElement("span");
         stateSpan.className = `tile-state state-${t.state}`;
@@ -766,14 +963,20 @@ export function serializeTiles(
   tiles: {
     session: string; workspacePath: string; name: string; workspaceId?: string;
     scheduledSkillId?: string; taskId?: string;
+    kind?: TileKind;
   }[],
 ): SessionEntry[] {
-  return tiles.map((t) => ({
-    sessionId: t.session, cwd: t.workspacePath, name: t.name,
-    ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
-    ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
-    ...(t.taskId ? { taskId: t.taskId } : {}),
-  }));
+  return tiles
+    // Командный тайл — разовое действие пользователя (установка пакета, вход в
+    // аккаунт). Восстанавливать его на следующем запуске нельзя: это молча
+    // выполнило бы sudo-команду без спроса.
+    .filter((t) => t.kind !== "command")
+    .map((t) => ({
+      sessionId: t.session, cwd: t.workspacePath, name: t.name,
+      ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+      ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
+      ...(t.taskId ? { taskId: t.taskId } : {}),
+    }));
 }
 
 export function selectedFromChecks(checks: { session: string; checked: boolean }[]): string[] {

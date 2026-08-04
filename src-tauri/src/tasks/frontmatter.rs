@@ -101,6 +101,7 @@ pub fn parse_card(text: &str, path: &str) -> Option<Task> {
         path: path.to_string(),
         damaged,
         conflict: false,
+        labels: Vec::new(),
     })
 }
 
@@ -540,6 +541,7 @@ Repro: three workspaces, Cmd+2.\n";
             path: "/r/x.md".to_string(),
             damaged: None,
             conflict: false,
+            labels: Vec::new(),
         };
         let text = render_card(&card);
         assert_eq!(

@@ -16,3 +16,8 @@ src-tauri/binaries/
 # the index they read is not.
 .gitnexus/
 .serena/
+# Agent worktrees. These are full nested checkouts with their own .git files and
+# their own node_modules symlink; committing the directory would commit every
+# branch that has ever been checked out under it. The tooling in .claude/ IS
+# committed — see the commit that added it — this is only the worktrees it makes.
+.claude/worktrees/

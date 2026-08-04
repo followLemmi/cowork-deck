@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>cowork-deck — Terminals</title>
+<link rel="stylesheet" href="assets/deck-ui.css" />
+</head>
+<body>
+
+<div class="app" data-od-id="app-shell">
+
+  <!-- ===================== Top bar ===================== -->
+  <header class="topbar" data-od-id="topbar">
+    <div class="mark" data-od-id="wordmark">
+      <span class="mark-glyph"><i data-ic="deck"></i></span>
+      <span class="mark-text">cowork<span>·deck</span></span>
+    </div>
+
+    <nav class="seg" data-od-id="view-switch" aria-label="Screen">
+      <button type="button" aria-selected="true" data-od-id="view-terminals">
+        <i data-ic="terminal"></i> Terminals
+      </button>
+      <button type="button" aria-selected="false" data-nav="board-screen.html" data-od-id="view-board">
+        <i data-ic="columns"></i> Board
+      </button>
+      <button type="button" aria-selected="false" data-nav="pull-requests-screen.html" data-od-id="view-pr">
+        <i data-ic="git-merge"></i> Pull requests
+        <span class="seg-badge">2</span>
+      </button>
+    </nav>
+
+    <span class="topbar-spacer"></span>
+
+    <!-- Which account the next `git push` goes out as. It used to be readable
+         only by scrolling the sidebar to the right workspace row. -->
+    <button type="button" class="ws-chip" data-od-id="workspace-chip">
+      <span class="dot" style="background:#7bd77f"></span>
+      cowork-deck
+      <span class="ws-chip-login">followLemmi</span>
+      <i data-ic="chevron" class="ic--down"></i>
+    </button>
+
+    <button type="button" class="btn--icon" id="bcast-toggle"
+            title="Broadcast input to several sessions" aria-label="Broadcast input to several sessions"
+            aria-pressed="false" data-od-id="broadcast-toggle"><i data-ic="broadcast"></i></button>
+    <button type="button" class="btn--icon" title="Command palette · Ctrl+Shift+K"
+            aria-label="Command palette" data-od-id="palette-open"><i data-ic="search"></i></button>
+    <button type="button" class="btn--icon" title="Settings" aria-label="Settings"
+            data-od-id="settings-open"><i data-ic="sliders"></i></button>
+  </header>
+
+  <div class="stage">
+
+    <!-- ===================== Sidebar ===================== -->
+    <!-- Three islands instead of one undifferentiated scroll. The old column was
+         `h3` + rows + `h3` + rows with nothing between them, so a workspace, a
+         session and a scenario all read as the same kind of thing. -->
+    <aside class="side" data-od-id="sidebar">
+
+      <section class="island" data-od-id="panel-workspaces">
+        <header class="island-head">
+          <h2 class="caps">Workspaces</h2>
+          <span class="head-spacer"></span>
+          <button type="button" class="btn--icon" title="New workspace"
+                  aria-label="New workspace"><i data-ic="plus"></i></button>
+        </header>
+        <div class="island-body">
+          <div class="row rail is-idle" aria-current="true" data-od-id="ws-cowork-deck"
+               style="--rail:var(--accent)">
+            <span class="dot" style="background:#7bd77f"></span>
+            <span class="row-main">
+              <span class="row-title">cowork-deck</span>
+              <span class="row-sub">followLemmi · ~/lemsoft/cowork-deck</span>
+            </span>
+            <span class="ws-count">4</span>
+            <span class="row-acts">
+              <button type="button" class="btn--icon" title="Edit workspace cowork-deck"
+                      aria-label="Edit workspace cowork-deck"><i data-ic="pencil"></i></button>
+            </span>
+          </div>
+
+          <div class="row" data-od-id="ws-lemsoft-api">
+            <span class="dot" style="background:#efc845"></span>
+            <span class="row-main">
+              <span class="row-title">lemsoft-api</span>
+              <span class="row-sub">evgeny-jvl · ~/jvl/lemsoft-api</span>
+            </span>
+            <span class="ws-count">2</span>
+            <span class="row-acts">
+              <button type="button" class="btn--icon" title="Edit workspace lemsoft-api"
+                      aria-label="Edit workspace lemsoft-api"><i data-ic="pencil"></i></button>
+            </span>
+          </div>
+
+          <div class="row" data-od-id="ws-vault-index">
+            <span class="dot" style="background:#d5eaf3"></span>
+            <span class="row-main">
+              <span class="row-title">vault-index</span>
+              <span class="row-sub">followLemmi · ~/tools/vault-index</span>
+            </span>
+            <span class="ws-count">1</span>
+            <span class="row-acts">
+              <button type="button" class="btn--icon" title="Edit workspace vault-index"
+                      aria-label="Edit workspace vault-index"><i data-ic="pencil"></i></button>
+            </span>
+          </div>
+
+          <button type="button" class="btn btn--dashed" style="width:100%;margin-top:6px">
+            <i data-ic="plus"></i> Add a workspace
+          </button>
+        </div>
+      </section>
+
+      <section class="island" data-od-id="panel-sessions">
+        <header class="island-head">
+          <h2 class="caps">Sessions</h2>
+          <span class="head-spacer"></span>
+          <span class="chip chip--plain tabular" title="Tokens used across every session">
+            <i data-ic="chart"></i> 412k
+          </span>
+        </header>
+        <div class="island-body">
+          <button type="button" class="group-head" aria-expanded="true">
+            <i data-ic="chevron"></i>
+            <span class="group-name">cowork-deck</span>
+            <span class="group-badge tabular">4</span>
+          </button>
+
+          <div class="row rail is-working" aria-current="true">
+            <span class="row-main">
+              <span class="row-title">tests · main</span>
+            </span>
+            <span class="chip-state is-working">Working</span>
+          </div>
+          <div class="row rail is-waiting">
+            <span class="row-main">
+              <span class="row-title">diff drawer · feat/drawer</span>
+            </span>
+            <span class="chip-state is-waiting">Needs you</span>
+          </div>
+          <div class="row rail is-done">
+            <span class="row-main">
+              <span class="row-title">release notes · main</span>
+            </span>
+            <span class="chip-state is-done">Done</span>
+          </div>
+          <div class="row rail is-error">
+            <span class="row-main">
+              <span class="row-title">pill sizing · fix/pill</span>
+            </span>
+            <span class="chip-state is-error">Error</span>
+          </div>
+
+          <button type="button" class="group-head" aria-expanded="false">
+            <i data-ic="chevron"></i>
+            <span class="group-name">lemsoft-api</span>
+            <span class="group-badge tabular">2</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="island" data-od-id="panel-scenarios">
+        <header class="island-head">
+          <h2 class="caps">Scenarios</h2>
+          <span class="head-spacer"></span>
+          <button type="button" class="btn--icon" title="New scenario"
+                  aria-label="New scenario"><i data-ic="plus"></i></button>
+        </header>
+        <div class="island-body">
+          <div class="row" data-od-id="scenario-nightly-review">
+            <i data-ic="shield" class="ic"></i>
+            <span class="row-main">
+              <span class="row-title">Nightly review</span>
+              <!-- The schedule, in the row. It used to live in a `title` tooltip
+                   that no keyboard could reach and that went stale. -->
+              <span class="row-sub">Daily 02:00 · ran 8h ago, ok</span>
+            </span>
+            <span class="row-acts">
+              <button type="button" class="btn--icon" title="Run Nightly review now"
+                      aria-label="Run Nightly review now"><i data-ic="clock-play"></i></button>
+              <button type="button" class="btn--icon" title="Edit Nightly review"
+                      aria-label="Edit Nightly review"><i data-ic="pencil"></i></button>
+            </span>
+          </div>
+
+          <div class="row" data-od-id="scenario-fix-test">
+            <i data-ic="flask" class="ic"></i>
+            <span class="row-main">
+              <span class="row-title">Fix the failing test</span>
+              <span class="row-sub">No schedule</span>
+            </span>
+            <span class="row-acts">
+              <button type="button" class="btn--icon" title="Edit Fix the failing test"
+                      aria-label="Edit Fix the failing test"><i data-ic="pencil"></i></button>
+            </span>
+          </div>
+
+          <div class="row rail is-error" data-od-id="scenario-session-note">
+            <i data-ic="book" class="ic"></i>
+            <span class="row-main">
+              <span class="row-title">Write the session note</span>
+              <!-- A run that produced nothing is recorded, not swallowed. -->
+              <span class="row-sub" style="color:var(--st-error)">Weekly Fri 18:00 · last run skipped, no workspace</span>
+            </span>
+            <span class="row-acts">
+              <button type="button" class="btn--icon" title="Run Write the session note now"
+                      aria-label="Run Write the session note now"><i data-ic="clock-play"></i></button>
+              <button type="button" class="btn--icon" title="Edit Write the session note"
+                      aria-label="Edit Write the session note"><i data-ic="pencil"></i></button>
+            </span>
+          </div>
+
+          <!-- The app's one primary action, and it is finally shaped like one. -->
+          <button type="button" class="btn btn--primary" style="width:100%;margin-top:8px"
+                  data-od-id="new-session">
+            <i data-ic="plus"></i> New session
+          </button>
+        </div>
+      </section>
+
+    </aside>
+
+    <!-- ===================== Deck ===================== -->
+    <main class="screen screen--deck" data-od-id="deck-screen">
+      <div class="deck" id="deck" data-od-id="deck">
+
+        <!-- Working -->
+        <section class="tile rail rail--full is-working is-active" data-od-id="tile-tests"
+                 tabindex="0">
+          <header class="tile-head">
+            <span class="tile-name">tests</span>
+            <span class="chip chip--mono"><i data-ic="git-branch"></i> main</span>
+            <span class="tile-tokens">38.2k</span>
+            <span class="chip-state is-working">Working</span>
+            <button type="button" class="btn--icon" title="Search in this terminal"
+                    aria-label="Search in this terminal" data-search><i data-ic="search"></i></button>
+            <button type="button" class="btn--icon" title="Zoom this session"
+                    aria-label="Zoom this session" data-zoom><i data-ic="expand"></i></button>
+            <button type="button" class="btn--icon btn--danger" title="Close session tests"
+                    aria-label="Close session tests"><i data-ic="x"></i></button>
+          </header>
+          <div class="tile-search" hidden>
+            <input class="field" type="search" placeholder="Find in terminal" aria-label="Find in terminal" />
+            <button type="button" class="btn--icon" title="Previous match" aria-label="Previous match"><i data-ic="chevron" class="ic--up"></i></button>
+            <button type="button" class="btn--icon" title="Next match" aria-label="Next match"><i data-ic="chevron" class="ic--down"></i></button>
+            <button type="button" class="btn--icon" title="Close search" aria-label="Close search" data-search-close><i data-ic="x"></i></button>
+          </div>
+          <div class="tile-body">
+            <div class="term" tabindex="0" aria-label="Terminal for session tests"><span class="term-dim">$</span> <span class="term-ink">npm test -- --run</span>
+
+<span class="term-dim">RUN</span>  v2.1.9 /home/evgeny/lemsoft/cowork-deck
+
+ <span class="term-ok">✓</span> tests/board-config.test.ts <span class="term-dim">(14 tests) 121ms</span>
+ <span class="term-ok">✓</span> tests/diff.test.ts <span class="term-dim">(22 tests) 208ms</span>
+ <span class="term-ok">✓</span> tests/diff-drawer.test.ts <span class="term-dim">(19 tests) 194ms</span>
+ <span class="term-ok">✓</span> tests/pr-view.test.ts <span class="term-dim">(31 tests) 402ms</span>
+ <span class="term-dim">❯</span> tests/sessions.test.ts <span class="term-dim">(27 tests | 3 running)</span>
+<span class="term-cursor"></span></div>
+          </div>
+        </section>
+
+        <!-- Waiting for a decision -->
+        <section class="tile rail rail--full is-waiting" data-od-id="tile-drawer" tabindex="0">
+          <header class="tile-head">
+            <span class="tile-name">diff drawer</span>
+            <span class="chip chip--mono"><i data-ic="git-branch"></i> feat/drawer</span>
+            <span class="tile-tokens">96.7k</span>
+            <span class="chip-state is-waiting">Needs you</span>
+            <button type="button" class="btn--icon" title="Search in this terminal"
+                    aria-label="Search in this terminal" data-search><i data-ic="search"></i></button>
+            <button type="button" class="btn--icon" title="Zoom this session"
+                    aria-label="Zoom this session" data-zoom><i data-ic="expand"></i></button>
+            <button type="button" class="btn--icon btn--danger" title="Close session diff drawer"
+                    aria-label="Close session diff drawer"><i data-ic="x"></i></button>
+          </header>
+          <div class="tile-body">
+            <div class="term" tabindex="0" aria-label="Terminal for session diff drawer"><span class="term-ink">I need to write the sticky gutter offsets into
+src/styles.css. The two number columns overlap while
+horizontally scrolled unless the offsets know the
+track width, so I am adding --dv-digits.</span>
+
+<span class="term-warn">╭─ Edit file ───────────────────────────────────╮</span>
+<span class="term-warn">│</span> src/styles.css                                <span class="term-warn">│</span>
+<span class="term-warn">│</span>                                               <span class="term-warn">│</span>
+<span class="term-warn">│</span> <span class="term-ink">Do you want to make this edit?</span>                <span class="term-warn">│</span>
+<span class="term-warn">│</span>  <span class="term-ink">❯ 1. Yes</span>                                     <span class="term-warn">│</span>
+<span class="term-warn">│</span>    2. Yes, and don't ask again this session    <span class="term-warn">│</span>
+<span class="term-warn">│</span>    3. No, tell Claude what to do differently   <span class="term-warn">│</span>
+<span class="term-warn">╰───────────────────────────────────────────────╯</span>
+<span class="term-cursor"></span></div>
+          </div>
+        </section>
+
+        <!-- Finished a turn — the same green as working, without the breathing -->
+        <section class="tile rail rail--full is-done" data-od-id="tile-release-notes" tabindex="0">
+          <header class="tile-head">
+            <span class="tile-name">release notes</span>
+            <span class="chip chip--mono"><i data-ic="git-branch"></i> main</span>
+            <span class="tile-tokens">21.4k</span>
+            <span class="chip-state is-done">Done</span>
+            <button type="button" class="btn--icon" title="Search in this terminal"
+                    aria-label="Search in this terminal" data-search><i data-ic="search"></i></button>
+            <button type="button" class="btn--icon" title="Zoom this session"
+                    aria-label="Zoom this session" data-zoom><i data-ic="expand"></i></button>
+            <button type="button" class="btn--icon btn--danger" title="Close session release notes"
+                    aria-label="Close session release notes"><i data-ic="x"></i></button>
+          </header>
+          <div class="tile-body">
+            <div class="term" tabindex="0" aria-label="Terminal for session release notes"><span class="term-ink">Wrote docs/RELEASE-1.1.md — 42 lines across four
+sections. The diff drawer and the configurable board
+are the two headline entries; the schedule catch-up
+fix is filed under Fixed rather than under Changed,
+since the behaviour was always the intent.</span>
+
+<span class="term-dim">╭──────────────────────────────────────────────╮</span>
+<span class="term-dim">│</span> <span class="term-dim">&gt; </span><span class="term-cursor"></span>                                          <span class="term-dim">│</span>
+<span class="term-dim">╰──────────────────────────────────────────────╯</span>
+<span class="term-dim">  ⏎ send   ⌃C exit</span></div>
+          </div>
+        </section>
+
+        <!-- Error, and it says what happened rather than only that it happened -->
+        <section class="tile rail rail--full is-error" data-od-id="tile-pill" tabindex="0">
+          <header class="tile-head">
+            <span class="tile-name">pill sizing</span>
+            <span class="chip chip--mono"><i data-ic="git-branch"></i> fix/pill</span>
+            <span class="tile-tokens">4.1k</span>
+            <span class="chip-state is-error">Error</span>
+            <button type="button" class="btn--icon" title="Restart session pill sizing"
+                    aria-label="Restart session pill sizing"><i data-ic="rotate"></i></button>
+            <button type="button" class="btn--icon" title="Zoom this session"
+                    aria-label="Zoom this session" data-zoom><i data-ic="expand"></i></button>
+            <button type="button" class="btn--icon btn--danger" title="Close session pill sizing"
+                    aria-label="Close session pill sizing"><i data-ic="x"></i></button>
+          </header>
+          <div class="tile-body">
+            <div class="term" tabindex="0" aria-label="Terminal for session pill sizing"><span class="term-dim">$</span> <span class="term-ink">claude --resume</span>
+
+<span class="term-err">error: could not resume: no conversation found for
+this session id.</span>
+
+<span class="term-dim">The session ended before Claude Code wrote a
+transcript, so there is nothing to resume. Restart (⟳)
+starts a fresh session in the same workspace with the
+same opening prompt.</span>
+
+<span class="term-dim">$</span> <span class="term-cursor"></span></div>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- Broadcast: type once, send to the checked sessions -->
+      <div class="bcast" id="bcast" hidden data-od-id="broadcast-bar">
+        <span class="bcast-label caps"><i data-ic="broadcast" class="ic"></i> Broadcast</span>
+        <input class="field" type="text" placeholder="Send the same input to the checked sessions"
+               aria-label="Broadcast input" />
+        <span class="bcast-targets" id="bcast-count">2 of 4 selected</span>
+        <button type="button" class="btn btn--primary">Send</button>
+        <button type="button" class="btn btn--quiet" id="bcast-close">Done</button>
+      </div>
+    </main>
+
+  </div>
+</div>
+
+<script src="assets/icons.js"></script>
+<script>
+(function () {
+  const deck = document.getElementById("deck");
+  const tiles = () => Array.from(deck.querySelectorAll(".tile"));
+
+  /* --- Active tile ----------------------------------------------------- */
+  deck.addEventListener("mousedown", (e) => {
+    const tile = e.target.closest(".tile");
+    if (!tile || deck.classList.contains("is-zoomed")) return;
+    tiles().forEach((t) => t.classList.toggle("is-active", t === tile));
+  });
+
+  /* --- Zoom / juggle ---------------------------------------------------
+     Double-clicking a tile header is the product's own gesture; the ⤢ button
+     is the same action for anyone who cannot double-click. */
+  function zoom(tile) {
+    deck.classList.add("is-zoomed");
+    tiles().forEach((t) => t.classList.toggle("zoomed", t === tile));
+    let strip = deck.querySelector(".strip");
+    if (!strip) {
+      strip = document.createElement("div");
+      strip.className = "strip";
+      deck.append(strip);
+    }
+    tiles().forEach((t) => { if (t !== tile) strip.append(t); });
+    tile.querySelector("[data-zoom] use").setAttribute("href", "#i-collapse");
+  }
+  function unzoom() {
+    const strip = deck.querySelector(".strip");
+    if (strip) { Array.from(strip.children).forEach((t) => deck.insertBefore(t, strip)); strip.remove(); }
+    deck.classList.remove("is-zoomed");
+    tiles().forEach((t) => {
+      t.classList.remove("zoomed");
+      t.querySelector("[data-zoom] use").setAttribute("href", "#i-expand");
+    });
+  }
+  deck.addEventListener("dblclick", (e) => {
+    const head = e.target.closest(".tile-head");
+    if (!head) return;
+    deck.classList.contains("is-zoomed") ? unzoom() : zoom(head.closest(".tile"));
+  });
+  deck.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-zoom]");
+    if (btn) {
+      const tile = btn.closest(".tile");
+      deck.classList.contains("is-zoomed") && tile.classList.contains("zoomed")
+        ? unzoom() : zoom(tile);
+      return;
+    }
+    /* Clicking a shrunken tile juggles focus to it. */
+    const shrunk = e.target.closest(".strip .tile");
+    if (shrunk) zoom(shrunk);
+  });
+
+  /* --- In-terminal search --------------------------------------------- */
+  deck.addEventListener("click", (e) => {
+    const open = e.target.closest("[data-search]");
+    if (open) {
+      const bar = open.closest(".tile").querySelector(".tile-search");
+      if (bar) { bar.hidden = false; bar.querySelector("input").focus(); }
+    }
+    const close = e.target.closest("[data-search-close]");
+    if (close) close.closest(".tile-search").hidden = true;
+  });
+
+  /* --- Broadcast ------------------------------------------------------- */
+  const bcast = document.getElementById("bcast");
+  const toggle = document.getElementById("bcast-toggle");
+  const count = document.getElementById("bcast-count");
+
+  function refreshCount() {
+    const boxes = deck.querySelectorAll(".tile-check");
+    const on = deck.querySelectorAll(".tile-check:checked").length;
+    count.textContent = on + " of " + boxes.length + " selected";
+  }
+  function setBroadcast(on) {
+    bcast.hidden = !on;
+    toggle.setAttribute("aria-pressed", String(on));
+    tiles().forEach((tile, i) => {
+      const head = tile.querySelector(".tile-head");
+      let box = head.querySelector(".tile-check");
+      if (on && !box) {
+        box = document.createElement("input");
+        box.type = "checkbox";
+        box.className = "tile-check";
+        box.checked = i < 2;
+        box.setAttribute("aria-label", "Include " + tile.querySelector(".tile-name").textContent + " in the broadcast");
+        head.prepend(box);
+      } else if (!on && box) box.remove();
+    });
+    if (on) refreshCount();
+  }
+  toggle.addEventListener("click", () => setBroadcast(bcast.hidden));
+  document.getElementById("bcast-close").addEventListener("click", () => setBroadcast(false));
+  deck.addEventListener("change", (e) => { if (e.target.matches(".tile-check")) refreshCount(); });
+
+  /* In the mockup the three screens are three files, so an inactive segment
+     navigates; in the real app the switch swaps a view in place. */
+  document.querySelectorAll("[data-nav]").forEach((b) => {
+    b.addEventListener("click", () => { location.href = b.dataset.nav; });
+  });
+})();
+</script>
+</body>
+</html>
