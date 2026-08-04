@@ -155,6 +155,7 @@ fn main() {
             commands::gh_status,
             commands::pr_list,
             commands::pr_detail,
+            commands::pr_diff,
             commands::pr_merge_options,
             commands::pr_merge,
             commands::pr_close,

@@ -278,6 +278,232 @@ pub fn parse_pr_detail(json: &str) -> Result<PrDetail, String> {
     })
 }
 
+/// How many patch lines of one file may cross IPC.
+///
+/// Ours, not GitHub's. On this repository's PR #151 it bites exactly one file of
+/// 62 — a 2506-line plan — while six are over 1000 and eleven over 500, so it is
+/// sensitive enough to matter and rare enough not to nag. No lockfile or
+/// generated-code heuristic beside it: the line count catches those anyway, and
+/// a `*.lock` rule would immediately have lied about the Markdown plan that
+/// tripped it here.
+pub const PR_DIFF_LINE_CAP: usize = 2000;
+
+/// Why a file arrived with no lines to show.
+///
+/// `None` beside an empty `hunks` is the third state and is not a failure:
+/// nothing changed — a rename, a mode change — so there is nothing to draw. The
+/// three earn different sentences and different escape hatches, which is the
+/// whole reason this is a type rather than a flag; collapsing them into "no
+/// diff" is exactly what reading an absent `patch` as an empty one would do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Omission {
+    /// GitHub sent no usable `patch` for a file it says really changed —
+    /// measured on #151, where `docs/superpowers/plans/2026-07-30-github-issues-board.md`
+    /// (5290 changes) comes back with the key missing outright. The bytes never
+    /// arrived, so an in-app "show anyway" could only fail; `blob_url` is the
+    /// only honest way through.
+    TooLargeUpstream,
+    /// Over `PR_DIFF_LINE_CAP`. The bytes did arrive and were dropped here, so
+    /// unlike the case above the count is exact and the refusal is ours to
+    /// reverse. Note what that costs, because the design document is ambiguous
+    /// on it: the text is not in the payload, so "show anyway" is a second fetch
+    /// and not a re-render — there is no command for it yet.
+    TooLargeLocal { lines: u64 },
+}
+
+/// One hunk of one file's patch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hunk {
+    /// The `@@` line verbatim. Kept because its trailing section context —
+    /// `@@ -89,6 +91,9 @@ fn main() {` — is written by git and by nothing else,
+    /// and 180 of #151's 217 hunks carry one. It is material for the heading the
+    /// view composes ("Hunk 2 of 5, lines 91 to 99"), not a line to print: read
+    /// aloud, the raw form is noise.
+    pub header: String,
+    pub old_start: u64,
+    pub new_start: u64,
+    /// Patch lines as written, leading `+`, `-`, ` ` or `\` kept.
+    ///
+    /// **Not one object per line.** `{kind, oldNo, newNo, text}` roughly doubles
+    /// the payload against the text it describes and #151 carries 19,854 of
+    /// them; the marker is one character the view slices into its own column,
+    /// and the running numbers are a fold the view performs once per drawn row
+    /// regardless. `\ No newline at end of file` stays for the same reason the
+    /// marker does — drop it and a copied selection stops being a patch.
+    pub lines: Vec<String>,
+}
+
+/// One changed file, as far as GitHub will describe it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffFile {
+    pub path: String,
+    /// Set only on a rename or a copy, where the row names two paths.
+    pub previous_path: Option<String>,
+    pub status: String,
+    pub additions: u64,
+    pub deletions: u64,
+    /// The permalink to the file at this head. The escape hatch for every case
+    /// the drawer cannot draw, so it is carried even when `hunks` is full.
+    pub blob_url: String,
+    pub hunks: Vec<Hunk>,
+    pub omitted: Option<Omission>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrDiff {
+    pub files: Vec<DiffFile>,
+    /// How many files the pull request touches, kept beside `files` rather than
+    /// derived from its length — for the same reason `changed_files` is on
+    /// `PrDetail`: `files` is a capped page, and a length would quietly disagree
+    /// with the repository. What fills it is `commands::pr_diff`'s job; a single
+    /// response only knows its own rows.
+    pub total_files: u64,
+}
+
+/// `@@ -12,7 +14,9 @@ optional section context` → the two starting line numbers.
+///
+/// The counts are deliberately dropped: `lines` is the truth about how many rows
+/// there are, and a stored count that disagrees with its own body is a count
+/// that lies. The single-number form `@@ -1 +1 @@` is real — git writes it
+/// whenever a range covers exactly one line — and #151 contains none of it, so
+/// it is covered by a written test rather than by the fixture.
+fn hunk_starts(line: &str) -> Option<(u64, u64)> {
+    let rest = line.strip_prefix("@@ -")?;
+    // First occurrence each time: the ranges are digits and commas, so the
+    // section context that may follow the closing `@@` cannot be mistaken for
+    // either separator.
+    let (old, rest) = rest.split_once(" +")?;
+    let (new, _) = rest.split_once(" @@")?;
+    let start = |r: &str| r.split(',').next()?.parse::<u64>().ok();
+    Some((start(old)?, start(new)?))
+}
+
+/// Split one file's `patch` into hunks.
+pub fn split_hunks(patch: &str) -> Vec<Hunk> {
+    let mut hunks: Vec<Hunk> = Vec::new();
+    // `split('\n')` and not `lines()`, which strips a trailing `\r`. A file with
+    // CRLF endings would then reach the view as `+` lines whose content differs
+    // from the file they came from, and a copied selection would stop
+    // reassembling into a patch — the one thing keeping the lines raw was for.
+    // None of #151's 19,854 patch lines carries a CR, so this is a guard against
+    // a repository we have not seen rather than a fix for one we have. The
+    // trailing newline comes off first for the same reason in reverse: 59 of 59
+    // patches end without one, and a `split` on a patch that did end with one
+    // would invent a blank final line.
+    for line in patch.strip_suffix('\n').unwrap_or(patch).split('\n') {
+        match hunk_starts(line) {
+            Some((old_start, new_start)) => hunks.push(Hunk {
+                header: line.to_string(),
+                old_start,
+                new_start,
+                lines: Vec::new(),
+            }),
+            // Anything ahead of the first `@@` belongs to no hunk. GitHub's
+            // `patch` begins at one, so reaching here is the shape changing
+            // under us rather than a case to draw: dropped, not guessed at.
+            None => {
+                if let Some(h) = hunks.last_mut() {
+                    h.lines.push(line.to_string());
+                }
+            }
+        }
+    }
+    hunks
+}
+
+/// Whether a file is too big to hand over, and how big it is.
+///
+/// Counts hunk bodies, not `@@` headers: a header becomes one heading in the
+/// view, not a row of code. Separate from `parse_pr_files` so the threshold can
+/// be exercised at a cap small enough to write a fixture around.
+pub fn cap_file(file: &DiffFile, cap: usize) -> Option<Omission> {
+    let lines: usize = file.hunks.iter().map(|h| h.lines.len()).sum();
+    (lines > cap).then_some(Omission::TooLargeLocal { lines: lines as u64 })
+}
+
+/// One row of the files endpoint. `None` for a row naming no file: it says
+/// nothing about any file, so there is nothing to draw a header for — the rule
+/// `parse_pr_detail` already applies to `files`.
+fn parse_diff_file(row: &serde_json::Value) -> Option<DiffFile> {
+    let path = row.get("filename").and_then(|x| x.as_str())?;
+    let s = |k: &str| row.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let n = |k: &str| row.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    // An empty `patch` string is treated as no patch at all. It is the same
+    // fact — no bytes — spelled differently, and letting it through would put a
+    // file with 5000 changes and nothing to show it with into the "nothing
+    // changed" state.
+    let patch = row.get("patch").and_then(|x| x.as_str()).filter(|p| !p.is_empty());
+    let (additions, deletions) = (n("additions"), n("deletions"));
+
+    let mut file = DiffFile {
+        path: path.to_string(),
+        previous_path: row.get("previous_filename").and_then(|x| x.as_str()).map(str::to_string),
+        status: s("status"),
+        additions,
+        deletions,
+        blob_url: s("blob_url"),
+        hunks: patch.map(split_hunks).unwrap_or_default(),
+        omitted: None,
+    };
+    // Decided on what we ended up holding rather than on the key's presence, so
+    // a patch we could not split lands here too. The variant names the usual
+    // cause and the reader's options are identical either way: the bytes are not
+    // in hand, and only `blob_url` is.
+    file.omitted = if file.hunks.is_empty() && additions + deletions > 0 {
+        Some(Omission::TooLargeUpstream)
+    } else {
+        cap_file(&file, PR_DIFF_LINE_CAP)
+    };
+    if file.omitted.is_some() {
+        // Dropped *here*, before serialisation — the whole reason this parse
+        // lives in Rust. #151's 97 KB worst case leaves as a couple of hundred
+        // bytes, and ten generated files on a pathological pull request stay a
+        // small payload instead of 10 MB the view would refuse to draw.
+        file.hunks = Vec::new();
+    }
+    Some(file)
+}
+
+/// Read one page of `gh api repos/{owner}/{repo}/pulls/{n}/files`.
+///
+/// **An absent `patch` is not an empty diff.** This is the one place where
+/// `parse_pr_detail`'s house rule — an absent field is its empty value — is the
+/// wrong reflex. GitHub drops the key when the file is too big for it, and
+/// reading that as "no changes" would tell a reader that a 5290-line addition is
+/// unchanged; measured on #151, where exactly that happens. So the missing key
+/// is read against `additions + deletions`, which arrives either way: changes
+/// with no lines is an upstream omission, no changes with no lines is a file
+/// where nothing happened, and the two get different sentences.
+///
+/// `total_files` here is this page's own row count, dropped rows included, on
+/// the same principle as `changed_files`. Only the caller knows how many pages
+/// there were.
+pub fn parse_pr_files(json: &str) -> Result<PrDiff, String> {
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(json).map_err(|e| format!("gh returned unreadable JSON: {e}"))?;
+    Ok(PrDiff {
+        total_files: rows.len() as u64,
+        files: rows.iter().filter_map(parse_diff_file).collect(),
+    })
+}
+
+/// Read the `changedFiles` count from the GraphQL query
+/// `commands::pr_changed_files_argv` sends.
+pub fn parse_pr_changed_files(json: &str) -> Result<u64, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("gh returned unreadable JSON: {e}"))?;
+    v.get("data")
+        .and_then(|d| d.get("repository"))
+        .and_then(|r| r.get("pullRequest"))
+        .and_then(|p| p.get("changedFiles"))
+        .and_then(|x| x.as_u64())
+        .ok_or_else(|| "the count response named no pull request".to_string())
+}
+
 pub use cowork_deck::tasks::slug::slug;
 
 /// Where the worktree for a pull request lives: beside the workspace, never
@@ -637,6 +863,315 @@ detached\n";
         assert!(parse_pr_detail("not json").is_err());
     }
 
+    /// Six rows lifted verbatim out of the 62 that
+    /// `gh api repos/followLemmi/cowork-deck/pulls/151/files?per_page=100`
+    /// returned on 2026-08-04, re-indented and not otherwise touched. The other
+    /// 56 are ordinary and cost 950 KB.
+    ///
+    /// A hand-written fixture agrees with the parser's author by construction,
+    /// which is the one thing this file cannot afford here: every rule below
+    /// about an absent `patch` was written from what GitHub actually sends, and
+    /// the six were chosen because between them they are every shape the drawer
+    /// has to survive — a patch omitted upstream, a file with no changes at all,
+    /// one over the local cap, one hunk per form of `@@` header, and a fresh
+    /// file whose old range is `-0,0`.
+    ///
+    /// Run over the whole 1.06 MB response rather than this slice of it,
+    /// `parse_pr_files` reports 62 files, 216 hunks and 17,131 patch lines, one
+    /// `TooLargeUpstream`, one `TooLargeLocal { lines: 2506 }` and two files
+    /// where nothing changed; the result serialises to 968 KB. Those totals
+    /// reconcile with the design document's 19,854 patch lines exactly —
+    /// 17,131 + 2506 capped + 217 headers — which is the check that the split
+    /// loses nothing. The other 56 rows are not kept because they cost 950 KB
+    /// and prove nothing this six does not.
+    const PR151: &str = include_str!("../fixtures/pr-151-files.json");
+
+    /// The measured shape of the real response, asserted rather than described:
+    /// three of #151's 62 files have no `patch`, and two of them are two
+    /// different states that must not share a sentence.
+    #[test]
+    fn a_real_response_yields_hunks_a_local_cap_and_two_kinds_of_nothing() {
+        let d = parse_pr_files(PR151).unwrap();
+        assert_eq!(d.total_files, 6);
+        let f = |p: &str| d.files.iter().find(|f| f.path == p).expect(p).clone();
+
+        // GitHub dropped the key on this one: 5290 changes, no patch, nothing
+        // the app can do about it.
+        let upstream = f("docs/superpowers/plans/2026-07-30-github-issues-board.md");
+        assert_eq!(upstream.omitted, Some(Omission::TooLargeUpstream));
+        assert_eq!((upstream.additions, upstream.deletions), (5290, 0));
+        assert!(upstream.hunks.is_empty());
+        assert!(upstream.blob_url.starts_with("https://github.com/"));
+
+        // Also no patch — and this one is a success. Nothing changed, so there
+        // is nothing to show, and calling it an omission would invent a failure.
+        let unchanged = f("tests/tasks.test.ts");
+        assert_eq!(unchanged.omitted, None);
+        assert_eq!((unchanged.additions, unchanged.deletions), (0, 0));
+        assert!(unchanged.hunks.is_empty());
+
+        // 2506 lines under one `@@ -0,0 +1,2506 @@`, the only file of the 62
+        // over the cap. Its 97 KB of patch text is gone before serialisation.
+        let capped = f("docs/superpowers/plans/2026-07-29-github-pull-requests.md");
+        assert_eq!(capped.omitted, Some(Omission::TooLargeLocal { lines: 2506 }));
+        assert!(capped.hunks.is_empty(), "the text is dropped, not merely flagged");
+
+        // And an ordinary file arrives whole.
+        let ordinary = f("src-tauri/src/tasks/frontmatter.rs");
+        assert_eq!(ordinary.omitted, None);
+        assert_eq!(ordinary.hunks.len(), 2);
+        assert_eq!(ordinary.status, "modified");
+        assert_eq!(ordinary.previous_path, None);
+    }
+
+    /// The three states are three states on the wire too. A view that cannot
+    /// tell them apart offers the wrong escape hatch, and offering "show anyway"
+    /// for bytes that never arrived is a button that can only fail.
+    #[test]
+    fn the_three_kinds_of_empty_file_serialise_differently() {
+        let d = parse_pr_files(PR151).unwrap();
+        let json = |p: &str| {
+            let f = d.files.iter().find(|f| f.path == p).expect(p);
+            serde_json::to_value(&f.omitted).unwrap()
+        };
+        assert_eq!(
+            json("docs/superpowers/plans/2026-07-30-github-issues-board.md"),
+            json!({ "kind": "tooLargeUpstream" }),
+        );
+        assert_eq!(
+            json("docs/superpowers/plans/2026-07-29-github-pull-requests.md"),
+            json!({ "kind": "tooLargeLocal", "lines": 2506 }),
+        );
+        assert_eq!(json("tests/tasks.test.ts"), serde_json::Value::Null);
+    }
+
+    /// The frontend is TypeScript and reads `previousPath`, `blobUrl`,
+    /// `totalFiles`. A snake_case key here is a field the view silently never
+    /// sees.
+    #[test]
+    fn the_wire_shape_is_camel_case_throughout() {
+        let d = parse_pr_files(PR151).unwrap();
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(v.get("totalFiles").is_some());
+        let file = &v["files"][0];
+        for k in ["previousPath", "blobUrl", "additions", "hunks", "omitted", "status"] {
+            assert!(file.get(k).is_some(), "{k} missing from the serialised file");
+        }
+        let hunk = &v["files"][3]["hunks"][0];
+        for k in ["header", "oldStart", "newStart", "lines"] {
+            assert!(hunk.get(k).is_some(), "{k} missing from the serialised hunk");
+        }
+    }
+
+    /// Both `@@` forms out of the real file, and the marker characters left on
+    /// the front of every line where the view's own column expects to find them.
+    #[test]
+    fn real_hunks_keep_their_headers_their_starts_and_their_markers() {
+        let d = parse_pr_files(PR151).unwrap();
+        let main = d.files.iter().find(|f| f.path == "src-tauri/src/main.rs").expect("main.rs");
+        assert_eq!(main.hunks.len(), 4);
+        assert_eq!(main.hunks[0].header, "@@ -2,6 +2,8 @@");
+        assert_eq!((main.hunks[0].old_start, main.hunks[0].new_start), (2, 2));
+        // The section context is the part nothing else preserves.
+        assert_eq!(main.hunks[1].header, "@@ -89,6 +91,9 @@ fn main() {");
+        assert_eq!((main.hunks[1].old_start, main.hunks[1].new_start), (89, 91));
+        assert!(main.hunks.iter().flat_map(|h| &h.lines).all(|l| {
+            l.starts_with(' ') || l.starts_with('+') || l.starts_with('-') || l.starts_with('\\')
+        }));
+
+        // A file added whole starts at `-0,0`, and 0 is a real answer.
+        let slug = d.files.iter().find(|f| f.path == "src-tauri/src/tasks/slug.rs").expect("slug");
+        assert_eq!(slug.hunks[0].header, "@@ -0,0 +1,26 @@");
+        assert_eq!((slug.hunks[0].old_start, slug.hunks[0].new_start), (0, 1));
+        assert_eq!(slug.hunks[0].lines.len(), 26);
+        assert!(slug.hunks[0].lines.iter().all(|l| l.starts_with('+')));
+    }
+
+    /// git writes `@@ -1 +1 @@` whenever a range covers exactly one line. #151
+    /// happens to contain none, so this is the one hunk shape the fixture cannot
+    /// vouch for and a written case has to.
+    #[test]
+    fn a_single_line_range_omits_its_count_and_still_parses() {
+        let h = split_hunks("@@ -1 +1 @@\n-old\n+new\n");
+        assert_eq!(h.len(), 1);
+        assert_eq!((h[0].old_start, h[0].new_start), (1, 1));
+        assert_eq!(h[0].lines, vec!["-old", "+new"]);
+    }
+
+    /// `\ No newline at end of file` is part of the patch. Dropping it would
+    /// make a copied selection stop reassembling into one.
+    #[test]
+    fn the_no_newline_marker_is_a_line_like_any_other() {
+        let h = split_hunks("@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n");
+        assert_eq!(h[0].lines, vec![" a", "-b", "\\ No newline at end of file", "+c"]);
+    }
+
+    /// A patch of a CRLF file carries the CR inside the line, and it is content:
+    /// strip it and the `+` line no longer matches the file it came from, so the
+    /// copied selection the marker column exists to protect stops being a valid
+    /// patch. `str::lines()` would strip it silently. #151 has no CR in any of
+    /// its 19,854 patch lines, so only a written case can hold this.
+    #[test]
+    fn a_carriage_return_is_content_and_survives_the_split() {
+        let h = split_hunks("@@ -1,2 +1,2 @@\r\n-old\r\n+new\r\n");
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].header, "@@ -1,2 +1,2 @@\r");
+        assert_eq!(h[0].lines, vec!["-old\r", "+new\r"]);
+    }
+
+    /// GitHub ends a `patch` without a newline — 59 of 59 in #151 — and a split
+    /// on one that did would append a blank line that is in no file.
+    #[test]
+    fn a_trailing_newline_does_not_become_a_line() {
+        assert_eq!(split_hunks("@@ -1,1 +1,1 @@\n a\n")[0].lines, vec![" a"]);
+        assert_eq!(split_hunks("@@ -1,1 +1,1 @@\n a")[0].lines, vec![" a"]);
+    }
+
+    /// A `@@` inside a line of the diff itself, and a section context that
+    /// contains one. Splitting on the last separator instead of the first would
+    /// misread both.
+    #[test]
+    fn an_at_sign_pair_inside_the_content_does_not_start_a_hunk() {
+        let h = split_hunks("@@ -1,2 +1,2 @@ fn f() -> @@\n+let s = \"@@ -9 +9 @@\";\n a\n");
+        assert_eq!(h.len(), 1, "the content line must not open a second hunk");
+        assert_eq!(h[0].header, "@@ -1,2 +1,2 @@ fn f() -> @@");
+        assert_eq!((h[0].old_start, h[0].new_start), (1, 1));
+        assert_eq!(h[0].lines.len(), 2);
+    }
+
+    /// Lines before the first `@@` belong to no hunk, and a patch with no `@@`
+    /// at all yields nothing rather than a hunk with invented bounds.
+    #[test]
+    fn text_outside_any_hunk_is_dropped_rather_than_guessed_at() {
+        assert!(split_hunks("").is_empty());
+        assert!(split_hunks("diff --git a/x b/x\nindex 1..2 100644\n").is_empty());
+        let h = split_hunks("stray\n@@ -1,1 +1,1 @@\n a\n");
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].lines, vec![" a"]);
+    }
+
+    /// The cap counts rows of code. A `@@` header becomes one heading in the
+    /// view, so counting it towards the cap would make a file of many small
+    /// hunks fail earlier than a file of one big one for no reason a reader
+    /// could see.
+    #[test]
+    fn the_cap_counts_hunk_bodies_and_not_their_headers() {
+        let d = parse_pr_files(PR151).unwrap();
+        let main = d.files.iter().find(|f| f.path == "src-tauri/src/main.rs").expect("main.rs");
+        assert_eq!(main.hunks.len(), 4);
+        let body: usize = main.hunks.iter().map(|h| h.lines.len()).sum();
+        assert_eq!(body, 46, "50 patch lines less its 4 headers");
+        assert_eq!(cap_file(main, body), None, "exactly at the cap is not over it");
+        assert_eq!(cap_file(main, body - 1), Some(Omission::TooLargeLocal { lines: 46 }));
+    }
+
+    /// A file GitHub says changed, with no lines to show it with, is never the
+    /// same answer as a file that did not change — however the emptiness is
+    /// spelled. `"patch": ""` is the spelling a strict absent-key test misses.
+    #[test]
+    fn an_empty_patch_string_is_no_patch_and_not_an_empty_diff() {
+        let json = r#"[{"filename":"a.md","status":"modified","additions":900,
+            "deletions":0,"changes":900,"patch":""},
+            {"filename":"b.md","status":"renamed","previous_filename":"c.md",
+             "additions":0,"deletions":0,"changes":0}]"#;
+        let d = parse_pr_files(json).unwrap();
+        assert_eq!(d.files[0].omitted, Some(Omission::TooLargeUpstream));
+        assert_eq!(d.files[1].omitted, None);
+        assert_eq!(d.files[1].previous_path.as_deref(), Some("c.md"));
+        assert_eq!(d.files[1].status, "renamed");
+    }
+
+    /// A row naming no file is dropped rather than drawn as a blank header, and
+    /// `total_files` is deliberately not recomputed from what survived: it says
+    /// how many files the pull request touches, not how many this parse could
+    /// use.
+    #[test]
+    fn a_diff_row_with_no_filename_is_dropped_and_never_recounted() {
+        let d = parse_pr_files(r#"[{"additions":1},{"filename":"a.ts","additions":1}]"#).unwrap();
+        assert_eq!(d.files.len(), 1);
+        assert_eq!(d.total_files, 2);
+    }
+
+    /// The files endpoint returns an array. An object is an error body or a
+    /// changed API, and indexing into it would be a guess.
+    #[test]
+    fn a_files_response_that_is_not_an_array_is_refused() {
+        assert!(parse_pr_files(r#"{"message":"Not Found"}"#).is_err());
+        assert!(parse_pr_files("not json").is_err());
+        assert!(parse_pr_files("[]").unwrap().files.is_empty());
+    }
+
+    /// The count only ever runs when the page came back full, so a shape it
+    /// cannot read must say so rather than answer 0 — "300 of 0" is worse than
+    /// falling back to the floor the caller already has.
+    #[test]
+    fn the_changed_files_count_is_read_or_refused_never_zeroed() {
+        let ok = r#"{"data":{"repository":{"pullRequest":{"changedFiles":912}}}}"#;
+        assert_eq!(parse_pr_changed_files(ok).unwrap(), 912);
+        assert!(parse_pr_changed_files(r#"{"data":{"repository":null}}"#).is_err());
+        assert!(parse_pr_changed_files("{}").is_err());
+    }
+
+    /// Four rows this repository could not supply, taken from public pull requests.
+    ///
+    /// PR #151 has 62 files and 19,854 patch lines and contains **none** of these
+    /// four shapes, so every rule about them was hand-written and agreed with its
+    /// author by construction. These were found by scanning 488 real patches across
+    /// `cli/cli`, `rust-lang/rust`, `microsoft/vscode` and `nodejs/node`, and trimmed
+    /// to the fields this parser reads:
+    ///
+    /// | row | what it settles |
+    /// |---|---|
+    /// | `cli/cli#14034` `acceptance/README.MD` | a real rename |
+    /// | `microsoft/vscode#328890` `openai.yaml` | `\ No newline at end of file` |
+    /// | `rust-lang/rust#160468` `libgccjit.version` | the `@@ -1 +1 @@` header |
+    /// | `rust-lang/rust#160468` `src/gcc` | a submodule bump |
+    const SHAPES: &str = include_str!("../fixtures/public-shapes.json");
+
+    /// The four shapes #151 has none of, against the parser rather than against a
+    /// description of the parser.
+    #[test]
+    fn the_shapes_this_repository_could_not_supply() {
+        let d = parse_pr_files(SHAPES).unwrap();
+        let by = |p: &str| d.files.iter().find(|f| f.path.contains(p)).unwrap().clone();
+
+        // A pure rename: GitHub sends no `patch` and `changes: 0`. That must NOT be
+        // read as an upstream omission — nothing changed, so there is nothing to show,
+        // and `previous_path` is what the row has to say. This is the case the design
+        // document got wrong twice: first by calling #151's two `changes: 0` files
+        // renames when they are `modified` with no previous name, and then by
+        // promising a "previous → current" line for a state that, here, is the only
+        // place a previous name actually exists.
+        let r = by("README.MD");
+        assert_eq!(r.status, "renamed");
+        assert_eq!(r.previous_path.as_deref(), Some("acceptance/README.md"));
+        assert_eq!((r.additions, r.deletions), (0, 0));
+        assert!(r.hunks.is_empty());
+        assert_eq!(r.omitted, None, "a rename is not an omission");
+
+        // `\ No newline at end of file` sits *inside* the hunk, as its own line, after
+        // the line it belongs to. Verified across all ten real instances in the scan:
+        // never before the first `@@`, and never more than once in one patch. That
+        // matters because `split_hunks` discards anything ahead of the first header —
+        // had the marker been able to sit outside, it would have vanished silently.
+        let n = by("openai.yaml");
+        let last = n.hunks[0].lines.last().unwrap();
+        assert_eq!(last, "\\ No newline at end of file");
+        assert!(n.hunks[0].lines.len() > 1, "the marker is a line beside the code");
+
+        // `@@ -1 +1 @@` — the count omitted when a range covers exactly one line.
+        let s = by("libgccjit.version");
+        assert_eq!(s.hunks[0].header, "@@ -1 +1 @@");
+        assert_eq!((s.hunks[0].old_start, s.hunks[0].new_start), (1, 1));
+
+        // A submodule bump is an ordinary hunk over one synthetic line. Recorded
+        // because it looks exotic and needs nothing: no branch anywhere is about it.
+        let g = by("src/gcc");
+        assert_eq!(g.hunks.len(), 1);
+        assert!(g.hunks[0].lines.iter().any(|l| l.starts_with("-Subproject commit ")));
+        assert!(g.hunks[0].lines.iter().any(|l| l.starts_with("+Subproject commit ")));
+    }
+
     /// The two constants must not converge. `body` and `files` in the list call
     /// would put a description and a per-path diffstat on a fifty-row page that
     /// re-polls every 15 s — the payload `PR_DETAIL_FIELDS` exists to keep out of
@@ -655,3 +1190,4 @@ detached\n";
         }
     }
 }
+

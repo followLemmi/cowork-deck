@@ -424,6 +424,57 @@ pub fn pr_detail_argv(repo: &str, number: u64) -> Vec<String> {
     ]
 }
 
+/// Cap on how many files of one diff cross IPC, named for the same reason
+/// `PR_PAGE_LIMIT` is: the drawer prints "showing N of M" against it, and a
+/// silently truncated file list reads as a complete one. A 900-file pull request
+/// has to say so rather than quietly stopping at 300.
+pub const PR_DIFF_FILE_LIMIT: usize = 300;
+
+/// One page of the files endpoint, and GitHub's own maximum for it. #151's 62
+/// files arrive in a single page at this size — the measurement the whole
+/// one-call design rests on.
+const PR_DIFF_PER_PAGE: usize = 100;
+
+/// One page of a pull request's changed files, with their patches.
+///
+/// `gh api` has no `-R`; the repository goes in the path instead, which is the
+/// same discipline `pr_list_argv` states, spelled the way this endpoint spells
+/// it. Explicit `page` rather than `--paginate` because the cap has to be ours:
+/// `--paginate` would fetch all 900 files of a 900-file pull request, patches
+/// included, before anything here got a chance to stop.
+pub fn pr_files_argv(repo: &str, number: u64, per_page: usize, page: usize) -> Vec<String> {
+    vec!["api".into(), format!("repos/{repo}/pulls/{number}/files?per_page={per_page}&page={page}")]
+}
+
+/// How many files GitHub says the pull request touches.
+///
+/// Exactly the shape and the reasoning of `issue_totals_argv`: a page shorter
+/// than the cap *is* the total, so this second call happens only when the pages
+/// ran out at `PR_DIFF_FILE_LIMIT` — which on a repository of ordinary pull
+/// requests is never. GraphQL rather than `pr view --json changedFiles` because
+/// the whole point is to move one integer, not a detail payload.
+const CHANGED_FILES_QUERY: &str = "query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { changedFiles }
+  }
+}";
+
+pub fn pr_changed_files_argv(repo: &str, number: u64) -> Vec<String> {
+    let (owner, name) = repo.split_once('/').unwrap_or((repo, ""));
+    vec![
+        "api".into(),
+        "graphql".into(),
+        "-F".into(),
+        format!("owner={owner}"),
+        "-F".into(),
+        format!("name={name}"),
+        "-F".into(),
+        format!("number={number}"),
+        "-f".into(),
+        format!("query={CHANGED_FILES_QUERY}"),
+    ]
+}
+
 /// Resolve the workspace's account token, caching it in memory.
 ///
 /// The account feature deliberately keeps tokens out of the app: one is
@@ -697,6 +748,62 @@ pub fn pr_detail(
     let repo = repo_facts_for(&state, &workspace_id)?.repo;
     let json = run_gh_for_workspace(&state, &workspace_id, &pr_detail_argv(&repo, number))?;
     crate::gh_pr::parse_pr_detail(&json)
+}
+
+/// The whole diff of one pull request, in one call.
+///
+/// **`gh pr diff` cannot serve this.** GitHub caps that endpoint at 20,000 lines
+/// and answers HTTP 406 above it; this repository's own PR #151 is 19,854 patch
+/// lines *after* GitHub has already dropped its largest file, so the path fails
+/// on precisely the pull request the drawer exists for, and it fails at the
+/// moment of use. The files endpoint has no such cap and pages instead.
+///
+/// Stateless, exactly like `pr_detail`: fetch, parse, return, keep nothing. All
+/// 62 files of #151 arrive in one response, so serving one file per call would
+/// be 62 IPC round trips slicing a single fetch, each taking the `AppState`
+/// mutex — and it would need an eviction policy, a lifetime tied to the head
+/// commit, and a cache-miss error case existing only because of the
+/// optimisation. What makes handing over the lot affordable is
+/// `gh_pr::PR_DIFF_LINE_CAP`, applied before any of this is serialised.
+#[tauri::command(async)]
+pub fn pr_diff(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+) -> Result<crate::gh_pr::PrDiff, String> {
+    let repo = repo_facts_for(&state, &workspace_id)?.repo;
+    let mut files: Vec<crate::gh_pr::DiffFile> = Vec::new();
+    let mut fetched: u64 = 0;
+    let mut page = 1;
+    // A page shorter than the one asked for *is* the end of the list — the rule
+    // `issue_totals_argv` states, and what makes the count below free in every
+    // ordinary case.
+    let mut full_page = true;
+    while full_page && files.len() < PR_DIFF_FILE_LIMIT {
+        let argv = pr_files_argv(&repo, number, PR_DIFF_PER_PAGE, page);
+        let json = run_gh_for_workspace(&state, &workspace_id, &argv)?;
+        let got = crate::gh_pr::parse_pr_files(&json)?;
+        full_page = got.total_files as usize == PR_DIFF_PER_PAGE;
+        fetched += got.total_files;
+        files.extend(got.files);
+        page += 1;
+    }
+    files.truncate(PR_DIFF_FILE_LIMIT);
+
+    // Still full at the cap, so `fetched` is a floor and not a total. Asking
+    // GitHub for the real number is one small request on a path an ordinary pull
+    // request never reaches — and its failure is not this command's failure: a
+    // diff in hand beats throwing 300 files away over a count, so the floor
+    // stands in. It can only understate, which reads as "showing 300 of 300".
+    let total_files = if full_page {
+        run_gh_for_workspace(&state, &workspace_id, &pr_changed_files_argv(&repo, number))
+            .ok()
+            .and_then(|json| crate::gh_pr::parse_pr_changed_files(&json).ok())
+            .unwrap_or(fetched)
+    } else {
+        fetched
+    };
+    Ok(crate::gh_pr::PrDiff { files, total_files })
 }
 
 #[tauri::command(async)]
@@ -1756,6 +1863,42 @@ branch refs/heads/feature/y\n";
         let repo_at = argv.iter().position(|a| a == "-R").expect("-R");
         assert_eq!(argv[repo_at + 1], "o/n");
         assert!(!argv.contains(&"-S".to_string()), "-S is a search, not a lookup");
+    }
+
+    /// The files endpoint, its page and its size all on the URL. `gh api` takes
+    /// no `-R`, so the repository being in the path is the same "never resolve
+    /// from `cwd`" discipline the other two argv builders state.
+    #[test]
+    fn the_diff_call_names_its_repository_its_number_and_its_page() {
+        let argv = pr_files_argv("o/n", 151, PR_DIFF_PER_PAGE, 2);
+        assert_eq!(argv[0], "api");
+        assert_eq!(argv[1], "repos/o/n/pulls/151/files?per_page=100&page=2");
+    }
+
+    /// `--paginate` would fetch every file of a 900-file pull request, patches
+    /// and all, before `PR_DIFF_FILE_LIMIT` got a chance to stop it. The cap is
+    /// only a cap if the paging is ours.
+    #[test]
+    fn the_diff_call_pages_itself_rather_than_letting_gh_do_it() {
+        let argv = pr_files_argv("o/n", 151, PR_DIFF_PER_PAGE, 1);
+        assert!(!argv.iter().any(|a| a == "--paginate"), "paging must stay under our cap");
+        assert!(PR_DIFF_FILE_LIMIT.is_multiple_of(PR_DIFF_PER_PAGE), "the cap must land on a page");
+    }
+
+    /// The count query is only reached when the file pages ran out at the cap,
+    /// so it must ask for the count and nothing else — a `files` field here
+    /// would refetch the payload the cap exists to bound.
+    #[test]
+    fn the_changed_files_query_moves_one_integer_and_names_its_pull_request() {
+        let argv = pr_changed_files_argv("o/n", 151);
+        assert_eq!(argv[0], "api");
+        assert_eq!(argv[1], "graphql");
+        assert!(argv.contains(&"owner=o".to_string()));
+        assert!(argv.contains(&"name=n".to_string()));
+        assert!(argv.contains(&"number=151".to_string()));
+        let q = argv.last().expect("query");
+        assert!(q.contains("changedFiles"));
+        assert!(!q.contains("files(") && !q.contains("patch"), "the payload stays out of it");
     }
 
     /// --match-head-commit is the whole safety story of this button: without it

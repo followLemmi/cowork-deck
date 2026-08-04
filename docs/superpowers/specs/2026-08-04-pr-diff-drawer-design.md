@@ -53,8 +53,42 @@ share a sentence:
 
 - `docs/superpowers/plans/2026-07-30-github-issues-board.md` — 5290 changes, patch
   omitted **by GitHub** for size. Nothing we can do in-app.
-- two files with `changes: 0` — renames with no content change. There is nothing to
-  show because nothing changed, which is a success, not a failure.
+- two files with `changes: 0` — nothing to show because nothing changed, which is a
+  success and not a failure.
+
+> **Correction, 2026-08-04.** An earlier version of this paragraph called those two
+> "renames with no content change". That was inferred from `changes: 0` and written up
+> as if it had been measured. It had not been. Both are
+> `"status": "modified"` with **no `previous_filename` at all**, and **#151 contains
+> zero renamed files** — re-checked directly against the endpoint.
+>
+> The consequence is not cosmetic: the *Files with no diff* table below promised
+> `previous_filename → filename` for this state, and on the only real instances of it
+> there is no previous filename to render. Whatever the drawer says for
+> `omitted: null` with empty `hunks` must read correctly when `previousPath` is
+> `null`. A rename is a *separate* case that this pull request happens not to contain.
+>
+> **Since settled against real data.** Four shapes #151 has none of were found by
+> scanning 488 patches across `cli/cli`, `rust-lang/rust`, `microsoft/vscode` and
+> `nodejs/node`, and are now a fixture (`src-tauri/fixtures/public-shapes.json`) with
+> a test over the real parser:
+>
+> - **A rename** carries `previous_filename`, `changes: 0`, and **no `patch`**. So the
+>   one state where a previous name exists is the same state that has nothing to draw
+>   — which is the opposite of what this table originally assumed.
+> - **`\ No newline at end of file`** sits *inside* the hunk, its own line, after the
+>   line it belongs to. Never before the first `@@` in any of the ten real instances,
+>   and never twice in one patch. That was the dangerous one: `split_hunks` discards
+>   everything ahead of the first header, so a marker outside a hunk would have
+>   vanished silently.
+> - **`@@ -1 +1 @@`** is real, not theoretical.
+> - **A submodule bump** is an ordinary hunk over one `Subproject commit` line and
+>   needs no branch anywhere.
+>
+> Still **unverified**: CRLF — zero instances in 488 patches. The parser handles it
+> deliberately anyway, after a defect was found where `str::lines()` silently stripped
+> the trailing `\r` and would have broken the copied-patch guarantee the marker column
+> exists to protect.
 
 So the "too big to render" rule is not ours to invent. It is set upstream, signalled
 for free by an absent JSON key, and our only job is to report it honestly.
@@ -119,9 +153,24 @@ reason differs by cause because the escape hatch differs:
 
 | Cause | What the drawer offers |
 |---|---|
-| Over **our** 2000-line cap | "Show anyway" (measured cost of the biggest real case is ~33 ms) **and** "Open on GitHub" |
+| Over **our** 2000-line cap | "Show anyway" **and** "Open on GitHub" — but see the contradiction below |
 | Omitted **upstream** | "Open on GitHub" only — the bytes never arrived, and a button that fails is worse than no button |
-| Rename, `changes: 0` | `previous_filename → filename`, stated affirmatively. Nothing changed; that is not an error |
+| `changes: 0` | Nothing changed, stated affirmatively; that is not an error. **Do not assume a rename** — see the correction above. If `previousPath` is set, name both paths; on the only measured instances it is `null` |
+
+> **"Show anyway" and "the cap is applied in Rust" contradict each other, and the
+> implementation resolved it one way.** This table priced "Show anyway" at ~33 ms,
+> which is a *render* cost and presumes the text is already on the client. *Data and
+> IPC* says a file over the cap crosses "as metadata plus an omission reason, never as
+> patch text". Both cannot hold.
+>
+> The Rust layer implements the second: the patch is dropped before serialisation,
+> which is the whole reason the parse lives there. So **"Show anyway" is a second IPC
+> round trip, and no command performs it yet.** The cheapest fix is an optional
+> `uncapped_path: Option<String>` on `pr_diff` exempting one named file; it was
+> deliberately not added, because it changes the IPC surface the frontend is being
+> built against. Decide it when the drawer is built, and until then the honest
+> affordance for a locally-capped file is "Open on GitHub" like the upstream case.
+> `Omission::TooLargeLocal` carries the exact line count either way.
 
 ---
 
@@ -239,9 +288,14 @@ cache-miss path that is an error case existing *only* because of the optimisatio
 
 What makes shipping the lot affordable is the cap being applied in Rust, which is the
 real link back to the parsing decision: **files over the cap cross as metadata plus an
-omission reason, never as patch text.** On #151 the 97 KB file becomes ~200 bytes on
-the wire, and on a pathological pull request with ten generated files the payload
-stays small instead of growing to 10 MB. The frontend can be handed everything
+omission reason, never as patch text.** On a pathological pull request with ten
+generated files the payload stays small instead of growing to 10 MB.
+
+**On #151 itself the cap buys rows, not bytes**, and the earlier wording here
+overstated it: measured through the real parser, the whole response serialises to
+968 KB against 1.06 MB — about 9%. What the cap actually saves on this pull request
+is the **2507 DOM rows** it stops the view building. The byte argument only carries
+weight on the generated-file case. The frontend can be handed everything
 precisely because Rust already threw away what the UI would refuse to draw. 0.8 MB of
 strings in the JS heap is nothing beside the xterm buffers this app already carries,
 and the `details` Map (`src/pr-view.ts:75`) already holds pull-request bodies on the
