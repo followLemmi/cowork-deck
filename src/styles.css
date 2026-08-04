@@ -1121,6 +1121,19 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   display: flex; flex-direction: column; gap: var(--sp-2);
 }
 .pr-detail p { margin: 0; }
+/* The description and the file list abreast, wrapping back to a column when the row
+   cannot hold both. Both children are capped in `ch` for readability — 80 and 72 —
+   and stacked, that left most of a 1970px window empty beside a column of text.
+   The caps are not the bug and do not move; using the width they decline to take is
+   the fix.
+   `align-items: flex-start` so a short file list does not stretch to the height of a
+   long description and hang its scrollbar down an empty box. The row gap is smaller
+   than the column gap because the wrapped case is a stack, where `--sp-3` between two
+   blocks of the same panel reads as a gap between panels. */
+.pr-detail-panels {
+  display: flex; flex-wrap: wrap; align-items: flex-start;
+  gap: var(--sp-2) var(--sp-3);
+}
 .pr-detail-stat { color: var(--fg-muted); font-size: var(--fs-sm); }
 .pr-detail-note { color: var(--fg-subtle); font-size: var(--fs-sm); }
 /* One step up from the meta chips around it: an error the same size as a caption
@@ -1155,6 +1168,18 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
      ASCII table wider than 80 columns. The honest answer to that is a Markdown
      renderer, which this app deliberately does not have (see pr-view.ts). */
   max-width: 80ch;
+  /* A flex item now. `min-width` is the load-bearing half and a `flex-basis` alone
+     will not do it: a basis is a starting size that flex is free to shrink past, and
+     measured at a 900px window that is exactly what happened — the description was
+     crushed to 48 columns beside a file list at its full width, rather than the two
+     wrapping. `min-width` is a floor flex must respect, so the pair drops to a column
+     instead.
+     56ch rather than 44: below that, prose in a fixed pitch is a column of fragments,
+     and a wrapped stack where each block gets the full row beats two cramped ones.
+     `min()` with `100%` so the floor never becomes an overflow on a narrow window —
+     that is the pattern the modal caps use for the same reason. */
+  flex: 1 1 56ch;
+  min-width: min(56ch, 100%);
   white-space: pre-wrap; overflow-wrap: anywhere;
   background: var(--bg-app); border: 1px solid var(--border);
   border-radius: var(--r-sm); padding: var(--sp-2);
@@ -1171,6 +1196,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
      which number belongs to which file. Intrinsic width keeps the alignment *and*
      the proximity: the block is as wide as its longest path needs, and no wider. */
   width: fit-content; max-width: 72ch; max-height: 30vh; overflow: auto;
+  /* Beside the description rather than under it. `0 1 auto` keeps `fit-content`
+     meaning what it says — the block is as wide as its longest path and no wider —
+     while still allowing it to give ground before it wraps. It does not grow: a file
+     list has no use for slack, and the description does. */
+  flex: 0 1 auto;
   font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-code);
 }
 .pr-detail-file { display: flex; gap: var(--sp-2); align-items: baseline; }

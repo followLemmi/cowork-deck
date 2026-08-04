@@ -271,8 +271,15 @@ export class PrView {
     // dependency, and a hand-rolled subset that turns `[x](javascript:…)` into an
     // anchor is not a third. `el` sets textContent, so a body containing markup
     // arrives as characters — and anyone who can open a pull request writes it.
-    if (d.body.trim()) box.append(el("pre", "pr-detail-body", d.body));
-    else box.append(el("p", "pr-detail-note", "No description."));
+    // The description and the file list side by side rather than stacked. Both are
+    // capped in `ch` for readability — 80 and 72 — so stacking them left a 1970px
+    // window mostly empty to the right of a column of text, which is what the owner
+    // saw as everything being glued to the left edge. The cap is right and stays;
+    // what changes is that the width it does not use now holds the file list instead
+    // of nothing. They wrap back to a column when the row is too narrow for both.
+    const panels = el("div", "pr-detail-panels");
+    if (d.body.trim()) panels.append(el("pre", "pr-detail-body", d.body));
+    else panels.append(el("p", "pr-detail-note", "No description."));
 
     if (d.files.length) {
       const files = el("ul", "pr-detail-files");
@@ -283,16 +290,19 @@ export class PrView {
         li.append(el("span", "pr-detail-minus", `−${f.deletions}`));
         files.append(li);
       }
-      box.append(files);
-      // `changedFiles` is GitHub's count and `files` is a page of its own, so the
-      // two can legitimately disagree on a very large pull request. Saying so beats
-      // a list that quietly stops.
-      if (d.files.length < d.changedFiles) {
-        box.append(el(
-          "p", "pr-detail-note",
-          `Listing ${d.files.length} of ${d.changedFiles} changed files.`,
-        ));
-      }
+      panels.append(files);
+    }
+    box.append(panels);
+
+    // `changedFiles` is GitHub's count and `files` is a page of its own, so the
+    // two can legitimately disagree on a very large pull request. Saying so beats
+    // a list that quietly stops. Below the pair rather than inside it: it is a
+    // sentence about the list, and a third flex item would be laid out beside it.
+    if (d.files.length && d.files.length < d.changedFiles) {
+      box.append(el(
+        "p", "pr-detail-note",
+        `Listing ${d.files.length} of ${d.changedFiles} changed files.`,
+      ));
     }
     return box;
   }
