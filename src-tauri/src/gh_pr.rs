@@ -474,7 +474,7 @@ pub fn cap_file(file: &DiffFile, cap: usize) -> Option<Omission> {
 /// One row of the files endpoint. `None` for a row naming no file: it says
 /// nothing about any file, so there is nothing to draw a header for — the rule
 /// `parse_pr_detail` already applies to `files`.
-fn parse_diff_file(row: &serde_json::Value) -> Option<DiffFile> {
+fn parse_diff_file(row: &serde_json::Value, cap: usize) -> Option<DiffFile> {
     let path = row.get("filename").and_then(|x| x.as_str())?;
     let s = |k: &str| row.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
     let n = |k: &str| row.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
@@ -509,7 +509,7 @@ fn parse_diff_file(row: &serde_json::Value) -> Option<DiffFile> {
     // which is the whole of what happened to the file, so there is nothing withheld.
     let renamed = file.previous_path.is_some();
     file.omitted = if !file.hunks.is_empty() {
-        cap_file(&file, PR_DIFF_LINE_CAP)
+        cap_file(&file, cap)
     } else if additions + deletions > 0 {
         Some(Omission::TooLargeUpstream)
     } else if renamed {
@@ -542,6 +542,16 @@ fn parse_diff_file(row: &serde_json::Value) -> Option<DiffFile> {
 /// the same principle as `changed_files`. Only the caller knows how many pages
 /// there were.
 pub fn parse_pr_files(json: &str) -> Result<PrDiff, String> {
+    parse_pr_files_capped(json, PR_DIFF_LINE_CAP)
+}
+
+/// The same, with the line cap as an argument.
+///
+/// One caller passes `usize::MAX`: the single-file re-fetch behind "Show anyway",
+/// where refusing the file again would make the button a loop. The cap exists to
+/// keep a generated file out of a payload nobody asked for; a person who asked for
+/// this one file by name has asked for it.
+pub fn parse_pr_files_capped(json: &str, cap: usize) -> Result<PrDiff, String> {
     let rows: Vec<serde_json::Value> =
         serde_json::from_str(json).map_err(|e| format!("gh returned unreadable JSON: {e}"))?;
     // From the first row that has one, not from the first row: a dropped row has
@@ -555,7 +565,7 @@ pub fn parse_pr_files(json: &str) -> Result<PrDiff, String> {
     Ok(PrDiff {
         head_ref_oid,
         total_files: rows.len() as u64,
-        files: rows.iter().filter_map(parse_diff_file).collect(),
+        files: rows.iter().filter_map(|r| parse_diff_file(r, cap)).collect(),
     })
 }
 
@@ -1296,6 +1306,37 @@ detached\n";
 
         // No rows, so nothing to read it from — and nothing that can go stale.
         assert_eq!(parse_pr_files("[]").unwrap().head_ref_oid, "");
+    }
+
+    /// "Show anyway" is the same parse with the cap lifted, which is what makes it
+    /// one mechanism rather than a second code path.
+    ///
+    /// A file the bulk fetch refused must not be refused again by the single-file
+    /// fetch, or the button is a loop. The cap keeps a generated file out of a
+    /// payload nobody asked for; somebody who named this one file has asked for it.
+    #[test]
+    fn lifting_the_cap_hands_back_the_file_the_bulk_parse_dropped() {
+        let capped = parse_pr_files(PR151).unwrap();
+        let big = capped
+            .files
+            .iter()
+            .find(|f| matches!(f.omitted, Some(Omission::TooLargeLocal { .. })))
+            .expect("the fixture carries one file over the cap");
+        assert!(big.hunks.is_empty(), "the bulk parse drops the text");
+        assert_eq!(big.omitted, Some(Omission::TooLargeLocal { lines: 2506 }));
+
+        let uncapped = parse_pr_files_capped(PR151, usize::MAX).unwrap();
+        let same = uncapped.files.iter().find(|f| f.path == big.path).unwrap();
+        assert_eq!(same.omitted, None, "asked for by name, it is not withheld");
+        assert_eq!(same.hunks.iter().map(|h| h.lines.len()).sum::<usize>(), 2506);
+
+        // Lifting the cap does not lift the other two states — they are not ours to
+        // lift. The upstream one has no bytes to hand back at any cap.
+        for f in &uncapped.files {
+            if f.path.contains("2026-07-30-github-issues-board") {
+                assert_eq!(f.omitted, Some(Omission::TooLargeUpstream));
+            }
+        }
     }
 
     /// The counts are the discriminator between a refusal and silence, and this is

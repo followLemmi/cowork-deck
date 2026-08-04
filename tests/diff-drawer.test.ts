@@ -66,14 +66,22 @@ interface Harness {
   list: HTMLElement;
   h: DiffDrawerHandlers;
   answers: ReturnType<typeof deferred<PrDiff>>[];
+  /** One per "Show anyway" / "Check again" press, settled by the test. */
+  refetches: ReturnType<typeof deferred<DiffFile>>[];
 }
 
 function mk(): Harness {
   const answers: ReturnType<typeof deferred<PrDiff>>[] = [];
+  const refetches: ReturnType<typeof deferred<DiffFile>>[] = [];
   const h: DiffDrawerHandlers = {
     onFetch: vi.fn(() => {
       const d = deferred<PrDiff>();
       answers.push(d);
+      return d.promise;
+    }),
+    onRefetchFile: vi.fn(() => {
+      const d = deferred<DiffFile>();
+      refetches.push(d);
       return d.promise;
     }),
     onWidth: vi.fn(),
@@ -87,7 +95,7 @@ function mk(): Harness {
   view.append(list, drawer.live);
   document.body.replaceChildren(view);
   drawer.attach(view, list);
-  return { drawer, view, list, h, answers };
+  return { drawer, view, list, h, answers, refetches };
 }
 
 /** Open on file 0 and let one answer through. */
@@ -637,6 +645,7 @@ describe("the poll cannot reach the drawer", () => {
     const answer = deferred<PrDiff>();
     const drawer = new DiffDrawer({
       onFetch: () => answer.promise, onWidth: vi.fn(), onClosed: vi.fn(),
+      onRefetchFile: vi.fn(() => Promise.reject(new Error("not used here"))),
     });
     const view = document.createElement("div");
     view.className = "pr-view";
@@ -664,5 +673,78 @@ describe("the poll cannot reach the drawer", () => {
     expect(view.querySelector(".dv-file")).toBe(fileEl);
     expect((fileEl as HTMLElement).scrollTop).toBe(4200);
     expect(view.querySelector(".dv-line")).not.toBeNull();
+  });
+});
+
+/** "Show anyway" and "Check again" are one fetch behind two labels, because the
+ *  refusals they answer have one cure: a page small enough that GitHub does not
+ *  drop the patch, parsed without our own line cap. `tooLargeUpstream` is not one
+ *  of them — measured, the bytes are absent at every page size — so it gets no
+ *  button rather than a button that can only fail. */
+describe("re-reading one file", () => {
+  const capped = () => diff({
+    files: [file({ omitted: { kind: "tooLargeLocal", lines: 2506 } })],
+  });
+  const withheld = () => diff({
+    files: [file({ additions: 0, deletions: 0, omitted: { kind: "unreported" } })],
+  });
+  const again = (view: HTMLElement) =>
+    [...view.querySelectorAll<HTMLButtonElement>(".dv-note button")][0];
+
+  it("offers the button for both recoverable refusals and for neither other state", async () => {
+    expect(again((await opened(capped())).view).textContent).toBe("Show anyway");
+    expect(again((await opened(withheld())).view).textContent).toBe("Check again");
+
+    const upstream = await opened(diff({
+      files: [file({ additions: 5290, omitted: { kind: "tooLargeUpstream" } })],
+    }));
+    expect(again(upstream.view)).toBeUndefined();
+    // The one recourse that always exists, even here.
+    expect(upstream.view.querySelector(".dv-note a")).not.toBeNull();
+  });
+
+  it("splices the answer into the file on screen and draws its rows", async () => {
+    const kit = await opened(capped());
+    expect(kit.view.querySelector(".dv-line")).toBeNull();
+
+    again(kit.view).click();
+    expect(again(kit.view).disabled).toBe(true);
+    kit.refetches[0].settle(changed());
+    await flush();
+
+    expect(kit.h.onRefetchFile).toHaveBeenCalledWith(expect.objectContaining({ number: 151 }), 0);
+    expect(kit.view.querySelectorAll(".dv-line").length).toBe(4);
+    expect(kit.view.querySelector(".dv-note button")).toBeNull();
+  });
+
+  it("leaves the rest of the pull request alone", async () => {
+    // The other files are unchanged; re-reading them to fix one row would cost a
+    // megabyte. Only the named index is replaced.
+    const kit = await opened(diff({
+      files: [file({ omitted: { kind: "unreported" } }), changed({ path: "b.ts" })],
+      totalFiles: 2,
+    }));
+    again(kit.view).click();
+    kit.refetches[0].settle(changed({ path: "src/pr-view.ts" }));
+    await flush();
+
+    kit.view.querySelector<HTMLButtonElement>(".pr-drawer-next")!.click();
+    expect(kit.view.querySelector(".pr-drawer-path")!.textContent).toContain("b.ts");
+    kit.view.querySelector<HTMLButtonElement>(".pr-drawer-prev")!.click();
+    expect(kit.view.querySelectorAll(".dv-line").length).toBe(4);
+  });
+
+  it("puts the button back when the read fails, and says why", async () => {
+    const kit = await opened(withheld());
+    again(kit.view).click();
+    kit.refetches[0].fail(new Error("gh: rate limited"));
+    await flush();
+
+    const btn = again(kit.view);
+    expect(btn.disabled).toBe(false);
+    expect(btn.title).toContain("rate limited");
+    // The file is exactly as unreadable as it was — a recoverable position, not
+    // one worth taking the drawer down for.
+    expect(kit.view.querySelector(".dv-note")).not.toBeNull();
   });
 });

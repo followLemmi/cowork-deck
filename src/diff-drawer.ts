@@ -116,6 +116,9 @@ export interface DiffDrawerHandlers {
   /** The drawer closed. The caller puts focus back on the file row that was
    *  showing — the drawer cannot, because it does not own the list. */
   onClosed: (pr: PullRequest, fileIndex: number) => void;
+  /** Re-read one file on a page of its own, uncapped. Behind both "Check again"
+   *  and "Show anyway", which are the same fetch: see `prFilePatch`. */
+  onRefetchFile: (pr: PullRequest, fileIndex: number) => Promise<DiffFile>;
 }
 
 export class DiffDrawer {
@@ -379,6 +382,56 @@ export class DiffDrawer {
     );
   }
 
+  /** Force the next `render` to rebuild the body even though its key has not
+   *  moved. For an edit in place — the only kind is `refetchFile` below. */
+  private invalidateBody(): void {
+    this.contentKey = "";
+  }
+
+  /** Replace the file on screen with an uncapped re-read of it.
+   *
+   *  Splices into the cached `PrDiff` rather than re-fetching the pull request:
+   *  the other 61 files are unchanged and re-reading them would cost a megabyte to
+   *  fix one row. The slot's `headRefOid` is left alone — this is the same commit,
+   *  asked about more narrowly, so nothing about staleness has changed.
+   *
+   *  Guarded by the button's own disabled state rather than by a slot, because it
+   *  is the only thing that can start one and a second press before the first
+   *  lands would splice twice. Failure puts the label back and says so: the file
+   *  is exactly as unreadable as it was, which is a recoverable position and not
+   *  one worth taking the whole drawer down for. */
+  private refetchFile(button: HTMLButtonElement): void {
+    const pr = this.pr;
+    const slot = pr === null ? undefined : this.slots.get(pr.number);
+    if (pr === null || slot?.state !== "ok") return;
+    const index = this.index;
+    button.disabled = true;
+    button.textContent = "Reading…";
+    void this.h.onRefetchFile(pr, index).then(
+      (file) => {
+        const now = this.slots.get(pr.number);
+        // The poll replaced the whole diff while this was out, or the reader moved
+        // on. Either way the row this was about is gone; dropping it is right.
+        if (now?.state !== "ok" || now.diff !== slot.diff) return;
+        now.diff.files[index] = file;
+        if (this.pr?.number === pr.number && this.index === index) {
+          // The body's key is (pull request, fetch, index) and none of the three
+          // moved — the file was edited underneath it. Without this the rows would
+          // never be drawn and the button would sit on "Reading…" for ever.
+          this.invalidateBody();
+          this.render();
+          this.announce();
+        }
+      },
+      (e: unknown) => {
+        if (!button.isConnected) return;
+        button.disabled = false;
+        button.textContent = "Try again";
+        button.title = String((e as { message?: string })?.message ?? e);
+      },
+    );
+  }
+
   /** Whether this answer is still the one being waited on. Promises settle out
    *  of order, and a second request can be started while a first is out — the
    *  head moving between an `open` and a `reload` is exactly that. Without this
@@ -522,6 +575,11 @@ export class DiffDrawer {
 
     // The head is cheap and changes on every poll; the body is up to 2000 rows
     // and must not be rebuilt unless what it says has changed.
+    // Deliberately *not* derived from the file's contents. The key answers "is
+    // this the same file of the same fetch", which is what the poll can change on
+    // its own; anything that edits a file in place has to say so, because a key
+    // wide enough to notice an edit would also be a key that rebuilds on noise.
+    // `invalidateBody` is that channel and `refetchFile` is its only caller.
     const key = [
       pr.number, slot?.state ?? "none", slot?.headRefOid ?? "", this.index,
     ].join("|");
@@ -623,18 +681,18 @@ export class DiffDrawer {
    *  would put a control's name in a paragraph a reader hears before reaching
    *  the control.
    *
-   *  **The second fetch is not built.** A narrower page would resolve
-   *  `unreported` and supply the text for a locally-capped file, and it is one
-   *  mechanism rather than two — but no command performs it, so the button here
-   *  is deliberately wired to nothing pending that decision. `tooLargeUpstream`
-   *  never gets one: the bytes never arrived, and a button that can only fail is
-   *  worse than no button. */
+   *  **Both buttons are the same fetch.** A page of one resolves `unreported` —
+   *  GitHub zeroed the counts because the whole response was too full, and a
+   *  smaller response cannot be — and it supplies the text for a file our own cap
+   *  dropped. `tooLargeUpstream` never gets one: the bytes never arrived at any
+   *  page size, measured, and a button that can only fail is worse than none. */
   private escapes(file: DiffFile): HTMLElement {
     const row = el("div", "dv-note");
     if (canRefetch(file.omitted)) {
       const label = file.omitted?.kind === "tooLargeLocal" ? "Show anyway" : "Check again";
       const again = el("button", "pr-detail-retry", label);
       again.type = "button";
+      again.onclick = () => this.refetchFile(again);
       row.append(again);
     }
     // An anchor and not a button with a handler: the project has no URL-opening

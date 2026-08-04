@@ -14,7 +14,7 @@ import {
   listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
   taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage,
-  prList, prDetail, prDiff, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
+  prList, prDetail, prDiff, prFilePatch, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
   prWorktreePath, prWorktreeRemove,
   issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove,
 } from "./ipc";
@@ -153,6 +153,14 @@ const diffDrawer = new DiffDrawer({
   onClosed: (pr, fileIndex) => {
     prView.setOpenDiff(null, null);
     prView.focusFile(pr.number, fileIndex);
+  },
+  // Resolved at call time and guarded the same way `onFetch` is, for the same
+  // reason: this can be pressed moments before a workspace switch.
+  onRefetchFile: (pr, fileIndex) => {
+    const ws = workspaces.active;
+    return ws
+      ? prFilePatch(ws.id, pr.number, fileIndex)
+      : Promise.reject(new Error("No workspace is selected."));
   },
 });
 

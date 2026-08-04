@@ -446,6 +446,43 @@ pub fn pr_files_argv(repo: &str, number: u64, per_page: usize, page: usize) -> V
     vec!["api".into(), format!("repos/{repo}/pulls/{number}/files?per_page={per_page}&page={page}")]
 }
 
+/// One file of a diff, on a page of its own, with no cap of ours applied.
+///
+/// **A page of one is the whole mechanism**, and it is measured rather than clever.
+/// GitHub zeroes a file's counts and drops its patch when the *response* hits a
+/// budget, so the fix for a file it declined to describe is to ask for a response
+/// small enough that it cannot. On #151 `tests/tasks.test.ts` is index 60: in the
+/// 62-file response it reads 0/0/0 with no patch, and at `per_page=1&page=61` it
+/// comes back 163/3 with a 193-line patch.
+///
+/// The same call answers the other refusal for free. A file over `PR_DIFF_LINE_CAP`
+/// was dropped by us and not by GitHub, so re-asking for it alone and parsing it
+/// uncapped is exactly "show anyway" — one mechanism serving both states, which is
+/// why no `uncapped_path` exemption was added to `pr_diff`. A path would not have
+/// worked as the key anyway: 2 of 549 measured responses name the same path twice.
+///
+/// It does **not** answer `TooLargeUpstream`, and that is measured too — #151's
+/// 5290-change plan has no patch at `per_page=1` either. The view offers no button
+/// there, because the bytes never existed to be fetched.
+#[tauri::command(async)]
+pub fn pr_file_patch(
+    state: State<AppState>,
+    workspace_id: String,
+    number: u64,
+    file_index: usize,
+) -> Result<crate::gh_pr::DiffFile, String> {
+    let repo = repo_facts_for(&state, &workspace_id)?.repo;
+    // The index in the accumulated list *is* the one-based page number of a
+    // one-per-page request. That equivalence is why the drawer keys files by index
+    // and never by path.
+    let argv = pr_files_argv(&repo, number, 1, file_index + 1);
+    let json = run_gh_for_workspace(&state, &workspace_id, &argv)?;
+    crate::gh_pr::parse_pr_files_capped(&json, usize::MAX)?
+        .files
+        .pop()
+        .ok_or_else(|| format!("the pull request has no file at position {}", file_index + 1))
+}
+
 /// How many files GitHub says the pull request touches.
 ///
 /// Exactly the shape and the reasoning of `issue_totals_argv`: a page shorter

@@ -234,6 +234,21 @@ export const prDetail = (workspaceId: string, number: number) =>
  *  drawer opens and never on the list poll. */
 export const prDiff = (workspaceId: string, number: number) =>
   invoke<PrDiff>("pr_diff", { workspaceId, number });
+/** One file of the diff, on a page of its own and with no cap applied.
+ *
+ *  The exception to the rule above, and it exists because of a measurement. GitHub
+ *  zeroes a file's counts and drops its patch when the *whole response* hits a
+ *  budget, so the cure for a file it declined to describe is a response small
+ *  enough that it cannot: on #151 `tests/tasks.test.ts` is index 60, reads 0/0/0
+ *  with no patch in the 62-file response, and comes back 163/3 with a patch on a
+ *  page of one.
+ *
+ *  The same call is "show anyway" for a file our own cap dropped — one mechanism
+ *  for both refusals, which is why `pr_diff` has no per-file exemption. `fileIndex`
+ *  is the position in `PrDiff.files` and becomes the one-based page number; a path
+ *  would not do, since 2 of 549 measured responses name the same path twice. */
+export const prFilePatch = (workspaceId: string, number: number, fileIndex: number) =>
+  invoke<DiffFile>("pr_file_patch", { workspaceId, number, fileIndex });
 export const prMergeOptions = (workspaceId: string) =>
   invoke<MergeOptions>("pr_merge_options", { workspaceId });
 /** `headOid` pins the merge to the commit that was reviewed: the backend passes
