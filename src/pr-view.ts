@@ -48,6 +48,18 @@ type DetailSlot =
   | { state: "ok"; updatedAt: string; detail: PrDetail }
   | { state: "failed"; updatedAt: string; message: string };
 
+/** Name a control by the role it plays in the list rather than by identity, so
+ *  focus can find its replacement after a redraw has destroyed the node it was on.
+ *  Read `PrView.render` for why that is needed at all.
+ *
+ *  Not an `id`: these have to be unique across the whole document, and the same
+ *  pull request can be described in more than one place. `data-fk` is scoped to
+ *  the mount it is searched in. */
+function fk<T extends HTMLElement>(node: T, key: string): T {
+  node.dataset.fk = key;
+  return node;
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K, cls?: string, text?: string,
 ): HTMLElementTagNameMap[K] {
@@ -78,13 +90,49 @@ export class PrView {
   private last: PrState | null = null;
   constructor(private h: PrHandlers) {}
 
+  /** Draw the list, keeping the reader's place.
+   *
+   *  `draw` below empties the mount and builds every node again, and the poll calls
+   *  it every 15 s while the window has focus (`schedulePrPoll` in `main.ts`) — which
+   *  is precisely while somebody is reading. Without the two restores here, the
+   *  focused control is destroyed and focus falls to `<body>`, and the scroll
+   *  position goes to zero because emptying the scroll container collapses it.
+   *
+   *  Restoring by `data-fk` rather than by holding the node: the node the person was
+   *  on no longer exists after `replaceChildren`, so the only thing that can survive
+   *  a redraw is a name for its *role* in the list. Every control that can hold focus
+   *  carries one — see `fk` below. A control that has gone (the row it belonged to
+   *  was merged away) matches nothing and focus is left where the browser put it,
+   *  which is the honest outcome: there is nowhere to go back to. */
   render(state: PrState, now: number) {
+    const active = document.activeElement;
+    const key = active instanceof HTMLElement && this.mount.contains(active)
+      ? active.dataset.fk ?? null
+      : null;
+    const scroll = this.mount.scrollTop;
+
+    this.draw(state, now);
+
+    this.mount.scrollTop = scroll;
+    if (key === null) return;
+    for (const node of this.mount.querySelectorAll<HTMLElement>("[data-fk]")) {
+      if (node.dataset.fk !== key) continue;
+      // `preventScroll`, because the scroll position was just put back deliberately
+      // and focusing must not overrule it. Scanning rather than a `[data-fk="…"]`
+      // selector so a key never has to be escaped — file paths will be keys once the
+      // diff drawer lands.
+      node.focus({ preventScroll: true });
+      return;
+    }
+  }
+
+  private draw(state: PrState, now: number) {
     this.last = state;
     this.mount.replaceChildren();
 
     const head = el("div", "pr-head");
     head.append(el("h3", "pr-title-head", "Pull requests"));
-    const refresh = el("button", "pr-refresh", "↻");
+    const refresh = fk(el("button", "pr-refresh", "↻"), "refresh");
     refresh.title = "Refresh";
     refresh.onclick = () => this.h.onRefresh();
     head.append(refresh);
@@ -101,7 +149,7 @@ export class PrView {
       const box = el("div", "pr-unavailable");
       box.append(el("p", "pr-unavailable-text", spec.text));
       if (spec.action) {
-        const fix = el("button", "pr-fix", spec.action);
+        const fix = fk(el("button", "pr-fix", spec.action), "fix");
         const u = state.unavailable;
         fix.onclick = () => this.h.onFixUnavailable(u);
         box.append(fix);
@@ -201,7 +249,7 @@ export class PrView {
       // The row above stays exactly as it was: one panel that cannot be read is
       // not the list failing, and the merge button beside it is still good.
       box.append(el("p", "pr-detail-error", `Could not read #${pr.number}: ${slot.message}`));
-      const retry = el("button", "pr-detail-retry", "Try again");
+      const retry = fk(el("button", "pr-detail-retry", "Try again"), `retry-${pr.number}`);
       retry.type = "button";
       retry.onclick = () => {
         this.details.delete(pr.number);
@@ -263,7 +311,7 @@ export class PrView {
     // The disclosure, first in the row so its position does not move with the
     // title's length. A button, not a bare glyph: it is operable from the keyboard,
     // and `aria-expanded` is what makes its state audible.
-    const toggle = el("button", "pr-toggle", open ? "▾" : "▸");
+    const toggle = fk(el("button", "pr-toggle", open ? "▾" : "▸"), `toggle-${pr.number}`);
     toggle.type = "button";
     toggle.setAttribute("aria-expanded", String(open));
     toggle.setAttribute("aria-label", open ? `Hide #${pr.number}` : `Show #${pr.number}`);
@@ -287,13 +335,13 @@ export class PrView {
 
     const actions = el("div", "pr-actions");
 
-    const launch = el("button", "pr-launch", "▶");
+    const launch = fk(el("button", "pr-launch", "▶"), `launch-${pr.number}`);
     launch.title = "Start a session on this branch, in a worktree of its own";
     launch.onclick = () => this.h.onLaunch(pr);
     actions.append(launch);
 
     const verdict = canMerge(pr);
-    const merge = el("button", "pr-merge", "Merge");
+    const merge = fk(el("button", "pr-merge", "Merge"), `merge-${pr.number}`);
     merge.disabled = !verdict.ok;
     // The refusal used to live in `title` alone. This is the highest-stakes button
     // in the app, and a `title` is reachable by neither keyboard nor touch — the
@@ -307,7 +355,7 @@ export class PrView {
     merge.onclick = () => { if (verdict.ok) this.h.onMerge(pr); };
     actions.append(merge);
 
-    const close = el("button", "pr-close", "Close");
+    const close = fk(el("button", "pr-close", "Close"), `close-${pr.number}`);
     close.onclick = () => this.h.onClose(pr);
     actions.append(close);
 
@@ -315,7 +363,7 @@ export class PrView {
     // plugin, and `github-screen.ts` already links out exactly this way.
     // Whether Tauri routes target=_blank to the system browser is unverified
     // there too — it is on the manual checklist in Task 13.
-    const link = el("a", "pr-open", "Open in browser");
+    const link = fk(el("a", "pr-open", "Open in browser"), `open-${pr.number}`);
     link.href = pr.url;
     link.target = "_blank";
     link.rel = "noreferrer";

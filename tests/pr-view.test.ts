@@ -313,3 +313,102 @@ describe("expanding a pull request", () => {
 
 /** Lets the promises the disclosure starts settle. */
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+/** The poll calls `render` every 15 s while the window has focus — which is exactly
+ *  while somebody is reading the list. Each call empties the mount and builds every
+ *  node again, so without these restores the reader loses their place twice a
+ *  minute. The bug predates the diff drawer; the drawer is what made it matter. */
+describe("a redraw keeps the reader's place", () => {
+  it("puts focus back on the same control after the list is rebuilt", () => {
+    const { view } = mk();
+    view.render(state(), NOW);
+
+    const before = document.querySelector<HTMLButtonElement>(".pr-toggle")!;
+    before.focus();
+    expect(document.activeElement).toBe(before);
+
+    view.render(state(), NOW);
+
+    const after = document.querySelector<HTMLButtonElement>(".pr-toggle")!;
+    // The node really was destroyed — this is what makes restoring by identity
+    // impossible and `data-fk` necessary.
+    expect(after).not.toBe(before);
+    expect(document.activeElement).toBe(after);
+  });
+
+  it("tells the row's controls apart, so focus does not jump between pull requests", () => {
+    const { view } = mk();
+    const two = state({ prs: [pr({ number: 7 }), pr({ number: 9 })], total: 2 });
+    view.render(two, NOW);
+
+    const merges = document.querySelectorAll<HTMLButtonElement>(".pr-merge");
+    expect(merges).toHaveLength(2);
+    merges[1].focus();
+
+    view.render(two, NOW);
+
+    const active = document.activeElement as HTMLElement;
+    expect(active.dataset.fk).toBe("merge-9");
+    expect(active.closest(".pr-row")!.textContent).toContain("#9");
+  });
+
+  /** **This asserts less than it looks like it does, and the difference is worth
+   *  writing down.** In a browser, emptying a scroll container collapses its content
+   *  and the scroll position goes to zero, which is the bug being fixed. jsdom has no
+   *  layout: `scrollTop` there is a plain stored number that `replaceChildren` leaves
+   *  alone — measured, not assumed. So this test would pass with the restore deleted.
+   *
+   *  What it does still catch is a redraw that writes `0` — an easy mistake if the
+   *  capture is ever moved after the rebuild instead of before it. The real behaviour
+   *  belongs on the manual checklist, and is there. */
+  it("does not reset the scroll position to zero", () => {
+    const { view } = mk();
+    view.render(state(), NOW);
+    view.mount.scrollTop = 120;
+
+    view.render(state(), NOW);
+
+    expect(view.mount.scrollTop).toBe(120);
+  });
+
+  it("leaves focus alone when it was never inside the list", () => {
+    const { view } = mk();
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    view.render(state(), NOW);
+    outside.focus();
+
+    view.render(state(), NOW);
+
+    // Not stolen into the list. A redraw is not a reason to take focus from
+    // whatever the person was actually using.
+    expect(document.activeElement).toBe(outside);
+  });
+
+  it("does not throw when the focused control no longer exists", () => {
+    const { view } = mk();
+    view.render(state(), NOW);
+    document.querySelector<HTMLButtonElement>(".pr-merge")!.focus();
+
+    // The pull request was merged away between two polls.
+    expect(() => view.render(state({ prs: [], total: 0 }), NOW)).not.toThrow();
+    expect(document.querySelector(".pr-empty")).not.toBeNull();
+  });
+
+  it("keeps focus on a panel control across the poll that re-renders it", async () => {
+    const { view, h } = mk();
+    (h.onDetail as Mock).mockRejectedValue(new Error("network is down"));
+    view.render(state(), NOW);
+    document.querySelector<HTMLButtonElement>(".pr-toggle")!.click();
+    await flush();
+
+    const retry = document.querySelector<HTMLButtonElement>(".pr-detail-retry")!;
+    retry.focus();
+
+    view.render(state(), NOW);
+
+    const active = document.activeElement as HTMLElement;
+    expect(active.dataset.fk).toBe("retry-7");
+    expect(active).not.toBe(retry);
+  });
+});

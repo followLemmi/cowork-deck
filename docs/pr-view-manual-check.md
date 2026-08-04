@@ -60,3 +60,17 @@ can see.
 - [ ] Press ✓ on an issue and, while the close is in flight, click something else. No freeze.
 - [ ] Slow it down on purpose if the network is too fast to see it — point the workspace at a repository over a throttled connection, or add a temporary `sleep` to the `gh` shim.
 - [ ] Type into a terminal tile while a board poll is running. Keystrokes arrive in order — the session commands stay on the main thread deliberately, and this is what that buys.
+
+### The poll must not take the reader's place away
+
+`render` empties the mount and rebuilds every node, and the poll calls it every 15 s
+while the window has focus — precisely while somebody is reading. Focus restore is
+covered by unit tests; **scroll position is not, and cannot be**: jsdom has no layout,
+so `scrollTop` there is a stored number that `replaceChildren` leaves alone (measured).
+The test that exists only proves the redraw does not write a zero. The real behaviour
+is only visible in the app.
+
+- [ ] On a repository with enough open pull requests to scroll, scroll halfway down and wait out two poll ticks (30 s, window focused). The list must not jump to the top.
+- [ ] Tab to a `Merge` button on the second or third row and wait out a tick. Focus stays on *that* row's button — not on the first row's, and not lost to the page.
+- [ ] Expand a row whose detail fails to load, focus `Try again`, wait a tick. Focus is still on `Try again`.
+- [ ] Select some text in a description and wait a tick. **Expected to fail today** — the rebuild destroys the selection, and the fix is the diff drawer's own mount living outside `PrView`. Note it here rather than being surprised by it later.
