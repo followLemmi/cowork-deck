@@ -409,6 +409,12 @@ const CASES = [
     threshold: TEXT, sc: "1.4.3",
   },
   {
+    what: "the open file row",
+    where: "the row whose diff the drawer is showing — `--accent-weak` over the row's own ground",
+    fg: "--fg-muted", backdrop: ["--bg-raised", "--accent-weak"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
     what: "resize grip at rest",
     where: "a control, not text: it must be findable before it is used",
     fg: "--fg-subtle", backdrop: ["--bg-panel"],

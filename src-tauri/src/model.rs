@@ -338,6 +338,23 @@ pub struct UiState {
     /// first launch after upgrade.
     #[serde(rename = "uiScale", default = "default_ui_scale")]
     pub ui_scale: f32,
+    /// How wide the diff drawer is, in `ch` of the mono face rather than in
+    /// pixels — see `UiState.prDiffCols` in `src/ipc.ts` for why the unit is the
+    /// decision and not an implementation detail.
+    ///
+    /// `#[serde(default)]` for exactly the reason spelled out above, and this is
+    /// the field that proves the note was worth writing: every `ui_state.json`
+    /// on disk predates it.
+    #[serde(rename = "prDiffCols", default = "default_pr_diff_cols")]
+    pub pr_diff_cols: u32,
+}
+
+/// Must agree with the `width` on `.pr-drawer` in `src/styles.css`, which is the
+/// fallback the drawer draws at before JS has written a width to it. 62 columns
+/// holds a 62-character line plus the gutter without the pane taking over the
+/// window on a first run.
+fn default_pr_diff_cols() -> u32 {
+    62
 }
 
 /// Must agree with `DEFAULT_SCALE` in `src/ui-scale.ts` — this is the value a person
@@ -354,7 +371,11 @@ fn default_ui_scale() -> f32 {
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { active_workspace_id: None, ui_scale: default_ui_scale() }
+        Self {
+            active_workspace_id: None,
+            ui_scale: default_ui_scale(),
+            pr_diff_cols: default_pr_diff_cols(),
+        }
     }
 }
 
@@ -374,6 +395,8 @@ pub struct UiStatePatch {
     pub active_workspace_id: Option<String>,
     #[serde(rename = "uiScale")]
     pub ui_scale: Option<f32>,
+    #[serde(rename = "prDiffCols")]
+    pub pr_diff_cols: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

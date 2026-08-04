@@ -104,6 +104,9 @@ impl Store {
         if let Some(scale) = patch.ui_scale {
             st.ui_scale = scale;
         }
+        if let Some(cols) = patch.pr_diff_cols {
+            st.pr_diff_cols = cols;
+        }
         let json = serde_json::to_string_pretty(&st)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(self.ui_path(), json)
@@ -317,14 +320,19 @@ mod tests {
         // Not 0.0, which derive would give, and not 1.0 — the shipped default is a
         // step above the stylesheet's base. Must match `DEFAULT_SCALE` in `ui-scale.ts`.
         assert_eq!(UiState::default().ui_scale, 1.15);
+        // Must match the `width` on `.pr-drawer` in `styles.css`, which is what the
+        // drawer is drawn at until JS writes a width to it.
+        assert_eq!(UiState::default().pr_diff_cols, 62);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
+            pr_diff_cols: Some(80),
         };
         s.save_ui_state(&patch).unwrap();
         let reloaded = Store::new(s.dir.clone()).ui_state();
         assert_eq!(reloaded.active_workspace_id, Some("w-1".into()));
         assert_eq!(reloaded.ui_scale, 1.3);
+        assert_eq!(reloaded.pr_diff_cols, 80);
     }
 
     /// The migration case, and the reason `ui_scale` carries `#[serde(default)]`.
@@ -341,6 +349,9 @@ mod tests {
         // Such a file migrates *up*: its owner never chose a size, so they get the
         // shipped default rather than the base the field did not exist to record.
         assert_eq!(st.ui_scale, 1.15);
+        // And the same again for the field added after *that*. Every file on disk
+        // today is missing this key, so it is not a hypothetical migration.
+        assert_eq!(st.pr_diff_cols, 62);
     }
 
     /// The other half of the same bug. `save_ui_state` used to write the file from a
@@ -349,17 +360,30 @@ mod tests {
     #[test]
     fn saving_one_field_leaves_the_other_alone() {
         let s = Store::new(tmp());
-        s.save_ui_state(&UiStatePatch { active_workspace_id: None, ui_scale: Some(1.45) })
-            .unwrap();
+        s.save_ui_state(&UiStatePatch {
+            active_workspace_id: None,
+            ui_scale: Some(1.45),
+            pr_diff_cols: None,
+        })
+        .unwrap();
+        // Exactly what the drawer's `pointerup` sends, and nothing else.
+        s.save_ui_state(&UiStatePatch {
+            active_workspace_id: None,
+            ui_scale: None,
+            pr_diff_cols: Some(96),
+        })
+        .unwrap();
         // Exactly what `workspaces.ts` sends, and nothing else.
         s.save_ui_state(&UiStatePatch {
             active_workspace_id: Some("w-2".into()),
             ui_scale: None,
+            pr_diff_cols: None,
         })
         .unwrap();
         let st = Store::new(s.dir.clone()).ui_state();
         assert_eq!(st.active_workspace_id, Some("w-2".into()));
         assert_eq!(st.ui_scale, 1.45, "a workspace switch must not reset the text size");
+        assert_eq!(st.pr_diff_cols, 96, "nor the width of the diff drawer");
     }
 
     #[test]

@@ -12,85 +12,11 @@
  *  that cannot be tested; it belongs in the view and on the manual checklist.
  */
 
-// ---------------------------------------------------------------------------
-// The wire shape
-// ---------------------------------------------------------------------------
-
-/** Why a file arrived with no lines to show. Mirrors `gh_pr::Omission`, tagged on
- *  `kind` and serialised camelCase.
- *
- *  Four states counting the absent one, and they are not interchangeable —
- *  each earns a different sentence and a different escape hatch:
- *
- *  - `null` with hunks — an ordinary file.
- *  - `null` with no hunks — a rename. The row names two paths and nothing is
- *    withheld.
- *  - `tooLargeUpstream` — counts kept, no patch. Re-fetching cannot help;
- *    measured on #151's 5290-change plan, which has no patch even on a page of one.
- *  - `unreported` — counts **zeroed**, no patch. Could be a binary file, a
- *    mode-only change, or the response hitting a budget; one response cannot tell
- *    them apart, and a narrower page resolves it — measured, where the same file
- *    read 0/0/0 on a page of 62 and 163/3 with a patch on a page of three.
- *  - `tooLargeLocal` — over our own cap. The bytes arrived and were dropped in
- *    Rust, so the count is exact and the refusal is ours. */
-export type Omission =
-  | { kind: "tooLargeUpstream" }
-  | { kind: "unreported" }
-  | { kind: "tooLargeLocal"; lines: number };
-
-/** One hunk of one file's patch. Mirrors `gh_pr::Hunk`.
- *
- *  `header` is the `@@` line verbatim, kept for its trailing section context —
- *  `@@ -89,6 +91,9 @@ fn main() {` — which git writes and nothing else does.
- *  It is material for a heading, never a row to print. `oldStart`/`newStart` are
- *  parsed in Rust; the single-number form `@@ -1 +1 @@` is real and is already
- *  handled there, so nothing here re-parses a header. */
-export interface Hunk {
-  header: string;
-  oldStart: number;
-  newStart: number;
-  /** Patch lines as written, leading `+`, `-`, ` ` or `\` kept. */
-  lines: string[];
-}
-
-/** One changed file, as far as GitHub will describe it. Mirrors `gh_pr::DiffFile`.
- *
- *  **The identity of a file is its index in `PrDiff.files`, never `path`.** Two of
- *  549 measured responses name the same `filename` twice, as a `removed` + `added`
- *  pair — a file replaced by a symlink. Anything keyed by path silently merges
- *  those two rows into one, which is why `filesToAutoOpen` returns indices. */
-export interface DiffFile {
-  path: string;
-  /** Set only on a rename or a copy, where the row names two paths. */
-  previousPath: string | null;
-  status: string;
-  additions: number;
-  deletions: number;
-  /** The permalink at this head — the escape hatch for everything the drawer
-   *  cannot draw, so it is carried even when `hunks` is full. */
-  blobUrl: string;
-  hunks: Hunk[];
-  omitted: Omission | null;
-}
-
-export interface PrDiff {
-  /** The commit this diff actually describes — read by the backend out of the
-   *  rows' `blob_url`, not taken from whatever the caller asked for.
-   *
-   *  This closes a hole worth naming, because the natural design has it. The
-   *  files endpoint is addressed by pull request *number*, so it serves whatever
-   *  HEAD is when it runs, and a slot keyed on the head believed at request time
-   *  can hold a diff labelled with a commit that is not the one in it. Keying on
-   *  this instead means the label is what arrived.
-   *
-   *  Empty when the response had no rows to read it from — a pull request that
-   *  changes nothing, where there is also nothing to go stale. */
-  headRefOid: string;
-  files: DiffFile[];
-  /** How many files the pull request touches, kept beside `files` rather than
-   *  derived from its length: `files` is a capped page. */
-  totalFiles: number;
-}
+// The wire shape lives in `ipc.ts` beside every other thing a Tauri command
+// returns, and not here. It was here first, which was the mistake: `PrDiff` is
+// what `pr_diff` resolves to, so a second declaration of it would be two copies
+// of one contract with nothing keeping them in step.
+import type { DiffFile, Hunk, Omission, PrDiff } from "./ipc";
 
 // ---------------------------------------------------------------------------
 // Marker characters and running line numbers
@@ -201,59 +127,6 @@ export function hunkHeading(hunk: Hunk, index: number, total: number): string {
     ? "from the start of the file"
     : `after line ${hunk.newStart}`;
   return `${at}, ${removed} line${removed === 1 ? "" : "s"} removed ${where}`;
-}
-
-// ---------------------------------------------------------------------------
-// What opens on arrival
-// ---------------------------------------------------------------------------
-
-/** How many lines the drawer spends opening files before it stops.
- *
- *  ~500 is chosen against the measured render cost: the median file is 149 rows
- *  at 18 ms and all 62 of #151 at once is 246 ms, so this buys a two-file pull
- *  request that opens fully and a 62-file one that opens as an index. */
-export const AUTO_OPEN_LINE_BUDGET = 500;
-
-/** How many rows of code a file would draw. Hunk bodies only, never `@@` headers:
- *  a header becomes one heading in the view, so counting it would make a file of
- *  many small hunks cost more than a file of one big one for no reason a reader
- *  could see. Mirrors `gh_pr::cap_file`, which measures the same thing. */
-export function fileLineCount(file: DiffFile): number {
-  let n = 0;
-  for (const h of file.hunks) n += h.lines.length;
-  return n;
-}
-
-/** Which files open expanded on arrival, **by index**.
- *
- *  Indices and not paths, because a path is not an identity here: 2 of 549 real
- *  responses name the same `filename` twice as a `removed` + `added` pair, and a
- *  `Set<string>` would open or close both together.
- *
- *  Files are taken in order and the walk **stops** at the first that does not
- *  fit, rather than skipping it to fit a smaller one later: the list is the pull
- *  request's own order, and opening files 1, 2 and 7 reads as arbitrary where a
- *  prefix reads as "this is where it got long".
- *
- *  The first file opens whatever it costs. A single-file pull request of 800
- *  lines is the case the drawer exists for, and opening it as a one-row index
- *  would make the reader click the only thing on screen.
- *
- *  A file with nothing to draw still costs one line, because it still draws the
- *  sentence saying why — see `fileNote`. */
-export function filesToAutoOpen(files: DiffFile[], lineBudget: number): Set<number> {
-  const open = new Set<number>();
-  // A caller that has budgeted nothing has asked for an index, and the
-  // first-file rule below must not overrule that.
-  if (lineBudget <= 0) return open;
-  let spent = 0;
-  for (let i = 0; i < files.length; i++) {
-    const cost = Math.max(1, fileLineCount(files[i]));
-    if (i > 0 && spent + cost > lineBudget) break;
-    open.add(i);
-    spent += cost;
-  }
-  return open;
 }
 
 // ---------------------------------------------------------------------------

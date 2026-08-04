@@ -74,3 +74,29 @@ is only visible in the app.
 - [ ] Tab to a `Merge` button on the second or third row and wait out a tick. Focus stays on *that* row's button — not on the first row's, and not lost to the page.
 - [ ] Expand a row whose detail fails to load, focus `Try again`, wait a tick. Focus is still on `Try again`.
 - [ ] Select some text in a description and wait a tick. **Expected to fail today** — the rebuild destroys the selection, and the fix is the diff drawer's own mount living outside `PrView`. Note it here rather than being surprised by it later.
+
+## The diff drawer
+
+Everything below was either measured in a headless browser against the real stylesheet
+or is impossible to measure there. The first group is regression cover; the second is
+the only place these can be checked at all.
+
+- [ ] A file with a line longer than the drawer. Scroll it sideways: the line numbers and the `+`/`−` markers stay pinned and the code slides underneath them, with nothing showing through. **The page itself must never scroll sideways** — only the file.
+- [ ] The same file at the largest text size. The gutter is sized from `--dv-digits`, which the module sets per file; a five-digit line number must not overlap its neighbour column.
+- [ ] Shrink the window until the list collapses. It must go away entirely, not sit behind the drawer — a covered list that can still be tabbed into fails SC 2.4.11.
+- [ ] Drag the resize grip, then reopen the app. The width is remembered. Drag it to its floor: the marker and both number columns stay legible.
+- [ ] Tab to the grip and use the arrow keys. The width changes, and the focus ring is visible along the whole grip rather than clipped to a sliver at its edge.
+
+### Only checkable by hand
+
+- [ ] **Windows high contrast** (`forced-colors: active`). Every tint collapses to a system colour, so added and removed become identical bands — the `+`/`−` characters are the only thing left telling them apart. The `forced-colors` block is the first in this stylesheet and **nobody has looked at it**: it was confirmed to parse and reach the CSSOM, not to look right.
+- [ ] **WebKitGTK render cost.** The 33 ms figure for the largest real file is Chromium via Playwright. Tauri on Linux is WebKitGTK, plausibly 2–3× slower. Open the biggest file in a large pull request and confirm there is no perceptible hitch.
+
+### Recorded as impossible, so nobody re-attempts it
+
+**Sticky file and hunk headers down the vertical scroll cannot be done with this
+structure.** `overflow-x: auto` on `.dv-file` computes `overflow-y` to `auto` as well,
+which makes the file its own scroll container — so a `top` offset inside it resolves
+against a box that never scrolls vertically. Getting them would mean moving the
+horizontal scroll somewhere else, which would cost the pinned gutter. The pinned line
+numbers answer "where am I" continuously, which is the better half of the trade.

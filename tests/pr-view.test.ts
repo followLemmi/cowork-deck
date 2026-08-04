@@ -24,7 +24,7 @@ const state = (over: Partial<PrState> = {}): PrState => ({
 function mk(): { view: PrView; h: PrHandlers } {
   const h: PrHandlers = {
     onLaunch: vi.fn(), onMerge: vi.fn(), onClose: vi.fn(), onReopen: vi.fn(),
-    onRefresh: vi.fn(), onFixUnavailable: vi.fn(),
+    onRefresh: vi.fn(), onFixUnavailable: vi.fn(), onOpenDiff: vi.fn(),
     onDetail: vi.fn().mockResolvedValue({
       body: "", additions: 0, deletions: 0, changedFiles: 0, files: [],
     }),
@@ -410,5 +410,120 @@ describe("a redraw keeps the reader's place", () => {
     const active = document.activeElement as HTMLElement;
     expect(active.dataset.fk).toBe("retry-7");
     expect(active).not.toBe(retry);
+  });
+});
+
+// The way into the diff drawer, and the list's one keyboard widget. What matters
+// is that arrowing is free: each file is an IPC round trip, so a list that
+// activated on focus would spend 62 `gh` processes on a walk through 62 rows.
+describe("the changed files are the way into the diff", () => {
+  const detail = (over: Partial<PrDetail> = {}): PrDetail => ({
+    body: "Fixes the thing.",
+    additions: 12, deletions: 3, changedFiles: 3,
+    files: [
+      { path: "src/board.ts", additions: 10, deletions: 3 },
+      { path: "src/styles.css", additions: 2, deletions: 0 },
+      { path: "docs/x.md", additions: 0, deletions: 0 },
+    ],
+    ...over,
+  });
+
+  const rows = () => [...document.querySelectorAll<HTMLButtonElement>(".pr-detail-file")];
+
+  async function open(): Promise<{ view: PrView; h: PrHandlers }> {
+    const kit = mk();
+    (kit.h.onDetail as Mock).mockResolvedValue(detail());
+    kit.view.render(state(), NOW);
+    document.querySelector<HTMLButtonElement>(".pr-toggle")!.click();
+    await flush();
+    return kit;
+  }
+
+  it("draws each file as a button inside its list item", async () => {
+    await open();
+    expect(rows()).toHaveLength(3);
+    expect(rows()[0].type).toBe("button");
+    expect(rows()[0].parentElement!.tagName).toBe("LI");
+    expect(rows()[0].textContent).toBe("src/board.ts+10−3");
+  });
+
+  // One tab stop, not 62. Everything else is reached with the arrows.
+  it("puts exactly one row in the tab order", async () => {
+    await open();
+    expect(rows().map((r) => r.tabIndex)).toEqual([0, -1, -1]);
+  });
+
+  it("moves the tab stop with the arrows, and never fires a request doing it", async () => {
+    const { h } = await open();
+    const list = document.querySelector<HTMLElement>(".pr-detail-files")!;
+    list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(rows()[1]);
+    expect(rows().map((r) => r.tabIndex)).toEqual([-1, 0, -1]);
+    list.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    expect(document.activeElement).toBe(rows()[2]);
+    list.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+    expect(document.activeElement).toBe(rows()[0]);
+    expect(h.onOpenDiff).not.toHaveBeenCalled();
+  });
+
+  it("stops at both ends rather than wrapping", async () => {
+    await open();
+    const list = document.querySelector<HTMLElement>(".pr-detail-files")!;
+    list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    expect(document.activeElement).toBe(rows()[0]);
+  });
+
+  it("opens the diff on a click, by index and with the path along for the label", async () => {
+    const { h } = await open();
+    rows()[1].click();
+    expect(h.onOpenDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ number: 7 }), 1, "src/styles.css",
+    );
+  });
+
+  // A file with nothing to show stays an ordinary enabled button: `disabled`
+  // takes the row out of the tab order and its explanation with it, and the
+  // explanation is in the drawer the row opens.
+  it("leaves a file with no changes openable", async () => {
+    const { h } = await open();
+    expect(rows()[2].disabled).toBe(false);
+    rows()[2].click();
+    expect(h.onOpenDiff).toHaveBeenCalledWith(expect.anything(), 2, "docs/x.md");
+  });
+
+  it("marks the row whose diff is showing, and unmarks it on close", async () => {
+    const { view } = await open();
+    view.setOpenDiff(7, 1);
+    expect(rows().map((r) => r.getAttribute("aria-current"))).toEqual([null, "true", null]);
+    view.setOpenDiff(null, null);
+    expect(rows().map((r) => r.getAttribute("aria-current"))).toEqual([null, null, null]);
+  });
+
+  // The drawer never took focus, so on close there is a specific row to come
+  // back to — and by then the poll has rebuilt the list, so the row it goes to
+  // is a different node with the same key.
+  it("puts focus back on a row that has been redrawn since", async () => {
+    const { view } = await open();
+    const before = rows()[2];
+    view.render(state(), NOW);
+    view.focusFile(7, 2);
+    const active = document.activeElement as HTMLElement;
+    expect(active.dataset.fk).toBe("file-7-2");
+    expect(active).not.toBe(before);
+  });
+
+  it("says nothing when the row to go back to has gone", async () => {
+    const { view } = await open();
+    view.render(state({ prs: [], total: 0 }), NOW);
+    expect(() => view.focusFile(7, 2)).not.toThrow();
+  });
+
+  // The poll destroys every node twice a minute; the tab stop has to survive it.
+  it("keeps the tab stop where the person left it across a redraw", async () => {
+    const { view } = await open();
+    const list = document.querySelector<HTMLElement>(".pr-detail-files")!;
+    list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    view.render(state(), NOW);
+    expect(rows().map((r) => r.tabIndex)).toEqual([-1, 0, -1]);
   });
 });

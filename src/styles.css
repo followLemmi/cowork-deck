@@ -1300,7 +1300,33 @@ h6.md-head { font-size: var(--fs-sm); }
   flex: 0 1 auto;
   font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-code);
 }
-.pr-detail-file { display: flex; gap: var(--sp-2); align-items: baseline; }
+/* A real `<button>` now, because the file row is the way into the diff drawer, and
+   the `<li>` around it is what keeps the list a list. Everything before `display` is
+   undoing the UA's idea of a button — `font: inherit` in particular, or the row loses
+   the mono face and the `--fs-sm` its parent sets and the counts stop lining up.
+   `min-height: 24px` for the target, a literal like `.pr-toggle`'s and for the same
+   reason: SC 2.5.8 is written in CSS pixels, so a `rem` here would fall under the
+   minimum at the 0.85 step of the text-size control.
+   Rows with nothing to show are **not** disabled: that removes them from the tab
+   order and takes their own explanation with them, which is the mistake Task 18
+   corrected on `.pr-merge`. The drawer is where the reason lives. */
+.pr-detail-file {
+  width: 100%; background: none; border: 0; border-radius: var(--r-sm);
+  padding: 1px var(--sp-1); min-height: 24px;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+  display: flex; gap: var(--sp-2); align-items: baseline;
+}
+/* Hover is an underline rather than a colour, and that is a contrast decision, not
+   a stylistic one: the path is `--fg-muted` because `--fg-subtle` on the selected
+   row measures 3.57 and fails, and a hover colour would need its own measurement on
+   two grounds. An underline needs none and survives forced colours. */
+.pr-detail-file:hover .pr-detail-path { text-decoration: underline; }
+.pr-detail-file:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The row whose diff is on screen. `--accent-weak` over `--bg-raised` is the same
+   active-row idiom as the selected session row, and `--fg-muted` on it measures
+   5.60 — which is why the whole list is `--fg-muted` and not `--fg-subtle`, whose
+   3.57 on this exact ground is kept as a rejected case in `contrast.mjs`. */
+.pr-detail-file[aria-current] { background: var(--accent-weak); }
 .pr-detail-path { color: var(--fg-muted); flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .pr-detail-plus { color: var(--st-working); flex: 0 0 auto; }
 .pr-detail-minus { color: var(--st-error); flex: 0 0 auto; }
@@ -1544,7 +1570,6 @@ h6.md-head { font-size: var(--fs-sm); }
   --dv-digits: 5;
   --dv-num-w: calc(var(--dv-digits) * 1ch + var(--sp-2));
 }
-.dv-file + .dv-file { margin-top: var(--sp-3); }
 /* `display: contents` so the four cells are grid items of the file, not of the row.
    A per-row grid would align each line against itself, which is the one thing a diff
    must not do. The cost is that `.dv-line` has no box of its own, so the band is
@@ -1656,6 +1681,14 @@ h6.md-head { font-size: var(--fs-sm); }
 .dv-sr {
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  /* **Not decoration.** This word lives *inside* `.dv-text`, and every engine
+     copies hidden text along with the visible text around it — so without this a
+     selection dragged across the diff pastes "Added, const x = 1" and the patch
+     no longer applies. That guarantee is the whole reason the marker two rules up
+     is a relocated character rather than a duplicated one; the announcement must
+     not undo it. `user-select: none` is skipped by the copy in every engine this
+     app runs on, which is what the two number cells already rely on. */
+  user-select: none;
 }
 
 /* The first `forced-colors` block in this stylesheet, and the diff is what earns it.

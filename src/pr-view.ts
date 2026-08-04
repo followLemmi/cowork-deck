@@ -36,6 +36,18 @@ export interface PrHandlers {
    *  can decide what to ask for. Rejection is expected and is drawn inside the
    *  panel — one row failing to expand is not the list failing. */
   onDetail: (pr: PullRequest) => Promise<PrDetail>;
+  /** Show this file's diff in the drawer.
+   *
+   *  The entry point is the file row and not a button on the pull request row.
+   *  `.pr-actions` already holds ▶ / Merge / Close / Open in browser, and Merge
+   *  is the highest-stakes button in the app; a fifth control there buys a
+   *  misclick on it. A "Diff" button with no file chosen would also have to
+   *  guess, and file 1 of 62 is rarely the one wanted.
+   *
+   *  The index is the identity, and `path` rides along only so the drawer can
+   *  name what it is fetching before the rows arrive — 2 of 549 measured
+   *  responses name the same path twice, so a path is not an identity here. */
+  onOpenDiff: (pr: PullRequest, fileIndex: number, path: string) => void;
 }
 
 const PAGE_LIMIT = 50;
@@ -61,6 +73,13 @@ function fk<T extends HTMLElement>(node: T, key: string): T {
   return node;
 }
 
+/** A file row's focus key. Its own function because two places have to agree on
+ *  it: the row that carries it and `focusFile`, which has to find that row again
+ *  after the drawer closed and the poll rebuilt the list twice in between. */
+function fileKey(prNumber: number, fileIndex: number): string {
+  return `file-${prNumber}-${fileIndex}`;
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K, cls?: string, text?: string,
 ): HTMLElementTagNameMap[K] {
@@ -72,7 +91,14 @@ function el<K extends keyof HTMLElementTagNameMap>(
 }
 
 export class PrView {
-  readonly mount = el("div", "pr-view");
+  /** The list column, **not the screen**. `.pr-view` is a flex row owned by
+   *  `main.ts` holding this and the diff drawer side by side, and the drawer has
+   *  to be a sibling rather than a child: `render` below empties this mount every
+   *  15 s, which inside it would cost the reader their scroll position in a
+   *  document up to 63,000px tall, and their text selection with it. The
+   *  `overflow` and the padding live here now for the same reason — on the row
+   *  they would scroll the drawer up out of the window along with the list. */
+  readonly mount = el("div", "pr-list");
   /** Which rows are open, by number.
    *
    *  View state, not `PrState`: opening a row needs no list read, and a poll
@@ -89,7 +115,37 @@ export class PrView {
   /** The last thing rendered, so an answer arriving later — or a disclosure being
    *  clicked — can redraw without a list read. */
   private last: PrState | null = null;
+  /** Which file row the drawer is showing, so the list can mark it. Null when the
+   *  drawer is closed — the drawer owns that fact and tells us. */
+  private showing: { number: number; index: number } | null = null;
+  /** The one file row per pull request that is in the tab order.
+   *
+   *  A roving tabindex, because 62 file rows are 62 tab stops otherwise and the
+   *  list is meant to be walked, not tabbed through. Kept here rather than read
+   *  off the DOM because the DOM is rebuilt every 15 s. */
+  private roving = new Map<number, number>();
   constructor(private h: PrHandlers) {}
+
+  /** Mark the row whose diff is on screen, or clear the mark. Called by whoever
+   *  owns the drawer: the list cannot know, and guessing would leave the mark on
+   *  after an Escape. */
+  setOpenDiff(prNumber: number | null, fileIndex: number | null): void {
+    this.showing = prNumber === null || fileIndex === null
+      ? null
+      : { number: prNumber, index: fileIndex };
+    this.redraw();
+  }
+
+  /** Put focus back on a file row — what the drawer's close does, since focus
+   *  never moved into it and there is a specific row to come back to. Silent
+   *  when the row has gone: the pull request was merged away while the diff was
+   *  open, and there is nowhere to return to. */
+  focusFile(prNumber: number, fileIndex: number): void {
+    this.roving.set(prNumber, fileIndex);
+    for (const node of this.mount.querySelectorAll<HTMLElement>("[data-fk]")) {
+      if (node.dataset.fk === fileKey(prNumber, fileIndex)) { node.focus(); return; }
+    }
+  }
 
   /** Draw the list, keeping the reader's place.
    *
@@ -289,17 +345,7 @@ export class PrView {
       panels.append(el("p", "pr-detail-note", "No description."));
     }
 
-    if (d.files.length) {
-      const files = el("ul", "pr-detail-files");
-      for (const f of d.files) {
-        const li = el("li", "pr-detail-file");
-        li.append(el("span", "pr-detail-path", f.path));
-        li.append(el("span", "pr-detail-plus", `+${f.additions}`));
-        li.append(el("span", "pr-detail-minus", `−${f.deletions}`));
-        files.append(li);
-      }
-      panels.append(files);
-    }
+    if (d.files.length) panels.append(this.fileList(pr, d));
     box.append(panels);
 
     // `changedFiles` is GitHub's count and `files` is a page of its own, so the
@@ -313,6 +359,75 @@ export class PrView {
       ));
     }
     return box;
+  }
+
+  /** The changed files, as the way into the diff.
+   *
+   *  Buttons and not text, and this is the list's one keyboard widget: **one tab
+   *  stop with a roving tabindex**, Arrow/Home/End to move within it, and
+   *  activation on Enter, Space or a click and never on an arrow. The last part
+   *  is not a style preference — each file is an IPC round trip, so arrowing
+   *  through 62 rows on an activate-on-focus list would be 62 `gh` processes.
+   *
+   *  Rows with nothing to show stay ordinary enabled buttons. `disabled` would
+   *  take them out of the tab order and take their explanation with them, which
+   *  is the mistake `.pr-merge` above already had corrected: the drawer is where
+   *  the reason lives, and a row you cannot reach cannot tell you one. */
+  private fileList(pr: PullRequest, d: PrDetail): HTMLElement {
+    const files = el("ul", "pr-detail-files");
+    const rove = Math.min(this.roving.get(pr.number) ?? 0, d.files.length - 1);
+    d.files.forEach((f, i) => {
+      const li = el("li");
+      const btn = fk(el("button", "pr-detail-file"), fileKey(pr.number, i));
+      btn.type = "button";
+      // Exactly one row per list is tabbable; the rest are reached with arrows.
+      btn.tabIndex = i === rove ? 0 : -1;
+      if (this.showing?.number === pr.number && this.showing.index === i) {
+        // `aria-current` rather than `aria-selected`: these are not the options
+        // of a listbox, they are places, and one of them is the one on screen.
+        btn.setAttribute("aria-current", "true");
+      }
+      btn.append(el("span", "pr-detail-path", f.path));
+      btn.append(el("span", "pr-detail-plus", `+${f.additions}`));
+      btn.append(el("span", "pr-detail-minus", `−${f.deletions}`));
+      btn.onclick = () => {
+        this.roving.set(pr.number, i);
+        this.h.onOpenDiff(pr, i, f.path);
+      };
+      // Tabbing into the list, or clicking a row, moves the single tab stop with
+      // the person rather than sending them back to row 1 next time.
+      btn.addEventListener("focus", () => this.rove(files, pr.number, i, false));
+      li.append(btn);
+      files.append(li);
+    });
+    files.addEventListener("keydown", (e) => this.fileKeys(e, files, pr.number, d.files.length));
+    return files;
+  }
+
+  /** Move the tab stop, and optionally the focus with it. Written against the
+   *  live nodes rather than by redrawing: a redraw here would rebuild the button
+   *  under the very `focus()` call that is moving to it. */
+  private rove(list: HTMLElement, prNumber: number, to: number, move: boolean): void {
+    this.roving.set(prNumber, to);
+    const buttons = list.querySelectorAll<HTMLButtonElement>(".pr-detail-file");
+    buttons.forEach((b, i) => { b.tabIndex = i === to ? 0 : -1; });
+    if (move) buttons[to]?.focus();
+  }
+
+  private fileKeys(e: KeyboardEvent, list: HTMLElement, prNumber: number, count: number): void {
+    const at = this.roving.get(prNumber) ?? 0;
+    const to =
+      e.key === "ArrowDown" ? Math.min(count - 1, at + 1)
+      : e.key === "ArrowUp" ? Math.max(0, at - 1)
+      : e.key === "Home" ? 0
+      : e.key === "End" ? count - 1
+      : null;
+    if (to === null) return;
+    // Stopped here rather than left to bubble: ArrowUp and ArrowDown scroll the
+    // panel, and a list that moves the focus *and* the page moves neither by the
+    // amount the person asked for.
+    e.preventDefault();
+    this.rove(list, prNumber, to, true);
   }
 
   private row(pr: PullRequest, now: number): HTMLElement {

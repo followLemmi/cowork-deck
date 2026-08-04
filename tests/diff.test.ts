@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  AUTO_OPEN_LINE_BUDGET, canRefetch, classifyHunk, diffCacheNext, fileLineCount,
-  fileNote, filesToAutoOpen, hunkHeading, lineMarker,
-  type DiffFile, type DiffLine, type Hunk, type Omission,
+  canRefetch, classifyHunk, diffCacheNext, fileNote, hunkHeading, lineMarker,
+  type DiffLine,
 } from "../src/diff";
+import type { DiffFile, Hunk, Omission } from "../src/ipc";
 
 const hunk = (over: Partial<Hunk> = {}): Hunk => ({
   header: "@@ -1,1 +1,1 @@", oldStart: 1, newStart: 1, lines: [], ...over,
@@ -14,10 +14,6 @@ const file = (over: Partial<DiffFile> = {}): DiffFile => ({
   additions: 1, deletions: 0, blobUrl: "https://github.com/o/r/blob/oid/src/a.ts",
   hunks: [], omitted: null, ...over,
 });
-
-/** A file of `n` ordinary added lines, for budget arithmetic. */
-const sized = (n: number, path = "f.ts"): DiffFile =>
-  file({ path, hunks: [hunk({ lines: Array.from({ length: n }, (_, i) => `+line ${i}`) })] });
 
 /** The three fields a numbering assertion is about, so a failure reads as a
  *  table rather than as four object diffs. */
@@ -209,84 +205,6 @@ describe("hunkHeading", () => {
       oldStart: 1, newStart: 1, lines: [" a", "+b", "\\ No newline at end of file"],
     });
     expect(hunkHeading(h, 0, 1)).toBe("Hunk 1 of 1, lines 1 to 2");
-  });
-});
-
-describe("fileLineCount", () => {
-  // Mirrors `cap_file`: a `@@` header becomes one heading, not a row of code, so
-  // counting it would make many small hunks cost more than one big one.
-  it("counts hunk bodies and not their headers", () => {
-    const f = file({ hunks: [hunk({ lines: [" a", "+b"] }), hunk({ lines: ["-c"] })] });
-    expect(fileLineCount(f)).toBe(3);
-  });
-
-  it("is zero for a file whose text never arrived", () => {
-    expect(fileLineCount(file({ omitted: { kind: "tooLargeUpstream" } }))).toBe(0);
-  });
-});
-
-describe("filesToAutoOpen", () => {
-  it("opens a two-file pull request in full", () => {
-    const files = [sized(40, "a.ts"), sized(60, "b.ts")];
-    expect([...filesToAutoOpen(files, AUTO_OPEN_LINE_BUDGET)]).toEqual([0, 1]);
-  });
-
-  // The motivating case: 62 files at the measured median of 149 rows is ~9000
-  // rows, and the drawer has to arrive as an index rather than as a document.
-  // Three files fit — 447 of the 500 — and the fourth would be 596.
-  it("opens a large pull request as an index", () => {
-    const files = Array.from({ length: 62 }, (_, i) => sized(149, `f${i}.ts`));
-    expect([...filesToAutoOpen(files, AUTO_OPEN_LINE_BUDGET)]).toEqual([0, 1, 2]);
-  });
-
-  // Skipping ahead would open files 1, 2 and 7, which reads as arbitrary. A
-  // prefix reads as "this is where it got long".
-  it("stops at the first file that does not fit rather than skipping to a smaller one", () => {
-    const files = [sized(10, "a.ts"), sized(500, "big.ts"), sized(5, "small.ts")];
-    expect([...filesToAutoOpen(files, 100)]).toEqual([0]);
-  });
-
-  // Otherwise the one thing the reader opened the drawer for arrives collapsed,
-  // and the only control on screen is the one that undoes the decision.
-  it("opens the first file however large it is", () => {
-    expect([...filesToAutoOpen([sized(9000, "huge.ts")], 500)]).toEqual([0]);
-  });
-
-  it("opens a file that fits the remaining budget exactly", () => {
-    const files = [sized(300, "a.ts"), sized(200, "b.ts"), sized(1, "c.ts")];
-    expect([...filesToAutoOpen(files, 500)]).toEqual([0, 1]);
-  });
-
-  it("opens nothing when nothing was budgeted", () => {
-    const files = [sized(1, "a.ts"), sized(1, "b.ts")];
-    expect(filesToAutoOpen(files, 0).size).toBe(0);
-    expect(filesToAutoOpen(files, -1).size).toBe(0);
-  });
-
-  it("opens nothing for a pull request with no files", () => {
-    expect(filesToAutoOpen([], AUTO_OPEN_LINE_BUDGET).size).toBe(0);
-  });
-
-  // A file with no diff still draws the sentence saying why, so it is not free —
-  // otherwise a pull request of nothing but binaries opens every one of them.
-  it("charges a file with nothing to draw one line, not zero", () => {
-    const files = Array.from({ length: 10 }, (_, i) =>
-      file({ path: `img${i}.png`, omitted: { kind: "unreported" }, additions: 0, deletions: 0 }));
-    expect([...filesToAutoOpen(files, 3)]).toEqual([0, 1, 2]);
-  });
-
-  // The identity rule, measured: 2 of 549 real responses name the same file
-  // twice, as a `removed` + `added` pair — a file replaced by a symlink. Keyed by
-  // path, these two rows would open and close together.
-  it("keeps two rows naming the same path apart", () => {
-    const files = [
-      file({ path: "lib/x.so", status: "removed", hunks: [hunk({ lines: ["-a"] })] }),
-      file({ path: "lib/x.so", status: "added", hunks: [hunk({ lines: ["+b"] })] }),
-    ];
-    const open = filesToAutoOpen(files, AUTO_OPEN_LINE_BUDGET);
-    expect(open.has(0)).toBe(true);
-    expect(open.has(1)).toBe(true);
-    expect(open.size).toBe(2);
   });
 });
 

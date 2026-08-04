@@ -14,7 +14,7 @@ import {
   listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
   taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage,
-  prList, prDetail, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
+  prList, prDetail, prDiff, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
   prWorktreePath, prWorktreeRemove,
   issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove,
 } from "./ipc";
@@ -27,6 +27,7 @@ import {
   repoFromIssueUrl, sourceOf, unavailableFrom,
 } from "./issues";
 import { PrView } from "./pr-view";
+import { DiffDrawer } from "./diff-drawer";
 import type { GhUnavailable } from "./gh-unavailable";
 import type { PrState } from "./pr-view";
 import { alertModal, confirmModal } from "./modal";
@@ -119,16 +120,57 @@ const prView = new PrView({
       ? prDetail(ws.id, pr.number)
       : Promise.reject(new Error("No workspace is selected."));
   },
+  onOpenDiff: (pr, fileIndex, path) => {
+    diffDrawer.open(pr, fileIndex, path);
+    prView.setOpenDiff(pr.number, fileIndex);
+  },
 });
-// The pull request screen. Created here rather than in index.html because
-// nothing else refers to it, and the view's own root *is* the screen: `.pr-view`
-// carries the `flex: 1` that makes it take the full width of the app row, which
-// a wrapper around it would swallow. It answers to `#pr` as well so the switch's
-// stylesheet rule (`#pr.hidden`) applies exactly as it does to the board.
-const prEl = prView.mount;
+
+/** The diff drawer, beside the list rather than inside it.
+ *
+ *  Owned here and not by `PrView` because `PrView.render` empties its mount on
+ *  every poll tick — every 15 s, and gated on the window having focus, which is
+ *  precisely while somebody is reading. A drawer inside it would lose the
+ *  reader's scroll position in a document up to 63,000px tall, and their text
+ *  selection with it, twice a minute. No focus restore fixes either. */
+const diffDrawer = new DiffDrawer({
+  // The workspace is resolved at call time for the reason `onDetail` gives: a
+  // diff can be asked for moments before a switch, and the answer must be about
+  // the repository the row came from or about nothing at all.
+  onFetch: (pr) => {
+    const ws = workspaces.active;
+    return ws
+      ? prDiff(ws.id, pr.number)
+      : Promise.reject(new Error("No workspace is selected."));
+  },
+  // A patch, so it cannot take the active workspace or the text size with it.
+  onWidth: (cols) => {
+    saveUiState({ prDiffCols: cols })
+      .catch((e) => console.debug("diff width save failed", e));
+  },
+  // Focus never moved into the drawer, so on close there is a specific row to
+  // go back to — the one for the file that was showing.
+  onClosed: (pr, fileIndex) => {
+    prView.setOpenDiff(null, null);
+    prView.focusFile(pr.number, fileIndex);
+  },
+});
+
+// The pull request screen: a flex row holding the list and the drawer, in that
+// DOM order so reading order matches visual order (SC 1.3.2). Created here
+// rather than in index.html because nothing else refers to it. It answers to
+// `#pr` so the switch's stylesheet rule (`#pr.hidden`) applies exactly as it
+// does to the board.
+//
+// This used to *be* `prView.mount`, which is why that element is now `.pr-list`:
+// a drawer inside the mount would be destroyed on every poll — see above.
+const prEl = document.createElement("div");
+prEl.className = "pr-view";
 prEl.id = "pr";
 prEl.classList.add("hidden");
+prEl.append(prView.mount, diffDrawer.live);
 boardEl.after(prEl);
+diffDrawer.attach(prEl, prView.mount);
 
 let boardVisible = false;
 let boardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -777,6 +819,11 @@ async function refreshPrs() {
     else prState = { ...prState, error: msg, loading: false };
   }
   prView.render(prState, Date.now());
+  // After the render and after the two late-reply guards, so the drawer is never
+  // told about a workspace whose answer was discarded. It re-reads the head of
+  // whichever pull request it is showing and offers a Reload if the branch has
+  // moved — it never swaps the diff out from under a reader.
+  diffDrawer.onPoll(prState.prs);
   // Whatever it ended up drawing, it is this workspace's answer — so the next tick
   // keeps it. After the render, and after the two late-reply guards above, so a
   // reply that was discarded does not claim the screen.
@@ -941,7 +988,14 @@ const workspaces = new WorkspacesPanel(wsMount, (ws) => {
   // second owner of the timer. Do not simplify it back.
   if (boardVisible) void boardTick();
   // The pull requests on screen belong to the workspace that was active a
-  // moment ago; re-reading also re-points the poll at the new one.
+  // moment ago; re-reading also re-points the poll at the new one. The drawer
+  // goes with them, cache and all: its slots are keyed by pull request number,
+  // and two repositories both have a #7.
+  diffDrawer.reset();
+  // `reset` deliberately does not hand focus back, so the mark it left on the
+  // row has to be cleared from here. Two repositories both have a #7, and a
+  // stale mark would land on whichever row happens to share the number.
+  prView.setOpenDiff(null, null);
   if (currentView === "pr") void refreshPrs();
 }, () => {
   // A workspace was added, edited or deleted: its tracker root may have moved,
@@ -1038,8 +1092,16 @@ function paletteCommands(): Command[] {
  *  (they go to the PTY), so once focus landed in a tile — which happens
  *  automatically on launch — the sidebar, the scenario buttons and the
  *  run-now button were unreachable by keyboard entirely. */
-type Region = "sidebar" | "screen";
-const REGIONS: Region[] = ["sidebar", "screen"];
+type Region = "sidebar" | "screen" | "drawer";
+/** The cycle, which is not fixed: the diff drawer is a region only while it is
+ *  open, because a region you cannot see is a stop that does nothing.
+ *
+ *  It has to be one at all — `currentRegion` decides by `sidebar.contains(...)`,
+ *  so without this focus inside the drawer reads as `"screen"` and F6 from a diff
+ *  sends you to the sidebar, with no key at all going the other way. */
+function regions(): Region[] {
+  return diffDrawer.isOpen() ? ["sidebar", "screen", "drawer"] : ["sidebar", "screen"];
+}
 
 /** Focus on a `#viewbar` tab reads as "screen" here, so F6 from a tab goes to the
  *  sidebar in both directions. The tabs are deliberately outside the cycle rather
@@ -1047,10 +1109,18 @@ const REGIONS: Region[] = ["sidebar", "screen"];
  *  them from the top, which the sidebar's own blocks never could — they sat behind
  *  the tabs when the switch lived there. */
 function currentRegion(): Region {
+  // The drawer first, because it is inside the screen: asked in the other order
+  // every answer would be "screen".
+  if (diffDrawer.contains(document.activeElement)) return "drawer";
   return sidebar.contains(document.activeElement) ? "sidebar" : "screen";
 }
 
 function focusRegion(r: Region): void {
+  if (r === "drawer") {
+    if (diffDrawer.focusFirst()) return;
+    focusRegion("sidebar");
+    return;
+  }
   if (r === "screen") {
     // Whichever screen is showing, not the deck unconditionally. It was the deck:
     // from a board row, F6 called `focus()` on an xterm inside a `display: none`
@@ -1073,8 +1143,12 @@ function focusRegion(r: Region): void {
 }
 
 function cycleRegion(step: number): void {
-  const i = REGIONS.indexOf(currentRegion());
-  focusRegion(REGIONS[(i + step + REGIONS.length) % REGIONS.length]);
+  const cycle = regions();
+  // A region not in the cycle would give -1, and -1 + 1 is 0 — the sidebar,
+  // which is a place worth being. Nothing produces that today; it costs a
+  // subtraction to not have to think about it again when a fourth arrives.
+  const i = cycle.indexOf(currentRegion());
+  focusRegion(cycle[(i + step + cycle.length) % cycle.length]);
 }
 
 const COMMANDS: Record<string, () => void> = {
@@ -1125,9 +1199,15 @@ claudeAvailable().then((ok) => {
 async function bootWithStoredScale(): Promise<void> {
   let scale = currentScale();
   try {
-    scale = clampScale((await loadUiState()).uiScale);
+    const ui = await loadUiState();
+    scale = clampScale(ui.uiScale);
+    // The drawer's width rides on the same read. It is applied whether or not
+    // the drawer is open, because the width is what the pane is drawn at the
+    // moment it first appears — set later, the first open would flash the
+    // stylesheet's fallback.
+    diffDrawer.setCols(ui.prDiffCols);
   } catch (e) {
-    console.debug("ui scale read failed, using the default", e);
+    console.debug("ui state read failed, using the defaults", e);
   }
   applyScale(scale, document.documentElement);
   await boot();
