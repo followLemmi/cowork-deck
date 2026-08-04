@@ -304,11 +304,31 @@ pub enum Omission {
     /// arrived, so an in-app "show anyway" could only fail; `blob_url` is the
     /// only honest way through.
     TooLargeUpstream,
+    /// **GitHub sent no patch *and* no line counts, so we do not know what this
+    /// file holds.** Not the same as "nothing changed", and the difference is not
+    /// theoretical: on #151 `tests/tasks.test.ts` arrives in the 62-file response
+    /// as `additions: 0, deletions: 0, changes: 0` with no `patch`, and the same
+    /// file requested on a three-file page comes back with **163 additions, 3
+    /// deletions and a patch**. The whole response had hit a budget and the counts
+    /// were zeroed with the text.
+    ///
+    /// Three causes produce this identical shape and one response cannot tell them
+    /// apart — a binary file, a mode-only change, and the truncation above. So the
+    /// honest report is that the diff was not sent, with an offer to ask again:
+    /// **a narrower page resolves it definitively**, which is what separates this
+    /// from `TooLargeUpstream`, where re-fetching alone still yields nothing
+    /// (measured on the same pull request's 5290-change file).
+    ///
+    /// Reading this as "nothing changed" is the failure the absent-`patch`
+    /// discipline was written to prevent, arriving on a second axis: not the patch
+    /// missing, but the counts lying about why.
+    Unreported,
     /// Over `PR_DIFF_LINE_CAP`. The bytes did arrive and were dropped here, so
-    /// unlike the case above the count is exact and the refusal is ours to
+    /// unlike the two cases above the count is exact and the refusal is ours to
     /// reverse. Note what that costs, because the design document is ambiguous
     /// on it: the text is not in the payload, so "show anyway" is a second fetch
-    /// and not a re-render — there is no command for it yet.
+    /// and not a re-render — the same narrower-page fetch `Unreported` needs, which
+    /// is an argument for building one mechanism rather than two.
     TooLargeLocal { lines: u64 },
 }
 
@@ -449,14 +469,27 @@ fn parse_diff_file(row: &serde_json::Value) -> Option<DiffFile> {
         hunks: patch.map(split_hunks).unwrap_or_default(),
         omitted: None,
     };
-    // Decided on what we ended up holding rather than on the key's presence, so
-    // a patch we could not split lands here too. The variant names the usual
-    // cause and the reader's options are identical either way: the bytes are not
-    // in hand, and only `blob_url` is.
-    file.omitted = if file.hunks.is_empty() && additions + deletions > 0 {
-        Some(Omission::TooLargeUpstream)
-    } else {
+    // Decided on what we ended up holding rather than on the key's presence, so a
+    // patch we could not split lands here too.
+    //
+    // The counts are the discriminator, and which way they point is measured rather
+    // than assumed. Counts **kept** with no patch is a real refusal: #151's
+    // 5290-change plan has no patch even when fetched on a page of one. Counts
+    // **zeroed** with no patch is not a refusal at all, it is silence — the same
+    // pull request's `tests/tasks.test.ts` reads 0/0/0 in the 62-file response and
+    // 163/3 with a patch on a three-file page.
+    //
+    // A rename is the one zeroed case that explains itself: the row names two paths,
+    // which is the whole of what happened to the file, so there is nothing withheld.
+    let renamed = file.previous_path.is_some();
+    file.omitted = if !file.hunks.is_empty() {
         cap_file(&file, PR_DIFF_LINE_CAP)
+    } else if additions + deletions > 0 {
+        Some(Omission::TooLargeUpstream)
+    } else if renamed {
+        None
+    } else {
+        Some(Omission::Unreported)
     };
     if file.omitted.is_some() {
         // Dropped *here*, before serialisation — the whole reason this parse
@@ -903,12 +936,16 @@ detached\n";
         assert!(upstream.hunks.is_empty());
         assert!(upstream.blob_url.starts_with("https://github.com/"));
 
-        // Also no patch — and this one is a success. Nothing changed, so there
-        // is nothing to show, and calling it an omission would invent a failure.
-        let unchanged = f("tests/tasks.test.ts");
-        assert_eq!(unchanged.omitted, None);
-        assert_eq!((unchanged.additions, unchanged.deletions), (0, 0));
-        assert!(unchanged.hunks.is_empty());
+        // Also no patch, and **this row is lying**. It reads 0/0/0, and the same
+        // file requested on a three-file page comes back with 163 additions, 3
+        // deletions and a patch: the 62-file response hit a budget and the counts
+        // were zeroed along with the text. An earlier version of this test asserted
+        // `None` here and called it "a success — nothing changed", which would have
+        // had the drawer say exactly that about 166 changes.
+        let withheld = f("tests/tasks.test.ts");
+        assert_eq!(withheld.omitted, Some(Omission::Unreported));
+        assert_eq!((withheld.additions, withheld.deletions), (0, 0));
+        assert!(withheld.hunks.is_empty());
 
         // 2506 lines under one `@@ -0,0 +1,2506 @@`, the only file of the 62
         // over the cap. Its 97 KB of patch text is gone before serialisation.
@@ -942,7 +979,16 @@ detached\n";
             json("docs/superpowers/plans/2026-07-29-github-pull-requests.md"),
             json!({ "kind": "tooLargeLocal", "lines": 2506 }),
         );
-        assert_eq!(json("tests/tasks.test.ts"), serde_json::Value::Null);
+        assert_eq!(json("tests/tasks.test.ts"), json!({ "kind": "unreported" }));
+
+        // `null` is reserved for a file that really has nothing to show, and on
+        // #151 no such file exists: every empty one here is withheld rather than
+        // unchanged. The rename that does produce `null` is in `SHAPES` below,
+        // because this pull request contains no renames at all.
+        assert!(
+            d.files.iter().filter(|f| f.hunks.is_empty()).all(|f| f.omitted.is_some()),
+            "an empty file on this response is never simply 'unchanged'",
+        );
     }
 
     /// The frontend is TypeScript and reads `previousPath`, `blobUrl`,
@@ -1170,6 +1216,47 @@ detached\n";
         assert_eq!(g.hunks.len(), 1);
         assert!(g.hunks[0].lines.iter().any(|l| l.starts_with("-Subproject commit ")));
         assert!(g.hunks[0].lines.iter().any(|l| l.starts_with("+Subproject commit ")));
+    }
+
+    /// The counts are the discriminator between a refusal and silence, and this is
+    /// the rule stated on its own so it cannot drift.
+    ///
+    /// Measured on #151, both directions:
+    /// - counts **kept**, no patch → the file really is too big. The 5290-change
+    ///   plan has no patch even when fetched on a page of one.
+    /// - counts **zeroed**, no patch → we were told nothing. `tests/tasks.test.ts`
+    ///   reads 0/0/0 in the 62-file response and 163/3 with a patch on a page of
+    ///   three.
+    ///
+    /// Only a rename earns `None`: the row names two paths, which is the whole of
+    /// what happened, so nothing is being withheld.
+    #[test]
+    fn zeroed_counts_are_silence_and_kept_counts_are_a_refusal() {
+        let row = |extra: &str| {
+            let json = format!(r#"[{{"filename":"f.txt","status":"modified"{extra}}}]"#);
+            parse_pr_files(&json).unwrap().files.remove(0).omitted
+        };
+        assert_eq!(row(r#","additions":5290,"deletions":0"#), Some(Omission::TooLargeUpstream));
+        assert_eq!(row(r#","additions":0,"deletions":0"#), Some(Omission::Unreported));
+        // Absent counts read as zero, so they are silence too — the safe direction.
+        assert_eq!(row(""), Some(Omission::Unreported));
+
+        let renamed = parse_pr_files(
+            r#"[{"filename":"b.txt","previous_filename":"a.txt","status":"renamed",
+                 "additions":0,"deletions":0}]"#,
+        )
+        .unwrap();
+        assert_eq!(renamed.files[0].omitted, None, "a rename explains its own emptiness");
+
+        // A binary add and a mode-only change are indistinguishable from a truncated
+        // row on one response — all three are 0/0/0 with no patch — so they land on
+        // `Unreported` together. That is the honest answer: a narrower fetch is what
+        // tells them apart, and the view offers it rather than guessing.
+        assert_eq!(
+            parse_pr_files(r#"[{"filename":"i.png","status":"added","additions":0,"deletions":0}]"#)
+                .unwrap().files[0].omitted,
+            Some(Omission::Unreported),
+        );
     }
 
     /// The two constants must not converge. `body` and `files` in the list call

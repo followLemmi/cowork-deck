@@ -93,6 +93,41 @@ share a sentence:
 So the "too big to render" rule is not ours to invent. It is set upstream, signalled
 for free by an absent JSON key, and our only job is to report it honestly.
 
+### The counts can lie, and that is the discriminator
+
+**Found late, and it invalidates the paragraph above twice over.** `tests/tasks.test.ts`
+arrives in the 62-file response as `additions: 0, deletions: 0, changes: 0` with no
+`patch`. Requested on a **three-file page**, the same file at the same commit comes
+back with **163 additions, 3 deletions and a patch**.
+
+GitHub zeroes the counts along with the text when the *response as a whole* hits a
+budget. So `changes: 0` is not evidence that nothing changed, and both of #151's
+"unchanged" files are this — not renames (the first correction), and not unchanged
+either (the second).
+
+The 5290-change file is genuinely different: fetched on a page of **one**, it still
+has no patch and its count is still 5290. So:
+
+| shape | meaning | does re-fetching help? |
+|---|---|---|
+| counts **kept**, no patch | really too large upstream | **No** — measured |
+| counts **zeroed**, no patch | we were told nothing | **Yes** — a narrower page resolves it |
+
+Three causes produce that second shape and one response cannot tell them apart: a
+binary file, a mode-only change, and budget truncation. A rename is the one zeroed
+case that explains itself, because the row names two paths.
+
+Two consequences, both now implemented in `gh_pr.rs`:
+
+1. **`Omission::Unreported`** exists as its own state. Reporting these as "nothing
+   changed" would have had the drawer say exactly that about a file with 166 changes
+   — the absent-`patch` failure arriving on a second axis, where it is not the patch
+   that is missing but the counts lying about why.
+2. **The re-fetch is one mechanism, not two.** A narrower page resolves `Unreported`
+   *and* supplies the text for a locally-capped file. That settles the "Show anyway"
+   contradiction below in favour of building a single narrow-window fetch, rather
+   than an `uncapped_path` exemption that would only serve one of the two.
+
 `gh api graphql` is already an established idiom here — `issue_totals_argv` in
 `src-tauri/src/tasks/gh_issues.rs:150` builds argv as a pure function and
 `parse_issue_totals` parses in a second, both unit-tested. `run_gh_for_workspace`
