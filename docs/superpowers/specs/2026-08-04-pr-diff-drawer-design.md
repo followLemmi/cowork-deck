@@ -190,7 +190,17 @@ reason differs by cause because the escape hatch differs:
 |---|---|
 | Over **our** 2000-line cap | "Show anyway" **and** "Open on GitHub" — but see the contradiction below |
 | Omitted **upstream** | "Open on GitHub" only — the bytes never arrived, and a button that fails is worse than no button |
-| `changes: 0` | Nothing changed, stated affirmatively; that is not an error. **Do not assume a rename** — see the correction above. If `previousPath` is set, name both paths; on the only measured instances it is `null` |
+| `unreported` — counts zeroed, no patch | "GitHub sent no diff for this file." Offer **Check again**: a narrower page resolves it. Names **no** counts, because the zeroed ones are the lie |
+| `null` + empty hunks | Always a rename or a copy. Since `Omission::Unreported` landed, the parser cannot emit `null` for anything else — a zeroed row with no previous name is routed there instead, so this row no longer needs to hedge about `previousPath` |
+
+**Two rules about the previous path that are easy to get backwards:**
+
+- The file **header** shows `previousPath → path` whenever `previousPath` is set, and
+  that is *independent* of whether there is a note. A rename **with** content changes
+  has both a previous path and hunks; its note is `null` precisely because there are
+  rows to draw and a sentence above them would contradict the diff.
+- So a null note does **not** mean there is no previous path. Reading it that way
+  hides the rename on exactly the files where the rename matters most.
 
 > **"Show anyway" and "the cap is applied in Rust" contradict each other, and the
 > implementation resolved it one way.** This table priced "Show anyway" at ~33 ms,
