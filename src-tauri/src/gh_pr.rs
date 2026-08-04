@@ -372,9 +372,35 @@ pub struct DiffFile {
     pub omitted: Option<Omission>,
 }
 
+/// The commit a `blob_url` points at, if it points at one.
+///
+/// **This is what makes a diff self-identifying, and it is not obvious that it
+/// is available at all.** The files endpoint is addressed by pull request
+/// *number*, not by commit, so it serves whatever HEAD is at the moment it runs
+/// — which means the head a caller believed when it made the request is not
+/// necessarily the head the answer describes. If the branch moves in between, a
+/// slot keyed on the requested commit holds a diff labelled with the wrong one.
+///
+/// The rows carry the answer anyway. Every `blob_url` is
+/// `…/blob/<40 hex>/<path>`, and measured on #151 all 62 rows name the same SHA
+/// and it equals the pull request's `head.sha`. So the response can be keyed on
+/// what it *is* rather than on what was asked for, and the race stops being a
+/// thing to reason about.
+fn head_oid_from_blob_url(url: &str) -> Option<String> {
+    let rest = url.split("/blob/").nth(1)?;
+    let sha = rest.split('/').next()?;
+    let ok = sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit());
+    ok.then(|| sha.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrDiff {
+    /// The commit this diff actually describes, read from the rows rather than
+    /// taken from the caller. Empty when the response has no rows to read it
+    /// from — a pull request that changes nothing, where there is also nothing
+    /// to go stale.
+    pub head_ref_oid: String,
     pub files: Vec<DiffFile>,
     /// How many files the pull request touches, kept beside `files` rather than
     /// derived from its length — for the same reason `changed_files` is on
@@ -518,7 +544,16 @@ fn parse_diff_file(row: &serde_json::Value) -> Option<DiffFile> {
 pub fn parse_pr_files(json: &str) -> Result<PrDiff, String> {
     let rows: Vec<serde_json::Value> =
         serde_json::from_str(json).map_err(|e| format!("gh returned unreadable JSON: {e}"))?;
+    // From the first row that has one, not from the first row: a dropped row has
+    // no path and never reached `files`, and a malformed `blob_url` should not
+    // decide the commit for the 61 rows behind it.
+    let head_ref_oid = rows
+        .iter()
+        .filter_map(|r| r.get("blob_url").and_then(|x| x.as_str()))
+        .find_map(head_oid_from_blob_url)
+        .unwrap_or_default();
     Ok(PrDiff {
+        head_ref_oid,
         total_files: rows.len() as u64,
         files: rows.iter().filter_map(parse_diff_file).collect(),
     })
@@ -1223,6 +1258,44 @@ detached\n";
         assert_eq!(g.hunks.len(), 1);
         assert!(g.hunks[0].lines.iter().any(|l| l.starts_with("-Subproject commit ")));
         assert!(g.hunks[0].lines.iter().any(|l| l.starts_with("+Subproject commit ")));
+    }
+
+    /// The response says which commit it describes, and that is worth having
+    /// because the endpoint does not let you ask for one.
+    ///
+    /// `gh api repos/{o}/{r}/pulls/{n}/files` is addressed by number, so it serves
+    /// whatever HEAD is when it runs. A caller keying its cache on the head it
+    /// believed at request time can therefore hold a diff labelled with a commit
+    /// that is not the one in front of it — self-correcting on the next poll, but
+    /// only because something eventually notices. Reading the oid out of the rows
+    /// removes the question: the slot is keyed on what arrived.
+    #[test]
+    fn a_response_names_the_commit_it_describes() {
+        let d = parse_pr_files(PR151).unwrap();
+        // Measured: all 62 rows of the live response carry this SHA in `blob_url`,
+        // and it equals the pull request's `head.sha`.
+        assert_eq!(d.head_ref_oid, "906498824b13d514124385702e3f5777567b4e1d");
+
+        // Read from the first row that has one, so a dropped or malformed row does
+        // not decide the commit for the rest.
+        let mixed = r#"[
+            {"filename":"a","blob_url":"not-a-blob-url"},
+            {"filename":"b","blob_url":"https://github.com/o/r/blob/0123456789abcdef0123456789abcdef01234567/b"}
+        ]"#;
+        assert_eq!(
+            parse_pr_files(mixed).unwrap().head_ref_oid,
+            "0123456789abcdef0123456789abcdef01234567",
+        );
+
+        // A branch name where a SHA should be is not a SHA. Anything that is not
+        // 40 hex characters is refused rather than passed on as an identity, since
+        // a wrong key is worse than an absent one: it compares equal to itself and
+        // the staleness check silently stops working.
+        let branchy = r#"[{"filename":"a","blob_url":"https://github.com/o/r/blob/main/a"}]"#;
+        assert_eq!(parse_pr_files(branchy).unwrap().head_ref_oid, "");
+
+        // No rows, so nothing to read it from — and nothing that can go stale.
+        assert_eq!(parse_pr_files("[]").unwrap().head_ref_oid, "");
     }
 
     /// The counts are the discriminator between a refusal and silence, and this is

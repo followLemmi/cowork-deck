@@ -779,10 +779,18 @@ pub fn pr_diff(
     // `issue_totals_argv` states, and what makes the count below free in every
     // ordinary case.
     let mut full_page = true;
+    // Read off page one and kept, rather than overwritten per page. Later pages
+    // are served by separate requests and a push between them would give two
+    // different commits; the first is the one the bulk of what we return came
+    // from, and the head moving mid-fetch is what the staleness bar is for.
+    let mut head_ref_oid = String::new();
     while full_page && files.len() < PR_DIFF_FILE_LIMIT {
         let argv = pr_files_argv(&repo, number, PR_DIFF_PER_PAGE, page);
         let json = run_gh_for_workspace(&state, &workspace_id, &argv)?;
         let got = crate::gh_pr::parse_pr_files(&json)?;
+        if head_ref_oid.is_empty() {
+            head_ref_oid = got.head_ref_oid;
+        }
         full_page = got.total_files as usize == PR_DIFF_PER_PAGE;
         fetched += got.total_files;
         files.extend(got.files);
@@ -803,7 +811,7 @@ pub fn pr_diff(
     } else {
         fetched
     };
-    Ok(crate::gh_pr::PrDiff { files, total_files })
+    Ok(crate::gh_pr::PrDiff { head_ref_oid, files, total_files })
 }
 
 #[tauri::command(async)]
