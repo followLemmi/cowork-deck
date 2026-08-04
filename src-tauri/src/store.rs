@@ -314,7 +314,9 @@ mod tests {
     fn ui_state_round_trips_and_defaults_empty() {
         let s = Store::new(tmp());
         assert_eq!(s.ui_state(), UiState::default()); // NotFound -> default
-        assert_eq!(UiState::default().ui_scale, 1.0); // not 0.0, which derive would give
+        // Not 0.0, which derive would give, and not 1.0 — the shipped default is a
+        // step above the stylesheet's base. Must match `DEFAULT_SCALE` in `ui-scale.ts`.
+        assert_eq!(UiState::default().ui_scale, 1.15);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
@@ -336,7 +338,9 @@ mod tests {
         std::fs::write(s.ui_path(), r#"{"activeWorkspaceId":"w-7"}"#).unwrap();
         let st = s.ui_state();
         assert_eq!(st.active_workspace_id, Some("w-7".into()));
-        assert_eq!(st.ui_scale, 1.0);
+        // Such a file migrates *up*: its owner never chose a size, so they get the
+        // shipped default rather than the base the field did not exist to record.
+        assert_eq!(st.ui_scale, 1.15);
     }
 
     /// The other half of the same bug. `save_ui_state` used to write the file from a

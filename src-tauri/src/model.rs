@@ -340,10 +340,16 @@ pub struct UiState {
     pub ui_scale: f32,
 }
 
-/// 1.0 is the base declared in `styles.css`, not zero — which is what `derive`d
-/// `Default` would give, and a zero scale is an invisible interface.
+/// Must agree with `DEFAULT_SCALE` in `src/ui-scale.ts` — this is the value a person
+/// who has never opened the size chooser gets, and the two sides both claim to own it:
+/// the frontend when the read fails, this when the file has no key.
+///
+/// 1.15, not 1.0 and not zero. Zero is what a `derive`d `Default` would give, and a
+/// zero scale is an invisible interface. 1.0 is the 13px base in `styles.css`, which
+/// is the size that prompted the typography work in the first place; a file written
+/// before this field existed therefore migrates *up*, which is the intent.
 fn default_ui_scale() -> f32 {
-    1.0
+    1.15
 }
 
 impl Default for UiState {

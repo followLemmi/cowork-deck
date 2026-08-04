@@ -31,7 +31,17 @@ export const TERMINAL_BASE_PX = 14;
  *  unmeasured. Raising the ceiling is the geometry sweep's job, not this file's. */
 export const SCALE_STEPS = [0.85, 1, 1.15, 1.3, 1.45] as const;
 
-export const DEFAULT_SCALE = 1;
+/** **Not 1.** The 13px base is the size the app had when the owner called its type
+ *  unpleasant, so shipping 1 as the default would have answered that complaint with
+ *  a preference the complainant has to go and find. 1.15 puts the chrome at 14.95px
+ *  and the terminal at 16px, and 1 is still one click away for anyone who wants the
+ *  old density back — which is the whole reason the raise went into the scale rather
+ *  than into `:root { font-size }`.
+ *
+ *  Must stay a member of `SCALE_STEPS`: `clampScale` returns it for a non-finite
+ *  input, and an off-step value there gives `nextScale`/`prevScale` no index to move
+ *  from. There is a test on exactly that. */
+export const DEFAULT_SCALE = 1.15;
 
 /** The scale in force. Module state, deliberately: `TerminalPanel`'s constructor
  *  needs the current value, and `Deck` builds panels from four places — threading

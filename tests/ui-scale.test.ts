@@ -9,6 +9,20 @@ import {
 // previous one left behind.
 beforeEach(() => applyScale(DEFAULT_SCALE, document.documentElement));
 
+describe("DEFAULT_SCALE", () => {
+  it("is one of the steps", () => {
+    // `clampScale` returns it for a non-finite input, and `nextScale`/`prevScale`
+    // find their position with `indexOf`. An off-step default would return -1 there,
+    // making "larger" jump to the second step and "smaller" to the last one.
+    expect(SCALE_STEPS).toContain(DEFAULT_SCALE);
+  });
+
+  it("is not the bottom of the ladder, so smaller is always available", () => {
+    expect(prevScale(DEFAULT_SCALE)).toBeLessThan(DEFAULT_SCALE);
+    expect(nextScale(DEFAULT_SCALE)).toBeGreaterThan(DEFAULT_SCALE);
+  });
+});
+
 describe("clampScale", () => {
   it("returns the steps unchanged", () => {
     for (const s of SCALE_STEPS) expect(clampScale(s)).toBe(s);
@@ -87,8 +101,14 @@ describe("terminalFontPx", () => {
     expect(terminalFontPx(1.15)).toBe(16);
   });
 
-  it("leaves the default at the terminal's own base", () => {
-    expect(terminalFontPx(DEFAULT_SCALE)).toBe(TERMINAL_BASE_PX);
+  it("leaves an unscaled interface at the terminal's own base", () => {
+    // 1, not DEFAULT_SCALE. The two were the same value until the default became
+    // 1.15, and asserting them together hid which of the two this test was about.
+    expect(terminalFontPx(1)).toBe(TERMINAL_BASE_PX);
+  });
+
+  it("puts the shipped default on a whole pixel", () => {
+    expect(terminalFontPx(DEFAULT_SCALE)).toBe(16);
   });
 
   it("never goes backwards as the scale rises", () => {
@@ -98,8 +118,15 @@ describe("terminalFontPx", () => {
 });
 
 describe("rootFontPx", () => {
-  it("is the declared base at the default scale", () => {
-    expect(rootFontPx(DEFAULT_SCALE)).toBe(BASE_PX);
+  it("is the declared base at 100%", () => {
+    expect(rootFontPx(1)).toBe(BASE_PX);
+  });
+
+  it("is a step above the declared base at the shipped default", () => {
+    // The point of the whole change: the app no longer opens at the size that was
+    // complained about, and 13px is reachable by choosing 100%.
+    expect(rootFontPx(DEFAULT_SCALE)).toBe(14.95);
+    expect(rootFontPx(DEFAULT_SCALE)).toBeGreaterThan(BASE_PX);
   });
 
   it("rounds off binary floating-point noise", () => {

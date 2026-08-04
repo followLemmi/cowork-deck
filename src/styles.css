@@ -127,8 +127,13 @@
 
 * { box-sizing: border-box; }
 /* The base every `rem` above is measured from, and the one knob that moves the
-   whole scale. 13px keeps the app pixel-identical to what it was — `--fs-base` was
-   already claiming to be 13px and now enforces it. */
+   whole scale. 13px is what `--fs-base` was already claiming to be, and declaring it
+   here is what makes the claim true.
+   It is no longer the size the app opens at. `ui-scale.ts` writes an inline
+   `font-size` on this same element at boot, and its default is 1.15 — so 13px is the
+   floor of the ladder and the fallback if that write never happens, not the shipped
+   size. Changing this number moves every step; changing the *shipped* size means
+   changing `DEFAULT_SCALE`. */
 :root { font-size: 13px; }
 html, body, #app { height: 100%; margin: 0; }
 /* A column of two: the view switch, then the row of screens. It was a single row

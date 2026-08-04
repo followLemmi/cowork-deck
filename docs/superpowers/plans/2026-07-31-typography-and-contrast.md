@@ -522,6 +522,24 @@ Worth doing only if the base chosen in Phase 1 turns out to be a matter of taste
       *(Every step previews live and Cancel puts it back — a chooser that only applies on OK asks a person to imagine the result of each option, which is what they opened it to stop doing. The rejected list above is repeated in `settings.ts`'s own header, where the next person to reach for a hotkey will actually be standing.)*
 - [x] **Task 31: Apply at boot *before* `boot()` runs**, not as a `runBoot` step — `runBoot` stops at the first failing step, so a failed preference read would take the layout restore and the scheduler wiring with it. A preference that cannot be read is a preference at its default, not a dead app. *(awaited rather than fired alongside: `boot()` restores the session layout, and terminals built during it read the scale in their constructor)*
 
+### Task 32 — the default moves to 1.15
+
+- [x] **Executed 2026-08-04, after the owner ran the branch and reported no visible change.**
+
+Phases 1–3 shipped pixel-identical at the base by design, and Phase 7 shipped its default at 1.0 — so the whole of the work the owner asked for was reachable only by opening a dialog they did not know existed. That is the plan answering "the fonts and their size are unpleasant" with a preference rather than a change, and it is a mistake this record should keep rather than quietly fix.
+
+`DEFAULT_SCALE` is 1.15, and `default_ui_scale()` in `model.rs` matches it. Chrome opens at 14.95px, the terminal at 16px. No new measurement was needed: the step table above already checked 1.15 against the sidebar, the label and the view switch, and found no clipping and no horizontal scroll.
+
+Three consequences worth naming, because each is a thing a reader could otherwise take for a bug:
+
+- **`:root { font-size: 13px }` stays 13px** and its comment now says so explicitly. It is the floor of the ladder and the fallback if the boot-time write never happens — not the shipped size. Moving the shipped size means moving `DEFAULT_SCALE`; moving *this* moves every step.
+- **Only a `ui_state.json` written *before* `ui_scale` existed migrates up**, and that is a narrower set than it sounds. `save_ui_state` merges a patch into the whole struct and re-serialises it, so any file touched by a build that already had the field carries an explicit `"uiScale": 1.0` — written by a workspace switch, not by a person. `#[serde(default)]` cannot see past a key that is present, so those files stay at 1.0. **The owner's own machine was in exactly that state**, which is how the wrinkle was found — `~/.config/ca.jvl.coworkdeck/ui_state.json` held a `"uiScale": 1.0` nobody had chosen. Deleting that key, or picking any size once in the chooser, resolves it for a given machine.
+
+  This is only ever a problem for someone who ran this branch between 2026-08-03 and 2026-08-04 — after the merge, every upgrade comes from a build with no such key. Making `ui_scale` an `Option` on disk, so "never chose" stays representable, is the model that would have prevented it and is **deliberately not done here**: it would rewrite the field, the IPC type and four tests on an open PR to serve a population of one machine that is already fixed. Worth a card if the persisted-preference set ever grows.
+- **Two tests asserted `DEFAULT_SCALE === 1` while claiming to be about something else** (`rootFontPx` returning the declared base, `terminalFontPx` returning xterm's). Both now assert against the literal `1`, and the default has tests of its own — including that it is a member of `SCALE_STEPS`, which `clampScale`'s non-finite fallback and `nextScale`/`prevScale`'s `indexOf` both silently depend on.
+
+**Gate re-run in full:** `npx tsc --noEmit` clean, **50 files / 580 tests**, **412 cargo tests**, clippy at the carried ceiling of **6**.
+
 ---
 
 ## Tests
