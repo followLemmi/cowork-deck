@@ -1196,10 +1196,17 @@ detached\n";
         assert_eq!(r.omitted, None, "a rename is not an omission");
 
         // `\ No newline at end of file` sits *inside* the hunk, as its own line, after
-        // the line it belongs to. Verified across all ten real instances in the scan:
-        // never before the first `@@`, and never more than once in one patch. That
-        // matters because `split_hunks` discards anything ahead of the first header —
-        // had the marker been able to sit outside, it would have vanished silently.
+        // the line it belongs to. That is the load-bearing part: `split_hunks` discards
+        // anything ahead of the first header, so a marker able to sit outside one would
+        // have vanished silently. Across 7985 real patches, **zero** appear before the
+        // first `@@`.
+        //
+        // It can appear **twice** in one patch, though — 22 of those 7985 do, when
+        // neither side of the file ends in a newline. An earlier version of this
+        // comment claimed one was the maximum, on a sample of ten. Nothing in the
+        // parser cares, since a marker is an ordinary body line either way, but the
+        // claim was wrong and a wrong measurement in a comment outlives the sample it
+        // came from.
         let n = by("openai.yaml");
         let last = n.hunks[0].lines.last().unwrap();
         assert_eq!(last, "\\ No newline at end of file");
