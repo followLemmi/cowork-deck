@@ -231,3 +231,39 @@ export function fsRootOf(p: TrackerProviderConfig | null | undefined): TrackerRo
   if (root.kind === "project") return root;
   return root.kind === "path" && typeof root.path === "string" ? root : null;
 }
+
+/** One line of an issue body, for the list.
+ *
+ *  A list of bare titles cannot be triaged: "Refund webhook retries forever" and
+ *  "Refund webhook retries on a 410" are the same line at a glance, and the body that
+ *  tells them apart is already fetched — the card dialog uses it — and was being
+ *  thrown away here.
+ *
+ *  Markdown furniture is skipped rather than rendered: a heading, a quote, a fence, an
+ *  image or a table row says nothing on one line. A body that is *nothing but* a
+ *  checklist still gets a line, with the marker stripped — "no description" and "a
+ *  list of tasks" are different facts and the row must not report the first when it
+ *  means the second. */
+export function bodyExcerpt(body: string, max = 160): string {
+  const lines = body.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "");
+  const isFurniture = (l: string) => /^(#{1,6}\s|>|```|<!--|!\[|\|)/.test(l);
+  const isListItem = (l: string) => /^([-*+]\s|\d+\.\s)/.test(l);
+  const chosen = lines.find((l) => !isFurniture(l) && !isListItem(l))
+    ?? lines.find((l) => !isFurniture(l));
+  if (!chosen) return "";
+  const flat = chosen
+    .replace(/^([-*+]|\d+\.)\s+/, "")
+    .replace(/^\[[ xX]\]\s*/, "")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  // Cut on a word boundary: a mid-word cut reads as a rendering bug rather than as an
+  // excerpt. Only a single token longer than the cap is cut through — a URL or a
+  // minified line, where there is no boundary to prefer.
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return (space > 0 ? cut.slice(0, space) : cut).trimEnd() + "…";
+}

@@ -14,8 +14,12 @@
  *  with them. Exits non-zero when a case misses its threshold.
  *
  *  Thresholds are WCAG 2.2 AA: 4.5:1 for text (1.4.3), 3.0:1 for user interface
- *  components and meaningful graphics (1.4.11). The 3.0:1 large-text allowance
- *  never applies here — it begins at 24px, and the app's largest step is 19px.
+ *  components and meaningful graphics (1.4.11). The 3.0:1 large-text allowance still
+ *  never applies: the largest step anything currently renders at is `--fs-xl` at
+ *  22px, and the allowance begins at 24px. There is deliberately no step above it: a
+ *  30px token was declared during the redesign and removed again because nothing
+ *  rendered at it. Whatever first does needs a case here, not an assumption that the
+ *  3.0 allowance applies.
  */
 
 import { readFileSync } from "node:fs";
@@ -201,19 +205,26 @@ const TEXT = 4.5;   // 1.4.3
 const UI = 3.0;     // 1.4.11
 const EXEMPT = 0;   // measured and reported, but disabled controls are exempt
 
-/** `--accent-weak` over the panel: the selected session row and the selected
+/** `--sel` over the panel: the selected session row and the selected
  *  board filter, which is where a user is most likely to be looking. */
-const ACTIVE_ROW = ["--bg-panel", "--accent-weak"];
+const ACTIVE_ROW = ["--bg-island", "--sel"];
 
 /** The two diff bands: a tint at 0.13 painted straight onto the list's own ground.
  *  The tint sits *under* code, so every point of alpha is contrast taken off `--fg`
  *  — which is why the cases below are worth keeping rather than assuming. */
-const ADDED_BAND = ["--bg-app", "--diff-add-weak"];
-const REMOVED_BAND = ["--bg-app", "--diff-del-weak"];
+const ADDED_BAND = ["--bg-void", "--diff-add-weak"];
+const REMOVED_BAND = ["--bg-void", "--diff-del-weak"];
 
 // Values read out of the rules they belong to, so this table cannot drift from
 // the stylesheet it describes.
-const ICON_REST = Number(decl(css, ".btn--icon", "opacity"));
+/** `.btn--icon`'s resting colour. This used to be its `opacity`, and the change is
+ *  the point: the rule no longer has one. Muting a control with ancestor opacity is
+ *  what put every icon button in the app at 2.67:1 while sitting still, and it is
+ *  invisible to axe-core and Lighthouse because neither composites it. A colour is
+ *  measurable by anything, including them. `decl` throws if the property goes, so
+ *  putting `opacity` back cannot happen quietly. */
+const ICON_REST_COLOR = decl(css, ".btn--icon", "color");
+const ICON_ROW_HOVER = decl(css, ".btn--icon:hover", "color");
 const DISABLED = Number(decl(css, "button:disabled, .sk-run:disabled", "opacity"));
 const GRAY = Number(decl(css, "button:disabled, .sk-run:disabled", "filter").match(/grayscale\(([\d.]+)\)/)[1]);
 const ERROR_FILL = decl(css, ".state-error", "background");
@@ -235,20 +246,38 @@ assertNoRule(css, ".tk-card.done", "its opacity took a closed card's meta to 2.6
 const CASES = [
   {
     what: ".btn--icon at rest",
-    where: "every icon control in the app, on a sidebar row",
-    fg: "--fg-muted", backdrop: ["--bg-panel"], opacity: ICON_REST,
+    where: "every icon control in the app, sitting still on a sidebar island",
+    fg: ICON_REST_COLOR, backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: ".btn--icon at rest, on a hovered row",
+    where: "the same control once the ground under it has moved — hover raises the ground, not the ink",
+    fg: ICON_REST_COLOR, backdrop: ["--bg-hover"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: ".btn--icon on its own hover",
+    where: "the brightest of the three steps, on the ground its own hover paints",
+    fg: ICON_ROW_HOVER, backdrop: ["--bg-hover"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: ".btn--icon at rest, on a selected row",
+    where: "the worst ground it can land on: `--sel` lightens what the glyph is read against",
+    fg: ICON_REST_COLOR, backdrop: ACTIVE_ROW,
     threshold: UI, sc: "1.4.11",
   },
   {
     what: "closed row meta",
     where: "a closed row in the issue list, no longer dimmed",
-    fg: "--fg-subtle", backdrop: ["--bg-panel"],
+    fg: "--fg-dim", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "closed card meta",
     where: "a closed card on the board, no longer dimmed",
-    fg: "--fg-subtle", backdrop: ["--bg-app"], group: ["--bg-panel"],
+    fg: "--fg-dim", backdrop: ["--bg-void"], group: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -258,21 +287,21 @@ const CASES = [
     threshold: TEXT, sc: "1.4.3",
   },
   {
-    what: "--fg-subtle badge on a tile head",
+    what: "--fg-dim badge on a tile head",
     where: "no longer dimmed on the tiles that are not active",
-    fg: "--fg-subtle", backdrop: ["--bg-panel"],
+    fg: "--fg-dim", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".state-error on panel",
     where: "a session row at rest",
-    fg: "--st-error", backdrop: ["--bg-panel"], group: [ERROR_FILL],
+    fg: "--st-error", backdrop: ["--bg-island"], group: [ERROR_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".state-error on raised",
     where: "a hovered session row",
-    fg: "--st-error", backdrop: ["--bg-raised"], group: [ERROR_FILL],
+    fg: "--st-error", backdrop: ["--bg-inset"], group: [ERROR_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -293,7 +322,7 @@ const CASES = [
   {
     what: ".state-idle on active row",
     where: "the most common state label of all",
-    fg: "--fg-muted", backdrop: ACTIVE_ROW, group: [IDLE_FILL],
+    fg: "--fg-mid", backdrop: ACTIVE_ROW, group: [IDLE_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -317,14 +346,14 @@ const CASES = [
   {
     what: "button:disabled",
     where: "opacity and grayscale together — exempt, raised anyway",
-    fg: "--fg-muted", backdrop: ["--bg-panel"], opacity: DISABLED,
+    fg: "--fg-mid", backdrop: ["--bg-island"], opacity: DISABLED,
     filter: "grayscale", filterAmount: GRAY,
     threshold: EXEMPT, sc: "exempt (1.4.3 excludes inactive controls)",
   },
   {
     what: "button:disabled on raised",
     where: "the same rule on a pull request row",
-    fg: "--fg-muted", backdrop: ["--bg-raised"], opacity: DISABLED,
+    fg: "--fg-mid", backdrop: ["--bg-inset"], opacity: DISABLED,
     filter: "grayscale", filterAmount: GRAY,
     threshold: EXEMPT, sc: "exempt",
   },
@@ -332,32 +361,53 @@ const CASES = [
   // raising them is a decision about how the whole app looks. Measured so the
   // table is not quietly incomplete.
   {
-    what: "--border as a boundary",
+    what: "--line as a boundary",
     where: "out of scope — a palette decision, its own card",
-    fg: "--border", backdrop: ["--bg-panel"],
+    fg: "--line", backdrop: ["--bg-island"],
     threshold: EXEMPT, sc: "1.4.11 (out of scope)",
   },
   {
-    what: "--border-strong as a boundary",
+    what: "--line-strong as a boundary",
     where: "out of scope — same",
-    fg: "--border-strong", backdrop: ["--bg-panel"],
+    fg: "--line-strong", backdrop: ["--bg-island"],
     threshold: EXEMPT, sc: "1.4.11 (out of scope)",
   },
   {
-    what: "--bg-app input fill on a dialog",
+    what: "--bg-void input fill on a dialog",
     where: "out of scope — focus-and-hover, not a brighter resting border",
-    fg: "--bg-app", backdrop: ["--bg-panel"],
+    fg: "--bg-void", backdrop: ["--bg-island"],
     threshold: EXEMPT, sc: "1.4.11 (out of scope)",
   },
 
+  // The card dialog's damaged/conflict banner: a new surface, and the first one in the
+  // app to put body text on a tinted error ground rather than on a chip.
+  {
+    what: "damaged-card banner text",
+    where: "the reasons a card cannot be written, on `--bg-error-soft` over the dialog",
+    fg: "--fg", backdrop: ["--bg-island"], group: [decl(css, ".tk-c-broken", "background")],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "card facts value",
+    where: "the facts list's own inset ground inside the dialog",
+    fg: "--fg-mid", backdrop: ["--bg-island"], group: ["--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "card facts label",
+    where: "the quieter column beside it",
+    fg: "--fg-dim", backdrop: ["--bg-island"], group: ["--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+
   // --- the pull request diff drawer ---------------------------------------
-  // Three grounds, not one: context sits on `--bg-app`, changed lines on a tinted
-  // band, hunk headings on `--bg-raised`. A colour cleared on one of them says
+  // Three grounds, not one: context sits on `--bg-void`, changed lines on a tinted
+  // band, hunk headings on `--bg-inset`. A colour cleared on one of them says
   // nothing about the other two, and the drawer puts all three on screen at once.
   {
     what: "diff context text",
     where: "the unchanged lines, most of any diff",
-    fg: "--fg-muted", backdrop: ["--bg-app"],
+    fg: "--fg-mid", backdrop: ["--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -386,81 +436,95 @@ const CASES = [
   },
   {
     what: "line numbers, untinted gutter",
-    where: "why the gutter keeps `--bg-app` under it — see the two rejected rows below",
-    fg: "--fg-subtle", backdrop: ["--bg-app"],
+    where: "the gutter's own ground, which stays opaque so `position: sticky` works",
+    fg: "--fg-dim", backdrop: ["--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  // These two were REJECTED cases until the palette moved: at the old `--fg-dim`
+  // they measured 4.16 and 4.29, and that pair was the stated reason the band starts
+  // at the marker column instead of at the frame. The raise to 5.05 on an island took
+  // them to 5.25 and 5.51, so the reason expired and this script said so rather than
+  // letting a stale justification stand.
+  //
+  // The decision did not change, because it never rested on this alone: the two
+  // number cells are `position: sticky`, a sticky cell needs an opaque base, and a
+  // translucent gutter shows the scrolling code through itself. That argument is
+  // independent of any ratio. What changed is that the band is now survivable if
+  // someone ever does move it — so these are asserted, as the margin, rather than
+  // documented as a failure.
+  {
+    what: "--fg-dim on the added band",
+    where: "the margin if the tint ever reaches the gutter — no longer the reason it does not",
+    fg: "--fg-dim", backdrop: ADDED_BAND,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "--fg-dim on the removed band",
+    where: "the same, and the better of the pair now",
+    fg: "--fg-dim", backdrop: REMOVED_BAND,
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "hunk heading",
     where: "the parsed `@@` line, on the raised band that segments the file",
-    fg: "--fg-muted", backdrop: ["--bg-raised"],
+    fg: "--fg-mid", backdrop: ["--bg-inset"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "drawer header path",
     where: "the file path at the top of the drawer",
-    fg: "--fg", backdrop: ["--bg-panel"],
+    fg: "--fg", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "drawer header meta",
     where: "the counts beside it — file 3 of 62, 24 added, 7 removed",
-    fg: "--fg-subtle", backdrop: ["--bg-panel"],
+    fg: "--fg-dim", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "the open file row",
-    where: "the row whose diff the drawer is showing — `--accent-weak` over the row's own ground",
-    fg: "--fg-muted", backdrop: ["--bg-raised", "--accent-weak"],
+    where: "the row whose diff the drawer is showing — `--sel` over the row's own ground",
+    fg: "--fg-mid", backdrop: ["--bg-inset", "--sel"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "resize grip at rest",
     where: "a control, not text: it must be findable before it is used",
-    fg: "--fg-subtle", backdrop: ["--bg-panel"],
+    fg: "--fg-dim", backdrop: ["--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
   {
     what: "resize grip on hover/focus",
     where: "the focused state of the same control",
-    fg: "--accent", backdrop: ["--bg-panel"],
+    fg: "--accent", backdrop: ["--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
 
-  // Four colours the drawer rejected, kept as cases rather than as a comment, and
+  // Three colours the drawer rejected, kept as cases rather than as a comment, and
   // marked `rejected` so they document the decision without failing the run. Each
   // one is a design constraint that reads as arbitrary the moment its number is
   // gone — and the number is the only part that a palette edit can invalidate. A
   // rejected case that starts *passing* stops the run too: the reason it was
-  // rejected has expired and the decision above it is owed a second look.
+  // rejected has expired and the decision above it is owed a second look. That is
+  // not hypothetical — it is exactly what the Slate & Ember palette did to the two
+  // diff-band rows, which have moved up into the asserted set.
   {
-    what: "--fg-subtle on the added band", rejected: true,
-    where: "rejected — this is why the gutter is untinted",
-    fg: "--fg-subtle", backdrop: ADDED_BAND,
+    what: "--fg-dim on the open file row", rejected: true,
+    where: "rejected — why the whole file list is `--fg-mid`, selected row included",
+    fg: "--fg-dim", backdrop: ["--bg-inset", "--sel"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
-    what: "--fg-subtle on the removed band", rejected: true,
-    where: "rejected — the same, and the worse of the pair",
-    fg: "--fg-subtle", backdrop: REMOVED_BAND,
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "--fg-subtle on the open file row", rejected: true,
-    where: "rejected — why the whole file list is `--fg-muted`, selected row included",
-    fg: "--fg-subtle", backdrop: ["--bg-raised", "--accent-weak"],
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "--border-strong as the drawer seam", rejected: true,
+    what: "--line-strong as the drawer seam", rejected: true,
     where: "rejected — no brighter border than the rest of the app has; the seam is not a control",
-    fg: "--border-strong", backdrop: ["--bg-app"],
+    fg: "--line-strong", backdrop: ["--bg-void"],
     threshold: UI, sc: "1.4.11",
   },
   {
     what: "added band against removed band", rejected: true,
     where: "rejected — tint alone cannot tell the two apart, which is why the marker is a character",
-    fg: "--diff-add-weak", backdrop: ["--bg-app"], group: ["--diff-del-weak"],
+    fg: "--diff-add-weak", backdrop: ["--bg-void"], group: ["--diff-del-weak"],
     threshold: UI, sc: "1.4.11",
   },
 ];

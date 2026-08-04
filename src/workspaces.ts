@@ -133,7 +133,24 @@ export class WorkspacesPanel {
       // on the row, because the button is what the person lands on and what a
       // reader announces.
       if (isActive) label.setAttribute("aria-current", "true");
-      label.onclick = () => this.select(w.id);
+      // Select on a click anywhere in the row that is not a control — the same shape
+      // as `BoardView.makeOpenable`, and for the same reason: the name was the only
+      // target, which made a workspace a thin strip of clickable text in a row that
+      // otherwise did nothing, while the dot, the count and the bound login all
+      // looked equally pressable.
+      //
+      // The label stays a `<button>`: that is what makes it reachable and operable
+      // from the keyboard and what carries `aria-current`. Its click — including the
+      // synthetic one Enter and Space produce — bubbles to here, so there is ONE
+      // handler and no way for the two to disagree or to fire twice.
+      //
+      // `.ws-edit` and `.ws-del` are excluded because each means something other than
+      // "switch to this": ✎ opens the form, 🗑 asks to delete. Matched with `closest`
+      // so a glyph inside a button counts as that button.
+      row.onclick = (e) => {
+        if ((e.target as Element | null)?.closest(".ws-edit, .ws-del")) return;
+        this.select(w.id);
+      };
       const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
       edit.onclick = () => this.edit(w.id);
       const x = iconButton("trash", `Delete workspace: ${w.name}`, "ws-del btn--icon--danger");

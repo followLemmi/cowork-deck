@@ -1,23 +1,33 @@
 // The text-size preference.
 //
 // A multiplier rather than a pixel size, because two bases have to move together:
-// the chrome's is `:root { font-size: 13px }` in styles.css, and xterm's own is
-// 14px set from JS, since xterm owns its theme and reads no CSS token. One number
-// scales both, where two pixel values would drift apart the moment either changed.
+// the chrome's is `:root { font-size: 16px }` in styles.css, and xterm's own is set
+// from JS, since xterm owns its theme and reads no CSS token. One number scales
+// both, where two pixel values would drift apart the moment either changed.
 //
-// This exists because the 13px base chosen in Phase 1 of the typography plan is a
-// judgement, not a measurement — the whole point of putting the scale in `rem` was
-// that the judgement could later be handed to the person using the app. It is also
-// the only way to resize text here at all: this is a Tauri window, so there is no
-// browser zoom to fall back on.
+// This exists because the base is a judgement, not a measurement — the whole point
+// of putting the scale in `rem` was that the judgement could later be handed to the
+// person using the app. It is also the only way to resize text here at all: this is
+// a Tauri window, so there is no browser zoom to fall back on.
 
 /** The base `styles.css` declares on `:root`. Must agree with it — a scale is a
- *  multiplier on this, so a disagreement makes every reported pixel size a lie. */
-export const BASE_PX = 13;
+ *  multiplier on this, so a disagreement makes every reported pixel size a lie.
+ *
+ *  16, up from 13, and the arithmetic is the reason rather than taste: with the old
+ *  1.15 default the app shipped at 14.95px, so 13 was a number nobody ever saw and
+ *  every step of the scale had to be reasoned about twice — once as declared and
+ *  once as shipped. 16 with `DEFAULT_SCALE` at 1 makes 100% and the shipped size
+ *  the same thing. */
+export const BASE_PX = 16;
 
-/** xterm's own, set in `TerminalPanel`'s constructor. Deliberately larger than the
- *  chrome: the terminal is the content, the chrome is the frame. */
-export const TERMINAL_BASE_PX = 14;
+/** xterm's own, set in `TerminalPanel`'s constructor.
+ *
+ *  16 rather than 14, which keeps the terminal at the size it already shipped at:
+ *  `14 * 1.15` rounded to 16, and with the default back at 1 a base of 14 would
+ *  have made the terminal SMALLER while the chrome grew. No longer larger than the
+ *  chrome — at a 16px chrome it does not need to be, and a monospace face at 16
+ *  already reads bigger than a proportional one at the same size. */
+export const TERMINAL_BASE_PX = 16;
 
 /** Coarse on purpose. A slider invites a person to hunt for a value; six steps
  *  make the choice a decision rather than a search, and every one of them was
@@ -25,23 +35,32 @@ export const TERMINAL_BASE_PX = 14;
  *  `rem` handles everything.
  *
  *  The ceiling is 1.45 and not 2.0, which is what SC 1.4.4 would ask for, and the
- *  honest reason is that a few boxes are still measured in pixels — the sidebar's
- *  `clamp()` is `rem` now because this control needs it to be, but the modal caps
- *  and the deck's grid minimums are not. Claiming 200% would be claiming something
- *  unmeasured. Raising the ceiling is the geometry sweep's job, not this file's. */
+ *  honest reason is that a few boxes are still measured in pixels. The sidebar's
+ *  `clamp()` and the deck's grid minimum are `rem` — the deck's was converted when
+ *  the base moved to 16, because at 23.2px root a fixed 320px column could no
+ *  longer hold a tile head — but the modal caps and the 24px hit targets are px and
+ *  are meant to be. Claiming 200% would be claiming something unmeasured. Raising
+ *  the ceiling is the geometry sweep's job, not this file's. */
 export const SCALE_STEPS = [0.85, 1, 1.15, 1.3, 1.45] as const;
 
-/** **Not 1.** The 13px base is the size the app had when the owner called its type
- *  unpleasant, so shipping 1 as the default would have answered that complaint with
- *  a preference the complainant has to go and find. 1.15 puts the chrome at 14.95px
- *  and the terminal at 16px, and 1 is still one click away for anyone who wants the
- *  old density back — which is the whole reason the raise went into the scale rather
- *  than into `:root { font-size }`.
+/** **Back to 1**, and this reverses an earlier decision on purpose.
+ *
+ *  1.15 was the right answer to "the type is unpleasant" while the base stayed at
+ *  13px: it raised the shipped size without touching a stylesheet full of `rem`.
+ *  The cost was that the declared base and the shipped size were different numbers:
+ *  the comment beside `--fs-base` named 13px, which was true of the declaration and
+ *  false of anything on screen, so every judgement about the scale had to be made
+ *  against 14.95 while reading 13.
+ *
+ *  The raise now lives in `BASE_PX` where it belongs, which frees the multiplier to
+ *  mean what its name says: 100% is the shipped size, and the four other steps are
+ *  the person's to choose. Nobody loses the old density — 0.85 puts the chrome at
+ *  13.6px, within half a pixel of what 100% used to be.
  *
  *  Must stay a member of `SCALE_STEPS`: `clampScale` returns it for a non-finite
  *  input, and an off-step value there gives `nextScale`/`prevScale` no index to move
  *  from. There is a test on exactly that. */
-export const DEFAULT_SCALE = 1.15;
+export const DEFAULT_SCALE = 1;
 
 /** The scale in force. Module state, deliberately: `TerminalPanel`'s constructor
  *  needs the current value, and `Deck` builds panels from four places — threading

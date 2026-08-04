@@ -202,14 +202,20 @@ describe("the board's github states", () => {
     expect(v.mount.querySelector(".tk-label")?.textContent).toBe("<img src=x onerror=alert(1)>");
   });
 
-  /// The arrows are how a row moves at all now: the list has no columns to drag
-  /// between, so ‹ and › carry the whole of reopen and close beside ✓. With two
-  /// steps each row gets exactly one, and reaching the closed one means switching
-  /// the filter — which is the second half of what this pins.
-  it("gives an open issue one arrow and a closed one the other", () => {
+  /// **This reverses an earlier decision.** It used to give the list layout both arrows,
+  /// on the grounds that ‹ and › "carry the whole of reopen and close beside ✓" — which
+  /// is true of ‹ and false of ›. A GitHub board has two steps, `open` and `closed`, so
+  /// on an open issue `stepAfter` IS the closing step: › and ✓ reached the same end
+  /// through two different handlers, and › was labelled "Move to the next step", which
+  /// names nothing on a two-step board. Both paths ask for a reason, so nothing was
+  /// bypassed; it was two buttons for one action.
+  /// ‹ stays and is the only way to reopen, which is what that argument really
+  /// established.
+  it("gives an open issue no › — ✓ already closes it — and a closed one ‹ to reopen", () => {
     const v = new BoardView(handlers());
     v.render(state(), NOW);
-    expect(v.mount.querySelector(".tk-next")).not.toBeNull();
+    expect(v.mount.querySelector(".tk-next")).toBeNull();
+    expect(v.mount.querySelector(".tk-done")).not.toBeNull();
     expect(v.mount.querySelector(".tk-prev")).toBeNull();
 
     v.render(state({ tasks: [issue({ status: "closed", resolved: "2026-07-02T00:00:00Z" })] }), NOW);
@@ -218,7 +224,10 @@ describe("the board's github states", () => {
     expect(v.mount.querySelector(".tk-row")).toBeNull();
     expect(v.mount.querySelector(".tk-empty")?.textContent).toBe("No open issues.");
     closedFilter(v).click();
-    expect(v.mount.querySelector(".tk-prev")).not.toBeNull();
+    const prev = v.mount.querySelector(".tk-prev")!;
+    expect(prev).not.toBeNull();
+    // And it says where it goes, rather than "the previous step".
+    expect(prev.getAttribute("aria-label")).toBe("Move to Open");
   });
 
   /// Both actions are always offered: `damaged` and `conflict` are false by
@@ -382,3 +391,98 @@ function closedFilter(v: BoardView): HTMLButtonElement {
   if (!chip) throw new Error("no Closed filter chip");
   return chip;
 }
+
+// ---------------------------------------------------------------------------
+
+describe("the issue list's label filter and row shape", () => {
+  const labelChips = (v: BoardView) =>
+    [...v.mount.querySelectorAll<HTMLButtonElement>(".tk-f-kind")];
+  const rowTitles = (v: BoardView) =>
+    [...v.mount.querySelectorAll(".tk-row-title")].map((n) => n.textContent);
+  const chip = (v: BoardView, prefix: string) => {
+    const c = labelChips(v).find((n) => n.textContent!.startsWith(prefix));
+    if (!c) throw new Error(`no label chip for ${prefix}`);
+    return c;
+  };
+
+  const LABELLED = [
+    issue({ id: "1", title: "a bug", labels: ["bug"] }),
+    issue({ id: "2", title: "a payments bug", labels: ["bug", "payments"] }),
+    issue({ id: "3", title: "some docs", labels: ["docs"] }),
+  ];
+
+  it("offers one chip per label on the page, with its own count", () => {
+    const v = new BoardView(handlers());
+    v.render(state({ tasks: LABELLED }), NOW);
+    expect(labelChips(v).map((c) => c.textContent))
+      .toEqual(["bug (2)", "docs (1)", "payments (1)"]);
+  });
+
+  it("draws no chips when there is nothing to choose between", () => {
+    const v = new BoardView(handlers());
+    v.render(state({ tasks: [issue({ labels: ["bug"] })] }), NOW);
+    expect(labelChips(v)).toHaveLength(0);
+  });
+
+  it("filters the rows to the pressed label", () => {
+    const v = new BoardView(handlers());
+    v.render(state({ tasks: LABELLED }), NOW);
+    chip(v, "bug").click();
+    expect(rowTitles(v)).toEqual(["a bug", "a payments bug"]);
+    expect(chip(v, "bug").getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("clears the filter when the pressed chip is pressed again", () => {
+    // With no "all" chip this is the only way back, and a filter a person cannot
+    // clear is a trap.
+    const v = new BoardView(handlers());
+    v.render(state({ tasks: LABELLED }), NOW);
+    chip(v, "docs").click();
+    expect(rowTitles(v)).toEqual(["some docs"]);
+    chip(v, "docs").click();
+    expect(rowTitles(v)).toEqual(["a bug", "a payments bug", "some docs"]);
+  });
+
+  it("clears a filter naming a label that has left the page", () => {
+    const v = new BoardView(handlers());
+    v.render(state({ tasks: LABELLED }), NOW);
+    chip(v, "docs").click();
+    // A poll brings a page that no longer carries that label at all.
+    v.render(state({ tasks: [LABELLED[0], LABELLED[1]] }), NOW);
+    expect(rowTitles(v)).toEqual(["a bug", "a payments bug"]);
+    expect(labelChips(v).every((c) => c.getAttribute("aria-pressed") === "false")).toBe(true);
+  });
+
+  it("says what the filter hides rather than folding it into the page count", () => {
+    // The repository's total has nothing to say about a label subset, so the two
+    // facts are reported as two lines instead of one that compares them.
+    const v = new BoardView(handlers());
+    v.render(state({ tasks: LABELLED }), NOW);
+    chip(v, "payments").click();
+    const lines = [...v.mount.querySelectorAll(".tk-count")].map((n) => n.textContent);
+    expect(lines.some((l) => l!.includes("1 of 3 on this page carry"))).toBe(true);
+  });
+
+  it("gives the issue number a column of its own, outside the title's line", () => {
+    const v = new BoardView(handlers());
+    v.render(state({ tasks: [issue({ id: "412" })] }), NOW);
+    const row = v.mount.querySelector(".tk-row")!;
+    expect(row.querySelector(".tk-row-number")!.textContent).toBe("#412");
+    // A sibling of `.tk-row-main`, not a child: that is what lets the numbers line
+    // up down the page instead of starting a wrapping line.
+    expect(row.querySelector(".tk-row-main .tk-row-number")).toBeNull();
+  });
+
+  it("shows one line of the body, and nothing when there is no body", () => {
+    const withBody = new BoardView(handlers());
+    withBody.render(state({
+      tasks: [issue({ body: "## Steps\n\nThe receiver treats 410 as retryable." })],
+    }), NOW);
+    expect(withBody.mount.querySelector(".tk-row-excerpt")!.textContent)
+      .toBe("The receiver treats 410 as retryable.");
+
+    const without = new BoardView(handlers());
+    without.render(state({ tasks: [issue({ body: "" })] }), NOW);
+    expect(without.mount.querySelector(".tk-row-excerpt")).toBeNull();
+  });
+});

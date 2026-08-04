@@ -49,9 +49,24 @@ describe("workspaceForm", () => {
     expect(await p).toBeNull();
   });
 
+  /** `#rrggbb` as jsdom reports an inline `background`, so the assertion below can
+   *  compare a resolved colour against the swatch that produced it. */
+  const asRgb = (hex: string) => {
+    const n = hex.replace("#", "");
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16));
+    return `rgb(${r}, ${g}, ${b})`;
+  };
+
   it("keeps the chosen color when the color label area is clicked", async () => {
     const p = workspaceForm();
-    const swatches = document.querySelectorAll<HTMLButtonElement>(".form-swatch");
+    const swatches = [...document.querySelectorAll<HTMLButtonElement>(".form-swatch")];
+    // Read from the DOM, never named. This assertion used to be
+    // `expect(res.color).not.toBe("#61afef")` with "not reset to the first swatch"
+    // beside it — and when the palette moved, that literal stopped referring to any
+    // swatch at all, so the test passed without testing anything. Asserting the
+    // positive against the swatch that was clicked cannot rot the same way.
+    expect(swatches[0].getAttribute("aria-checked")).toBe("true");
+
     swatches[1].click(); // choose the second color
     const colorRow = [...document.querySelectorAll<HTMLElement>(".form-row")]
       .find((r) => r.querySelector(".form-swatches"))!;
@@ -60,7 +75,11 @@ describe("workspaceForm", () => {
     (document.querySelector(".form-path") as HTMLInputElement).value = "/p";
     document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
     const res = await p;
-    expect(res!.color).not.toBe("#61afef"); // not reset to the first swatch
+
+    expect(asRgb(res!.color)).toBe(swatches[1].style.background);
+    expect(asRgb(res!.color)).not.toBe(swatches[0].style.background);
+    expect(swatches[1].getAttribute("aria-checked")).toBe("true");
+    expect(swatches[0].getAttribute("aria-checked")).toBe("false");
   });
 
   /** The form debounces nothing, but it does await IPC — let the microtasks run. */

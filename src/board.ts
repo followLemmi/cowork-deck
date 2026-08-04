@@ -1,8 +1,9 @@
 import type { MigrationOffer, ProviderCapabilities, StepId, Task } from "./ipc";
-import { isTerminal, stepAfter, stepBefore } from "./board-config";
+import { firstTerminal, isTerminal, stepAfter, stepBefore, stepLabel } from "./board-config";
 import { ghUnavailable, type GhUnavailable } from "./gh-unavailable";
 import {
-  canShowMore, countLine, initialPageLimit, needsTotals, rateLimitBanner, type TaskSource,
+  bodyExcerpt, canShowMore, countLine, initialPageLimit, needsTotals, rateLimitBanner,
+  type TaskSource,
 } from "./issues";
 import { ago } from "./pr";
 import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
@@ -110,6 +111,11 @@ export class BoardView {
    *  a poll landing under the person's hand. Null rather than `"open"` because the
    *  step ids are the configuration's to choose. */
   private filter: StepId | null = null;
+  /** The label filter on the GitHub layout, or `null` for "every label". Kept beside
+   *  `filter` rather than in `BoardState`: it is a view preference, it survives a poll
+   *  because the view is not rebuilt from scratch, and nothing outside this class has
+   *  any use for it. */
+  private label: string | null = null;
   constructor(private h: BoardHandlers) {}
 
   /** `now` is a parameter, not a `Date.now()` inside, so the age line is
@@ -450,10 +456,45 @@ export class BoardView {
       wrap.append(bar);
     }
 
+    // Labels, as a filter. GitHub's own list makes them the main way a person finds
+    // "everything about payments", and this board rendered them as identical grey
+    // chips — so the only way to answer that was to read every row.
+    //
+    // Derived from the page in view rather than from the repository: these are the
+    // labels the rows on screen actually carry, so a chip can never select nothing.
+    // A filter naming a label that has since left the page clears itself, the same way
+    // the step filter falls back to the first group.
+    const labels = [...new Set(active.tasks.flatMap((t) => t.labels))].sort();
+    if (this.label !== null && !labels.includes(this.label)) this.label = null;
+    if (labels.length > 1) {
+      const bar = el("div", "tk-f-kinds");
+      bar.setAttribute("role", "group");
+      bar.setAttribute("aria-label", "Filter by label");
+      for (const name of labels) {
+        const n = active.tasks.filter((t) => t.labels.includes(name)).length;
+        const chip = el("button", "tk-f-kind", `${name} (${n})`);
+        chip.type = "button";
+        const on = this.label === name;
+        if (on) chip.classList.add("selected");
+        chip.setAttribute("aria-pressed", String(on));
+        // Toggles rather than only selects: with no "all" chip, pressing the active one
+        // is the only way back, and a filter a person cannot clear is a trap.
+        chip.onclick = () => { this.label = on ? null : name; this.render(state, Date.now()); };
+        bar.append(chip);
+      }
+      wrap.append(bar);
+    }
+
+    const shown = this.label === null
+      ? active.tasks
+      : active.tasks.filter((t) => t.labels.includes(this.label!));
+
     const rows = el("div", "tk-rows");
-    for (const t of active.tasks) rows.append(this.row(t, state, caps, now));
-    if (active.tasks.length === 0) {
-      rows.append(el("div", "tk-empty", `No ${active.label.toLowerCase()} issues.`));
+    for (const t of shown) rows.append(this.row(t, state, caps, now));
+    if (shown.length === 0) {
+      rows.append(el("div", "tk-empty", this.label === null
+        ? `No ${active.label.toLowerCase()} issues.`
+        : `No ${active.label.toLowerCase()} issues carry \u201c${this.label}\u201d.`));
     }
     wrap.append(rows);
 
@@ -478,6 +519,14 @@ export class BoardView {
         active.terminal ? "closed issues" : "open issues",
       );
     if (count) wrap.append(el("p", "tk-count", count));
+    // The paging above deliberately measures `active.tasks`, not `shown`: "Show more"
+    // fetches another page from GitHub, and the repository's total has nothing to say
+    // about a label subset. So the label filter gets its own line rather than being
+    // folded into a count that would then be comparing two different things.
+    if (this.label !== null) {
+      wrap.append(el("p", "tk-count",
+        `${shown.length} of ${active.tasks.length} on this page carry \u201c${this.label}\u201d.`));
+    }
     return wrap;
   }
 
@@ -490,20 +539,35 @@ export class BoardView {
     if (t.damaged) row.classList.add("damaged");
     this.makeOpenable(row, t);
 
-    const main = el("div", "tk-row-main");
     // `#42` from the card's own id, which for this source *is* the issue number
-    // (`gh_issues.rs`'s `row_to_task`). A file card would print `#01J…` here,
-    // which is why the row is reached only from the GitHub layout.
-    main.append(el("span", "tk-row-number", `#${t.id}`));
-    main.append(el("span", "tk-row-title", t.title));
-    main.append(...this.chips(t, status, state, caps));
-    row.append(main);
+    // (`gh_issues.rs`'s `row_to_task`). A file card would print `#01J…` here, which is
+    // why the row is reached only from the GitHub layout.
+    //
+    // A column of its own now, rather than the first word of a wrapping line: the
+    // number is the name a person actually uses for an issue, and a ragged left edge
+    // of numbers cannot be scanned. Tabular figures do the rest.
+    row.append(el("span", "tk-row-number", `#${t.id}`));
 
+    const main = el("div", "tk-row-main");
+    main.append(el("span", "tk-row-title", t.title));
+    // One line of the body, which is fetched already — the card dialog uses it — and
+    // was being dropped here. A list of bare titles cannot be triaged.
+    const excerpt = bodyExcerpt(t.body);
+    if (excerpt) main.append(el("span", "tk-row-excerpt", excerpt));
+
+    // Everything that is not the title, on a line of its own. It used to share the
+    // title's line, so three labels pushed the title into a wrap and the row's height
+    // depended on how many labels somebody had added.
+    const meta = el("div", "tk-row-meta");
+    meta.append(...this.chips(t, status, state, caps));
     // Which timestamp is the honest one depends on the step: a closed issue's
-    // `created` is the least interesting date on it, and `resolved` is null for
-    // an open one, so neither field can serve both.
+    // `created` is the least interesting date on it, and `resolved` is null for an open
+    // one, so neither field can serve both.
     const when = t.resolved ? `closed ${ago(t.resolved, now)}` : `opened ${ago(t.created, now)}`;
-    row.append(el("span", "tk-row-when", when));
+    meta.append(el("span", "tk-row-when", when));
+    main.append(meta);
+
+    row.append(main);
     row.append(this.actions(t, status, caps));
     return row;
   }
@@ -587,11 +651,24 @@ export class BoardView {
     // separate check for the unknown step, `stepBefore`/`stepAfter` already
     // say "no neighbour" for it. Withheld from a damaged or conflicting card
     // for the same reason `draggable` is: the write would only ever be refused.
+    // Where ✓ would send this card, and whether it is offered at all. Both are needed
+    // below: the › arrow is withheld when it would perform the transition ✓ already
+    // performs, and that is only knowable by asking what ✓ does.
+    const showDone = caps.canResolve && !isTerminal(caps.board, t.status)
+      && !t.conflict && !t.damaged;
+    const closesTo = showDone ? firstTerminal(caps.board) : null;
+
     const prevStep = stepBefore(caps.board, t.status);
     if (prevStep !== null && canWrite) {
       const prev = el("button", "tk-prev", "‹");
-      prev.title = "Move to the previous step";
-      prev.setAttribute("aria-label", "Move to the previous step");
+      // Names the destination. "Move to the previous step" is board vocabulary, and on
+      // a two-step board — which is what the GitHub source synthesizes — it names
+      // nothing a person can act on: the whole board is "open" and "closed", so "the
+      // previous step" is a riddle whose answer is "reopen it". `stepLabel` falls back
+      // to the id, so a card naming a step the configuration lost still reads.
+      const label = `Move to ${stepLabel(caps.board, prevStep)}`;
+      prev.title = label;
+      prev.setAttribute("aria-label", label);
       prev.onclick = () => this.h.onMove(t, prevStep);
       acts.append(prev);
     }
@@ -618,7 +695,7 @@ export class BoardView {
     // resolving it would rewrite a file we do not own (see fs.rs::resolve).
     // Already in a terminal step: there is nothing for ✓ to do. Asked of the
     // configuration, because which steps those are is board.json's decision.
-    if (caps.canResolve && !isTerminal(caps.board, t.status) && !t.conflict && !t.damaged) {
+    if (showDone) {
       const done = el("button", "tk-done", "✓");
       done.title = "Close this task";
       done.setAttribute("aria-label", "Close this task");
@@ -626,10 +703,24 @@ export class BoardView {
       acts.append(done);
     }
     const nextStep = stepAfter(caps.board, t.status);
-    if (nextStep !== null && canWrite) {
+    // **Withheld when it would only do what ✓ does.** This reverses an earlier decision
+    // that gave the list layout both, on the grounds that ‹ and › "carry the whole of
+    // reopen and close beside ✓" — which is true of ‹ and false of ›. On a GitHub board
+    // the steps are `open` and `closed`, so on an open issue the next step IS the
+    // closing step: › and ✓ called two different handlers to reach the same end, and
+    // one of them was labelled in vocabulary that named nothing on a two-step board.
+    // Both paths ask for a reason (`moveTask` checks `needsCloseConfirmation`), so
+    // nothing was being bypassed — it was two buttons for one action, which is its own
+    // defect.
+    // Stated generally rather than as a GitHub special case, because it is general: on
+    // any board, a card standing in the last non-terminal step has a › that closes it,
+    // and ✓ is the control that says so.
+    const nextIsClose = nextStep !== null && closesTo !== null && nextStep === closesTo;
+    if (nextStep !== null && canWrite && !nextIsClose) {
       const next = el("button", "tk-next", "›");
-      next.title = "Move to the next step";
-      next.setAttribute("aria-label", "Move to the next step");
+      const label = `Move to ${stepLabel(caps.board, nextStep)}`;
+      next.title = label;
+      next.setAttribute("aria-label", label);
       next.onclick = () => this.h.onMove(t, nextStep);
       acts.append(next);
     }

@@ -95,19 +95,26 @@ describe("terminalFontPx", () => {
     for (const s of SCALE_STEPS) expect(Number.isInteger(terminalFontPx(s))).toBe(true);
   });
 
-  it("rounds the case that would otherwise be fractional", () => {
-    // 14 * 1.15 is 16.1 exactly — the example the plan names.
-    expect(TERMINAL_BASE_PX * 1.15).toBeCloseTo(16.1, 5);
-    expect(terminalFontPx(1.15)).toBe(16);
+  it("rounds the steps that would otherwise be fractional", () => {
+    // 16 * 1.15 is 18.4 and 16 * 1.45 is 23.2. Either would give xterm a fractional
+    // character cell, every glyph would land off the device pixel grid, and the
+    // whole terminal would go soft.
+    expect(TERMINAL_BASE_PX * 1.15).toBeCloseTo(18.4, 5);
+    expect(terminalFontPx(1.15)).toBe(18);
+    expect(terminalFontPx(1.45)).toBe(23);
   });
 
   it("leaves an unscaled interface at the terminal's own base", () => {
-    // 1, not DEFAULT_SCALE. The two were the same value until the default became
-    // 1.15, and asserting them together hid which of the two this test was about.
+    // 1, not DEFAULT_SCALE. The two were the same until the default became 1.15 and
+    // are the same again now that it is back to 1 — kept apart deliberately, so the
+    // day the default moves off 100% this test still says which value it is about.
     expect(terminalFontPx(1)).toBe(TERMINAL_BASE_PX);
   });
 
   it("puts the shipped default on a whole pixel", () => {
+    // 16, which is the size the terminal already shipped at: the old pair was a
+    // 14px base and a 1.15 default, and `round(14 * 1.15)` is 16. The base absorbed
+    // the multiplier rather than the terminal changing size.
     expect(terminalFontPx(DEFAULT_SCALE)).toBe(16);
   });
 
@@ -122,19 +129,23 @@ describe("rootFontPx", () => {
     expect(rootFontPx(1)).toBe(BASE_PX);
   });
 
-  it("is a step above the declared base at the shipped default", () => {
-    // The point of the whole change: the app no longer opens at the size that was
-    // complained about, and 13px is reachable by choosing 100%.
-    expect(rootFontPx(DEFAULT_SCALE)).toBe(14.95);
-    expect(rootFontPx(DEFAULT_SCALE)).toBeGreaterThan(BASE_PX);
+  it("is the declared base at the shipped default", () => {
+    // This assertion is the inverse of the one it replaces, and deliberately so.
+    // The app used to open at 14.95px off a declared 13px base, so the declared base
+    // was a size nobody ever saw and every step had to be read twice. The raise now
+    // lives in BASE_PX, which frees the multiplier to mean what its name says.
+    expect(rootFontPx(DEFAULT_SCALE)).toBe(BASE_PX);
+    expect(rootFontPx(DEFAULT_SCALE)).toBe(16);
   });
 
-  it("rounds off binary floating-point noise", () => {
-    // 13 * 1.3 is 16.900000000000002, and that string would end up in an inline style
-    // for anyone inspecting the element to read. 1.15 is *not* an example — 13 * 1.15
-    // is exactly 14.95 — which is why the invariant below is the one worth asserting.
-    expect(BASE_PX * 1.3).not.toBe(16.9);
-    expect(rootFontPx(1.3)).toBe(16.9);
+  it("keeps its rounding guard even though no current step needs one", () => {
+    // The rounding exists because `13 * 1.15` is 14.949999999999999, and that string
+    // ended up in an inline style for anyone inspecting the element to read. At a
+    // power-of-two base there is no such case left: multiplying by 16 only shifts a
+    // float's exponent, so every step comes out exactly representable. The guard
+    // stays — the base is a judgement, and the next one need not be a power of two.
+    for (const s of SCALE_STEPS) expect(rootFontPx(s)).toBe(BASE_PX * s);
+    expect(rootFontPx(1.3)).toBe(20.8);
   });
 
   it("never produces more than two decimals, whatever the step", () => {
@@ -167,7 +178,7 @@ describe("applyScale", () => {
 describe("scaleLabel", () => {
   it("names the percentage and what it means in pixels", () => {
     expect(scaleLabel(1.3)).toContain("130%");
-    expect(scaleLabel(1.3)).toContain("16.9px");
+    expect(scaleLabel(1.3)).toContain("20.8px");
   });
 
   it("marks the default so a person can get back to it", () => {
@@ -183,6 +194,9 @@ describe("broadcastScale", () => {
     target.addEventListener(UI_SCALE_EVENT, (e) => { detail = (e as CustomEvent<number>).detail; });
     broadcastScale(1.15, target);
     expect(detail).toBe(terminalFontPx(1.15));
-    expect(detail).toBe(16);
+    // The literal is here so the test fails if the payload silently becomes the
+    // scale: `1.15` would also satisfy the line above if `terminalFontPx` were the
+    // identity. 18 is `round(16 * 1.15)`.
+    expect(detail).toBe(18);
   });
 });

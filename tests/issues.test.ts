@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   ISSUE_POLL_MS, FILE_POLL_MS, boardPollMs, OPEN_PAGE_LIMIT, CLOSED_PAGE_LIMIT, needsTotals,
   countLine, needsCloseConfirmation, closeConfirmText, RATE_WARN_BELOW, rateLimitBanner, sourceOf,
-  unavailableFrom, repoFromIssueUrl, fsRootOf,
+  unavailableFrom, repoFromIssueUrl, fsRootOf, bodyExcerpt,
   PAGE_STEP, MAX_PAGE_LIMIT, initialPageLimit, nextPageLimit, canShowMore,
 } from "../src/issues";
 import type { BoardConfig, TrackerConfig } from "../src/ipc";
@@ -278,5 +278,51 @@ describe("the count line's noun", () => {
     expect(countLine(50, 63, true)).toBe("Showing 50 of 63 open issues.");
     expect(countLine(20, 400, true, "closed issues")).toBe("Showing 20 of 400 closed issues.");
     expect(countLine(20, null, true, "closed issues")).toBe("Showing the first 20 closed issues.");
+  });
+});
+
+describe("bodyExcerpt", () => {
+  it("takes the first line of prose", () => {
+    expect(bodyExcerpt("The receiver treats 410 as retryable.\n\nMore below."))
+      .toBe("The receiver treats 410 as retryable.");
+  });
+
+  it("skips markdown furniture that says nothing on one line", () => {
+    const body = "## Steps to reproduce\n\n> quoted\n\n![shot](a.png)\n\nIt loops forever.";
+    expect(bodyExcerpt(body)).toBe("It loops forever.");
+  });
+
+  it("falls back to a checklist rather than reporting no description", () => {
+    // "no description" and "a list of tasks" are different facts.
+    expect(bodyExcerpt("## Plan\n\n- [ ] wire the retry budget\n- [ ] add a test"))
+      .toBe("wire the retry budget");
+  });
+
+  it("flattens inline code, links and emphasis", () => {
+    expect(bodyExcerpt("A `410 Gone` from [the API](https://x.y) is **permanent**."))
+      .toBe("A 410 Gone from the API is permanent.");
+  });
+
+  it("is empty for an empty body", () => {
+    expect(bodyExcerpt("")).toBe("");
+    expect(bodyExcerpt("\n\n   \n")).toBe("");
+  });
+
+  it("cuts on a word boundary and marks the cut", () => {
+    const src = "alpha bravo charlie delta echo foxtrot golf hotel";
+    const out = bodyExcerpt(src, 20);
+    expect(out.endsWith("…")).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(20);
+    // The real property, and the one a `/[a-z]…$/` assertion cannot express: what was
+    // kept is a prefix of the source that ends exactly where a word ends.
+    const kept = out.slice(0, -1);
+    expect(src.startsWith(kept)).toBe(true);
+    expect(src[kept.length]).toBe(" ");
+  });
+
+  it("cuts through a single token when there is no boundary to prefer", () => {
+    const out = bodyExcerpt("https://example.com/a/very/long/path/that/never/breaks", 20);
+    expect(out.endsWith("…")).toBe(true);
+    expect(out.length).toBe(20);
   });
 });

@@ -353,13 +353,23 @@ export class Deck {
     const isCommand = opts.kind === "command";
     const el = document.createElement("div");
     el.className = "tile";
+    // The state rail's carrier. A data attribute rather than a class for the reason
+    // the session row documents: `.state-*` already means "a chip with this fill",
+    // and one of those names on the tile would paint a chip across the whole thing.
+    el.dataset.state = "idle";
     const head = document.createElement("div");
     head.className = "tile-head";
     const title = document.createElement("span");
+    // A class, because the selector this used to rely on could not work. The rule was
+    // `.tile-head span:first-child`, and `head.insertBefore(bcastCheck, title)` below
+    // puts an `<input>` in front of the title on every tile — so the title is never
+    // `:first-child` and never got the `flex: 1` or the ellipsis that rule grants. A
+    // long session name pushed the badges out of the head instead of truncating.
+    title.className = "tile-name";
     title.textContent = titleText;
-    // `.tile-head span:first-child` truncates with an ellipsis, and a tile head
-    // is as narrow as the deck's grid makes it. Set beside the text so the two
-    // cannot drift — nothing rewrites either after this.
+    // The tooltip is for the sighted reader of a truncated name; the accessible name
+    // comes from the text itself. Set beside the text so the two cannot drift —
+    // nothing rewrites either after this.
     title.title = titleText;
     const schedMark = opts.scheduled ? icon("clock", 12) : null;
     if (schedMark) {
@@ -592,6 +602,10 @@ export class Deck {
   toggleBroadcast() {
     this.broadcasting = !this.broadcasting;
     for (const t of this.tiles.values()) t.bcastCheck.classList.toggle("hidden", !this.broadcasting);
+    // The deck makes room for the bar rather than letting it float over the bottom
+    // tile's last rows — which is the output a person is about to type at. The
+    // padding lives in the stylesheet; this only says when it applies.
+    this.deckEl.classList.toggle("has-bcast", this.broadcasting);
     if (this.broadcasting) this.showBroadcastPanel();
     else this.hideBroadcastPanel();
   }
@@ -662,6 +676,8 @@ export class Deck {
     const prev = tile.state;
     tile.state = state;
     tile.label.className = `tile-state state-${state}`;
+    // Keeps the tile's rail in step with its chip. Two carriers, one source.
+    tile.el.dataset.state = state;
     tile.label.textContent = LABEL[state];
     // У командного тайла перезапуск не предлагаем: он поднял бы claude, а не
     // повторил команду. Разовое действие повторяется из своего экрана.
@@ -897,7 +913,16 @@ export class Deck {
         // `aria-selected` — this is a list of things to go to, not a widget with a
         // selection, and it is the same reading as `.ws-label` below.
         if (isActive) row.setAttribute("aria-current", "true");
-        row.style.borderLeftColor = color;
+        // The left edge used to be a 3px border in the WORKSPACE's colour, which the
+        // group heading three lines up already carries as a dot — so it was a second
+        // rendering of the grouping and said nothing about the row. It is a state
+        // rail now: the one thing a list of a dozen sessions exists to answer, and
+        // readable in a single sweep instead of by reading a dozen small chips.
+        //
+        // A data attribute rather than a class: `.state-*` already means "a chip with
+        // this fill and this text colour", and putting one of those names on the row
+        // would paint a chip's background across the whole line.
+        row.dataset.state = t.state;
         row.onclick = () => this.focusSessionAnywhere(t.session);
         const stateSpan = document.createElement("span");
         stateSpan.className = `tile-state state-${t.state}`;

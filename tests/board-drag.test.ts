@@ -44,8 +44,11 @@ beforeEach(() => {
   view = new BoardView({ ...handlers });
 });
 
-function render(tasks: Task[]) {
-  view.render({ project: "deck", caps, error: null, links: [], tasks });
+function render(tasks: Task[], capsOverride?: Partial<ProviderCapabilities>) {
+  view.render({
+    project: "deck", caps: capsOverride ? { ...caps, ...capsOverride } : caps,
+    error: null, links: [], tasks,
+  });
 }
 
 function cardEl(id: string): HTMLElement {
@@ -89,10 +92,33 @@ function dragCardTo(id: string, step: StepId) {
 }
 
 describe("BoardView — dragging and the keyboard equivalent", () => {
-  it("gives a card in a known step both arrows in the middle of the board", () => {
+  it("gives a card in a known step both arrows, each naming where it goes", () => {
+    // The labels used to be "Move to the previous/next step", which is board vocabulary
+    // rather than an answer: on a two-step board — what the GitHub source synthesizes —
+    // "the next step" names nothing a person can act on.
     render([card({ id: "a", status: "todo" })]);
-    expect(btn("a", ".tk-prev")!.getAttribute("aria-label")).toBe("Move to the previous step");
-    expect(btn("a", ".tk-next")!.getAttribute("aria-label")).toBe("Move to the next step");
+    expect(btn("a", ".tk-prev")!.getAttribute("aria-label")).toBe("Move to backlog");
+    expect(btn("a", ".tk-next")!.getAttribute("aria-label")).toBe("Move to doing");
+  });
+
+  it("withholds › from the last non-terminal step, where it would only do what ✓ does", () => {
+    // `doing` is the last step before the terminal one, so `stepAfter` is exactly where
+    // ✓ sends a card. Two controls for one transition is the defect; ✓ is the one that
+    // names it, so › goes. ‹ stays — nothing else moves a card backwards.
+    render([card({ id: "a", status: "doing" })]);
+    expect(btn("a", ".tk-next")).toBeNull();
+    expect(btn("a", ".tk-done")).not.toBeNull();
+    expect(btn("a", ".tk-prev")!.getAttribute("aria-label")).toBe("Move to todo");
+  });
+
+  it("keeps › when ✓ is not on offer to duplicate it", () => {
+    // A damaged card gets no ✓ (its write would be refused) — but it gets no arrows
+    // either, for the same reason, so the pair that proves the rule is a board with no
+    // closing step at all: then ✓ has nowhere to send anything and › is the only way on.
+    render([card({ id: "a", status: "doing" })], {
+      board: { ...CFG, steps: CFG.steps.map((st) => ({ ...st, terminal: false })) },
+    });
+    expect(btn("a", ".tk-next")!.getAttribute("aria-label")).toBe("Move to done");
   });
 
   it("omits the back arrow in the first step and the forward arrow in the last", () => {

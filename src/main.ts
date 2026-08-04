@@ -35,7 +35,7 @@ import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
 import { runBoot } from "./boot";
-import { installSprite } from "./icons";
+import { icon, iconButton, installSprite } from "./icons";
 import { openGithubScreen } from "./github-screen";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
@@ -48,11 +48,21 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 installSprite();
 const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
 const deckEl = document.querySelector<HTMLElement>("#deck")!;
+// Each list is a raised surface of its own. The sidebar used to be one
+// undifferentiated scroll — heading, rows, heading, rows — so a workspace, a
+// scenario and a session all read as the same kind of thing. The class is all this
+// takes: the panels render into these mounts exactly as before, and the stylesheet
+// turns each one into an island with the heading it already writes as its head.
 const wsMount = document.createElement("div");
+wsMount.className = "island";
 const skMount = document.createElement("div");
+skMount.className = "island";
 const listMount = document.createElement("div");
+listMount.className = "island";
 const newBtn = document.createElement("button");
 newBtn.textContent = "+ session"; newBtn.className = "btn-primary";
+// Between the scenarios and the sessions, and outside both islands: it is the app's
+// one primary action, not a row in a list.
 sidebar.append(wsMount, skMount, newBtn, listMount);
 
 const boardEl = document.querySelector<HTMLElement>("#board")!;
@@ -77,6 +87,35 @@ const prBtn = document.createElement("button");
 prBtn.textContent = "Pull requests";
 views.append(termBtn, boardBtn, prBtn);
 viewbar.append(views);
+
+// The rest of the top bar: the wordmark on the left, the global actions on the
+// right. Both are optional-chained on purpose — three test files import this module
+// against a fixture that mirrors only `#app`, `#viewbar` and `#stage`, and a
+// non-null assertion here would throw before a single one of their assertions ran.
+const markEl = document.querySelector<HTMLElement>("#mark");
+if (markEl) {
+  const glyph = document.createElement("span");
+  glyph.className = "mark-glyph";
+  glyph.append(icon("deck", 14));
+  const text = document.createElement("span");
+  text.className = "mark-text";
+  text.append(document.createTextNode("cowork"));
+  const suffix = document.createElement("span");
+  suffix.textContent = "·deck";
+  text.append(suffix);
+  markEl.append(glyph, text);
+}
+
+const actionsEl = document.querySelector<HTMLElement>("#topbar-actions");
+if (actionsEl) {
+  // Both already exist as commands; these are the same actions with a place to be
+  // clicked, for the majority of moments when nobody is holding the keyboard.
+  const paletteBtn = iconButton("search", `Command palette (${hotkeyLabel("K")})`);
+  paletteBtn.onclick = () => openPalette(paletteCommands());
+  const settingsBtn = iconButton("sliders", "Text size");
+  settingsBtn.onclick = () => void chooseScale();
+  actionsEl.append(paletteBtn, settingsBtn);
+}
 
 /** The next step for each of the three unavailabilities, shared by both GitHub
  *  screens: the board's source can be unavailable for exactly the same reasons as

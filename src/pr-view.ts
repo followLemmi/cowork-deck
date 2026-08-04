@@ -432,6 +432,11 @@ export class PrView {
 
   private row(pr: PullRequest, now: number): HTMLElement {
     const row = el("div", "pr-row");
+    // The state rail's carrier, and the one thing worth railing on a pull request:
+    // whether its checks are red. The kind was already on a meta span as coloured
+    // text, which means reading four lines of every row to find the one that needs
+    // you — the same problem the session list had before its rail.
+    row.dataset.checks = pr.checks.kind;
 
     const open = this.expanded.has(pr.number);
     // A row that is open re-fetches when the pull request itself has moved on. Done
