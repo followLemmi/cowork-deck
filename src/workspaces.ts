@@ -71,7 +71,10 @@ export class WorkspacesPanel {
     this.render();
   }
 
-  private async add() {
+  /** Public because the empty deck offers the same action: with no workspace there is
+   *  nowhere for a session to run, so "add one" is the only thing that screen can
+   *  usefully say — and it must be the same form the sidebar's own button opens. */
+  async add() {
     const res = await workspaceForm();
     if (!res) return;
     const ws: Workspace = { id: crypto.randomUUID(), ...res };

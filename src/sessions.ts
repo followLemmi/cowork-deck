@@ -10,7 +10,7 @@ import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
-import { icon, iconButton } from "./icons";
+import { icon, iconButton, type IconName } from "./icons";
 import { linksInWorkspace, liveSessionForTask, taskPrompt, type TaskSessionLink } from "./tasks";
 import { workingStep } from "./board-config";
 
@@ -45,6 +45,38 @@ const LABEL: Record<SessionState, string> = {
 // pill answers "how many sessions are blocked on me".
 const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
 
+/** What an empty deck should say, and which one action it should offer.
+ *
+ *  `<main id="deck">` is an empty element until a session exists, so the app's most
+ *  likely first screen — and its screen every time the last session is closed — was an
+ *  unexplained dark rectangle.
+ *
+ *  Two states rather than one, because the action differs. With no workspace there is
+ *  nowhere for a session to run at all, and offering "New session" there produces
+ *  `Pick a workspace first.` in a modal: a question answered by a refusal. Pure, so the
+ *  copy can be asserted without standing a Deck up. */
+export function emptyDeckCopy(
+  activeWorkspaceName: string | null, anyWorkspaceExists: boolean,
+): { mark: IconName; title: string; body: string; action: string } {
+  if (activeWorkspaceName === null) {
+    return {
+      mark: "folder",
+      title: anyWorkspaceExists ? "Pick a workspace to start working" : "Add a workspace to start working",
+      body: "A workspace is a project folder. Sessions run in one, so it is the first thing "
+        + "the deck needs — and it is what binds the GitHub account git push will go out as.",
+      action: anyWorkspaceExists ? "Add another workspace" : "Add a workspace",
+    };
+  }
+  return {
+    mark: "terminal",
+    title: `No sessions in ${activeWorkspaceName}`,
+    body: "A session is a real claude process in this folder. It is a child of this window: "
+      + "closing the app ends it, and its scrollback stays on screen after it finishes so "
+      + "you can read what it did.",
+    action: "New session",
+  };
+}
+
 export class Deck {
   private tiles = new Map<string, Tile>();
   /** skillId -> session of that scenario's most recent scheduled run. */
@@ -60,7 +92,88 @@ export class Deck {
   private collapsed = new Set<string>();
   private zoomedSession: string | null = null;
   private strip: HTMLElement | null = null;
+  private emptyEl: HTMLElement | null = null;
+  private emptyActions: {
+    newSession: () => void; addWorkspace: () => void;
+    scenarios: () => Skill[]; runScenario: (s: Skill) => void;
+  } | null = null;
   constructor(private deckEl: HTMLElement, private listEl: HTMLElement, private workspaces: () => Workspace[]) {}
+
+  /** Wired after construction for the same reason `WorkspacesPanel.setSkillsSource` is:
+   *  the deck is built before the handlers it needs exist. Without them the empty deck
+   *  still renders and simply carries no buttons — an explanation is worth more than a
+   *  dark rectangle even with nothing to press. */
+  setEmptyActions(a: NonNullable<Deck["emptyActions"]>) {
+    this.emptyActions = a;
+    this.renderEmpty();
+  }
+
+  /** The deck with nothing on it. "Nothing" means nothing VISIBLE: tiles belonging to
+   *  another workspace stay in the DOM behind `ws-hidden`, so counting the map would
+   *  call a deck full while the screen is blank. */
+  private renderEmpty() {
+    const visible = [...this.tiles.values()]
+      .some((t) => !t.el.classList.contains("ws-hidden"));
+    if (visible) {
+      this.emptyEl?.remove();
+      this.emptyEl = null;
+      return;
+    }
+    const all = this.workspaces();
+    const active = this.activeWorkspaceId === null
+      ? null
+      : all.find((w) => w.id === this.activeWorkspaceId)?.name ?? null;
+    const copy = emptyDeckCopy(active, all.length > 0);
+
+    const box = document.createElement("div");
+    box.className = "deck-empty";
+    const mark = document.createElement("span");
+    mark.className = "deck-empty-mark";
+    mark.append(icon(copy.mark, 24));
+    const h = document.createElement("h2");
+    h.className = "deck-empty-title";
+    h.textContent = copy.title;
+    const p = document.createElement("p");
+    p.textContent = copy.body;
+    box.append(mark, h, p);
+
+    if (this.emptyActions) {
+      const go = document.createElement("button");
+      go.className = "deck-empty-go";
+      go.textContent = copy.action;
+      go.onclick = active === null
+        ? () => this.emptyActions!.addWorkspace()
+        : () => this.emptyActions!.newSession();
+      box.append(go);
+
+      // Scenarios are the fastest start there is — a session with its prompt already
+      // written — and on an empty deck the sidebar is the only place they appear. Quiet,
+      // because this screen has one primary and it is the button above.
+      const scenarios = active === null ? [] : this.emptyActions.scenarios();
+      if (scenarios.length > 0) {
+        const alt = document.createElement("div");
+        alt.className = "deck-empty-alt";
+        const caption = document.createElement("span");
+        caption.className = "deck-empty-caption";
+        caption.textContent = "or start from a scenario";
+        const row = document.createElement("div");
+        row.className = "deck-empty-alt-row";
+        for (const s of scenarios.slice(0, 4)) {
+          const b = document.createElement("button");
+          b.className = "deck-empty-scenario";
+          b.textContent = s.name;
+          b.onclick = () => this.emptyActions!.runScenario(s);
+          row.append(b);
+        }
+        alt.append(caption, row);
+        box.append(alt);
+      }
+    }
+
+    this.emptyEl?.remove();
+    this.emptyEl = box;
+    this.deckEl.appendChild(box);
+  }
 
   private startPolling() {
     if (this.pollTimer !== null) return;
@@ -457,6 +570,10 @@ export class Deck {
       kind: opts.kind, taskId: opts.taskId,
     };
     this.tiles.set(session, tile);
+    // The first tile ends the empty deck. `applyLayout` is only reached from here when a
+    // zoom has to be dropped, so this cannot wait for it — the panel would sit under the
+    // new terminal until something else moved the layout.
+    this.renderEmpty();
     if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
@@ -706,8 +823,15 @@ export class Deck {
         this.deckEl.appendChild(t.el);
       }
       if (this.strip) { this.strip.remove(); this.strip = null; }
+      // Last, so the panel is appended after the tiles it replaces have been moved —
+      // and here rather than in each caller, because this is the one function every
+      // path that changes what the deck holds already goes through.
+      this.renderEmpty();
       return;
     }
+    // A zoomed session is a session, so the deck is not empty.
+    this.emptyEl?.remove();
+    this.emptyEl = null;
     this.deckEl.classList.add("is-zoomed");
     if (!this.strip) {
       this.strip = document.createElement("div");

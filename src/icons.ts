@@ -77,6 +77,10 @@ const PATHS: Record<string, string> = {
     + '<polyline points="5,7 6.9,9 5,11"/><path d="M8.6 11 H11"/>',
   chart: '<path d="M2.5 13.5 H13.5"/><path d="M4.5 13.5 V9"/><path d="M8 13.5 V4.5"/>'
     + '<path d="M11.5 13.5 V7"/>',
+  // A project folder, for the empty deck: with no workspace there is nowhere for a
+  // session to run, and that screen says so with the same outline hand as the rest.
+  folder: '<path d="M2.5 5.2 a1.2 1.2 0 0 1 1.2-1.2 h2.5 l1.5 1.7 H12.3 a1.2 1.2 0 0 1 1.2 1.2 '
+    + 'v4.9 a1.2 1.2 0 0 1-1.2 1.2 H3.7 a1.2 1.2 0 0 1-1.2-1.2 z"/>',
   shield: '<path d="M8 2.5 l4.5 1.8 v3.6 c0 2.6-1.8 4.6-4.5 5.6 -2.7-1-4.5-3-4.5-5.6 V4.3 z"/>',
   wrench: '<path d="M10.8 2.8 a3.6 3.6 0 0 0-4.6 4.6 L2.8 10.8 a1.4 1.4 0 0 0 2 2 l3.4-3.4 '
     + 'a3.6 3.6 0 0 0 4.6-4.6 L11 6.6 9.4 5 z"/>',

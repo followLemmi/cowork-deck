@@ -1062,13 +1062,18 @@ async function requireWorkspace(): Promise<Workspace | null> {
   return null;
 }
 
-const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null, async (skill) => {
+/** Named, because the empty deck offers the same scenarios the sidebar does and both must
+ *  go through one path: resolve the workspace, fill the prompt's placeholders, launch. */
+const launchScenario = async (skill: Skill) => {
   const ws = await requireWorkspace();
   if (!ws) return;
   const prompt = await resolvePrompt(skill.prompt, placeholderForm);
   if (prompt === null) return;
   deck.launch(ws, { ...skill, prompt });
-}, (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
+};
+const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null,
+  (skill) => { void launchScenario(skill); },
+  (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
    () => workspaces.active?.name ?? null);
 // Deleting a workspace strands the scenarios pinned to it — the confirmation
 // says how many before it happens.
@@ -1078,6 +1083,14 @@ const newSession = async () => {
   if (ws) await deck.launch(ws, null);
 };
 newBtn.onclick = () => { void newSession(); };
+// What an empty deck can offer. Wired here rather than in the constructor because the
+// deck is built long before these exist — the same reason `setSkillsSource` is a setter.
+deck.setEmptyActions({
+  newSession: () => { void newSession(); },
+  addWorkspace: () => { void workspaces.add(); },
+  scenarios: () => skills.all,
+  runScenario: (skill) => { void launchScenario(skill); },
+});
 
 /** Human-readable binding for the palette. Filled in because the `hotkey`
  *  field existed on Command from the start and was never populated, so the
