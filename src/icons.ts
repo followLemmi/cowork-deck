@@ -17,6 +17,8 @@
 // motif. Authored on a 16-unit grid with a 12-unit live area and 1.5 stroke,
 // which matches the weight of 13px text at --fw-medium beside it.
 
+import markSource from "../src-tauri/icons/icon-source.svg?raw";
+
 const NS = "http://www.w3.org/2000/svg";
 
 /** Geometry per icon: everything is stroked with currentColor unless it opts
@@ -42,10 +44,6 @@ const PATHS: Record<string, string> = {
     + '<path d="M11.5 5 v1.4 a2.6 2.6 0 0 1-2.6 2.6 H7.1 a2.6 2.6 0 0 0-2.6 2.6"/>',
   play: '<path d="M5.8 3.6 l7 4.4 -7 4.4 z" fill="currentColor" stroke="none"/>',
   plus: '<path d="M8 3.5 V12.5"/><path d="M3.5 8 H12.5"/>',
-  // The wordmark's glyph: two stacked tiles, which is what a deck is. Drawn
-  // dark-on-light inside `.mark-glyph`, the one place in the app an icon inverts.
-  deck: '<rect x="2.8" y="3" width="10.4" height="4.2" rx="1.3"/>'
-    + '<rect x="2.8" y="8.8" width="10.4" height="4.2" rx="1.3"/>',
   // Settings. Two rails and two knobs rather than a gear: at 16px a gear's teeth
   // collapse into a circle, and the same shape already has to read at 12px in the
   // tile heads.
@@ -77,6 +75,10 @@ const PATHS: Record<string, string> = {
     + '<polyline points="5,7 6.9,9 5,11"/><path d="M8.6 11 H11"/>',
   chart: '<path d="M2.5 13.5 H13.5"/><path d="M4.5 13.5 V9"/><path d="M8 13.5 V4.5"/>'
     + '<path d="M11.5 13.5 V7"/>',
+  // A project folder, for the empty deck: with no workspace there is nowhere for a
+  // session to run, and that screen says so with the same outline hand as the rest.
+  folder: '<path d="M2.5 5.2 a1.2 1.2 0 0 1 1.2-1.2 h2.5 l1.5 1.7 H12.3 a1.2 1.2 0 0 1 1.2 1.2 '
+    + 'v4.9 a1.2 1.2 0 0 1-1.2 1.2 H3.7 a1.2 1.2 0 0 1-1.2-1.2 z"/>',
   shield: '<path d="M8 2.5 l4.5 1.8 v3.6 c0 2.6-1.8 4.6-4.5 5.6 -2.7-1-4.5-3-4.5-5.6 V4.3 z"/>',
   wrench: '<path d="M10.8 2.8 a3.6 3.6 0 0 0-4.6 4.6 L2.8 10.8 a1.4 1.4 0 0 0 2 2 l3.4-3.4 '
     + 'a3.6 3.6 0 0 0 4.6-4.6 L11 6.6 9.4 5 z"/>',
@@ -93,6 +95,35 @@ export const SCENARIO_ICONS = [
 
 export const ICON_NAMES = Object.keys(PATHS);
 export type IconName = keyof typeof PATHS & string;
+
+/** The application's own icon, as the mark in the window's corner.
+ *
+ *  Read from the file the bundle icons are generated from rather than redrawn here: the
+ *  corner of the window and the icon in the dock are the same product, and two copies of
+ *  a mark drift. `?raw` because that is how this project reads a file it must not
+ *  duplicate — `node:fs` does not typecheck under the narrowed `types`.
+ *
+ *  It is the icon **unchanged**, which is the point, and that has one consequence worth
+ *  stating: its cursor block is `#61afef`, the accent from before the Slate & Ember pass.
+ *  Hue belongs to state everywhere inside this window except here, where it is not a
+ *  state but a logo. If that trade stops being worth it, the answer is to redraw
+ *  `icon-source.svg` — not to draw something else in this corner.
+ *
+ *  What it cannot carry at 22px: the four tiles. Their lit/unlit fills are 16 % and 4.5 %
+ *  alpha, which is a tint at 1024 px and nothing at 22. What survives, and what makes it
+ *  recognisable, is the plate, the prompt chevron and that cursor. */
+
+export function appMark(size = 22): SVGSVGElement {
+  const doc = new DOMParser().parseFromString(markSource, "image/svg+xml");
+  const svg = doc.documentElement as unknown as SVGSVGElement;
+  svg.setAttribute("class", "mark-icon");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  // Decorative: the wordmark beside it is the accessible name of the app, and below
+  // 960px `.mark-text` is hidden — so the label lives on `#mark` itself, not here.
+  svg.setAttribute("aria-hidden", "true");
+  return svg;
+}
 
 const SPRITE_ID = "cowork-icon-sprite";
 

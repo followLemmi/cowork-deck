@@ -13,7 +13,7 @@
   <!-- ===================== Top bar ===================== -->
   <header class="topbar" data-od-id="topbar">
     <div class="mark" data-od-id="wordmark">
-      <span class="mark-glyph"><i data-ic="deck"></i></span>
+      <span class="mark-glyph" data-app-mark></span>
       <span class="mark-text">cowork<span>·deck</span></span>
     </div>
 
@@ -226,10 +226,16 @@
       <div class="deck" id="deck" data-od-id="deck">
 
         <!-- Working -->
+        <!-- A tile in the deck is a labelled REGION, not a control: it holds three
+             buttons and a focusable terminal, so `role="button"` here would be a
+             button containing interactive content. Zooming has its own ⤢ button.
+             In the filmstrip the same element becomes a real button — see `zoom()`,
+             where the body and those buttons are gone and the whole card is the
+             only thing left to press. -->
         <section class="tile rail rail--full is-working is-active" data-od-id="tile-tests"
-                 tabindex="0">
+                 tabindex="0" role="group" aria-labelledby="tile-name-tests">
           <header class="tile-head">
-            <span class="tile-name">tests</span>
+            <span class="tile-name" id="tile-name-tests">tests</span>
             <span class="chip chip--mono"><i data-ic="git-branch"></i> main</span>
             <span class="tile-tokens">38.2k</span>
             <span class="chip-state is-working">Working</span>
@@ -261,9 +267,10 @@
         </section>
 
         <!-- Waiting for a decision -->
-        <section class="tile rail rail--full is-waiting" data-od-id="tile-drawer" tabindex="0">
+        <section class="tile rail rail--full is-waiting" data-od-id="tile-drawer" tabindex="0"
+                 role="group" aria-labelledby="tile-name-drawer">
           <header class="tile-head">
-            <span class="tile-name">diff drawer</span>
+            <span class="tile-name" id="tile-name-drawer">diff drawer</span>
             <span class="chip chip--mono"><i data-ic="git-branch"></i> feat/drawer</span>
             <span class="tile-tokens">96.7k</span>
             <span class="chip-state is-waiting">Needs you</span>
@@ -293,9 +300,10 @@ track width, so I am adding --dv-digits.</span>
         </section>
 
         <!-- Finished a turn — the same green as working, without the breathing -->
-        <section class="tile rail rail--full is-done" data-od-id="tile-release-notes" tabindex="0">
+        <section class="tile rail rail--full is-done" data-od-id="tile-release-notes" tabindex="0"
+                 role="group" aria-labelledby="tile-name-release-notes">
           <header class="tile-head">
-            <span class="tile-name">release notes</span>
+            <span class="tile-name" id="tile-name-release-notes">release notes</span>
             <span class="chip chip--mono"><i data-ic="git-branch"></i> main</span>
             <span class="tile-tokens">21.4k</span>
             <span class="chip-state is-done">Done</span>
@@ -321,9 +329,10 @@ since the behaviour was always the intent.</span>
         </section>
 
         <!-- Error, and it says what happened rather than only that it happened -->
-        <section class="tile rail rail--full is-error" data-od-id="tile-pill" tabindex="0">
+        <section class="tile rail rail--full is-error" data-od-id="tile-pill" tabindex="0"
+                 role="group" aria-labelledby="tile-name-pill">
           <header class="tile-head">
-            <span class="tile-name">pill sizing</span>
+            <span class="tile-name" id="tile-name-pill">pill sizing</span>
             <span class="chip chip--mono"><i data-ic="git-branch"></i> fix/pill</span>
             <span class="tile-tokens">4.1k</span>
             <span class="chip-state is-error">Error</span>
@@ -370,6 +379,11 @@ same opening prompt.</span>
 (function () {
   const deck = document.getElementById("deck");
   const tiles = () => Array.from(deck.querySelectorAll(".tile"));
+  /* The deck's order as authored. Zooming reparents tiles into the filmstrip, and
+     putting them back where they happened to land left the deck reshuffled: zoom the
+     third session, come back, and it is now the first. The order is a fact about the
+     deck, so it is held once rather than reconstructed from the DOM. */
+  const authored = tiles();
 
   /* --- Active tile ----------------------------------------------------- */
   deck.addEventListener("mousedown", (e) => {
@@ -381,24 +395,60 @@ same opening prompt.</span>
   /* --- Zoom / juggle ---------------------------------------------------
      Double-clicking a tile header is the product's own gesture; the ⤢ button
      is the same action for anyone who cannot double-click. */
+  /* A card in the filmstrip is the app's only way to switch sessions while one is
+     zoomed, and its ⤢ / ✕ / search buttons are hidden at that size — so the CARD
+     has to be the control. It was a `tabindex="0"` region with a click handler:
+     focusable, ringed on arrival, and inert on Enter. A focus stop that promises an
+     action and refuses it is worse than one that never took focus.
+     Whole card rather than a re-added 30px button: at 240×59 the target is the
+     largest one on the screen, and the strip's whole point is that the eye is
+     elsewhere. */
+  function asStripButton(t) {
+    t.setAttribute("role", "button");
+    t.removeAttribute("aria-labelledby");
+    t.setAttribute("aria-label", "Switch to " + t.querySelector(".tile-name").textContent);
+  }
+  function asRegion(t) {
+    t.setAttribute("role", "group");
+    t.removeAttribute("aria-label");
+    t.setAttribute("aria-labelledby", t.querySelector(".tile-name").id);
+  }
+
   function zoom(tile) {
     deck.classList.add("is-zoomed");
-    tiles().forEach((t) => t.classList.toggle("zoomed", t === tile));
     let strip = deck.querySelector(".strip");
     if (!strip) {
       strip = document.createElement("div");
       strip.className = "strip";
       deck.append(strip);
     }
-    tiles().forEach((t) => { if (t !== tile) strip.append(t); });
+    /* The zoomed tile has to be a DIRECT child of the deck: every zoom rule is
+       written with `>` so that a strip card can never be caught by the hide rule.
+       Juggling from the strip left the newly picked card inside the strip, where it
+       kept `flex: 0 0 240px` and a hidden body — the gesture selected a session and
+       then showed nothing. */
+    deck.insertBefore(tile, strip);
+    /* Authored order here too, so the strip reads the same after a juggle as before
+       it — appended in DOM order, the card that gave up the zoom went to the end. */
+    authored.forEach((t) => {
+      if (t === tile) return;
+      strip.append(t);
+      asStripButton(t);
+      /* The tile that just gave up the zoom still carried the collapse glyph. */
+      t.querySelector("[data-zoom] use").setAttribute("href", "#i-expand");
+    });
+    authored.forEach((t) => t.classList.toggle("zoomed", t === tile));
+    asRegion(tile);
     tile.querySelector("[data-zoom] use").setAttribute("href", "#i-collapse");
   }
   function unzoom() {
     const strip = deck.querySelector(".strip");
-    if (strip) { Array.from(strip.children).forEach((t) => deck.insertBefore(t, strip)); strip.remove(); }
+    if (strip) strip.remove();
     deck.classList.remove("is-zoomed");
-    tiles().forEach((t) => {
+    authored.forEach((t) => {
+      deck.append(t);
       t.classList.remove("zoomed");
+      asRegion(t);
       t.querySelector("[data-zoom] use").setAttribute("href", "#i-expand");
     });
   }
@@ -418,6 +468,20 @@ same opening prompt.</span>
     /* Clicking a shrunken tile juggles focus to it. */
     const shrunk = e.target.closest(".strip .tile");
     if (shrunk) zoom(shrunk);
+  });
+
+  /* The same action from the keyboard. Space is prevented because on a `<section>`
+     it scrolls the page instead — the browser only suppresses that for elements it
+     already treats as buttons. Focus is put back on the card that took the zoom, so
+     the strip can be walked with Tab and Enter without the ring jumping to the top
+     of the deck. */
+  deck.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const card = e.target.closest(".strip .tile");
+    if (!card) return;
+    e.preventDefault();
+    zoom(card);
+    card.focus();
   });
 
   /* --- In-terminal search --------------------------------------------- */

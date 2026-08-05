@@ -278,3 +278,179 @@ Both arrows name their destination now.
   tests cannot see — the sidebar's three islands, tile heads on a narrow window, the
   broadcast bar, the card dialog's height — is the first thing to look at with the app
   open.
+
+## The 2026-08-05 quality pass
+
+A second reading of work already shipped: not filling gaps, but looking for what these
+screens get wrong. Six findings, all fixed. Each is a state the system promises and does
+not show, or a label that names the wrong thing.
+
+**The pressed filter had no hover.** `.filter:hover` and `.filter[aria-pressed="true"]`
+carry the same specificity, so the pressed rule won by being later and swallowed the
+hover it never replaced — on the one control that can clear a label filter, since there
+is no "all" chip. Fixed with `--sel-hover`; the app carries the same fix for
+`.tk-filter.selected` and `.tk-f-kind.selected`. The alpha and its measurements are in
+`tools/palette.mjs`, which now asserts 60 pairs.
+
+**Four components ate the focus ring.** The global ring is declared through `:where()`,
+so it contributes nothing but the pseudo-class and sits at the top of the file — which
+means *any* component painting its own `box-shadow` outranks it, being both later and at
+least as specific. The four that did were each in the worst possible place:
+
+| Selector | What it showed instead of a ring |
+|---|---|
+| `.island` | the launcher's four screen links are `<a class="island">` — no focus state at all |
+| `.tile.is-active` | the tile a keyboard is most likely to arrive on |
+| `.seg button[aria-selected="true"]` | the view tab the user is standing on |
+| `.swatch[aria-pressed="true"]` | the pressed swatch, whose position is the thing to see |
+
+Each now restates the ring beside the shadow that beat it — the idiom `.drawer-grip`
+already used. The rule is written into the stylesheet: paint a `box-shadow` on something
+focusable and you owe it a `:focus-visible` next to it. The app is immune to this trap
+because its global ring is an `outline` (`src/styles.css`), which no shadow can override.
+
+**Three `›` arrows named the wrong step.** The rule that an arrow names its destination
+is stated in this file, and the board mockup broke it on three cards out of seven. The
+worst was a card in **Todo** whose `›` read **"Move to Todo"** — the button named the
+column the card was already in, which is exactly the complaint the rule was written for.
+
+**`✓` was scattered.** It was drawn on one card out of five non-terminal ones, and two
+cards in the same column disagreed. Since the rule for `›` depends on where `✓` sends a
+card, an invisible `✓` makes that rule unverifiable for anyone reading the mockup. The
+footer order is now one order everywhere — `‹ › ▶ ✓`, arrows as a pair, then the
+actions, closing last — which is what the issue row already did (`▶ ✓ ↗`). The damaged
+card gets no `✓`: closing rewrites the file, and that is the one file we will not write.
+
+**Juggling sessions did not work.** `zoom()` marked the picked tile and moved the rest
+into the filmstrip, but never moved the picked one *out* of it. Every zoom rule is
+written with `>`, so a card left inside `.strip` got neither the grid row nor a body: the
+gesture selected a session and showed nothing. Only the first zoom — from the deck —
+ever worked. The deck also reshuffled itself, because returning from zoom inserted tiles
+where they had landed rather than where they belonged; the authored order is now held
+once and restored from it, filmstrip included.
+
+**The filmstrip card was a dead focus stop.** It is the only way to switch sessions while
+one is zoomed, and at 240×59 its own buttons are hidden — yet activation hung on a click
+handler on a `<section tabindex="0">`: it took focus, drew a ring, and did nothing on
+Enter. A focus stop that promises an action and refuses it is worse than one that never
+takes focus. The card is now a real button (`role="button"`, an `aria-label` naming the
+session, Enter and Space handled, Space suppressed explicitly because a `<section>`
+would scroll the page). In the deck the same element stays a labelled **region**:
+`role="button"` there would be a button containing three buttons and a focusable
+terminal. In the strip it is legitimate precisely because that content is
+`display: none` and absent from the accessibility tree.
+
+Note for the app: zoom there still has no keyboard path at all (`sessions.ts` hangs it on
+`dblclick`). That is wave 3 of the UX audit, not a regression of this port.
+
+## The issue dialog, and why it did not read
+
+From a screenshot of the running app on 2026-08-05, issue #150. Six separate reasons,
+and none of them is "the type is small".
+
+**The title could not physically be read.** An 81-character issue title in a single-line
+`<input>`, with the dialog focusing that field on open so the caret lands at the end:
+what was on screen was `oked GitHub token is reported as…`. The first third of the
+sentence was simply gone, and GitHub titles are long as a matter of course rather than
+occasionally. The title now **wraps** — a textarea, two lines at the dialog's width,
+three before it scrolls, the whole of it readable at once.
+
+**`BodyMarkdown · 28 lines`, as one word.** `.tk-c-hint` carries `margin-left: auto`, but
+`.form-label` is not a flex container, so the margin is inert — and `labeled()` leaves no
+text node between the two. A hint has to be laid out, not merely pushed:
+`.form-label--split` makes the label row a flex row, and the hint sits above the right
+edge of the box it describes.
+
+**The body was raw Markdown in an editor.** This is the real answer to "it does not
+read". An issue body is read every time the issue is triaged and written once, yet the
+screen showed `##`, backticks and `>` as literal characters, monospaced, in a box ten
+lines tall out of twenty-eight. The renderer already exists (`markdown.ts` draws pull
+request descriptions) and the `.md` rules are in the system. **Reading is now the resting
+state** and the editor is one press away: an `Edit` button in the label row, the same box,
+the same ground, the same measure, so switching does not move the page. Focus follows the
+mode, so the keyboard is never left on a hidden box.
+
+**The body got the leftovers while a column of dead space sat beside it.**
+`.modal--card` had only a `max-height`, so the dialog was as tall as its content: the
+rail runs out after four facts, a grid row is as tall as its taller column, and the body
+took what was left. Now `min-height: min(40rem, …)` and `align-items: stretch` instead of
+`start` — the rail top-packs its own contents, so `start` bought exactly one thing: a
+main column that stopped at its content.
+
+**`id 150` restated the heading.** A row is a claim, and that one claimed `#150` a second
+time. On a file card the id is a ULID nobody says out loud, so there the row stays.
+
+**`path` holding a URL was both the wrong word and unreadable** — it wrapped mid-host
+across two lines. It is now `on GitHub`, linking `followLemmi/cowork-deck#150`, the form
+a person says out loud, with the whole URL on the row's `title`. It is also the one fact
+here that is a destination.
+
+**And what the dialog never had: labels.** They are the main way anyone finds everything
+about payments, and until now they appeared only in the list row that the dialog covers.
+Uncoloured, for the reason the list gives — hue belongs to state.
+
+No author row: `Task` carries no author, so the dialog would be inventing one. Worth
+adding to the issue mapping; not drawn until it exists.
+
+**Also closed:** an issue row did not open at all — not by mouse, not by keyboard. The
+title is a button now, as on a card, the row carries `data-open`, and `.list-acts` joins
+`.card-acts` in the handler's exclusions, because `▶` starts a session and `✓` closes the
+issue and neither is a way into a dialog.
+
+One more divergence found on the way: `.tk-c-body`, `.tk-c-hint`, `.tk-c-facts`,
+`.tk-c-mono`, `.tk-c-patch` and `.tk-c-broken` existed **only** in `src/styles.css`. The
+system file carried the two-column shell and nothing that goes inside it, so the facts
+`<dl>` rendered as a default browser `<dl>` in the mockup and the two could not be
+compared at all. It carries them now, along with `--bg-error-soft`, which also lived only
+in the port. The measurement set is up to **62**.
+
+### Ported
+
+All of it, in this branch: `card-modal.ts`, `dialog-shell.ts`, `styles.css`. The title is
+a textarea with auto-grow; Enter still saves through the `data-single-line` opt-out
+dialog-shell reads, and a pasted newline folds to a space the way the input silently did.
+The body has the read/edit pair on the same `renderMarkdown` the pull request screen uses.
+The body's label row is built by hand rather than through `labeled()` — a `<label>` around
+a rendered body and a button would activate the field on every click in the text.
+`cardFacts` stopped repeating the heading (the predicate is shared with the heading so
+they cannot drift), calls the URL what it is, and gained a labels row.
+
+## An empty deck
+
+`<main id="deck"></main>` is an empty element until a session is added. So the app's most
+likely first screen — and its screen every time the last session is closed — was an
+unexplained dark rectangle.
+
+**Two states, not one**, because the action differs. With no workspace there is nowhere
+for a session to run, and "New session" there produces a `Pick a workspace first.` modal:
+a question answered by a refusal.
+
+- **No workspace.** "Add a workspace to start working" — a workspace is a project folder,
+  sessions run *in* one, and it is also what binds the GitHub account `git push` will go
+  out as. One primary: add a workspace.
+- **A workspace, no sessions.** "No sessions in {name}" — what a session is (a real
+  `claude` process in this folder, a child of this window) plus the thing nobody knows
+  that removes the fear: the scrollback stays on screen after it finishes. The primary is
+  "New session". Under a hairline, **scenarios**: the fastest start there is, a session
+  with its prompt already written, and on an empty deck the sidebar is the only place
+  they appear. Quiet buttons, because a screen gets one primary. Below that, a line
+  saying all of it is in the command palette, with keycaps.
+
+The mark is `.empty-mark`: one inset 52px glyph from the app's own icon set (`folder`,
+`terminal`). A screen needs something to look at before it needs words, but not a
+wireframe box and not a drawn scene — so it comes from the app's own vocabulary.
+
+Ported in this branch: `sessions.ts`, `main.ts`, `workspaces.ts`, `icons.ts`,
+`styles.css`. The copy and the choice between the two states are a pure function with
+tests on them. Rendering hangs off `applyLayout`, which every path that changes what the
+deck holds already goes through, plus one call where a tile is added — that path only
+reaches `applyLayout` when a zoom has to be dropped, so the panel would otherwise sit
+under the new terminal. "Empty" means nothing *visible*: tiles belonging to another
+workspace stay in the DOM behind `ws-hidden`, so counting the map would call a deck full
+while the screen is blank. `WorkspacesPanel.add` is public now and `launchScenario` has a
+name, because the empty deck offers the same two actions the sidebar does and both must go
+through one path.
+
+Gates after the port: `npm test` **761/761** (14 new), `tsc --noEmit` clean,
+`npm run contrast` 38 measured with the 3 documented rejections, `npm run build` succeeds.
+`cargo test` was not run — no Rust was touched.

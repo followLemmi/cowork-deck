@@ -21,7 +21,7 @@
 
   <header class="topbar">
     <div class="mark">
-      <span class="mark-glyph"><i data-ic="deck"></i></span>
+      <span class="mark-glyph" data-app-mark></span>
       <span class="mark-text">cowork<span>·deck</span></span>
     </div>
     <nav class="seg" aria-label="Screen">
@@ -230,14 +230,57 @@
           </div>
         </div>
 
-        <div class="island" style="padding:8px">
-          <div class="empty empty--center" style="max-width:52ch">
-            <h3 class="empty-title">Pick a workspace, then start a session</h3>
+        <!-- ---------------------------------------------------------------
+             The deck with nothing in it. `<main id="deck">` is an empty element until a
+             session is added, so the app's most likely first screen — and its screen
+             every time the last session is closed — was an unexplained dark rectangle.
+             Two states, not one, because the action differs: with no workspace there is
+             nothing to start a session IN, and offering "New session" there produces
+             "Pick a workspace first." in a modal, which is a question answered by a
+             refusal. -->
+        <p class="sec-note" style="margin-top:8px">
+          The deck screen with no sessions on it. Two states rather than one: the first
+          answers <em>where would it even run</em>, the second <em>what do I start</em>.
+        </p>
+
+        <div class="island" style="padding:8px" data-od-id="deck-empty-no-workspace">
+          <div class="empty empty--center" style="max-width:54ch">
+            <span class="empty-mark"><i data-ic="folder"></i></span>
+            <h3 class="empty-title">Add a workspace to start working</h3>
             <p>
-              A session is a real <code>claude</code> process in a folder you choose. It is a
-              child of this window: closing the app ends it.
+              A workspace is a project folder. Sessions run <em>in</em> one, so it is the
+              first thing the deck needs — and it is what binds the GitHub account that
+              <code>git push</code> will go out as.
+            </p>
+            <button type="button" class="btn btn--primary"><i data-ic="plus"></i> Add a workspace</button>
+          </div>
+        </div>
+
+        <div class="island" style="padding:8px" data-od-id="deck-empty-no-sessions">
+          <div class="empty empty--center" style="max-width:58ch">
+            <span class="empty-mark"><i data-ic="terminal"></i></span>
+            <h3 class="empty-title">No sessions in cowork-deck</h3>
+            <p>
+              A session is a real <code>claude</code> process in this folder. It is a child
+              of this window: closing the app ends it, and its scrollback stays on screen
+              after it finishes so you can read what it did.
             </p>
             <button type="button" class="btn btn--primary"><i data-ic="plus"></i> New session</button>
+            <!-- Scenarios are the fastest start there is — a session with its prompt
+                 already written — and on an empty deck the sidebar is the only place they
+                 appear. Quiet, because "New session" above is this screen's one primary. -->
+            <div class="empty-alt">
+              <span class="caps">or start from a scenario</span>
+              <div class="empty-alt-row">
+                <button type="button" class="btn btn--quiet"><i data-ic="shield"></i> Nightly review</button>
+                <button type="button" class="btn btn--quiet"><i data-ic="flask"></i> Fix the failing test</button>
+                <button type="button" class="btn btn--quiet"><i data-ic="book"></i> Write the session note</button>
+              </div>
+            </div>
+            <p class="empty-kbd">
+              Everything here is in the command palette — <span class="kbd">Ctrl</span>
+              <span class="kbd">Shift</span> <span class="kbd">K</span>
+            </p>
           </div>
         </div>
       </section>

@@ -5,6 +5,7 @@
 
 import { openDialog } from "./dialog-shell";
 import { isKnownKind, isKnownStep } from "./board-config";
+import { renderMarkdown } from "./markdown";
 import { ago } from "./pr";
 import type { BoardConfig, KindId, StepId, Task, TaskPatch } from "./ipc";
 
@@ -44,7 +45,28 @@ export function computePatch(original: Task, edited: CardFormValues): TaskPatch 
 /** One row of the facts block. `mono` marks the values that are identifiers rather
  *  than prose — an id, a session name, a path — because those are read character by
  *  character and a proportional face makes that harder than it needs to be. */
-export interface CardFact { label: string; value: string; title?: string; mono?: boolean }
+export interface CardFact {
+  label: string; value: string; title?: string; mono?: boolean;
+  /** Renders the value as a link. Only the issue URL has one: it is the single fact in
+   *  this list that is also a destination. */
+  href?: string;
+  /** Renders as chips instead of text. Labels are a set, not a sentence. */
+  chips?: string[];
+}
+
+/** The heading already shows `#150` for anything whose id is all digits — the same test
+ *  `openCardModal` uses for the title. Exported so the two cannot drift: the facts list
+ *  drops the `id` row exactly when the heading is already saying it. */
+export function idIsInHeading(task: Task): boolean {
+  return /^\d+$/.test(task.id);
+}
+
+/** `owner/repo#150` from an issue URL — the form a person says out loud. `null` for
+ *  anything that is not one, which is every file card: its `path` is a path. */
+export function issueRef(path: string): string | null {
+  const m = /^https?:\/\/[^/]*github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)/.exec(path);
+  return m ? `${m[1]}/${m[2]}#${m[3]}` : null;
+}
 
 /** The card's facts, in the order they are worth reading, with nothing in them that
  *  says nothing.
@@ -60,14 +82,30 @@ export interface CardFact { label: string; value: string; title?: string; mono?:
  *  - **`origin` appears only when it is not the ordinary case.** A person filing a card
  *    is the default; a session filing one is worth saying. */
 export function cardFacts(task: Task, now: number): CardFact[] {
-  const out: CardFact[] = [{ label: "id", value: task.id, mono: true }];
-  out.push({ label: "created", value: ago(task.created, now), title: task.created });
+  const out: CardFact[] = [];
+  // No `id` row when the heading is already `#150`. A row is a claim, and that one
+  // claimed the dialog's own title a second time. A file card's id is a ULID nobody says
+  // out loud, so there the row stays and earns its place.
+  if (!idIsInHeading(task)) out.push({ label: "id", value: task.id, mono: true });
+  // "opened" is the word GitHub uses and the word a person triaging says; "created" is
+  // right for a file that was written.
+  const ref = issueRef(task.path);
+  out.push({
+    label: ref ? "opened" : "created", value: ago(task.created, now), title: task.created,
+  });
   if (task.resolved) {
     out.push({ label: "closed", value: ago(task.resolved, now), title: task.resolved });
   }
   if (task.session) out.push({ label: "session", value: task.session, mono: true });
   if (task.origin !== "human") out.push({ label: "filed by", value: task.origin });
-  out.push({ label: "path", value: task.path, mono: true });
+  // Labels were nowhere in this dialog, though they are the main way anyone finds
+  // everything about payments — and the row that carries them is behind it.
+  if (task.labels.length > 0) out.push({ label: "labels", value: "", chips: task.labels });
+  // An issue's `path` is a URL, so "path" was the wrong word for it and the value was
+  // unreadable besides: it wrapped mid-host across two lines. The short ref is a fact a
+  // person can read and a destination they can reach; the whole URL stays on the row.
+  if (ref) out.push({ label: "on GitHub", value: ref, href: task.path, title: task.path });
+  else out.push({ label: "path", value: task.path, mono: true });
   return out;
 }
 
@@ -160,7 +198,28 @@ function factsList(facts: CardFact[]): HTMLElement {
     const dt = document.createElement("dt");
     dt.textContent = f.label;
     const dd = document.createElement("dd");
-    dd.textContent = f.value;
+    if (f.chips) {
+      // A set, not a sentence: chips, and uncoloured, because hue in this palette belongs
+      // to session state and fifteen repository labels would collide with it.
+      const wrap = document.createElement("span");
+      wrap.className = "tk-c-labels";
+      for (const name of f.chips) {
+        const chip = document.createElement("span");
+        chip.className = "tk-label";
+        chip.textContent = name;
+        wrap.append(chip);
+      }
+      dd.append(wrap);
+    } else if (f.href) {
+      const a = document.createElement("a");
+      a.href = f.href;
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      a.textContent = f.value;
+      dd.append(a);
+    } else {
+      dd.textContent = f.value;
+    }
     if (f.mono) dd.classList.add("tk-c-mono");
     // The exact value for anything shown in a friendlier form. On the `<dd>` rather
     // than the row so the tooltip appears over the value it belongs to.
@@ -226,13 +285,31 @@ export function openCardModal(
     // IS its name — `gh_issues.rs` puts it in `id` — and for a file card the id is a
     // ULID, which names nothing a human uses, so that one is called what the board and
     // the CLI both call it.
-    heading.textContent = /^\d+$/.test(task.id) ? `#${task.id}` : "Task";
+    heading.textContent = idIsInHeading(task) ? `#${task.id}` : "Task";
     head.append(heading);
 
-    const titleInput = document.createElement("input");
+    // A textarea, not an input, and only in order to WRAP. An issue title runs to eighty
+    // characters as a matter of course; an input answers that by scrolling the beginning
+    // out of sight, and this dialog focuses the field on open, so the caret lands at the
+    // end and takes the first third of the sentence with it.
+    // Enter still saves (`data-single-line`, read by dialog-shell) and a pasted newline
+    // is folded to a space, which is what the input did silently.
+    const titleInput = document.createElement("textarea");
     titleInput.className = "modal-input tk-c-title";
-    titleInput.type = "text";
+    titleInput.rows = 1;
+    titleInput.dataset.singleLine = "true";
     titleInput.value = task.title;
+    // `field-sizing: content` would do this in CSS but not in the webview this ships in.
+    const grow = () => {
+      titleInput.style.height = "auto";
+      titleInput.style.height = `${titleInput.scrollHeight}px`;
+    };
+    titleInput.addEventListener("input", () => {
+      if (titleInput.value.includes("\n")) {
+        titleInput.value = titleInput.value.replace(/\r?\n/g, " ");
+      }
+      grow();
+    });
 
     const kindSelect = buildSelect(
       "tk-c-kind", cfg.kinds, task.kind, isKnownKind(cfg, task.kind),
@@ -257,7 +334,21 @@ export function openCardModal(
     // The body of a card is Markdown — the pull request screen renders it as such — so
     // the field says so and counts its lines. A `<textarea>` in the UI face was the
     // only place in the app where authored Markdown was set in a proportional font.
-    const bodyRow = labeled("Body", bodyInput);
+    // Built by hand rather than through `labeled()`, which wraps its field in a `<label>`
+    // and relies on implicit association. That is right for a lone field and wrong here:
+    // a `<label>` containing a rendered body and a button means every click inside the
+    // rendered text, and the click on the button itself, also activates the labelled
+    // control. So the label is explicit — `for` against an id — and the row is a div.
+    bodyInput.id = "tk-c-body-field";
+    const bodyRow = document.createElement("div");
+    bodyRow.className = "form-row";
+    const bodyLabel = document.createElement("div");
+    bodyLabel.className = "form-label tk-c-label-row";
+    const bodyLabelText = document.createElement("label");
+    bodyLabelText.htmlFor = bodyInput.id;
+    bodyLabelText.textContent = "Body";
+    bodyLabel.append(bodyLabelText);
+    bodyRow.append(bodyLabel);
     const bodyHint = document.createElement("span");
     bodyHint.className = "tk-c-hint";
     const countLines = () => {
@@ -265,7 +356,41 @@ export function openCardModal(
       bodyHint.textContent = `Markdown · ${n} line${n === 1 ? "" : "s"}`;
     };
     countLines();
-    bodyRow.querySelector(".form-label")!.append(bodyHint);
+
+    // Reading is the resting state. A body is read every time a card is triaged and
+    // written once, and until now the only rendering of it was the editor: `##`,
+    // backticks and `>` as literal characters, monospaced, in a box a fraction of the
+    // body's length. `renderMarkdown` is the same one the pull request screen uses.
+    const bodyRead = document.createElement("div");
+    bodyRead.className = "tk-c-read md";
+    bodyRead.tabIndex = 0;
+    const paintRead = () => {
+      bodyRead.replaceChildren(renderMarkdown(bodyInput.value));
+    };
+    paintRead();
+    bodyInput.hidden = true;
+
+    const bodyMode = document.createElement("button");
+    bodyMode.type = "button";
+    bodyMode.className = "tk-c-mode";
+    bodyMode.textContent = "Edit";
+    bodyMode.setAttribute("aria-pressed", "false");
+    bodyMode.onclick = () => {
+      const editing = bodyMode.getAttribute("aria-pressed") === "true";
+      if (editing) paintRead();
+      bodyRead.hidden = !editing;
+      bodyInput.hidden = editing;
+      bodyMode.setAttribute("aria-pressed", String(!editing));
+      bodyMode.textContent = editing ? "Edit" : "Done";
+      // Focus follows the mode: the keyboard is never left on a hidden box.
+      (editing ? bodyRead : bodyInput).focus();
+    };
+    // A card nobody can write is a card nobody can edit, so the toggle goes with the
+    // field it toggles — the reading side stays, which is the half that still works.
+    if (!canWrite) bodyMode.hidden = true;
+
+    bodyLabel.append(bodyHint, bodyMode);
+    bodyRow.append(bodyRead, bodyInput);
 
     // Two columns, and the reason is not "there was room". A dialog wide enough to stop
     // the body scrolling is also wide enough to give it a 100-character measure, which
@@ -360,5 +485,8 @@ export function openCardModal(
     // the card's own title button *behind* the overlay, where Space (unlike
     // Enter) is not intercepted by the shell and reopens a second modal.
     (canWrite ? titleInput : cancelBtn).focus();
+    // After the box is in the document: `scrollHeight` on a detached element is zero, so
+    // a title measured before this point wraps to one line and stays there.
+    grow();
   });
 }

@@ -40,6 +40,19 @@ describe("openDialog", () => {
     expect(onAccept).not.toHaveBeenCalled();
   });
 
+  // Unless the textarea is one only in order to WRAP. The card dialog's title is one: an
+  // issue title runs past what a single-line input can show, but a title has no second
+  // line, so Enter there still means save.
+  it("still accepts on Enter in a textarea that declares itself single-line", () => {
+    const onAccept = vi.fn();
+    const { box } = openDialog({ onCancel: () => {}, onAccept });
+    const ta = document.createElement("textarea");
+    ta.dataset.singleLine = "true";
+    box.append(ta);
+    press("Enter", ta);
+    expect(onAccept).toHaveBeenCalledOnce();
+  });
+
   // Tab used to walk out of the overlay into the sidebar and the terminal
   // underneath, where keystrokes went into a PTY the user could not see.
   it("keeps Tab inside the dialog", () => {

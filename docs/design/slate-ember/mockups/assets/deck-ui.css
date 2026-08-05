@@ -50,6 +50,10 @@
   --accent-press: #bed5df;
   --accent-ink: #0f0d0b;    /* what sits ON an accent fill */
   --sel: rgba(213, 234, 243, 0.10);
+  /* The selected ground under the cursor. Translucent for the same reason `--sel` is:
+     a filter bar sits on the screen's ground and a specimen sheet's on an island, and
+     both composites are measured. */
+  --sel-hover: rgba(213, 234, 243, 0.18);
 
   /* State, and state alone. `ended` has no hue by design. */
   --st-working: #7bd77f;
@@ -59,6 +63,10 @@
   --chip-working: rgba(123, 215, 127, 0.14);
   --chip-waiting: rgba(239, 200, 69, 0.16);
   --chip-error: rgba(251, 129, 122, 0.06);  /* the fill's hue IS the text's, so alpha costs contrast: 0.12 gave 4.31 */
+  /* A soft error ground for a BANNER, and deliberately NOT the error chip's fill. A chip
+     carries text of the same hue as its fill, so every point of alpha there is contrast
+     spent; a banner carries `--fg` and can afford twice as much. Both are measured. */
+  --bg-error-soft: rgba(251, 129, 122, 0.12);
   --chip-ended: rgba(186, 183, 178, 0.10);
   --diff-add: rgba(123, 215, 127, 0.13);
   --diff-del: rgba(251, 129, 122, 0.13);
@@ -156,7 +164,14 @@ h1, h2, h3, h4, h5, h6, p, ul, ol, dl, dd, figure { margin: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
 
 /* One ring for the whole app. `:focus-visible` only — a mouse click on a tile
-   should not light it up like a keyboard landing. */
+   should not light it up like a keyboard landing.
+   `:where()` costs nothing, which is the point for the radius — but it also means
+   this rule loses to ANY component that paints its own `box-shadow`, because every
+   such rule is both later in the file and at least as specific. The ring is not a
+   default a component may quietly outrank, so each of the four that did restates it
+   below, next to the shadow that beat it (`.island`, `.tile`, `.seg button`,
+   `.swatch`; `.drawer-grip` already did). The rule for anything added later: paint a
+   `box-shadow` on something focusable and you owe it a `:focus-visible` beside it. */
 :where(a, button, input, select, textarea, [tabindex]):focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
@@ -218,12 +233,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* The wordmark. A filled square with a notch cut out of it — the same round-cap,
    outline handwriting as the icon set, at the one size where a solid reads. */
 .mark { display: flex; align-items: center; gap: var(--sp-2); flex: none; }
-.mark-glyph {
-  width: 22px; height: 22px; border-radius: var(--r-sm);
-  background: var(--fg); color: var(--bg-void);
-  display: grid; place-items: center;
-}
-.mark-glyph svg { width: 14px; height: 14px; }
+/* No plate of its own: the mark inside it is the application's icon and that icon brings
+   its own. A light plate under it would read as a sticker with the icon stuck on top. */
+.mark-glyph { width: 22px; height: 22px; flex: none; display: grid; place-items: center; }
+/* The icon's plate is `#1d1f21` against a `--bg-chrome` of `#171412` — 1.06:1, which is no
+   border at all; its own 9%-white hairline is what gives it an edge. The one element here
+   whose colours come from outside the palette, because it is a logo, not a component. */
+.mark-icon { display: block; width: 22px; height: 22px; }
 .mark-text {
   font-family: var(--font-display); font-size: var(--fs-body);
   font-weight: var(--fw-announce); letter-spacing: -0.01em; color: var(--fg);
@@ -252,6 +268,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--bg-island); color: var(--fg);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 3px rgba(0, 0, 0, 0.5);
 }
+/* Same trap as the tile: the raised look of the SELECTED segment outranked the ring,
+   so the tab a keyboard user is standing on was the one that stopped showing it. */
+.seg button:focus-visible { box-shadow: var(--focus-ring); }
 .seg button svg { width: 15px; height: 15px; }
 /* A count on a view that wants attention. The only place a state hue appears in
    the chrome, and it is a state — sessions blocked on a decision. */
@@ -289,7 +308,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
    here hides a control; the bar never overflows instead. */
 @media (max-width: 1180px) { .ws-chip-login { display: none; } }
 @media (max-width: 960px) {
-  .mark-text { display: none; }
+  /* Clipped rather than `display: none`. The glyph beside it is the product's logo and is
+     `aria-hidden` — a logo is not a label — so dropping the wordmark out of the tree here
+     left the top bar with no accessible name for the application at all. */
+  .mark-text {
+    position: absolute; width: 1px; height: 1px; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
   .topbar { gap: var(--sp-3); }
 }
 @media (max-width: 860px) {
@@ -326,6 +351,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-radius: var(--r-island);
   box-shadow: var(--sh-island);
 }
+/* An island is usually a container, but not always: the overview's four screen links
+   are `<a class="island">`, and there the island's own elevation was the whole of
+   their focus state — which is to say they had none. */
+.island:focus-visible { box-shadow: var(--focus-ring); }
 
 .island-head {
   display: flex; align-items: center; gap: var(--sp-2);
@@ -545,6 +574,13 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
 }
 .filter:hover { background: var(--bg-hover-2); color: var(--fg); }
 .filter[aria-pressed="true"] { background: var(--sel); border-color: var(--accent); color: var(--fg); }
+/* The pressed chip needs its own hover, and not as a nicety: `.filter:hover` and
+   `.filter[aria-pressed="true"]` carry the same specificity, so the pressed rule wins
+   by coming later and swallows the hover it never replaced. On the label filter that
+   left the app's only way to CLEAR a filter — pressing the active chip, since there is
+   no "all" chip — with no sign that it does anything at all.
+   The ground steps and the accent edge stays: still on, and live. */
+.filter[aria-pressed="true"]:hover { background: var(--sel-hover); border-color: var(--accent); }
 
 /* ---- Rows -------------------------------------------------------------- */
 /* The shared list-row: sidebar entries, issue rows, file rows. */
@@ -625,6 +661,11 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
   border-radius: var(--r-island); box-shadow: var(--sh-island);
 }
 .tile.is-active { border-color: var(--accent); box-shadow: var(--sh-tile-active); }
+/* The active tile is the one a keyboard is most likely to arrive on, and it was the
+   one tile whose focus looked exactly like its rest: `--sh-tile-active` is a
+   box-shadow at the same specificity as the global ring and later in the file. The
+   accent border stays; the ring replaces the drop shadow while focus is here. */
+.tile:focus-visible { box-shadow: var(--focus-ring); }
 
 .tile-head {
   display: flex; align-items: center; gap: var(--sp-2); flex: none;
@@ -821,7 +862,14 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
   color: var(--fg-dim); font-size: var(--fs-small); font-family: var(--font-mono);
   font-variant-numeric: tabular-nums; min-width: 5ch; text-align: right; padding-top: 2px;
 }
-.list-title { color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-emph); line-height: 1.35; }
+/* A button, on the same reasoning as `.card-title`: opening the issue is what a row is
+   for, and until the title carried it there was no way in from the keyboard — nor from
+   the mouse, since the row had no handler at all. */
+.list-title {
+  padding: 0; margin: 0; width: 100%;
+  background: none; border: 0; text-align: left; cursor: pointer;
+  color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-emph); line-height: 1.35;
+}
 /* Context for the title, not content in its own right, so it must never be the reason
    a row grows. */
 .list-excerpt {
@@ -1105,12 +1153,23 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
    also wide enough to give it a 100-character measure, which is worse to read than the
    narrow box it replaced — so the width goes to a rail of reference material and the
    body keeps a readable measure while gaining all the height there is. */
-.modal--card { width: min(64rem, 100%); max-height: calc(100vh - 2 * var(--sp-6)); }
+/* `min-height` as well as `max-height`, and this is what makes the sentence above true.
+   With a cap alone the dialog is content-tall: the rail runs out after four facts, the
+   grid row is as tall as the taller column, and the body — the one thing a person came
+   to read — settles for whatever is left while a column of dead space sits beside it.
+   `min()` so a short window still gets a dialog that fits in it. */
+.modal--card {
+  width: min(64rem, 100%);
+  min-height: min(40rem, calc(100vh - 2 * var(--sp-6)));
+  max-height: calc(100vh - 2 * var(--sp-6));
+}
 .tk-c-cols {
   flex: 1 1 auto; min-height: 0;
   display: grid; gap: var(--sp-4);
   grid-template-columns: minmax(0, 1fr) minmax(15rem, 19rem);
-  align-items: start;
+  /* `stretch`, not `start`: the rail is top-packed by its own flex column, so the only
+     thing `start` bought was a main column that stopped at its content. */
+  align-items: stretch;
 }
 @media (max-width: 60rem) { .tk-c-cols { grid-template-columns: minmax(0, 1fr); } }
 .tk-c-main { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; min-height: 0; }
@@ -1119,6 +1178,97 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
 .tk-c-side .tk-c-selects { flex-direction: column; }
 .tk-c-selects { display: flex; flex-wrap: wrap; gap: var(--sp-3); }
 .tk-c-selects .select, .tk-c-selects select { width: 100%; }
+
+/* ---- The card dialog's own parts --------------------------------------------
+   These lived only in `src/styles.css` until now: the system file carried the two-column
+   shell and none of what goes in it, so the `<dl>` of facts rendered as a default
+   browser `<dl>` in the mockup and the two could not be compared. */
+
+/* The label row of a field that has something to say about itself. A plain block is
+   what made `margin-left: auto` inert in the app and printed `BodyMarkdown · 28 lines`
+   as one word — the hint has to be laid out, not merely pushed. */
+.form-label--split { display: flex; align-items: baseline; gap: var(--sp-2); }
+.tk-c-hint { margin-left: auto; color: var(--fg-dim); font-weight: var(--fw-read); }
+.tk-c-hint .kbd { margin-left: var(--sp-1); }
+
+/* A GitHub issue title runs to eighty characters as a matter of course, and a
+   single-line input answers that by scrolling the beginning out of sight — worse still
+   when the dialog focuses the field on open and the caret lands at the end. So the
+   title WRAPS: two lines at the dialog's width, three before it scrolls, and the whole
+   of it readable at once. */
+.tk-c-title {
+  min-height: 0; max-height: 5.4em; resize: none; overflow-y: auto;
+  font-size: var(--fs-body); font-weight: var(--fw-emph); line-height: 1.35;
+}
+
+.tk-c-body {
+  flex: 1 1 auto; min-height: 12rem; width: 100%; max-width: 82ch;
+  font-family: var(--font-mono); font-size: var(--fs-small); line-height: var(--lh-code);
+  resize: vertical;
+}
+/* The same box as the editor, rendered. A body is READ far more often than it is
+   written — every issue triaged is a body read — and the editor showed `##`, backticks
+   and `>` as literal characters in a monospace box ten lines tall. Same ground, same
+   border, same measure, so switching between the two does not move the page. */
+.tk-c-read {
+  flex: 1 1 auto; min-height: 12rem; width: 100%; max-width: 74ch;
+  overflow-y: auto; padding: var(--sp-3);
+  background: var(--bg-inset); border: 1px solid var(--line-strong);
+  border-radius: var(--r-ctl);
+  font-size: var(--fs-small); line-height: var(--lh-body); color: var(--fg-mid);
+}
+/* Read mode is the resting state, so it must not read as a field waiting for input:
+   the edit affordance is the button in the label row, and the box itself is quiet. */
+.tk-c-read:focus-visible { box-shadow: var(--focus-ring); }
+/* A text button, because there is one solid button in this dialog and it says Save. */
+.tk-c-mode {
+  padding: 2px var(--sp-2); min-height: 24px;
+  background: none; border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--fg-mid); font-size: var(--fs-caption); font-weight: var(--fw-emph);
+  letter-spacing: var(--ls-ui); cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.tk-c-mode:hover { background: var(--bg-hover); color: var(--fg); border-color: var(--line); }
+
+/* Two columns: labels, then values. Six `label: value` lines of one weight is a wall;
+   the grid is what lets the eye run down the values, which is what a person came for. */
+.tk-c-facts {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px var(--sp-3); margin: 0; padding: var(--sp-3);
+  background: var(--bg-void); border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font-size: var(--fs-caption); line-height: var(--lh-body);
+}
+.tk-c-facts dt { color: var(--fg-dim); }
+.tk-c-facts dd { margin: 0; color: var(--fg-mid); min-width: 0; overflow-wrap: anywhere; }
+/* An id, a session name, a path: read character by character, so a fixed pitch. */
+.tk-c-facts .tk-c-mono { font-family: var(--font-mono); color: var(--fg); }
+/* An issue's home is a URL, and a URL is the one fact here that is also a destination.
+   Shown as `owner/repo#150` — the form a person actually says out loud — with the whole
+   of it on the row's `title`, because a wrapped `https://…` broken mid-host is not a
+   fact anybody can read. */
+.tk-c-facts a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.tk-c-facts a:hover { color: var(--accent); }
+/* Labels belong in the dialog too: they are how a person finds everything about
+   payments, and the row that carries them was the only place they appeared. Uncoloured,
+   for the reason the list gives — hue belongs to state. */
+.tk-c-labels { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+
+/* Beside the button that does it, and to the left of it: a person reads what will
+   happen before reaching the control that makes it happen. */
+.tk-c-patch {
+  margin: 0 auto 0 0; max-width: 46ch;
+  color: var(--fg-dim); font-size: var(--fs-caption); line-height: var(--lh-body);
+}
+/* A banner rather than one run-on line: a parse error and an instruction are two facts,
+   not one sentence. */
+.tk-c-broken {
+  display: flex; flex-direction: column; gap: var(--sp-1);
+  padding: var(--sp-3);
+  background: var(--bg-error-soft); border: 1px solid rgba(251, 129, 122, 0.42);
+  border-radius: var(--r-ctl);
+  color: var(--fg); font-size: var(--fs-small); line-height: var(--lh-body);
+}
+.tk-c-broken p { margin: 0; }
 .modal--narrow { width: min(420px, 100%); }
 .modal-head { display: flex; align-items: baseline; gap: var(--sp-3); }
 .modal-title {
@@ -1143,6 +1293,10 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
   border: 2px solid transparent; cursor: pointer;
 }
 .swatch[aria-pressed="true"] { border-color: var(--fg); box-shadow: 0 0 0 2px var(--bg-island); }
+/* A colour swatch is a button, and the pressed one's separating halo is a box-shadow —
+   so on the only swatch whose position matters the ring disappeared. The `--fg` ring
+   from the pressed rule stays: it is a border, not a shadow. */
+.swatch:focus-visible { box-shadow: var(--focus-ring); }
 .icon-swatch {
   display: inline-grid; place-items: center;
   width: 32px; height: 32px; border-radius: var(--r-ctl);
@@ -1222,6 +1376,29 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
 }
 .empty-title { color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-emph); font-family: var(--font-display); }
 .empty--center { align-items: center; text-align: center; margin: auto; max-width: 46ch; }
+
+/* An empty state that is a whole screen needs something to look at before it needs
+   words — but a wireframe box or a hand-drawn scene is not it. One inset glyph at the
+   size of the thing that is missing: the icon set already has the terminal and the
+   folder, so the mark is the app's own vocabulary rather than decoration. */
+.empty-mark {
+  display: grid; place-items: center; flex: none;
+  width: 52px; height: 52px; border-radius: var(--r-island);
+  background: var(--bg-inset); border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  color: var(--fg-mid);
+}
+.empty-mark svg { width: 24px; height: 24px; }
+
+/* The second way in, under a hairline: the same weight as the paragraph above it and
+   never a second solid button, because the screen already has its one primary. */
+.empty-alt {
+  display: flex; flex-direction: column; align-items: center; gap: var(--sp-2);
+  width: 100%; margin-top: var(--sp-2); padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+.empty-alt-row { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--sp-2); }
+.empty-kbd { color: var(--fg-dim); font-size: var(--fs-caption); }
 
 .banner {
   display: flex; align-items: flex-start; gap: var(--sp-3);

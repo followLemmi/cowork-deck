@@ -130,6 +130,21 @@ const H = Object.fromEntries(Object.entries(TOKENS).map(([k, v]) => [k, hex(v)])
 const SEL_ALPHA = 0.10;
 H["sel"] = over(H.accent, H["bg-island"], SEL_ALPHA);
 H["sel-chrome"] = over(H.accent, H["bg-chrome"], SEL_ALPHA);
+// The selected ground, hovered. It exists because of a control that had no hover
+// state at all: `.filter[aria-pressed="true"]` and `.filter:hover` carry the same
+// specificity, so the pressed rule — written later — simply won this cascade, and
+// pressing an active label chip is the ONLY way to clear that filter. A live
+// control with no hover feedback reads as a label.
+//
+// 0.18 is the alpha that lands the step inside the 0.06–0.12 OKLab-L band the rest
+// of the hover set uses: +0.071 over `--bg-void`, +0.064 over `--bg-island`. Both
+// grounds are measured because a filter bar sits on the SCREEN (void) on the board
+// and on an island in the specimen sheet, and `--sel` is translucent — it takes
+// whatever is behind it.
+const SEL_HOVER_ALPHA = 0.18;
+H["sel-void"] = over(H.accent, H["bg-void"], SEL_ALPHA);
+H["sel-hover"] = over(H.accent, H["bg-island"], SEL_HOVER_ALPHA);
+H["sel-hover-void"] = over(H.accent, H["bg-void"], SEL_HOVER_ALPHA);
 H["diff-add"] = over(H["st-working"], H["bg-terminal"], 0.13);
 H["diff-del"] = over(H["st-error"], H["bg-terminal"], 0.13);
 H["chip-working"] = over(H["st-working"], H["bg-island"], 0.14);
@@ -138,6 +153,9 @@ H["chip-error"] = over(H["st-error"], H["bg-island"], 0.06);
 // The chips as they are actually read: on a SELECTED row, which is the worst ground
 // and the one the eye is already on. Measuring them only on a resting island is how
 // the ended chip shipped at 3.62 and the error chip at 4.31.
+// The banner ground, which is twice the chip's alpha on purpose: a chip's text shares its
+// fill's hue, so alpha there is contrast spent, while a banner carries `--fg`.
+H["error-soft"] = over(H["st-error"], H["bg-island"], 0.12);
 H["chip-error-sel"] = over(H["st-error"], H["sel"], 0.06);
 H["chip-ended-sel"] = over(H["st-ended"], H["sel"], 0.10);
 H["chip-working-sel"] = over(H["st-working"], H["sel"], 0.14);
@@ -183,6 +201,14 @@ const PAIRS = [
   ["bg-inset", "bg-island", 1.2], ["bg-hover-2", "bg-inset", 1.2],
   ["fg-mid", "bg-hover-2", 4.5], ["bg-void", "accent-press", 4.5],
   ["line", "bg-island", 1.15], ["line", "bg-void", 1.15],
+  // A pressed filter, hovered. The label is `--fg` on both grounds; the step itself
+  // is asserted against the resting selected ground, because a hover nobody can see
+  // is the defect this token was added to fix.
+  ["fg", "sel-hover", 4.5], ["fg", "sel-hover-void", 4.5],
+  ["sel-hover", "sel", 1.15], ["sel-hover-void", "sel-void", 1.15],
+  // The broken-card banner in the task dialog: body text, and the icon-free kind, so the
+  // text threshold is the whole of it.
+  ["fg", "error-soft", 4.5], ["st-error", "error-soft", 4.5],
   ["st-working", "bg-void", 3.0], ["st-waiting", "bg-void", 3.0], ["st-error", "bg-void", 3.0],
   ["fg-dim", "bg-void", 3.0],
   ["accent", "bg-island", 3.0],

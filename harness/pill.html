@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/pill.css" />
+    <style>
+      /* The pill is its own always-on-top window, so in the app it has no page
+         around it. Here it does, and the page has to get out of the way. */
+      html, body { background: transparent; margin: 0; padding: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="pill" data-tauri-drag-region><span id="pill-text"></span></div>
+    <script type="module">
+      import { installMocks, emit } from "/harness/mock.ts";
+      installMocks();
+      await import("/src/pill.ts");
+      // The count the main window broadcasts on every render — three sessions
+      // parked on a decision is what the pill exists to say.
+      emit("pill://count", { n: 3 });
+      window.__HARNESS_BOOTED__ = true;
+    </script>
+  </body>
+</html>

@@ -49,8 +49,6 @@ const PATHS = {
 
   // --- New, for the redesigned shell -------------------------------------
   // The wordmark: two stacked tiles, which is what a deck is.
-  deck: '<rect x="2.8" y="3" width="10.4" height="4.2" rx="1.3"/>'
-    + '<rect x="2.8" y="8.8" width="10.4" height="4.2" rx="1.3"/>',
   columns: '<rect x="2.5" y="3.5" width="3.2" height="9" rx="1"/>'
     + '<rect x="6.4" y="3.5" width="3.2" height="9" rx="1"/>'
     + '<rect x="10.3" y="3.5" width="3.2" height="9" rx="1"/>',
@@ -111,6 +109,21 @@ function iconMarkup(name, cls) {
   return `<svg class="ic ${cls || ""}" aria-hidden="true" width="16" height="16"><use href="#i-${name}"/></svg>`;
 }
 
+/* The application's own icon, as the mark in the window's corner — the file
+ * `src-tauri/icons/icon-source.svg` is generated from, copied here because a mockup has
+ * no build step to read it with. It is the icon UNCHANGED, including the `#61afef` cursor
+ * that predates this palette: in that corner it is a logo, not a state.
+ * Hydrated separately from `[data-ic]` because the sprite's shared rule forces
+ * `fill: none; stroke: currentColor`, which would erase every fill in it. */
+const APP_MARK = '<rect x="72" y="72" width="880" height="880" rx="200" fill="#1d1f21"/> <rect x="72.5" y="72.5" width="879" height="879" rx="199.5" fill="none" stroke="rgba(255,255,255,.09)" stroke-width="3"/><g> <rect x="176" y="176" width="308" height="308" rx="44" fill="rgba(97,175,239,.16)"/> <rect x="540" y="176" width="308" height="308" rx="44" fill="rgba(255,255,255,.045)"/> <rect x="176" y="540" width="308" height="308" rx="44" fill="rgba(255,255,255,.045)"/> <rect x="540" y="540" width="308" height="308" rx="44" fill="rgba(255,255,255,.045)"/> </g><polyline points="398,392 556,512 398,632" fill="none" stroke="#e6e6e6" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"/> <rect x="590" y="470" width="150" height="84" rx="20" fill="#61afef"/>';
+
+function hydrateAppMark(root) {
+  (root || document).querySelectorAll("[data-app-mark]").forEach((el) => {
+    el.innerHTML = '<svg class="mark-icon" viewBox="0 0 1024 1024" width="22" height="22"'
+      + ' aria-hidden="true">' + APP_MARK + '</svg>';
+  });
+}
+
 /** Expand `<i data-ic="play"></i>` placeholders so the markup stays readable. */
 function hydrateIcons(root) {
   (root || document).querySelectorAll("[data-ic]").forEach((el) => {
@@ -126,6 +139,7 @@ function hydrateIcons(root) {
 if (document.body) {
   installSprite();
   hydrateIcons();
+  hydrateAppMark();
 } else {
-  document.addEventListener("DOMContentLoaded", () => { installSprite(); hydrateIcons(); });
+  document.addEventListener("DOMContentLoaded", () => { installSprite(); hydrateIcons(); hydrateAppMark(); });
 }

@@ -12,7 +12,7 @@
 
   <header class="topbar">
     <div class="mark">
-      <span class="mark-glyph"><i data-ic="deck"></i></span>
+      <span class="mark-glyph" data-app-mark></span>
       <span class="mark-text">cowork<span>·deck</span></span>
     </div>
 
@@ -147,11 +147,17 @@
                         aria-label="Move to Todo"><i data-ic="chevron"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task"><i data-ic="play"></i></button>
+                <button type="button" class="btn--icon" title="Close this task"
+                        aria-label="Close this task"><i data-ic="check"></i></button>
               </div>
             </article>
 
             <!-- A card the app cannot safely write refuses the move rather than
-                 offering it and failing. -->
+                 offering it and failing — disabled and with the reason beside it,
+                 not silently absent, because a card missing the buttons its
+                 neighbours have reads as a rendering fault rather than as a refusal.
+                 ✓ is the exception: it is not drawn at all. Closing rewrites the
+                 file, and this is the one card we will not write. -->
             <article class="card rail is-error" data-od-id="card-damaged" data-open="card">
               <button type="button" class="card-title">Board editor rejects a duplicate step id twice</button>
               <div class="card-meta meta">
@@ -162,8 +168,8 @@
               </div>
               <div class="card-acts">
                 <span class="head-spacer"></span>
-                <button type="button" class="btn--icon" title="Move to Doing"
-                        aria-label="Move to Doing" disabled><i data-ic="chevron"></i></button>
+                <button type="button" class="btn--icon" title="Move to Todo"
+                        aria-label="Move to Todo" disabled><i data-ic="chevron"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task" disabled><i data-ic="play"></i></button>
               </div>
@@ -187,10 +193,12 @@
                 <span class="head-spacer"></span>
                 <button type="button" class="btn--icon" title="Move to Backlog"
                         aria-label="Move to Backlog"><i data-ic="chevron" class="ic--left"></i></button>
-                <button type="button" class="btn--icon" title="Move to Todo"
-                        aria-label="Move to Todo"><i data-ic="chevron"></i></button>
+                <button type="button" class="btn--icon" title="Move to Doing"
+                        aria-label="Move to Doing"><i data-ic="chevron"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task"><i data-ic="play"></i></button>
+                <button type="button" class="btn--icon" title="Close this task"
+                        aria-label="Close this task"><i data-ic="check"></i></button>
               </div>
             </article>
 
@@ -205,10 +213,12 @@
                 <span class="head-spacer"></span>
                 <button type="button" class="btn--icon" title="Move to Backlog"
                         aria-label="Move to Backlog"><i data-ic="chevron" class="ic--left"></i></button>
-                <button type="button" class="btn--icon" title="Move to Todo"
-                        aria-label="Move to Todo"><i data-ic="chevron"></i></button>
+                <button type="button" class="btn--icon" title="Move to Doing"
+                        aria-label="Move to Doing"><i data-ic="chevron"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task"><i data-ic="play"></i></button>
+                <button type="button" class="btn--icon" title="Close this task"
+                        aria-label="Close this task"><i data-ic="check"></i></button>
               </div>
             </article>
           </section>
@@ -253,6 +263,8 @@
                         aria-label="Move to Todo"><i data-ic="chevron" class="ic--left"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task"><i data-ic="play"></i></button>
+                <button type="button" class="btn--icon" title="Close this task"
+                        aria-label="Close this task"><i data-ic="check"></i></button>
               </div>
             </article>
           </section>
@@ -301,10 +313,10 @@
         </div>
 
         <div class="island rows" data-od-id="issue-list">
-          <div class="list-row rail" data-od-id="issue-412">
+          <div class="list-row rail" data-open="issue" data-od-id="issue-412">
             <span class="list-num">#412</span>
             <span class="list-main">
-              <span class="list-title">Refund webhook retries forever on a 410</span>
+              <button type="button" class="list-title">Refund webhook retries forever on a 410</button>
               <span class="list-excerpt">The receiver treats 410 Gone as retryable, so a deleted endpoint is hammered until the budget runs out.</span>
               <span class="list-meta">
               <span class="chip">bug</span>
@@ -323,10 +335,10 @@
             </span>
           </div>
 
-          <div class="list-row rail is-working" data-od-id="issue-408">
+          <div class="list-row rail is-working" data-open="issue" data-od-id="issue-408">
             <span class="list-num">#408</span>
             <span class="list-main">
-              <span class="list-title">Idempotency key is not honoured on partial refunds</span>
+              <button type="button" class="list-title">Idempotency key is not honoured on partial refunds</button>
               <span class="list-excerpt">A second call with the same key creates a second refund when the amount differs from the first.</span>
               <span class="list-meta">
               <span class="chip">bug</span>
@@ -342,10 +354,10 @@
             </span>
           </div>
 
-          <div class="list-row rail" data-od-id="issue-397">
+          <div class="list-row rail" data-open="issue" data-od-id="issue-397">
             <span class="list-num">#397</span>
             <span class="list-main">
-              <span class="list-title">Document the settlement window for EUR accounts</span>
+              <button type="button" class="list-title">Document the settlement window for EUR accounts</button>
               <span class="list-excerpt">Support keeps answering this by hand; the window differs from the USD one and nothing says so.</span>
               <span class="list-meta">
               <span class="chip">docs</span>
@@ -364,10 +376,10 @@
             </span>
           </div>
 
-          <div class="list-row rail" data-od-id="issue-390">
+          <div class="list-row rail" data-open="issue" data-od-id="issue-390">
             <span class="list-num">#390</span>
             <span class="list-main">
-              <span class="list-title">Rate limiter counts preflight requests</span>
+              <button type="button" class="list-title">Rate limiter counts preflight requests</button>
               <span class="list-excerpt">OPTIONS is billed against the caller's budget, so a browser client gets half the quota it paid for.</span>
               <span class="list-meta">
               <span class="chip">bug</span>
@@ -598,18 +610,35 @@
     <div class="tk-c-cols">
       <div class="tk-c-main">
         <div class="form-row">
+          <!-- A textarea, not an input: a title long enough to matter is a title an
+               input scrolls out of view, and this dialog focuses the field on open, so
+               the caret lands at the end and takes the beginning with it. -->
           <label class="form-label" for="c-title">Title</label>
-          <input class="field" id="c-title" value="Sticky gutter overlaps at five-digit line numbers" />
+          <textarea class="field tk-c-title" id="c-title" rows="1"
+                    data-autogrow>Sticky gutter overlaps at five-digit line numbers</textarea>
         </div>
 
-        <div class="form-row">
-          <!-- Monospace, and it says what it is: a card's body is Markdown, and this was
-               the only place in the app where authored Markdown was set in a
-               proportional face. It takes whatever height the dialog has left. -->
-          <label class="form-label" for="c-body">
-            Body <span class="tk-c-hint">Markdown · 8 lines</span>
+        <div class="form-row" data-body-field>
+          <!-- A body is read far more often than it is written, so reading is the resting
+               state and the editor is one press away. The hint sits at the right edge of
+               the box it describes — as a plain block the label printed
+               "BodyMarkdown · 8 lines" as one word. -->
+          <label class="form-label form-label--split" for="c-body-read">
+            Body
+            <span class="tk-c-hint">Markdown · 8 lines</span>
+            <button type="button" class="tk-c-mode" data-body-mode aria-pressed="false">Edit</button>
           </label>
-          <textarea class="field tk-c-body" id="c-body">The two number cells are `position: sticky` with `left` offsets computed from
+          <div class="tk-c-read md" id="c-body-read" tabindex="0" data-body-read>
+            <p>The two number cells are <code>position: sticky</code> with <code>left</code>
+              offsets computed from <code>--dv-num-w</code>, which assumes the digit count set
+              on <code>.dv-file</code>. When a file has more lines than that assumption, the
+              <code>max-content</code> track grows past the <code>min-width</code> and the
+              offsets under-shoot, so the columns overlap while scrolled.</p>
+            <p><strong>Fix:</strong> have the module set <code>--dv-digits</code> to the digit
+              count of the largest line number it just rendered, which it knows because it
+              rendered them.</p>
+          </div>
+          <textarea class="field tk-c-body" id="c-body" data-body-edit hidden>The two number cells are `position: sticky` with `left` offsets computed from
 `--dv-num-w`, which assumes the digit count set on `.dv-file`. When a file has
 more lines than that assumption, the `max-content` track grows past the
 `min-width` and the offsets under-shoot, so the columns overlap while scrolled.
@@ -659,6 +688,112 @@ number it just rendered, which it knows because it rendered them.</textarea>
   </div>
 </div>
 
+<!-- ===================== The same dialog, for an issue =====================
+     The GitHub source puts a different card in this shell and the differences are not
+     cosmetic: there is no kind, the step is the repository's two, the id IS the number
+     already in the heading, and "path" is a URL. Drawn separately because the shape a
+     person spends most of their triage in was the shape the mockups never showed. -->
+<div class="overlay" id="issue" hidden>
+  <div class="modal modal--card" role="dialog" aria-modal="true" aria-labelledby="issue-title-label"
+       data-od-id="issue-modal">
+    <div class="modal-head">
+      <h2 class="modal-title" id="issue-title-label">#150</h2>
+      <span class="chip"><i data-ic="user"></i> followLemmi/cowork-deck</span>
+      <span class="head-spacer"></span>
+      <button type="button" class="btn--icon" data-close aria-label="Close"><i data-ic="x"></i></button>
+    </div>
+
+    <div class="tk-c-cols">
+      <div class="tk-c-main">
+        <div class="form-row">
+          <!-- Eighty-one characters. In a single-line input this read
+               "oked GitHub token is reported as…" — the caret at the end and the first
+               third of the sentence gone. -->
+          <label class="form-label" for="i-title">Title</label>
+          <textarea class="field tk-c-title" id="i-title" rows="1"
+                    data-autogrow>A revoked GitHub token is reported as "no account bound", which the user can see is false</textarea>
+        </div>
+
+        <div class="form-row" data-body-field>
+          <label class="form-label form-label--split" for="i-body-read">
+            Body
+            <span class="tk-c-hint">Markdown · 16 lines</span>
+            <button type="button" class="tk-c-mode" data-body-mode aria-pressed="false">Edit</button>
+          </label>
+          <div class="tk-c-read md" id="i-body-read" tabindex="0" data-body-read>
+            <p>Found 2026-07-31 while fixing a Barrier C finding on the GitHub issues board.
+              Not a defect in that fix — the fix took the best of the three available states —
+              but the state itself is missing, so the screen says something slightly untrue.</p>
+            <h5>What happens now</h5>
+            <p><code>gh</code> returns <strong>exit 4</strong> for “authentication required”.
+              As of <code>87f9ed5</code> the backend maps that to the <code>no-account</code>
+              marker, and the board renders
+              <code>GH_UNAVAILABLE["no-account"]</code>:</p>
+            <blockquote>This workspace has no GitHub account bound, so there is no account to
+              read the repository's issues with.</blockquote>
+          </div>
+          <textarea class="field tk-c-body" id="i-body" data-body-edit hidden>Found 2026-07-31 while fixing a Barrier C finding on the GitHub issues board.
+Not a defect in that fix — the fix took the best of the three available
+states — but the state itself is missing, so the screen says something
+slightly untrue.
+
+## What happens now
+
+`gh` returns **exit 4** for "authentication required". As of `87f9ed5` the
+backend maps that to the `no-account` marker, and the board renders
+`GH_UNAVAILABLE["no-account"]`:
+
+> This workspace has no GitHub account bound, so there is no account to read
+> the repository's issues with.</textarea>
+        </div>
+      </div>
+
+      <div class="tk-c-side">
+        <div class="tk-c-selects">
+          <!-- No kind: an issue has labels instead, and the GitHub board's steps are the
+               repository's two. -->
+          <div class="form-row">
+            <label class="form-label" for="i-step">Step</label>
+            <div class="select"><select id="i-step">
+              <option selected>Open</option><option>Closed</option>
+            </select></div>
+          </div>
+        </div>
+
+        <!-- No `id` row. The heading above already says #150, and a row is a claim: this
+             one only restated the title. On a file card the id is a ULID nobody says out
+             loud, so there it stays. -->
+        <dl class="tk-c-facts" data-od-id="issue-facts">
+          <dt>opened</dt><dd title="2026-07-31T11:02:00Z">5 d ago</dd>
+          <!-- No author row: `Task` carries no author, so the dialog would be inventing
+               one. It is worth adding to the issue mapping, and it is not drawn until it
+               exists. -->
+          <!-- "path" for a URL was both the wrong word and unreadable: the value wrapped
+               mid-host across two lines. This is the form a person says out loud, it is a
+               destination, and the whole URL is on the row. -->
+          <dt>on GitHub</dt>
+          <dd><a href="https://github.com/followLemmi/cowork-deck/issues/150"
+                 target="_blank" rel="noreferrer"
+                 title="https://github.com/followLemmi/cowork-deck/issues/150"
+                >followLemmi/cowork-deck#150 <i data-ic="external"></i></a></dd>
+          <!-- Labels were nowhere in this dialog, though they are how a person finds
+               everything about payments — and the row they came from is behind it. -->
+          <dt>labels</dt>
+          <dd><span class="tk-c-labels">
+            <span class="chip">bug</span><span class="chip">github</span>
+          </span></dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="modal-acts">
+      <p class="tk-c-patch" aria-live="polite">Nothing changed yet.</p>
+      <button type="button" class="btn btn--quiet" data-close>Cancel</button>
+      <button type="button" class="btn btn--primary" data-close>Save</button>
+    </div>
+  </div>
+</div>
+
 <script src="assets/icons.js"></script>
 <script>
 (function () {
@@ -666,12 +801,48 @@ number it just rendered, which it knows because it rendered them.</textarea>
     b.addEventListener("click", () => { location.href = b.dataset.nav; });
   });
 
+  /* --- A title that wraps ------------------------------------------------
+     `field-sizing: content` would do this in CSS, but not in the webview this app
+     actually ships in, so the height is set from the content and capped by
+     `max-height` in the stylesheet. */
+  function autogrow(el) {
+    el.style.height = "auto";
+    el.style.height = el.scrollHeight + "px";
+  }
+  document.querySelectorAll("[data-autogrow]").forEach((el) => {
+    el.addEventListener("input", () => autogrow(el));
+  });
+
+  /* --- Read, or edit ------------------------------------------------------
+     Reading is the resting state: a body is read every time an issue is triaged and
+     written once. The toggle is the only control that changes which one is on screen,
+     and it carries `aria-pressed` because it is a two-state control, not two buttons. */
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-body-mode]");
+    if (!btn) return;
+    const field = btn.closest("[data-body-field]");
+    const read = field.querySelector("[data-body-read]");
+    const edit = field.querySelector("[data-body-edit]");
+    const editing = btn.getAttribute("aria-pressed") === "true";
+    read.hidden = !editing;
+    edit.hidden = editing;
+    btn.setAttribute("aria-pressed", String(!editing));
+    btn.textContent = editing ? "Edit" : "Done";
+    /* Focus follows the mode, so the keyboard is never left on a hidden box. */
+    (editing ? read : edit).focus();
+  });
+
   /* --- Overlays --------------------------------------------------------- */
   function open(id) {
     const el = document.getElementById(id);
     el.hidden = false;
-    const first = el.querySelector("input, select, textarea, button");
+    /* The reading panel first, not the first field: this dialog is opened to read an
+       issue far more often than to rename one, and focusing the title used to scroll
+       its own beginning out of view. */
+    const first = el.querySelector("[data-body-read]:not([hidden])")
+      || el.querySelector("input, select, textarea, button");
     if (first) first.focus();
+    el.querySelectorAll("[data-autogrow]").forEach(autogrow);
   }
   function close(el) { el.hidden = true; }
   document.addEventListener("click", (e) => {
@@ -679,7 +850,10 @@ number it just rendered, which it knows because it rendered them.</textarea>
        box is clickable precisely because a card used to be a thin strip of
        clickable text in a box that did nothing, so the exception is narrow. */
     const opener = e.target.closest("[data-open]");
-    if (opener && !e.target.closest(".card-acts")) { open(opener.dataset.open); return; }
+    /* The row's own actions are not a way into the dialog: ▶ starts a session and ✓
+       closes the issue, and both used to be inside the openable area. `.list-acts`
+       joins `.card-acts` here now that an issue row opens at all. */
+    if (opener && !e.target.closest(".card-acts, .list-acts")) { open(opener.dataset.open); return; }
     if (opener) return;
     if (e.target.closest("[data-close]")) { close(e.target.closest(".overlay")); return; }
     /* A click on the backdrop itself, not on the box inside it. */

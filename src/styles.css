@@ -98,6 +98,16 @@
      is a rule rather than a token — a selected row raises its captions one step —
      and `scripts/contrast.mjs` holds both ends of that bargain. */
   --sel: rgba(213, 234, 243, 0.10);
+  /* The selected ground under the cursor. It exists because of a control that had no
+     hover state at all: `.tk-f-kind.selected` and `.tk-f-kind:hover` carry the same
+     specificity, so the selected rule won this cascade by being written later and
+     swallowed the hover it never replaced — on the one filter whose only way back is
+     pressing the active chip (`board.ts`, the label filter has no "all").
+     0.18 puts the step inside the same 0.06–0.12 OKLab-L band as the rest of the
+     hover set: +0.071 over `--bg-void`, +0.064 over `--bg-island`. Translucent for the
+     same reason `--sel` is — a filter bar sits on the screen's ground here and on an
+     island in the specimen sheet, and both composites are measured. */
+  --sel-hover: rgba(213, 234, 243, 0.18);
 
   /* Hue, therefore, means exactly one thing: what a session is doing. */
   --st-working: #7bd77f;
@@ -276,12 +286,15 @@ html, body, #app { height: 100%; margin: 0; }
 /* Two stacked bars knocked out of a filled square: a deck. The only icon in the
    app drawn dark-on-light, which is what makes it read as a mark rather than as one
    more control. */
-.mark-glyph {
-  width: 22px; height: 22px; flex: none; border-radius: var(--r-sm);
-  background: var(--fg); color: var(--bg-void);
-  display: grid; place-items: center;
-}
-.mark-glyph .icon { width: 14px; height: 14px; }
+/* No plate of its own any more: the mark inside it is the application's icon, and that
+   icon brings its own. A light plate under it would read as a sticker with the icon
+   stuck on top. */
+.mark-glyph { width: 22px; height: 22px; flex: none; display: grid; place-items: center; }
+/* The icon's plate is `#1d1f21` against a `--bg-chrome` of `#171412` — 1.06:1, which is
+   not a border by any measure. Its own 9%-white hairline is what gives it an edge, and
+   this is the one element in the app whose colours come from outside the palette: it is
+   a logo, not a component. */
+.mark-icon { display: block; width: 22px; height: 22px; }
 .mark-text {
   font-family: var(--font-display); font-size: var(--fs-base);
   font-weight: var(--fw-bold); letter-spacing: -0.01em; color: var(--fg);
@@ -291,7 +304,14 @@ html, body, #app { height: 100%; margin: 0; }
 /* The wordmark is the first thing dropped when the bar runs out of room, because
    the glyph beside it still says which app this is. Nothing here hides a control. */
 @media (max-width: 960px) {
-  .mark-text { display: none; }
+  /* Clipped rather than `display: none`. The glyph beside it is the product's logo and is
+     `aria-hidden` — a logo is not a label — so dropping the wordmark out of the tree here
+     left the top bar with no accessible name for the application at all. It stays out of
+     sight and in the tree. */
+  .mark-text {
+    position: absolute; width: 1px; height: 1px; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
   .topbar { gap: var(--sp-3); }
 }
 
@@ -338,6 +358,73 @@ html, body, #app { height: 100%; margin: 0; }
   text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--fg-dim);
 }
 #deck { flex: 1; display: grid; gap: var(--sp-3); padding: var(--sp-3); background: var(--bg-void); position: relative; }
+
+/* --- The deck with nothing on it -----------------------------------------------
+   `#deck` is an empty element until a session exists, so the most likely first screen
+   of the app — and its screen every time the last session is closed — was an
+   unexplained dark rectangle. One island, centred, carrying the one action that makes
+   sense: see `emptyDeckCopy`, which decides which of the two states this is. */
+.deck-empty {
+  place-self: center; justify-self: center;
+  display: flex; flex-direction: column; align-items: center; gap: var(--sp-3);
+  max-width: 58ch; padding: var(--sp-6);
+  background: var(--bg-island); border: 1px solid var(--line);
+  border-radius: var(--r-island); box-shadow: var(--sh-island);
+  text-align: center;
+  color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-body);
+}
+.deck-empty p { margin: 0; max-width: 54ch; }
+/* Something to look at before there is anything to read — but not a wireframe box and
+   not a drawn scene. One inset glyph from the app's own icon set. */
+.deck-empty-mark {
+  display: grid; place-items: center; flex: none;
+  width: 52px; height: 52px; border-radius: var(--r-island);
+  background: var(--bg-inset); border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  color: var(--fg-mid);
+}
+.deck-empty-title {
+  margin: 0;
+  font-family: var(--font-display); font-size: var(--fs-lg);
+  font-weight: var(--fw-bold); color: var(--fg);
+}
+/* The screen's one primary action. */
+.deck-empty-go {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 32px; padding: 7px var(--sp-3);
+  background: var(--accent); color: var(--accent-ink);
+  border: 1px solid transparent; border-radius: var(--r-ctl);
+  font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-bold);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+.deck-empty-go:hover { background: var(--accent-press); }
+.deck-empty-go:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The second way in, under a hairline: scenarios are a session with its prompt already
+   written, and on an empty deck the sidebar is the only place they appear. Never a
+   second solid button — the screen already has its primary. */
+.deck-empty-alt {
+  display: flex; flex-direction: column; align-items: center; gap: var(--sp-2);
+  width: 100%; margin-top: var(--sp-2); padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+.deck-empty-caption {
+  font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  text-transform: uppercase; letter-spacing: var(--ls-caps);
+  color: var(--fg-dim);
+}
+.deck-empty-alt-row { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--sp-2); }
+.deck-empty-scenario {
+  min-height: 32px; padding: 7px var(--sp-3);
+  background: none; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  color: var(--fg-mid); font: inherit; font-size: var(--fs-sm); cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+              border-color var(--dur-1) var(--ease);
+}
+.deck-empty-scenario:hover {
+  background: var(--bg-hover); border-color: var(--line-strong); color: var(--fg);
+}
+.deck-empty-scenario:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 /* --- Rows: one reading for the sidebar's three lists ---------------------
    `.ws-row`, `.sess-row` and `.sk-row` were three different shapes for one idea —
@@ -1251,6 +1338,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .tk-filter:hover { background: var(--bg-hover-2); color: var(--fg); }
 .tk-filter.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
+/* The selected chip's own hover. Without it the pressed rule above — same specificity,
+   written later — leaves the chip with no response to the cursor at all. The ground
+   steps and the accent edge stays: still on, and still live. */
+.tk-filter.selected:hover { background: var(--sel-hover); border-color: var(--accent); }
 .tk-filter:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 /* Hairlines between rows rather than a gap and a border each: fifty bordered
@@ -1445,6 +1536,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .tk-f-kind:hover { background: var(--bg-hover-2); color: var(--fg); }
 .tk-f-kind.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
+/* This is the chip the token exists for: with no "all" chip, pressing the active label
+   is the only way to clear the filter, and until now that press had no hover at all. */
+.tk-f-kind.selected:hover { background: var(--sel-hover); border-color: var(--accent); }
 .tk-f-kind:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 /* --- The opened card (card-modal.ts) ------------------------------------- */
@@ -1463,6 +1557,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
      there is. Subtracted rather than guessed at 88vh, which would have left the box
      scrolling the overlay by the difference. */
   max-height: calc(100vh - 2 * var(--sp-6));
+  /* A `min-height` as well, and this is what makes the paragraph below true. With a cap
+     alone the dialog is content-tall: the rail runs out after four facts, a grid row is
+     as tall as its taller column, and the body — the one thing a person came to read —
+     settled for what was left while a column of dead space sat beside it. `min()` so a
+     short window still gets a dialog that fits inside it. */
+  min-height: min(40rem, calc(100vh - 2 * var(--sp-6)));
 }
 /* Two columns, and NOT because there was room. A dialog wide enough to stop the body
    scrolling is also wide enough to give it a 100-character measure, which is worse to
@@ -1472,7 +1572,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   flex: 1 1 auto; min-height: 0;
   display: grid; gap: var(--sp-4);
   grid-template-columns: minmax(0, 1fr) minmax(15rem, 19rem);
-  align-items: start;
+  /* `stretch`, not `start`: the rail top-packs its own contents with its own flex
+     column, so the only thing `start` bought was a main column that stopped at its
+     content and a body that never took the height the dialog had. */
+  align-items: stretch;
 }
 /* Below this the rail would leave the body too narrow to be the point of the dialog,
    so the two stack and the body keeps the full width. The dialog's width follows the
@@ -1503,8 +1606,45 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-code);
   resize: vertical;
 }
+/* The same box as the editor, rendered. A body is READ far more often than it is
+   written — every issue triaged is a body read — and the editor showed `##`, backticks
+   and `>` as literal characters in a monospace box ten lines tall out of twenty-eight.
+   Same ground, same border, same measure, so switching between the two does not move
+   the page. */
+.tk-c-read {
+  flex: 1 1 auto; min-height: 16rem; width: 100%; max-width: 74ch;
+  overflow-y: auto; padding: var(--sp-3);
+  background: var(--bg-inset); border: 1px solid var(--line-strong);
+  border-radius: var(--r-ctl);
+  font-size: var(--fs-sm); line-height: var(--lh-body); color: var(--fg-mid);
+}
+.tk-c-read:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* A text button: this dialog has one solid button and it says Save. */
+.tk-c-mode {
+  padding: 2px var(--sp-2); min-height: 24px;
+  background: none; border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--fg-mid); font-size: var(--fs-xs); font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.tk-c-mode:hover { background: var(--bg-hover); color: var(--fg); border-color: var(--line); }
+.tk-c-mode:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* A GitHub issue title runs to eighty characters as a matter of course, and a
+   single-line input answers that by scrolling the beginning out of sight — worse when
+   the dialog focuses the field on open and the caret lands at the end. So the title
+   WRAPS: two lines at the dialog's width, three before it scrolls. Enter still accepts
+   the dialog rather than adding a line — see `data-single-line` in dialog-shell.ts. */
+.tk-c-title {
+  min-height: 0; max-height: 5.4em; resize: none; overflow-y: auto;
+  font-size: var(--fs-md); font-weight: var(--fw-medium); line-height: 1.35;
+}
+
 /* Pushed to the end of the field's own label, so "Markdown · 12 lines" sits above the
-   right edge of the box it describes rather than starting a row of its own. */
+   right edge of the box it describes rather than starting a row of its own.
+   `margin-left: auto` needs a flex line to push against: on a plain block label it was
+   inert, and the two ran together as `BodyMarkdown · 28 lines`. */
+.tk-c-label-row { display: flex; align-items: baseline; gap: var(--sp-2); }
 .tk-c-hint { margin-left: auto; color: var(--fg-dim); font-weight: var(--fw-medium); }
 
 /* Two columns: labels, then values. Six `label: value` lines of identical weight is a
@@ -1522,6 +1662,16 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tk-c-facts dd { margin: 0; color: var(--fg-mid); min-width: 0; overflow-wrap: anywhere; }
 /* An id, a session name, a path: read character by character, so a fixed pitch. */
 .tk-c-facts .tk-c-mono { font-family: var(--font-mono); color: var(--fg); }
+/* An issue's home is a URL, and the only fact here that is also a destination. Shown as
+   `owner/repo#150` — the form a person says out loud — with the whole URL on the row,
+   because an `https://…` wrapped mid-host is not a fact anybody can read. */
+.tk-c-facts a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.tk-c-facts a:hover { color: var(--accent); }
+.tk-c-facts a:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--r-sm); }
+/* Labels belong in the dialog too: they are how a person finds everything about
+   payments, and the row that carried them is behind it. Uncoloured, for the reason the
+   list gives — hue belongs to state. */
+.tk-c-labels { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
 
 /* A banner rather than one run-on line. Each reason is its own paragraph, which is what
    they are — a parse error and an instruction are two facts, not one sentence. */
