@@ -278,3 +278,67 @@ Both arrows name their destination now.
   tests cannot see — the sidebar's three islands, tile heads on a narrow window, the
   broadcast bar, the card dialog's height — is the first thing to look at with the app
   open.
+
+## The 2026-08-05 quality pass
+
+A second reading of work already shipped: not filling gaps, but looking for what these
+screens get wrong. Six findings, all fixed. Each is a state the system promises and does
+not show, or a label that names the wrong thing.
+
+**The pressed filter had no hover.** `.filter:hover` and `.filter[aria-pressed="true"]`
+carry the same specificity, so the pressed rule won by being later and swallowed the
+hover it never replaced — on the one control that can clear a label filter, since there
+is no "all" chip. Fixed with `--sel-hover`; the app carries the same fix for
+`.tk-filter.selected` and `.tk-f-kind.selected`. The alpha and its measurements are in
+`tools/palette.mjs`, which now asserts 60 pairs.
+
+**Four components ate the focus ring.** The global ring is declared through `:where()`,
+so it contributes nothing but the pseudo-class and sits at the top of the file — which
+means *any* component painting its own `box-shadow` outranks it, being both later and at
+least as specific. The four that did were each in the worst possible place:
+
+| Selector | What it showed instead of a ring |
+|---|---|
+| `.island` | the launcher's four screen links are `<a class="island">` — no focus state at all |
+| `.tile.is-active` | the tile a keyboard is most likely to arrive on |
+| `.seg button[aria-selected="true"]` | the view tab the user is standing on |
+| `.swatch[aria-pressed="true"]` | the pressed swatch, whose position is the thing to see |
+
+Each now restates the ring beside the shadow that beat it — the idiom `.drawer-grip`
+already used. The rule is written into the stylesheet: paint a `box-shadow` on something
+focusable and you owe it a `:focus-visible` next to it. The app is immune to this trap
+because its global ring is an `outline` (`src/styles.css`), which no shadow can override.
+
+**Three `›` arrows named the wrong step.** The rule that an arrow names its destination
+is stated in this file, and the board mockup broke it on three cards out of seven. The
+worst was a card in **Todo** whose `›` read **"Move to Todo"** — the button named the
+column the card was already in, which is exactly the complaint the rule was written for.
+
+**`✓` was scattered.** It was drawn on one card out of five non-terminal ones, and two
+cards in the same column disagreed. Since the rule for `›` depends on where `✓` sends a
+card, an invisible `✓` makes that rule unverifiable for anyone reading the mockup. The
+footer order is now one order everywhere — `‹ › ▶ ✓`, arrows as a pair, then the
+actions, closing last — which is what the issue row already did (`▶ ✓ ↗`). The damaged
+card gets no `✓`: closing rewrites the file, and that is the one file we will not write.
+
+**Juggling sessions did not work.** `zoom()` marked the picked tile and moved the rest
+into the filmstrip, but never moved the picked one *out* of it. Every zoom rule is
+written with `>`, so a card left inside `.strip` got neither the grid row nor a body: the
+gesture selected a session and showed nothing. Only the first zoom — from the deck —
+ever worked. The deck also reshuffled itself, because returning from zoom inserted tiles
+where they had landed rather than where they belonged; the authored order is now held
+once and restored from it, filmstrip included.
+
+**The filmstrip card was a dead focus stop.** It is the only way to switch sessions while
+one is zoomed, and at 240×59 its own buttons are hidden — yet activation hung on a click
+handler on a `<section tabindex="0">`: it took focus, drew a ring, and did nothing on
+Enter. A focus stop that promises an action and refuses it is worse than one that never
+takes focus. The card is now a real button (`role="button"`, an `aria-label` naming the
+session, Enter and Space handled, Space suppressed explicitly because a `<section>`
+would scroll the page). In the deck the same element stays a labelled **region**:
+`role="button"` there would be a button containing three buttons and a focusable
+terminal. In the strip it is legitimate precisely because that content is
+`display: none` and absent from the accessibility tree.
+
+Note for the app: zoom there still has no keyboard path at all (`sessions.ts` hangs it on
+`dblclick`). That is wave 3 of the UX audit, not a regression of this port.

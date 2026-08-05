@@ -147,11 +147,17 @@
                         aria-label="Move to Todo"><i data-ic="chevron"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task"><i data-ic="play"></i></button>
+                <button type="button" class="btn--icon" title="Close this task"
+                        aria-label="Close this task"><i data-ic="check"></i></button>
               </div>
             </article>
 
             <!-- A card the app cannot safely write refuses the move rather than
-                 offering it and failing. -->
+                 offering it and failing — disabled and with the reason beside it,
+                 not silently absent, because a card missing the buttons its
+                 neighbours have reads as a rendering fault rather than as a refusal.
+                 ✓ is the exception: it is not drawn at all. Closing rewrites the
+                 file, and this is the one card we will not write. -->
             <article class="card rail is-error" data-od-id="card-damaged" data-open="card">
               <button type="button" class="card-title">Board editor rejects a duplicate step id twice</button>
               <div class="card-meta meta">
@@ -162,8 +168,8 @@
               </div>
               <div class="card-acts">
                 <span class="head-spacer"></span>
-                <button type="button" class="btn--icon" title="Move to Doing"
-                        aria-label="Move to Doing" disabled><i data-ic="chevron"></i></button>
+                <button type="button" class="btn--icon" title="Move to Todo"
+                        aria-label="Move to Todo" disabled><i data-ic="chevron"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task" disabled><i data-ic="play"></i></button>
               </div>
@@ -187,10 +193,12 @@
                 <span class="head-spacer"></span>
                 <button type="button" class="btn--icon" title="Move to Backlog"
                         aria-label="Move to Backlog"><i data-ic="chevron" class="ic--left"></i></button>
-                <button type="button" class="btn--icon" title="Move to Todo"
-                        aria-label="Move to Todo"><i data-ic="chevron"></i></button>
+                <button type="button" class="btn--icon" title="Move to Doing"
+                        aria-label="Move to Doing"><i data-ic="chevron"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task"><i data-ic="play"></i></button>
+                <button type="button" class="btn--icon" title="Close this task"
+                        aria-label="Close this task"><i data-ic="check"></i></button>
               </div>
             </article>
 
@@ -205,10 +213,12 @@
                 <span class="head-spacer"></span>
                 <button type="button" class="btn--icon" title="Move to Backlog"
                         aria-label="Move to Backlog"><i data-ic="chevron" class="ic--left"></i></button>
-                <button type="button" class="btn--icon" title="Move to Todo"
-                        aria-label="Move to Todo"><i data-ic="chevron"></i></button>
+                <button type="button" class="btn--icon" title="Move to Doing"
+                        aria-label="Move to Doing"><i data-ic="chevron"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task"><i data-ic="play"></i></button>
+                <button type="button" class="btn--icon" title="Close this task"
+                        aria-label="Close this task"><i data-ic="check"></i></button>
               </div>
             </article>
           </section>
@@ -253,6 +263,8 @@
                         aria-label="Move to Todo"><i data-ic="chevron" class="ic--left"></i></button>
                 <button type="button" class="btn--icon" title="Start a session from this task"
                         aria-label="Start a session from this task"><i data-ic="play"></i></button>
+                <button type="button" class="btn--icon" title="Close this task"
+                        aria-label="Close this task"><i data-ic="check"></i></button>
               </div>
             </article>
           </section>

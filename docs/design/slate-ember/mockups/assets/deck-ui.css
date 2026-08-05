@@ -50,6 +50,10 @@
   --accent-press: #bed5df;
   --accent-ink: #0f0d0b;    /* what sits ON an accent fill */
   --sel: rgba(213, 234, 243, 0.10);
+  /* The selected ground under the cursor. Translucent for the same reason `--sel` is:
+     a filter bar sits on the screen's ground and a specimen sheet's on an island, and
+     both composites are measured. */
+  --sel-hover: rgba(213, 234, 243, 0.18);
 
   /* State, and state alone. `ended` has no hue by design. */
   --st-working: #7bd77f;
@@ -156,7 +160,14 @@ h1, h2, h3, h4, h5, h6, p, ul, ol, dl, dd, figure { margin: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
 
 /* One ring for the whole app. `:focus-visible` only — a mouse click on a tile
-   should not light it up like a keyboard landing. */
+   should not light it up like a keyboard landing.
+   `:where()` costs nothing, which is the point for the radius — but it also means
+   this rule loses to ANY component that paints its own `box-shadow`, because every
+   such rule is both later in the file and at least as specific. The ring is not a
+   default a component may quietly outrank, so each of the four that did restates it
+   below, next to the shadow that beat it (`.island`, `.tile`, `.seg button`,
+   `.swatch`; `.drawer-grip` already did). The rule for anything added later: paint a
+   `box-shadow` on something focusable and you owe it a `:focus-visible` beside it. */
 :where(a, button, input, select, textarea, [tabindex]):focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
@@ -252,6 +263,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--bg-island); color: var(--fg);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 3px rgba(0, 0, 0, 0.5);
 }
+/* Same trap as the tile: the raised look of the SELECTED segment outranked the ring,
+   so the tab a keyboard user is standing on was the one that stopped showing it. */
+.seg button:focus-visible { box-shadow: var(--focus-ring); }
 .seg button svg { width: 15px; height: 15px; }
 /* A count on a view that wants attention. The only place a state hue appears in
    the chrome, and it is a state — sessions blocked on a decision. */
@@ -326,6 +340,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-radius: var(--r-island);
   box-shadow: var(--sh-island);
 }
+/* An island is usually a container, but not always: the overview's four screen links
+   are `<a class="island">`, and there the island's own elevation was the whole of
+   their focus state — which is to say they had none. */
+.island:focus-visible { box-shadow: var(--focus-ring); }
 
 .island-head {
   display: flex; align-items: center; gap: var(--sp-2);
@@ -545,6 +563,13 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
 }
 .filter:hover { background: var(--bg-hover-2); color: var(--fg); }
 .filter[aria-pressed="true"] { background: var(--sel); border-color: var(--accent); color: var(--fg); }
+/* The pressed chip needs its own hover, and not as a nicety: `.filter:hover` and
+   `.filter[aria-pressed="true"]` carry the same specificity, so the pressed rule wins
+   by coming later and swallows the hover it never replaced. On the label filter that
+   left the app's only way to CLEAR a filter — pressing the active chip, since there is
+   no "all" chip — with no sign that it does anything at all.
+   The ground steps and the accent edge stays: still on, and live. */
+.filter[aria-pressed="true"]:hover { background: var(--sel-hover); border-color: var(--accent); }
 
 /* ---- Rows -------------------------------------------------------------- */
 /* The shared list-row: sidebar entries, issue rows, file rows. */
@@ -625,6 +650,11 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
   border-radius: var(--r-island); box-shadow: var(--sh-island);
 }
 .tile.is-active { border-color: var(--accent); box-shadow: var(--sh-tile-active); }
+/* The active tile is the one a keyboard is most likely to arrive on, and it was the
+   one tile whose focus looked exactly like its rest: `--sh-tile-active` is a
+   box-shadow at the same specificity as the global ring and later in the file. The
+   accent border stays; the ring replaces the drop shadow while focus is here. */
+.tile:focus-visible { box-shadow: var(--focus-ring); }
 
 .tile-head {
   display: flex; align-items: center; gap: var(--sp-2); flex: none;
@@ -1143,6 +1173,10 @@ textarea.field { resize: vertical; min-height: 96px; line-height: var(--lh-body)
   border: 2px solid transparent; cursor: pointer;
 }
 .swatch[aria-pressed="true"] { border-color: var(--fg); box-shadow: 0 0 0 2px var(--bg-island); }
+/* A colour swatch is a button, and the pressed one's separating halo is a box-shadow —
+   so on the only swatch whose position matters the ring disappeared. The `--fg` ring
+   from the pressed rule stays: it is a border, not a shadow. */
+.swatch:focus-visible { box-shadow: var(--focus-ring); }
 .icon-swatch {
   display: inline-grid; place-items: center;
   width: 32px; height: 32px; border-radius: var(--r-ctl);
