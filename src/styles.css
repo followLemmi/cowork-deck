@@ -286,12 +286,15 @@ html, body, #app { height: 100%; margin: 0; }
 /* Two stacked bars knocked out of a filled square: a deck. The only icon in the
    app drawn dark-on-light, which is what makes it read as a mark rather than as one
    more control. */
-.mark-glyph {
-  width: 22px; height: 22px; flex: none; border-radius: var(--r-sm);
-  background: var(--fg); color: var(--bg-void);
-  display: grid; place-items: center;
-}
-.mark-glyph .icon { width: 14px; height: 14px; }
+/* No plate of its own any more: the mark inside it is the application's icon, and that
+   icon brings its own. A light plate under it would read as a sticker with the icon
+   stuck on top. */
+.mark-glyph { width: 22px; height: 22px; flex: none; display: grid; place-items: center; }
+/* The icon's plate is `#1d1f21` against a `--bg-chrome` of `#171412` — 1.06:1, which is
+   not a border by any measure. Its own 9%-white hairline is what gives it an edge, and
+   this is the one element in the app whose colours come from outside the palette: it is
+   a logo, not a component. */
+.mark-icon { display: block; width: 22px; height: 22px; }
 .mark-text {
   font-family: var(--font-display); font-size: var(--fs-base);
   font-weight: var(--fw-bold); letter-spacing: -0.01em; color: var(--fg);
@@ -301,7 +304,14 @@ html, body, #app { height: 100%; margin: 0; }
 /* The wordmark is the first thing dropped when the bar runs out of room, because
    the glyph beside it still says which app this is. Nothing here hides a control. */
 @media (max-width: 960px) {
-  .mark-text { display: none; }
+  /* Clipped rather than `display: none`. The glyph beside it is the product's logo and is
+     `aria-hidden` — a logo is not a label — so dropping the wordmark out of the tree here
+     left the top bar with no accessible name for the application at all. It stays out of
+     sight and in the tree. */
+  .mark-text {
+    position: absolute; width: 1px; height: 1px; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
   .topbar { gap: var(--sp-3); }
 }
 

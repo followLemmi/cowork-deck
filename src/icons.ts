@@ -17,6 +17,8 @@
 // motif. Authored on a 16-unit grid with a 12-unit live area and 1.5 stroke,
 // which matches the weight of 13px text at --fw-medium beside it.
 
+import markSource from "../src-tauri/icons/icon-source.svg?raw";
+
 const NS = "http://www.w3.org/2000/svg";
 
 /** Geometry per icon: everything is stroked with currentColor unless it opts
@@ -42,27 +44,6 @@ const PATHS: Record<string, string> = {
     + '<path d="M11.5 5 v1.4 a2.6 2.6 0 0 1-2.6 2.6 H7.1 a2.6 2.6 0 0 0-2.6 2.6"/>',
   play: '<path d="M5.8 3.6 l7 4.4 -7 4.4 z" fill="currentColor" stroke="none"/>',
   plus: '<path d="M8 3.5 V12.5"/><path d="M3.5 8 H12.5"/>',
-  // The wordmark's glyph, and the one glyph in this file that is not free to be
-  // whatever reads best: it has to be the app icon (`src-tauri/icons/`), because the
-  // corner of the window and the icon in the dock are the same product. It was two
-  // stacked tiles and the icon is four in a 2×2 grid — one product with two marks,
-  // which is what a person notices before they notice either of them.
-  //
-  // FILLED, not outlined, for two reasons that agree. The icon's own tiles are filled
-  // and its plate shows through as the cross-shaped seam, so this is the icon inverted
-  // rather than a redrawing of it. And at the 14px this renders at, an outlined 4px
-  // square closes up into a ring: the tile stops reading as a tile.
-  //
-  // The icon's prompt caret is deliberately dropped. At 14px it collides with the tiles
-  // it sits between, and the word "cowork·deck" is right beside the glyph to carry what
-  // the caret says. Below 960px that word is hidden and this glyph is the only thing
-  // naming the app — which is the other reason it has to be the icon's shape.
-  deck: '<g fill="currentColor" stroke="none">'
-    + '<rect x="1.6" y="1.6" width="5.6" height="5.6" rx="1.6"/>'
-    + '<rect x="8.8" y="1.6" width="5.6" height="5.6" rx="1.6"/>'
-    + '<rect x="1.6" y="8.8" width="5.6" height="5.6" rx="1.6"/>'
-    + '<rect x="8.8" y="8.8" width="5.6" height="5.6" rx="1.6"/>'
-    + '</g>',
   // Settings. Two rails and two knobs rather than a gear: at 16px a gear's teeth
   // collapse into a circle, and the same shape already has to read at 12px in the
   // tile heads.
@@ -114,6 +95,35 @@ export const SCENARIO_ICONS = [
 
 export const ICON_NAMES = Object.keys(PATHS);
 export type IconName = keyof typeof PATHS & string;
+
+/** The application's own icon, as the mark in the window's corner.
+ *
+ *  Read from the file the bundle icons are generated from rather than redrawn here: the
+ *  corner of the window and the icon in the dock are the same product, and two copies of
+ *  a mark drift. `?raw` because that is how this project reads a file it must not
+ *  duplicate — `node:fs` does not typecheck under the narrowed `types`.
+ *
+ *  It is the icon **unchanged**, which is the point, and that has one consequence worth
+ *  stating: its cursor block is `#61afef`, the accent from before the Slate & Ember pass.
+ *  Hue belongs to state everywhere inside this window except here, where it is not a
+ *  state but a logo. If that trade stops being worth it, the answer is to redraw
+ *  `icon-source.svg` — not to draw something else in this corner.
+ *
+ *  What it cannot carry at 22px: the four tiles. Their lit/unlit fills are 16 % and 4.5 %
+ *  alpha, which is a tint at 1024 px and nothing at 22. What survives, and what makes it
+ *  recognisable, is the plate, the prompt chevron and that cursor. */
+
+export function appMark(size = 22): SVGSVGElement {
+  const doc = new DOMParser().parseFromString(markSource, "image/svg+xml");
+  const svg = doc.documentElement as unknown as SVGSVGElement;
+  svg.setAttribute("class", "mark-icon");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  // Decorative: the wordmark beside it is the accessible name of the app, and below
+  // 960px `.mark-text` is hidden — so the label lives on `#mark` itself, not here.
+  svg.setAttribute("aria-hidden", "true");
+  return svg;
+}
 
 const SPRITE_ID = "cowork-icon-sprite";
 

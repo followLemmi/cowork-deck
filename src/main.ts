@@ -35,7 +35,7 @@ import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
 import { runBoot } from "./boot";
-import { icon, iconButton, installSprite } from "./icons";
+import { appMark, iconButton, installSprite } from "./icons";
 import { openGithubScreen } from "./github-screen";
 import { resolvePrompt, fillPlaceholders } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
@@ -96,7 +96,8 @@ const markEl = document.querySelector<HTMLElement>("#mark");
 if (markEl) {
   const glyph = document.createElement("span");
   glyph.className = "mark-glyph";
-  glyph.append(icon("deck", 14));
+  // The application's icon itself, not a glyph standing in for it — see `appMark`.
+  glyph.append(appMark(22));
   const text = document.createElement("span");
   text.className = "mark-text";
   text.append(document.createTextNode("cowork"));
