@@ -16,6 +16,14 @@ per-session state, token usage, and git context at a glance.
 ![No framework](https://img.shields.io/badge/UI-vanilla%20TS-informational)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-lightgrey)
 
+<br />
+
+<img src="docs/images/deck.png" alt="Four Claude Code sessions as tiles in one window: one working, one waiting for a decision, one finished, one exited — each with its state rail, token count and git branch, beside a sidebar of workspaces and scheduled scenarios." width="960" />
+
+<sub>Four sessions, four states, one glance. The bar down the left edge of each tile is its
+state — green working, amber waiting on you, red broken — so twelve sessions read in one
+sweep instead of twelve labels.</sub>
+
 </div>
 
 ---
@@ -26,8 +34,14 @@ waiting for input, ended, error) is tracked per tile via Claude Code's hooks and
 and, optionally, a desktop notification.
 
 Built with [Tauri v2](https://v2.tauri.app/) (Rust backend, PTY + process management) and a small
-TypeScript / [xterm.js](https://xtermjs.org/) frontend — no UI framework. Dark theme, One Dark palette,
-memory footprint kept under ~100 MB.
+TypeScript / [xterm.js](https://xtermjs.org/) frontend — no UI framework. Memory footprint kept under
+~100 MB.
+
+The interface is a design system of its own — "Slate & Ember": a warm graphite dark theme where
+**hue belongs to state**, so green, amber and red mean working, waiting on you and broken and are
+never spent on decoration. Every colour pair it claims is measured by `npm run contrast`, which
+fails if one falls under its threshold and documents the three that deliberately do. The reasoning,
+the tokens and the measurements are in [docs/design/slate-ember](docs/design/slate-ember/README.md).
 
 ## Features
 
@@ -94,6 +108,12 @@ at most one tile.
 A run that produced nothing — no workspace, a skipped overlap, `claude` missing — is recorded rather
 than silently swallowed: the scenario's row says what happened and when it was last successful.
 
+![One terminal zoomed near-full, the other sessions reduced to a filmstrip of cards below it — each card carrying its name, state, branch and token count.](docs/images/zoom.png)
+
+*Double-click a tile's header and it takes the window; the rest become a filmstrip. The
+cards carry no terminal on purpose — at 232 × 132 a terminal is texture, not information,
+so the space goes to the four things worth knowing about a session you are not watching.*
+
 ## The board
 
 The Board is a screen of its own, not a panel: switching to it puts the columns
@@ -113,6 +133,12 @@ itself and a crashed session would otherwise read as work in progress. Cards
 naming a step the configuration does not know stay visible in their own column;
 cards belonging to another project in a shared root are counted, not silently
 hidden.
+
+![The Board screen: four configured columns of cards, each card carrying its kind, its age and the arrows that move it, with one card in the working step marked as having a session running on it.](docs/images/board.png)
+
+*The columns are the project's own — `board.json` beside the cards decides them. The card
+is the raised surface and the column is not: what you can pick up sits above what you
+cannot.*
 
 ### The configuration
 
@@ -197,6 +223,20 @@ editable**: there is no `board.json` to edit, so ⚙ is not offered. Labels show
 chips; nothing on an issue maps to a card kind, so no kind chip is drawn. Closed
 issues are fetched rather than accumulated, twenty at a time, so an issue you
 close stays visible where you closed it.
+
+![The same Board reading a repository's issues: an Open/Closed filter, a row of label filters with one pressed, and issue rows showing the number, the title and a line of the body.](docs/images/issues.png)
+
+*Each row carries a line of the issue's body, because a list of titles cannot be triaged —
+"Refund webhook retries forever" and "Refund webhook retries on a 410" are the same row at
+a glance. The labels are the filter; pressing the active one clears it.*
+
+Click a row and the issue opens as a document:
+
+![An issue open in the card dialog: a long title wrapped over two lines, the body rendered as Markdown with a heading and a code span, and a rail carrying the step, the labels and a link to the issue on GitHub.](docs/images/issue-dialog.png)
+
+*The body is **rendered**, not raw — an issue is read every time it is triaged and written
+once — and the editor is one press away. The rail carries what the issue *is*; the number
+is the heading, so no row repeats it.*
 
 **▶ opens a session on a new branch in a worktree of its own**, at
 `<parent>/<workspace>-issue/<number>-<title>` — beside the workspace, never
@@ -312,6 +352,12 @@ points at the fix.
 
 Each row shows the checks, the review verdict and how long ago it moved. Four
 check states are distinguished, and "no checks" is not shown as success.
+
+![The pull request list with one row expanded and the diff drawer open beside it, showing a file's changes with two sticky line-number columns and + / − markers.](docs/images/pull-requests.png)
+
+*The drawer squeezes the list rather than covering it, so nothing focusable ends up behind
+it. Colour is the third channel in the diff, never the channel: the two bands measure ~1.0
+against each other, so the literal `+` and `−` in their own column do the work.*
 
 **▶ opens a session on the pull request's branch in a worktree of its own**, at
 `<parent>/<workspace>-pr/<number>-<branch>` — beside the workspace, never inside
