@@ -342,3 +342,104 @@ terminal. In the strip it is legitimate precisely because that content is
 
 Note for the app: zoom there still has no keyboard path at all (`sessions.ts` hangs it on
 `dblclick`). That is wave 3 of the UX audit, not a regression of this port.
+
+## The issue dialog, and why it did not read
+
+From a screenshot of the running app on 2026-08-05, issue #150. Six separate reasons,
+and none of them is "the type is small".
+
+**The title could not physically be read.** An 81-character issue title in a single-line
+`<input>`, with the dialog focusing that field on open so the caret lands at the end:
+what was on screen was `oked GitHub token is reported as…`. The first third of the
+sentence was simply gone, and GitHub titles are long as a matter of course rather than
+occasionally. The title now **wraps** — a textarea, two lines at the dialog's width,
+three before it scrolls, the whole of it readable at once.
+
+**`BodyMarkdown · 28 lines`, as one word.** `.tk-c-hint` carries `margin-left: auto`, but
+`.form-label` is not a flex container, so the margin is inert — and `labeled()` leaves no
+text node between the two. A hint has to be laid out, not merely pushed:
+`.form-label--split` makes the label row a flex row, and the hint sits above the right
+edge of the box it describes.
+
+**The body was raw Markdown in an editor.** This is the real answer to "it does not
+read". An issue body is read every time the issue is triaged and written once, yet the
+screen showed `##`, backticks and `>` as literal characters, monospaced, in a box ten
+lines tall out of twenty-eight. The renderer already exists (`markdown.ts` draws pull
+request descriptions) and the `.md` rules are in the system. **Reading is now the resting
+state** and the editor is one press away: an `Edit` button in the label row, the same box,
+the same ground, the same measure, so switching does not move the page. Focus follows the
+mode, so the keyboard is never left on a hidden box.
+
+**The body got the leftovers while a column of dead space sat beside it.**
+`.modal--card` had only a `max-height`, so the dialog was as tall as its content: the
+rail runs out after four facts, a grid row is as tall as its taller column, and the body
+took what was left. Now `min-height: min(40rem, …)` and `align-items: stretch` instead of
+`start` — the rail top-packs its own contents, so `start` bought exactly one thing: a
+main column that stopped at its content.
+
+**`id 150` restated the heading.** A row is a claim, and that one claimed `#150` a second
+time. On a file card the id is a ULID nobody says out loud, so there the row stays.
+
+**`path` holding a URL was both the wrong word and unreadable** — it wrapped mid-host
+across two lines. It is now `on GitHub`, linking `followLemmi/cowork-deck#150`, the form
+a person says out loud, with the whole URL on the row's `title`. It is also the one fact
+here that is a destination.
+
+**And what the dialog never had: labels.** They are the main way anyone finds everything
+about payments, and until now they appeared only in the list row that the dialog covers.
+Uncoloured, for the reason the list gives — hue belongs to state.
+
+No author row: `Task` carries no author, so the dialog would be inventing one. Worth
+adding to the issue mapping; not drawn until it exists.
+
+**Also closed:** an issue row did not open at all — not by mouse, not by keyboard. The
+title is a button now, as on a card, the row carries `data-open`, and `.list-acts` joins
+`.card-acts` in the handler's exclusions, because `▶` starts a session and `✓` closes the
+issue and neither is a way into a dialog.
+
+One more divergence found on the way: `.tk-c-body`, `.tk-c-hint`, `.tk-c-facts`,
+`.tk-c-mono`, `.tk-c-patch` and `.tk-c-broken` existed **only** in `src/styles.css`. The
+system file carried the two-column shell and nothing that goes inside it, so the facts
+`<dl>` rendered as a default browser `<dl>` in the mockup and the two could not be
+compared at all. It carries them now, along with `--bg-error-soft`, which also lived only
+in the port. The measurement set is up to **62**.
+
+### What the port needs here
+
+Pure CSS, and it is the same text as the mockups: `.form-label--split` (or making the
+dialog's own label row a flex row), `.tk-c-title`, `.tk-c-read`, `.tk-c-mode`,
+`.tk-c-labels`, the `.tk-c-facts a` pair, and `min-height` + `align-items: stretch` on
+the card dialog.
+
+In `card-modal.ts`: the title becomes a textarea with the same auto-grow, the body gets
+the read/edit pair with `renderMarkdown` on the reading side, and `cardFacts` learns that
+an issue's id is already its heading and its path is a URL — a change with tests on it
+(`cardFacts` is pure and covered), plus a labels row where `task.labels` is non-empty.
+
+## An empty deck
+
+`<main id="deck"></main>` is an empty element until a session is added. So the app's most
+likely first screen — and its screen every time the last session is closed — was an
+unexplained dark rectangle.
+
+**Two states, not one**, because the action differs. With no workspace there is nowhere
+for a session to run, and "New session" there produces a `Pick a workspace first.` modal:
+a question answered by a refusal.
+
+- **No workspace.** "Add a workspace to start working" — a workspace is a project folder,
+  sessions run *in* one, and it is also what binds the GitHub account `git push` will go
+  out as. One primary: add a workspace.
+- **A workspace, no sessions.** "No sessions in {name}" — what a session is (a real
+  `claude` process in this folder, a child of this window) plus the thing nobody knows
+  that removes the fear: the scrollback stays on screen after it finishes. The primary is
+  "New session". Under a hairline, **scenarios**: the fastest start there is, a session
+  with its prompt already written, and on an empty deck the sidebar is the only place
+  they appear. Quiet buttons, because a screen gets one primary. Below that, a line
+  saying all of it is in the command palette, with keycaps.
+
+The mark is `.empty-mark`: one inset 52px glyph from the app's own icon set (`folder`,
+`terminal`). A screen needs something to look at before it needs words, but not a
+wireframe box and not a drawn scene — so it comes from the app's own vocabulary.
+
+For the port: the deck needs to render one of the two when it has no tiles, choosing on
+whether a workspace is selected, and remove it when the first tile arrives.

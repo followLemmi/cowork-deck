@@ -153,6 +153,9 @@ H["chip-error"] = over(H["st-error"], H["bg-island"], 0.06);
 // The chips as they are actually read: on a SELECTED row, which is the worst ground
 // and the one the eye is already on. Measuring them only on a resting island is how
 // the ended chip shipped at 3.62 and the error chip at 4.31.
+// The banner ground, which is twice the chip's alpha on purpose: a chip's text shares its
+// fill's hue, so alpha there is contrast spent, while a banner carries `--fg`.
+H["error-soft"] = over(H["st-error"], H["bg-island"], 0.12);
 H["chip-error-sel"] = over(H["st-error"], H["sel"], 0.06);
 H["chip-ended-sel"] = over(H["st-ended"], H["sel"], 0.10);
 H["chip-working-sel"] = over(H["st-working"], H["sel"], 0.14);
@@ -203,6 +206,9 @@ const PAIRS = [
   // is the defect this token was added to fix.
   ["fg", "sel-hover", 4.5], ["fg", "sel-hover-void", 4.5],
   ["sel-hover", "sel", 1.15], ["sel-hover-void", "sel-void", 1.15],
+  // The broken-card banner in the task dialog: body text, and the icon-free kind, so the
+  // text threshold is the whole of it.
+  ["fg", "error-soft", 4.5], ["st-error", "error-soft", 4.5],
   ["st-working", "bg-void", 3.0], ["st-waiting", "bg-void", 3.0], ["st-error", "bg-void", 3.0],
   ["fg-dim", "bg-void", 3.0],
   ["accent", "bg-island", 3.0],
