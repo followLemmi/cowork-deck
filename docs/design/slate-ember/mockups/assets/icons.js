@@ -49,8 +49,22 @@ const PATHS = {
 
   // --- New, for the redesigned shell -------------------------------------
   // The wordmark: two stacked tiles, which is what a deck is.
-  deck: '<rect x="2.8" y="3" width="10.4" height="4.2" rx="1.3"/>'
-    + '<rect x="2.8" y="8.8" width="10.4" height="4.2" rx="1.3"/>',
+  // The wordmark's glyph, and the one glyph here that is not free to be whatever reads
+  // best: it has to be the app icon (`src-tauri/icons/`), because the corner of the
+  // window and the icon in the dock are the same product. It was two stacked tiles and
+  // the icon is four in a 2x2 grid — one product with two marks.
+  //
+  // FILLED, not outlined: the icon's own tiles are filled and its plate shows through as
+  // the cross-shaped seam, so this is that icon inverted rather than a redrawing of it —
+  // and at 14px an outlined 4px square closes up into a ring.
+  // The icon's prompt caret is dropped: at this size it collides with the tiles it sits
+  // between, and the wordmark beside the glyph carries what it said.
+  deck: '<g fill="currentColor" stroke="none">'
+    + '<rect x="1.6" y="1.6" width="5.6" height="5.6" rx="1.6"/>'
+    + '<rect x="8.8" y="1.6" width="5.6" height="5.6" rx="1.6"/>'
+    + '<rect x="1.6" y="8.8" width="5.6" height="5.6" rx="1.6"/>'
+    + '<rect x="8.8" y="8.8" width="5.6" height="5.6" rx="1.6"/>'
+    + '</g>',
   columns: '<rect x="2.5" y="3.5" width="3.2" height="9" rx="1"/>'
     + '<rect x="6.4" y="3.5" width="3.2" height="9" rx="1"/>'
     + '<rect x="10.3" y="3.5" width="3.2" height="9" rx="1"/>',

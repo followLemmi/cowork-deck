@@ -42,10 +42,27 @@ const PATHS: Record<string, string> = {
     + '<path d="M11.5 5 v1.4 a2.6 2.6 0 0 1-2.6 2.6 H7.1 a2.6 2.6 0 0 0-2.6 2.6"/>',
   play: '<path d="M5.8 3.6 l7 4.4 -7 4.4 z" fill="currentColor" stroke="none"/>',
   plus: '<path d="M8 3.5 V12.5"/><path d="M3.5 8 H12.5"/>',
-  // The wordmark's glyph: two stacked tiles, which is what a deck is. Drawn
-  // dark-on-light inside `.mark-glyph`, the one place in the app an icon inverts.
-  deck: '<rect x="2.8" y="3" width="10.4" height="4.2" rx="1.3"/>'
-    + '<rect x="2.8" y="8.8" width="10.4" height="4.2" rx="1.3"/>',
+  // The wordmark's glyph, and the one glyph in this file that is not free to be
+  // whatever reads best: it has to be the app icon (`src-tauri/icons/`), because the
+  // corner of the window and the icon in the dock are the same product. It was two
+  // stacked tiles and the icon is four in a 2×2 grid — one product with two marks,
+  // which is what a person notices before they notice either of them.
+  //
+  // FILLED, not outlined, for two reasons that agree. The icon's own tiles are filled
+  // and its plate shows through as the cross-shaped seam, so this is the icon inverted
+  // rather than a redrawing of it. And at the 14px this renders at, an outlined 4px
+  // square closes up into a ring: the tile stops reading as a tile.
+  //
+  // The icon's prompt caret is deliberately dropped. At 14px it collides with the tiles
+  // it sits between, and the word "cowork·deck" is right beside the glyph to carry what
+  // the caret says. Below 960px that word is hidden and this glyph is the only thing
+  // naming the app — which is the other reason it has to be the icon's shape.
+  deck: '<g fill="currentColor" stroke="none">'
+    + '<rect x="1.6" y="1.6" width="5.6" height="5.6" rx="1.6"/>'
+    + '<rect x="8.8" y="1.6" width="5.6" height="5.6" rx="1.6"/>'
+    + '<rect x="1.6" y="8.8" width="5.6" height="5.6" rx="1.6"/>'
+    + '<rect x="8.8" y="8.8" width="5.6" height="5.6" rx="1.6"/>'
+    + '</g>',
   // Settings. Two rails and two knobs rather than a gear: at 16px a gear's teeth
   // collapse into a circle, and the same shape already has to read at 12px in the
   // tile heads.
