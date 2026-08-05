@@ -18,7 +18,7 @@ per-session state, token usage, and git context at a glance.
 
 <br />
 
-<img src="docs/images/deck.png" alt="Four Claude Code sessions as tiles in one window: one working, one waiting for a decision, one finished, one exited — each with its state rail, token count and git branch, beside a sidebar of workspaces and scheduled scenarios." width="960" />
+<img src="docs/images/deck.png" alt="Four Claude Code sessions as tiles in one window: one working, one waiting for a decision, one finished, one stopped on an error — each with its state rail, token count and git branch, beside a sidebar of workspaces and scheduled scenarios." width="960" />
 
 <sub>Four sessions, four states, one glance. The bar down the left edge of each tile is its
 state — green working, amber waiting on you, red broken — so twelve sessions read in one
@@ -47,13 +47,13 @@ the tokens and the measurements are in [docs/design/slate-ember](docs/design/sla
 
 - **Multi-session deck** — run many `claude` sessions as tiles in one window, each a full interactive terminal.
 - **Live state tracking** — per-tile `idle` / `working` / `finished a turn` / `waiting for a decision` / `ended` / `error`, driven by Claude Code hooks, with optional desktop notifications. Click a notification to focus that session. "Finished a turn" and "waiting for a decision" are separate on purpose: an interactive `claude` parks at the prompt when it is done, which is not the same as being blocked on a permission request.
-- **Floating status pill** — an always-on-top pill counting the sessions blocked on a decision, so you can step away from the app and still know when one needs you. A session that merely finished its task announces itself with a notification instead.
-- **GitHub-аккаунт на воркспейс** — привяжите воркспейс к аккаунту `gh`, и его сессии стартуют уже с нужным доступом: `gh pr list`, `git push` и авторство коммитов идут от правильного лица. Разные воркспейсы работают на разных аккаунтах **одновременно** — приложение не переключает активный аккаунт `gh` и не трогает `~/.config/gh`.
+- **Floating status pill** — an always-on-top pill counting the sessions blocked on a decision, so you can step away from the app and still know when one needs you. A session that merely finished its task announces itself with a notification instead.<br /><img src="docs/images/pill.png" alt="A small floating pill reading “3 waiting for input”." width="240" />
+- **A GitHub account per workspace** — bind a workspace to a `gh` account and its sessions start with that access already in place: `gh pr list`, `git push` and the authorship of commits all go out as the right person. Different workspaces run on different accounts **at the same time** — the app never switches the active `gh` account and never touches `~/.config/gh`.
 - **Workspaces** — group sessions by workspace in a color-coded sidebar, and switch the deck to show only one workspace's terminals.
 - **Zoom / juggle** — double-click a tile header to expand one terminal near-full while the rest shrink to a filmstrip; click a shrunken tile to juggle focus (animated).
-- **Scenarios** — launch sessions with canned prompts, parameterized with `{{name}}` placeholders filled in at start.
+- **Scenarios** — a saved prompt under a name and a mark of its own, launched as a session in one press. A scenario is either pinned to one workspace or offered in every one of them, and an empty deck offers them as well, a canned prompt being the fastest start there is. The prompt can be parameterized: each distinct `{{name}}` in it becomes a field in a small "Launch parameters" form at launch, and a prompt with no placeholders asks nothing at all. A placeholder name is matched by letter rather than by ASCII, so a prompt written in any script names its fields in that script — the interface being English does not oblige anyone to think in it.
 - **Scheduled scenarios** — attach a schedule (hourly / daily at `HH:MM` / weekly) to a scenario and it fires unattended into a fresh session, using stored defaults for its placeholders. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra cost, full local context and permissions.
-- **Run a schedule now** — a ⏰ button on a scheduled scenario runs it immediately, exactly as the schedule would, without consuming the upcoming scheduled run.
+- **Run a schedule now** — a scheduled scenario carries a run-now button, a clock face with a play triangle where the hands would be, and it fires the scenario immediately and exactly as the schedule would. Not a skip-forward glyph, on purpose: the run it starts does not consume the upcoming scheduled one.
 - **Task tracker** — a per-workspace backlog of markdown cards (`.cowork/tasks/` in the project, or any folder you point at — a dedicated repo, an Obsidian vault — where the cards go into a `cowork-deck-tasks/<workspace>/` folder the app creates, one container however many workspaces you point there). A Board screen next to Terminals, `Cmd/Ctrl+Shift+T` to file one without leaving the deck, and ▶ on a card launches a session with the card as its prompt. Sessions file their own tickets via a bundled `cowork_task` CLI, so a side finding becomes a card instead of scope creep. "In progress" is derived from live sessions, never stored, so nothing gets stuck.
 - **Or the repository's issues** — a workspace's board can read the open and closed GitHub issues of the repository its folder is, instead of local card files, under the workspace's own account. ▶ on an issue opens a session on a new branch in a worktree of its own; ✓ closes the issue, after asking. One source per workspace, chosen in its settings, never both at once. See [The board's second source](#the-boards-second-source-github-issues).
 - **A board each project configures** — the steps (columns) and card kinds live in a `board.json` beside the cards, so one project can run `backlog / todo / doing / shipped` and the next just `open / done`. Edit them from the board's ⚙ editor, which also moves the cards a rename or a removal would otherwise strand. Cards open as documents to read and edit, and move between steps by drag or by the ‹ › on the card. See [The board](#the-board).
@@ -85,9 +85,9 @@ npm test                                            # frontend (vitest)
 cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
 ```
 
-> В свежем клоне (или git worktree) перед `cargo test` выполните один раз
-> `npm install && npm run build && npm run stage:reporter` — `dist/` и `src-tauri/binaries/`
-> не в git, а без них падает build-скрипт Tauri.
+> In a fresh clone (or a fresh git worktree), run `npm install && npm run build &&
+> npm run stage:reporter` once before `cargo test`. Neither `dist/` nor
+> `src-tauri/binaries/` is in git, and Tauri's build script fails without them.
 
 ## Sessions and the app window
 
@@ -134,7 +134,7 @@ naming a step the configuration does not know stay visible in their own column;
 cards belonging to another project in a shared root are counted, not silently
 hidden.
 
-![The Board screen: four configured columns of cards, each card carrying its kind, its age and the arrows that move it, with one card in the working step marked as having a session running on it.](docs/images/board.png)
+![The Board screen: four configured columns of cards, each card carrying its kind and the arrows that move it, one card in the working step marked as having a session running on it and another marked as having none.](docs/images/board.png)
 
 *The columns are the project's own — `board.json` beside the cards decides them. The card
 is the raised surface and the column is not: what you can pick up sits above what you
@@ -315,33 +315,36 @@ COWORK_CLAUDE_PATH=/usr/local/bin/claude npm run tauri dev
 If neither `COWORK_CLAUDE_PATH` nor a `claude` on `PATH` can be found, the app shows an alert on startup
 telling you to set `COWORK_CLAUDE_PATH` and restart.
 
-## GitHub-аккаунты воркспейсов
+## A workspace's GitHub account
 
-Требуется [GitHub CLI](https://cli.github.com/) (`gh`), залогиненный в нужные аккаунты
-(`gh auth login`). Экран «GitHub» в палитре команд показывает статус, список аккаунтов и
-помогает установить `gh`, если его нет: команда установки подставляется под вашу платформу
-в **редактируемое** поле и выполняется в обычном тайле-терминале, так что вывод виден
-целиком, а `sudo`-пароль вводите вы сами.
+You need the [GitHub CLI](https://cli.github.com/) (`gh`), logged in to the accounts you
+mean to use (`gh auth login`). The "GitHub" screen in the command palette shows the
+status and the list of accounts, and helps you install `gh` if it is missing: the install
+command is filled in for your platform in an **editable** field and runs in an ordinary
+terminal tile, so you see all of its output and type your own `sudo` password.
 
-Аккаунт и идентичность коммитов задаются в свойствах пространства. Токены приложение
-**не хранит**: в настройках лежит только имя аккаунта, а токен читается из keyring `gh`
-в момент старта сессии и передаётся дочернему процессу через переменные окружения
-(`GH_TOKEN`, `GIT_AUTHOR_*` и, при необходимости, `GIT_SSH_COMMAND`).
+The account and the commit identity belong to the workspace's own settings. The app
+**stores no tokens**: the settings hold the account name and nothing else, and the token
+is read from `gh`'s keyring at the moment a session starts and handed to the child
+process through environment variables (`GH_TOKEN`, `GIT_AUTHOR_*` and, where it is
+needed, `GIT_SSH_COMMAND`).
 
-Переключений (`gh auth switch`) приложение не делает никогда — именно поэтому сессии на
-разных аккаунтах не мешают друг другу, а ваш собственный терминал вне приложения остаётся
-на прежнем активном аккаунте. Больше того, с выставленным `GH_TOKEN` сам `gh` отказывается
-менять аккаунт, так что сессия не может испортить окружение соседей, даже если попытается.
+The app never switches accounts (`gh auth switch`). That is precisely why sessions on
+different accounts do not interfere with each other, and why your own terminal outside
+the app stays on whichever account was active there. More than that: with `GH_TOKEN` set,
+`gh` itself refuses to change account, so a session cannot spoil its neighbours'
+environment even if it tries.
 
-Если `gh` лежит не на `PATH`, укажите путь через `COWORK_GH_PATH`.
+If `gh` is not on `PATH`, point at it with `COWORK_GH_PATH`.
 
-Смена аккаунта у пространства действует на новые и перезапущенные сессии: окружение
-процесса фиксируется при запуске и на лету не меняется. Живые сессии в этом случае
-помечаются на тайле значком `GitHub ⟳`.
+Changing a workspace's account applies to new and restarted sessions: a process's
+environment is fixed when it starts and cannot be changed under it. Live sessions are
+marked on the tile with a `GitHub ⟳` badge instead.
 
-Если аккаунт не удалось подключить (нет `gh`, аккаунт разлогинен, залочен keyring), сессия
-всё равно стартует — но с пустым `GH_CONFIG_DIR`, чтобы `gh` честно сообщил «не залогинен»
-вместо тихой работы под чужим аккаунтом. На тайле появляется значок `GitHub ✕` с причиной.
+If the account could not be attached at all — no `gh`, the account logged out, the
+keyring locked — the session still starts, but with an empty `GH_CONFIG_DIR`, so that
+`gh` says "not logged in" honestly rather than quietly working as somebody else. The tile
+carries a `GitHub ✕` badge with the reason.
 
 ## Pull requests
 
@@ -390,19 +393,15 @@ the tile's state label stays on `idle` instead of reflecting the actual state.
 
 **Next**
 
-- **Scheduling v2** — cron expressions, more than one schedule per scenario, and last-run info in the ⏰ tooltip (all deliberately left out of the first cut).
+- **Built-in memory, and search over it** — semantic search over what earlier sessions actually did and decided, for you and for the agents. The corpus fills itself: a session writes its own summary when it closes, so nothing depends on anyone keeping notes. Lessons are kept globally rather than per project, which is what lets a mistake made in one repository stop the same mistake in the next, and a session can consult them through an MCP tool of its own. Local, like everything else here — the embedding model runs on your machine and the index never leaves it.
+- **Session names that come from the work** — a tile started with "+ session" is called `session · relay` and stays called that, so four of them on one deck are four identical labels. The name should be generated from what the session is actually doing — its opening prompt, then the turn it is on — the way a scenario's or a card's tile is already named after something.
+- **Renaming a session** — the same title, editable by hand, for when the generated one is wrong or the work has moved on since. The name is what the sidebar list, the filmstrip and the restored layout all show, so it is worth being able to fix.
 - **UI localization** — a language switch and translated strings; the interface is English-only today.
-- **Tracker providers** — Jira boards inside the deck, configured per workspace on the same `TaskProvider` port the GitHub issues board arrived on (needs token storage of its own; GitHub's comes from `gh`).
 
 **Later**
 
-- **Session diff review** — a side-by-side diff of what a session changed, without leaving the deck.
-- **Project memory** — a per-project store of decisions, architecture, and gotchas that scenarios pick up automatically.
+- **Deeper git integration** — a side-by-side diff of what a session changed, staging and committing without leaving the deck, and the worktrees the app already makes managed from inside it.
 - **Multi-provider** — agent CLIs beyond Claude Code (Codex, Gemini CLI, Ollama, …), with keys going straight to the provider.
+- **Jira boards** — configured per workspace on the same `TaskProvider` port the GitHub issues board arrived on (needs token storage of its own; GitHub's comes from `gh`).
+- **Syntax highlighting** — in the diff drawer and in the card and issue bodies, where a patch is currently read in one colour.
 - **Agent teams** — handing work along Dev → QA → PM, including delegation to cheaper agents.
-
-**Non-goals**
-
-- **Cloud agents.** Every session is a local process on your machine, and scheduled work uses your own Claude Code install rather than a hosted runner.
-- **Token markup or proxying.** The app never sits between you and your provider.
-- **A UI framework.** Vanilla TypeScript and xterm.js; the sub-100 MB footprint is a feature, not an accident.

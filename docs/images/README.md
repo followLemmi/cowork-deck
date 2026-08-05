@@ -1,6 +1,6 @@
 # The README's screenshots
 
-Six shots, and each one is in the root `README.md` because it proves something the prose
+Seven shots, and each one is in the root `README.md` because it proves something the prose
 has to spend a paragraph on. Capture them from the **running app**, not from the mockups
 in `docs/design/slate-ember/mockups/`: the point of a repository's front page is that the
 thing exists, and a render of a design file is not evidence of that.
@@ -8,7 +8,38 @@ thing exists, and a render of a design file is not evidence of that.
 Keep this file next to them. A re-shoot six months from now should look like a re-shoot,
 not like a different application.
 
-## Rules for all six
+## How the current set was shot
+
+Against `harness/`, which is the app itself with the backend replaced: `src/main.ts` boots
+unmodified and every screen renders from the data it would have got over IPC, but the IPC
+answers come from `harness/fixtures.ts` instead of from Rust. So the terminals are real
+xterm instances holding real bytes, the board really is `BoardView` reading a
+`board.json`, and the diff drawer really is parsing a patch — while the accounts, the
+repositories, the issue numbers and the paths are all invented.
+
+Two things that buys, and they are the reasons to shoot this way rather than from a live
+window:
+
+- **Nothing publishable has to be found first.** The front page shows no real account, no
+  customer's repository and no path off anybody's disk, so there is no scrollback to vet.
+- **A re-shoot is a re-shoot.** The same fixtures give the same four states, the same
+  columns and the same twelve issues, instead of whatever happened to be open that
+  afternoon.
+
+What it cannot show is the backend: if `gh` stops answering the way `gh_issues.rs` expects,
+these shots will not notice. They are evidence that the interface exists and works, not
+that the plumbing behind it does — that is what the tests are for.
+
+```bash
+npm run dev                       # serves /harness/
+node harness/shoot.mjs            # all seven, into docs/images/
+node harness/shoot.mjs deck zoom  # or just the ones you are redoing
+```
+
+Vite does not watch this worktree (`vite.config.ts` ignores `.claude/worktrees/**`), so
+restart the dev server after editing a fixture or the shot will be of the old data.
+
+## Rules for all seven
 
 | | |
 |---|---|
@@ -16,7 +47,7 @@ not like a different application.
 | **Text size** | The default — 100 % in Settings. It is the one setting that changes every measurement in the app, so a shot taken at 115 % does not match its neighbours. |
 | **Window** | Capture the app window only, with its own corners. No desktop wallpaper, no dock, no menu bar. |
 | **Format** | PNG, under ~400 kB each. Above that, quantize (`pngquant --quality 65-85`) rather than dropping resolution. |
-| **Content** | Real sessions and real repositories, but pick ones whose paths, branch names and scrollback you are content to publish. The sidebar shows the bound `gh` account, and the tiles show absolute paths. |
+| **Content** | Fixtures, from the harness below — the sidebar shows the bound `gh` account and the tiles show absolute paths, and neither belongs on a repository's front page. Shooting a live window instead is allowed, but then every path, branch name and line of scrollback in frame is published with it. |
 | **What not to shoot** | A scrollback carrying a token, a customer name, or a path under someone else's project. Start a fresh session for the shot if the live one is not publishable. |
 
 ## The six
