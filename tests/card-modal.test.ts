@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import {
-  brokenReasons, cardFacts, computePatch, describePatch, openCardModal,
-  type CardFormValues,
+  brokenReasons, cardFacts, computePatch, describePatch, idIsInHeading, issueRef,
+  openCardModal, type CardFormValues,
 } from "../src/card-modal";
 import type { BoardConfig, Task } from "../src/ipc";
 
@@ -11,6 +11,19 @@ const original: Task = {
   created: "2026-07-01T00:00:00Z", resolved: null, origin: "human", session: null,
   body: "Body.\n", path: "/t/1.md", damaged: null, conflict: false, labels: [],
 };
+/** A file card as the app actually hands one over: a ULID id and a path on disk. The
+ *  facts list keeps an `id` row for these, because a ULID is not in the heading. */
+const card: Task = {
+  ...original, id: "01J8XQ2K7Y3M4N5P6R7S8T9V0W", path: "/t/sticky-gutter.md",
+};
+/** An issue as the GitHub source hands one over: the number as its id, the URL as its
+ *  path, and labels. */
+const issue: Task = {
+  ...original, id: "150", path: "https://github.com/followLemmi/cowork-deck/issues/150",
+  labels: ["bug", "github"],
+};
+const labelOf = (t: Task, label: string) =>
+  cardFacts(t, Date.parse("2026-07-04T00:00:00Z")).find((f) => f.label === label);
 const same = (): CardFormValues =>
   ({ title: "Original", kind: "task", status: "todo", body: "Body.\n" });
 
@@ -92,6 +105,65 @@ describe("computePatch", () => {
 });
 
 describe("openCardModal", () => {
+  it("opens on the body rendered, with the editor one press away", async () => {
+    // An issue body is read every time it is triaged and written once, and the only
+    // rendering of it used to be the editor: `##` and backticks as literal characters.
+    const p = openCardModal({ ...issue, body: "## Heading\n\nWith `code` in it." }, CFG, true);
+    const read = document.querySelector<HTMLElement>(".tk-c-read")!;
+    const edit = document.querySelector<HTMLTextAreaElement>(".tk-c-body")!;
+    expect(read.hidden).toBe(false);
+    expect(edit.hidden).toBe(true);
+    // Rendered, not escaped into the page as characters.
+    expect(read.querySelector("h3, h4, h5, h6")).not.toBeNull();
+    expect(read.querySelector("code")?.textContent).toBe("code");
+    expect(read.textContent).not.toContain("##");
+
+    const mode = document.querySelector<HTMLButtonElement>(".tk-c-mode")!;
+    expect(mode.textContent).toBe("Edit");
+    mode.click();
+    expect(edit.hidden).toBe(false);
+    expect(read.hidden).toBe(true);
+    expect(mode.getAttribute("aria-pressed")).toBe("true");
+    // Focus follows the mode, so the keyboard is never left on a hidden box.
+    expect(document.activeElement).toBe(edit);
+
+    // Back again, and the rendering catches up with what was typed.
+    edit.value = "Rewritten **entirely**.";
+    mode.click();
+    expect(read.hidden).toBe(false);
+    expect(read.querySelector("strong")?.textContent).toBe("entirely");
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
+  });
+
+  it("offers no way to edit a body nobody can write", () => {
+    const p = openCardModal({ ...original, damaged: "no created field" }, CFG, false);
+    // The reading half still works, which is the half a broken card still has.
+    expect(document.querySelector<HTMLElement>(".tk-c-read")!.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>(".tk-c-mode")!.hidden).toBe(true);
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    return expect(p).resolves.toBeNull();
+  });
+
+  it("wraps a long title instead of scrolling its beginning away", async () => {
+    const long = "A revoked GitHub token is reported as \"no account bound\", "
+      + "which the user can see is false";
+    const p = openCardModal({ ...issue, title: long }, CFG, true);
+    const title = document.querySelector<HTMLTextAreaElement>(".tk-c-title")!;
+    // A textarea, because that is the only field that can show all of it at once.
+    expect(title.tagName).toBe("TEXTAREA");
+    expect(title.value).toBe(long);
+    // A title has no second line, so Enter still means save rather than newline —
+    // dialog-shell reads this flag, and without it Enter would silently add one.
+    expect(title.dataset.singleLine).toBe("true");
+    // A pasted newline folds to a space, which is what the single-line input did.
+    title.value = "Two\nlines";
+    title.dispatchEvent(new Event("input"));
+    expect(title.value).toBe("Two lines");
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await expect(p).resolves.toBeNull();
+  });
+
   it("offers a card's unknown step as the selected option", () => {
     // Rendered, not resolved: the modal is how an unknown-step card gets out,
     // and it must not silently pick a different step on the way.
@@ -182,8 +254,7 @@ describe("cardFacts", () => {
   const NOW = Date.parse("2026-07-04T00:00:00Z"); // three days after `original.created`
 
   it("puts the dates in a form a person reads, keeping the exact value", () => {
-    const [, created] = cardFacts(original, NOW);
-    expect(created.label).toBe("created");
+    const created = labelOf(card, "created")!;
     expect(created.value).toBe("3 d ago");
     // Nothing is lost: the timestamp survives as the row's tooltip.
     expect(created.title).toBe("2026-07-01T00:00:00Z");
@@ -192,7 +263,7 @@ describe("cardFacts", () => {
   it("gives no row to a value that is absent", () => {
     // `resolved: —` and `session: —` were two of six lines saying nothing. A row is a
     // claim, so the honest rendering of "there is no session" is no session row.
-    const labels = cardFacts(original, NOW).map((f) => f.label);
+    const labels = cardFacts(card, NOW).map((f) => f.label);
     expect(labels).toEqual(["id", "created", "path"]);
     expect(labels).not.toContain("closed");
     expect(labels).not.toContain("session");
@@ -200,20 +271,70 @@ describe("cardFacts", () => {
 
   it("adds the rows a card has earned", () => {
     const labels = cardFacts({
-      ...original, resolved: "2026-07-03T00:00:00Z", session: "s-7", origin: "session",
+      ...card, resolved: "2026-07-03T00:00:00Z", session: "s-7", origin: "session",
     }, NOW).map((f) => f.label);
     expect(labels).toEqual(["id", "created", "closed", "session", "filed by", "path"]);
   });
 
   it("stays silent about the ordinary origin", () => {
     // A person filing a card is the default; a session filing one is worth saying.
-    expect(cardFacts(original, NOW).map((f) => f.label)).not.toContain("filed by");
+    expect(cardFacts(card, NOW).map((f) => f.label)).not.toContain("filed by");
   });
 
   it("marks identifiers as read character by character", () => {
-    const mono = cardFacts({ ...original, session: "s-7" }, NOW)
+    const mono = cardFacts({ ...card, session: "s-7" }, NOW)
       .filter((f) => f.mono).map((f) => f.label);
     expect(mono).toEqual(["id", "session", "path"]);
+  });
+
+  it("does not repeat the id the heading is already showing", () => {
+    // The dialog's own heading reads `#150`, so an `id` row claimed the title twice. The
+    // predicate is shared with the heading so the two cannot drift apart.
+    expect(idIsInHeading(issue)).toBe(true);
+    expect(cardFacts(issue, NOW).map((f) => f.label)).not.toContain("id");
+    // A ULID is not in the heading, so that row still earns its place.
+    expect(idIsInHeading(card)).toBe(false);
+    expect(cardFacts(card, NOW).map((f) => f.label)).toContain("id");
+  });
+
+  it("calls an issue's URL what it is, and makes it reachable", () => {
+    const row = labelOf(issue, "on GitHub")!;
+    // The form a person says out loud, not a URL wrapped mid-host across two lines.
+    expect(row.value).toBe("followLemmi/cowork-deck#150");
+    expect(row.href).toBe(issue.path);
+    // Nothing is lost: the whole URL is still on the row.
+    expect(row.title).toBe(issue.path);
+    expect(cardFacts(issue, NOW).map((f) => f.label)).not.toContain("path");
+    // A file card keeps a path, and it is still read character by character.
+    expect(labelOf(card, "path")!.mono).toBe(true);
+    expect(labelOf(card, "on GitHub")).toBeUndefined();
+  });
+
+  it("says opened for an issue and created for a file", () => {
+    expect(labelOf(issue, "opened")?.value).toBe("3 d ago");
+    expect(labelOf(issue, "created")).toBeUndefined();
+    expect(labelOf(card, "created")?.value).toBe("3 d ago");
+  });
+
+  it("carries the labels, and only when there are some", () => {
+    // They are how a person finds everything about payments, and the row that shows them
+    // is the one the dialog covers.
+    expect(labelOf(issue, "labels")?.chips).toEqual(["bug", "github"]);
+    expect(cardFacts(card, NOW).map((f) => f.label)).not.toContain("labels");
+  });
+});
+
+describe("issueRef", () => {
+  it("reads owner, repository and number out of an issue URL", () => {
+    expect(issueRef("https://github.com/followLemmi/cowork-deck/issues/150"))
+      .toBe("followLemmi/cowork-deck#150");
+  });
+
+  it("refuses anything that is not one", () => {
+    // A file card's path is a path, and the fallback for it is the `path` row.
+    expect(issueRef("/t/sticky-gutter.md")).toBeNull();
+    expect(issueRef("https://github.com/followLemmi/cowork-deck/pull/151")).toBeNull();
+    expect(issueRef("https://example.com/followLemmi/cowork-deck/issues/150")).toBeNull();
   });
 });
 

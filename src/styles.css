@@ -1480,6 +1480,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
      there is. Subtracted rather than guessed at 88vh, which would have left the box
      scrolling the overlay by the difference. */
   max-height: calc(100vh - 2 * var(--sp-6));
+  /* A `min-height` as well, and this is what makes the paragraph below true. With a cap
+     alone the dialog is content-tall: the rail runs out after four facts, a grid row is
+     as tall as its taller column, and the body — the one thing a person came to read —
+     settled for what was left while a column of dead space sat beside it. `min()` so a
+     short window still gets a dialog that fits inside it. */
+  min-height: min(40rem, calc(100vh - 2 * var(--sp-6)));
 }
 /* Two columns, and NOT because there was room. A dialog wide enough to stop the body
    scrolling is also wide enough to give it a 100-character measure, which is worse to
@@ -1489,7 +1495,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   flex: 1 1 auto; min-height: 0;
   display: grid; gap: var(--sp-4);
   grid-template-columns: minmax(0, 1fr) minmax(15rem, 19rem);
-  align-items: start;
+  /* `stretch`, not `start`: the rail top-packs its own contents with its own flex
+     column, so the only thing `start` bought was a main column that stopped at its
+     content and a body that never took the height the dialog had. */
+  align-items: stretch;
 }
 /* Below this the rail would leave the body too narrow to be the point of the dialog,
    so the two stack and the body keeps the full width. The dialog's width follows the
@@ -1520,8 +1529,45 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-code);
   resize: vertical;
 }
+/* The same box as the editor, rendered. A body is READ far more often than it is
+   written — every issue triaged is a body read — and the editor showed `##`, backticks
+   and `>` as literal characters in a monospace box ten lines tall out of twenty-eight.
+   Same ground, same border, same measure, so switching between the two does not move
+   the page. */
+.tk-c-read {
+  flex: 1 1 auto; min-height: 16rem; width: 100%; max-width: 74ch;
+  overflow-y: auto; padding: var(--sp-3);
+  background: var(--bg-inset); border: 1px solid var(--line-strong);
+  border-radius: var(--r-ctl);
+  font-size: var(--fs-sm); line-height: var(--lh-body); color: var(--fg-mid);
+}
+.tk-c-read:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* A text button: this dialog has one solid button and it says Save. */
+.tk-c-mode {
+  padding: 2px var(--sp-2); min-height: 24px;
+  background: none; border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--fg-mid); font-size: var(--fs-xs); font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.tk-c-mode:hover { background: var(--bg-hover); color: var(--fg); border-color: var(--line); }
+.tk-c-mode:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* A GitHub issue title runs to eighty characters as a matter of course, and a
+   single-line input answers that by scrolling the beginning out of sight — worse when
+   the dialog focuses the field on open and the caret lands at the end. So the title
+   WRAPS: two lines at the dialog's width, three before it scrolls. Enter still accepts
+   the dialog rather than adding a line — see `data-single-line` in dialog-shell.ts. */
+.tk-c-title {
+  min-height: 0; max-height: 5.4em; resize: none; overflow-y: auto;
+  font-size: var(--fs-md); font-weight: var(--fw-medium); line-height: 1.35;
+}
+
 /* Pushed to the end of the field's own label, so "Markdown · 12 lines" sits above the
-   right edge of the box it describes rather than starting a row of its own. */
+   right edge of the box it describes rather than starting a row of its own.
+   `margin-left: auto` needs a flex line to push against: on a plain block label it was
+   inert, and the two ran together as `BodyMarkdown · 28 lines`. */
+.tk-c-label-row { display: flex; align-items: baseline; gap: var(--sp-2); }
 .tk-c-hint { margin-left: auto; color: var(--fg-dim); font-weight: var(--fw-medium); }
 
 /* Two columns: labels, then values. Six `label: value` lines of identical weight is a
@@ -1539,6 +1585,16 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tk-c-facts dd { margin: 0; color: var(--fg-mid); min-width: 0; overflow-wrap: anywhere; }
 /* An id, a session name, a path: read character by character, so a fixed pitch. */
 .tk-c-facts .tk-c-mono { font-family: var(--font-mono); color: var(--fg); }
+/* An issue's home is a URL, and the only fact here that is also a destination. Shown as
+   `owner/repo#150` — the form a person says out loud — with the whole URL on the row,
+   because an `https://…` wrapped mid-host is not a fact anybody can read. */
+.tk-c-facts a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.tk-c-facts a:hover { color: var(--accent); }
+.tk-c-facts a:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--r-sm); }
+/* Labels belong in the dialog too: they are how a person finds everything about
+   payments, and the row that carried them is behind it. Uncoloured, for the reason the
+   list gives — hue belongs to state. */
+.tk-c-labels { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
 
 /* A banner rather than one run-on line. Each reason is its own paragraph, which is what
    they are — a parse error and an instruction are two facts, not one sentence. */

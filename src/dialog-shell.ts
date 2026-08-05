@@ -48,8 +48,13 @@ export function openDialog({ onCancel, onAccept, labelledBy }: DialogOptions): D
     }
     if (e.key === "Enter") {
       // A prompt textarea owns Enter — it is how you write a second line.
+      //
+      // Unless it is a textarea only in order to WRAP. The card dialog's title is one:
+      // an issue title runs past what a single-line input can show, so it wraps, but a
+      // title has no second line and Enter there still means "save". The opt-out is on
+      // the element because only the element knows which of the two it is.
       const t = e.target as HTMLElement | null;
-      if (t?.tagName === "TEXTAREA") return;
+      if (t?.tagName === "TEXTAREA" && t.dataset.singleLine !== "true") return;
       e.preventDefault();
       onAccept();
       return;
