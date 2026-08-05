@@ -98,6 +98,16 @@
      is a rule rather than a token — a selected row raises its captions one step —
      and `scripts/contrast.mjs` holds both ends of that bargain. */
   --sel: rgba(213, 234, 243, 0.10);
+  /* The selected ground under the cursor. It exists because of a control that had no
+     hover state at all: `.tk-f-kind.selected` and `.tk-f-kind:hover` carry the same
+     specificity, so the selected rule won this cascade by being written later and
+     swallowed the hover it never replaced — on the one filter whose only way back is
+     pressing the active chip (`board.ts`, the label filter has no "all").
+     0.18 puts the step inside the same 0.06–0.12 OKLab-L band as the rest of the
+     hover set: +0.071 over `--bg-void`, +0.064 over `--bg-island`. Translucent for the
+     same reason `--sel` is — a filter bar sits on the screen's ground here and on an
+     island in the specimen sheet, and both composites are measured. */
+  --sel-hover: rgba(213, 234, 243, 0.18);
 
   /* Hue, therefore, means exactly one thing: what a session is doing. */
   --st-working: #7bd77f;
@@ -1251,6 +1261,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .tk-filter:hover { background: var(--bg-hover-2); color: var(--fg); }
 .tk-filter.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
+/* The selected chip's own hover. Without it the pressed rule above — same specificity,
+   written later — leaves the chip with no response to the cursor at all. The ground
+   steps and the accent edge stays: still on, and still live. */
+.tk-filter.selected:hover { background: var(--sel-hover); border-color: var(--accent); }
 .tk-filter:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 /* Hairlines between rows rather than a gap and a border each: fifty bordered
@@ -1445,6 +1459,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .tk-f-kind:hover { background: var(--bg-hover-2); color: var(--fg); }
 .tk-f-kind.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
+/* This is the chip the token exists for: with no "all" chip, pressing the active label
+   is the only way to clear the filter, and until now that press had no hover at all. */
+.tk-f-kind.selected:hover { background: var(--sel-hover); border-color: var(--accent); }
 .tk-f-kind:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 /* --- The opened card (card-modal.ts) ------------------------------------- */
