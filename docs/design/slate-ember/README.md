@@ -404,17 +404,16 @@ system file carried the two-column shell and nothing that goes inside it, so the
 compared at all. It carries them now, along with `--bg-error-soft`, which also lived only
 in the port. The measurement set is up to **62**.
 
-### What the port needs here
+### Ported
 
-Pure CSS, and it is the same text as the mockups: `.form-label--split` (or making the
-dialog's own label row a flex row), `.tk-c-title`, `.tk-c-read`, `.tk-c-mode`,
-`.tk-c-labels`, the `.tk-c-facts a` pair, and `min-height` + `align-items: stretch` on
-the card dialog.
-
-In `card-modal.ts`: the title becomes a textarea with the same auto-grow, the body gets
-the read/edit pair with `renderMarkdown` on the reading side, and `cardFacts` learns that
-an issue's id is already its heading and its path is a URL — a change with tests on it
-(`cardFacts` is pure and covered), plus a labels row where `task.labels` is non-empty.
+All of it, in this branch: `card-modal.ts`, `dialog-shell.ts`, `styles.css`. The title is
+a textarea with auto-grow; Enter still saves through the `data-single-line` opt-out
+dialog-shell reads, and a pasted newline folds to a space the way the input silently did.
+The body has the read/edit pair on the same `renderMarkdown` the pull request screen uses.
+The body's label row is built by hand rather than through `labeled()` — a `<label>` around
+a rendered body and a button would activate the field on every click in the text.
+`cardFacts` stopped repeating the heading (the predicate is shared with the heading so
+they cannot drift), calls the URL what it is, and gained a labels row.
 
 ## An empty deck
 
@@ -441,5 +440,17 @@ The mark is `.empty-mark`: one inset 52px glyph from the app's own icon set (`fo
 `terminal`). A screen needs something to look at before it needs words, but not a
 wireframe box and not a drawn scene — so it comes from the app's own vocabulary.
 
-For the port: the deck needs to render one of the two when it has no tiles, choosing on
-whether a workspace is selected, and remove it when the first tile arrives.
+Ported in this branch: `sessions.ts`, `main.ts`, `workspaces.ts`, `icons.ts`,
+`styles.css`. The copy and the choice between the two states are a pure function with
+tests on them. Rendering hangs off `applyLayout`, which every path that changes what the
+deck holds already goes through, plus one call where a tile is added — that path only
+reaches `applyLayout` when a zoom has to be dropped, so the panel would otherwise sit
+under the new terminal. "Empty" means nothing *visible*: tiles belonging to another
+workspace stay in the DOM behind `ws-hidden`, so counting the map would call a deck full
+while the screen is blank. `WorkspacesPanel.add` is public now and `launchScenario` has a
+name, because the empty deck offers the same two actions the sidebar does and both must go
+through one path.
+
+Gates after the port: `npm test` **761/761** (14 new), `tsc --noEmit` clean,
+`npm run contrast` 38 measured with the 3 documented rejections, `npm run build` succeeds.
+`cargo test` was not run — no Rust was touched.
