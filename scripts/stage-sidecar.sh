@@ -12,7 +12,11 @@ BIN="${1:?usage: stage-sidecar.sh <bin-name>}"
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-TARGET_TRIPLE="$(rustc -Vv | grep host | cut -d' ' -f2)"
+# `tauri build --target <triple>` exports the triple to its hooks; a sidecar
+# staged for the host on a cross-build (x86_64 on an arm64 runner) would carry
+# the wrong name AND the wrong architecture. Fall back to the host triple for
+# plain local builds.
+TARGET_TRIPLE="${TAURI_ENV_TARGET_TRIPLE:-$(rustc -Vv | grep host | cut -d' ' -f2)}"
 
 EXT=""
 case "$(uname -s)" in
@@ -44,12 +48,14 @@ while IFS= read -r entry; do
   fi
 done <<< "$SIDECARS"
 
-cargo build --release --bin "$BIN" --manifest-path src-tauri/Cargo.toml
+# Building with an explicit --target keeps the output path deterministic
+# (target/<triple>/release) whether or not this is a cross-build.
+cargo build --release --bin "$BIN" --manifest-path src-tauri/Cargo.toml --target "$TARGET_TRIPLE"
 
 # `cp` preserves the destination's existing mode rather than the source's, so
 # a placeholder staged as 0644 would stay 0644 forever even after the real
 # binary lands. `install -m` sets the mode explicitly on every run.
-install -m 0755 "src-tauri/target/release/${BIN}${EXT}" "$DEST"
+install -m 0755 "src-tauri/target/${TARGET_TRIPLE}/release/${BIN}${EXT}" "$DEST"
 
 # Belt-and-suspenders: fail the build loudly if the staged sidecar somehow
 # isn't executable, rather than letting it silently rot and only surface as
