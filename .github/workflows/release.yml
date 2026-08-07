@@ -123,7 +123,9 @@ jobs:
     needs: [create-release, build]
     runs-on: ubuntu-22.04
     permissions:
-      contents: read
+      # write, not read: draft releases are invisible to a read-only token,
+      # and this job exists precisely to inspect the draft. It never writes.
+      contents: write
     steps:
       - name: latest.json covers every platform
         env:
