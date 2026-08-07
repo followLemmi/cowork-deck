@@ -6,9 +6,17 @@
 #
 #   scripts/stage-sidecar.sh cowork_report
 #   scripts/stage-sidecar.sh cowork_task
+#   scripts/stage-sidecar.sh --seed-only
+#
+# `--seed-only` writes the placeholders and stops, building nothing. That is
+# enough for anything that only needs the crate to *compile* — `cargo test`
+# included, because tauri-build's build.rs refuses to run while a declared
+# externalBin is missing, while the tests themselves never touch the staged
+# copies. CI uses it to avoid a release build of two binaries per run; the real
+# staging stays covered by `tauri build` in the release workflow.
 set -euo pipefail
 
-BIN="${1:?usage: stage-sidecar.sh <bin-name>}"
+BIN="${1:?usage: stage-sidecar.sh <bin-name> | --seed-only}"
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -47,6 +55,11 @@ while IFS= read -r entry; do
     install -m 0755 /dev/null "$seed"
   fi
 done <<< "$SIDECARS"
+
+if [ "$BIN" = "--seed-only" ]; then
+  echo "Seeded sidecar placeholders for ${TARGET_TRIPLE}"
+  exit 0
+fi
 
 # Building with an explicit --target keeps the output path deterministic
 # (target/<triple>/release) whether or not this is a cross-build.

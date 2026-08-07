@@ -1,0 +1,106 @@
+# Runs the tests on every pull request, and on what lands in dev and main.
+#
+# Until this existed the only workflow was `release.yml`, which triggers on a
+# `v*` tag — so the whole suite ran only where somebody remembered to run it,
+# and `dev` was a convention rather than a gate.
+#
+# Two things this deliberately does NOT do:
+#
+#   * No `cargo fmt --check`. The Rust here is hand-formatted denser than
+#     rustfmt wants, throughout — adding the check would fail every run until
+#     someone reformats the crate, which is a decision about the code's style
+#     and not something a CI file gets to make on its own.
+#   * No bundling. `tauri build` is the release workflow's job; duplicating it
+#     per pull request would multiply the slowest step in the project for no
+#     answer that a tag build does not already give.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+# A second push to the same branch makes the first run's answer worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Before the tests: a type error is the cheapest failure to read, and
+      # vitest would report it as something else entirely.
+      - name: Types
+        run: npx tsc --noEmit
+
+      - name: Tests
+        run: npm test
+
+  rust:
+    # Both platforms, and not for symmetry: the terminal bugs this project has
+    # shipped were platform-shaped. The Darwin tty caps a pty read at 1024 bytes
+    # where Linux fills a 4096-byte buffer, which is the difference between a
+    # rare glitch and one corrupted line in five — a suite that ran on Linux
+    # alone would have called that fixed while macOS was still broken.
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The crate depends on tauri, so even `cargo test` needs the webkit
+      # headers. Same list as the release workflow's, minus the bundling-only
+      # packages.
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # `scripts/stage-sidecar.sh` reads the sidecar list out of
+      # tauri.conf.json with node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # tauri-build's build.rs refuses to run while a declared externalBin is
+      # missing from disk, and it runs on any cargo build of this crate — so the
+      # tests cannot compile without this. Placeholders rather than real
+      # binaries: nothing under test reads the staged copies (the sidecars' own
+      # code is compiled and tested by `cargo test --bins` from source), and
+      # building two release binaries per run to satisfy a bundler check the
+      # tests do not use would be the most expensive step in this workflow.
+      - name: Seed the sidecar placeholders
+        run: bash scripts/stage-sidecar.sh --seed-only
+
+      # No target filter, and that is worth stating because both obvious
+      # filters are wrong here. `--lib` reaches only `tasks` — every other
+      # module (commands, pty, gh, store, the scheduler) lives in the binary
+      # crate, so it covers 154 of 436 tests. `--bins` inverts the mistake and
+      # drops the lib plus the two integration suites in `src-tauri/tests/`.
+      # The default target set is the only one that runs all six binaries'
+      # worth.
+      - name: Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
