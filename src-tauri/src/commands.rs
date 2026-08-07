@@ -321,17 +321,68 @@ fn which_claude() -> Option<String> {
         if !p.is_empty() { return Some(p); }
     }
     let candidate = if cfg!(windows) { "claude.cmd" } else { "claude" };
-    // Probe by attempting a version call.
-    match std::process::Command::new(candidate).arg("--version").output() {
-        Ok(o) if o.status.success() => Some(candidate.to_string()),
-        _ => {
-            // Fallback to bare "claude" on Windows too.
-            match std::process::Command::new("claude").arg("--version").output() {
-                Ok(o) if o.status.success() => Some("claude".to_string()),
-                _ => None,
-            }
+    for c in [candidate, "claude"] {
+        if claude_runs(c) {
+            return Some(c.to_string());
         }
     }
+    // A PATH miss doesn't mean claude is absent: an app launched from
+    // Finder/Dock inherits launchd's minimal PATH, not the login shell's.
+    // Probe where installers actually put the binary, then as a last resort
+    // ask the login shell to resolve it (catches nvm-style versioned dirs).
+    known_claude_paths().into_iter().find(|p| claude_runs(p)).or_else(login_shell_claude)
+}
+
+fn claude_runs(program: &str) -> bool {
+    std::process::Command::new(program)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn known_claude_paths() -> Vec<String> {
+    let mut paths = Vec::new();
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
+    if let Some(home) = home {
+        let home = std::path::PathBuf::from(home);
+        // Native installer, `claude migrate-installer`, and common npm setups.
+        let rels: &[&str] = if cfg!(windows) {
+            &[".local/bin/claude.exe"]
+        } else {
+            &[".local/bin/claude", ".claude/local/claude", ".npm-global/bin/claude", ".volta/bin/claude", ".bun/bin/claude"]
+        };
+        paths.extend(rels.iter().map(|r| home.join(r).to_string_lossy().into_owned()));
+    }
+    if cfg!(windows) {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            paths.push(format!("{appdata}\\npm\\claude.cmd"));
+        }
+    } else {
+        paths.push("/opt/homebrew/bin/claude".to_string());
+        paths.push("/usr/local/bin/claude".to_string());
+    }
+    paths.retain(|p| std::path::Path::new(p).exists());
+    paths
+}
+
+fn login_shell_claude() -> Option<String> {
+    if cfg!(windows) {
+        return None;
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let out = std::process::Command::new(shell)
+        .args(["-l", "-c", "command -v claude"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // Login profiles are free to echo to stdout; the resolved path is
+    // whatever `command -v` printed last.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let path = stdout.lines().rev().find(|l| !l.trim().is_empty())?.trim().to_string();
+    claude_runs(&path).then_some(path)
 }
 
 /// Что фронт узнаёт про аккаунт стартовавшей сессии. Токена здесь нет и быть
