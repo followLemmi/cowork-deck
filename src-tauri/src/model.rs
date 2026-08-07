@@ -322,6 +322,34 @@ pub struct SessionEntry {
     /// above, so older layout files still load.
     #[serde(rename = "scheduledSkillId", default, skip_serializing_if = "Option::is_none")]
     pub scheduled_skill_id: Option<String>,
+    /// The name a person typed for this tile. It outranks everything, including
+    /// the title read out of the transcript, and is cleared by emptying the field.
+    ///
+    /// Read the NOTE above before touching either of these two renames: without an
+    /// explicit `rename` serde writes `user_name` while TS reads `userName`, and a
+    /// hand-typed name silently reverts to a transcript title on the next restart.
+    #[serde(rename = "userName", default, skip_serializing_if = "Option::is_none")]
+    pub user_name: Option<String>,
+    /// What `name` above is: a name the launch context gave the tile (a card, a
+    /// scenario, a worktree, a command label) or the generic `session · <workspace>`
+    /// placeholder, which is the only string a transcript title may replace.
+    ///
+    /// Absent → `Context`. Nothing on disk distinguishes the two for an entry
+    /// written before this field existed, and the failures are not symmetric: a
+    /// name the person recognises silently changing is worse than a generic
+    /// placeholder staying generic until that session is closed.
+    #[serde(rename = "nameKind", default, skip_serializing_if = "Option::is_none")]
+    pub name_kind: Option<NameKind>,
+}
+
+/// Which of the two kinds of launch name `SessionEntry::name` holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NameKind {
+    /// `☑ <card>`, `<icon> <scenario>`, a worktree name, a command label.
+    Context,
+    /// `session · <workspace>`.
+    Placeholder,
 }
 
 /// A little UI state that survives a restart: the active workspace and the text
@@ -566,7 +594,7 @@ mod tests {
         // None is omitted from output (keeps files clean).
         let entry = SessionEntry {
             session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
-            task_id: None, scheduled_skill_id: None,
+            task_id: None, scheduled_skill_id: None, user_name: None, name_kind: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
@@ -576,6 +604,43 @@ mod tests {
         let old_entry = r#"{"sessionId":"s4","cwd":"/c","name":"K"}"#;
         let e: SessionEntry = serde_json::from_str(old_entry).unwrap();
         assert_eq!(e.scheduled_skill_id, None);
+    }
+
+    /// The same four directions for the two name fields. The rename is the whole
+    /// risk: serde would write `user_name` while TS reads `userName`, and a
+    /// hand-typed name would revert to a transcript title on the next restart with
+    /// nothing reported anywhere.
+    #[test]
+    fn session_entry_name_fields_are_backward_compatible() {
+        // A file written before this feature has neither → both None.
+        let old = r#"[{"sessionId":"s1","cwd":"/a","name":"session · deck"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(old).unwrap();
+        assert_eq!(v[0].user_name, None);
+        assert_eq!(v[0].name_kind, None, "absent is read as a context name by the frontend");
+
+        // A new file carries both, under the camelCase names TS writes.
+        let new = r#"[{"sessionId":"s2","cwd":"/b","name":"session · deck",
+            "userName":"the one I must not close","nameKind":"placeholder"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(new).unwrap();
+        assert_eq!(v[0].user_name.as_deref(), Some("the one I must not close"));
+        assert_eq!(v[0].name_kind, Some(NameKind::Placeholder));
+
+        // The keys serde writes are the keys TS reads.
+        let entry = SessionEntry {
+            session_id: "s3".into(), cwd: "/c".into(), name: "session · deck".into(),
+            workspace_id: None, task_id: None, scheduled_skill_id: None,
+            user_name: Some("relay".into()), name_kind: Some(NameKind::Placeholder),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""userName":"relay""#), "got {json}");
+        assert!(json.contains(r#""nameKind":"placeholder""#), "got {json}");
+        assert!(!json.contains("user_name"), "snake_case would never be read back, got {json}");
+
+        // None is omitted from output.
+        let bare = SessionEntry { user_name: None, name_kind: None, ..entry };
+        let json = serde_json::to_string(&bare).unwrap();
+        assert!(!json.contains("userName"), "None userName must be omitted, got {json}");
+        assert!(!json.contains("nameKind"), "None nameKind must be omitted, got {json}");
     }
 
     /// The record stays visible: one unreadable *provider* must not cost the
