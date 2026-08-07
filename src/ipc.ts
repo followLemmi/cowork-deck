@@ -357,8 +357,15 @@ export const onSchedulerBroken = (cb: (message: string) => void): Promise<Unlist
 
 export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }
+/** Two readings, deliberately kept apart: `context` is what the terminal prints
+ *  for the session and covers the main chain only, `spend` is the bill and
+ *  includes every subagent. `context` is null until the first request. */
+export interface SessionTokens { context: number | null; spend: TokenUsage; subagents: number; }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
-export const sessionTokens = (sessionId: string) => invoke<TokenUsage>("session_tokens", { sessionId });
+/** Null when the reading is unavailable — no transcript, or one that would not
+ *  open — which is not the same as a session that has spent nothing. */
+export const sessionTokens = (sessionId: string) =>
+  invoke<SessionTokens | null>("session_tokens", { sessionId });
 
 /** A step id and a kind id are whatever `board.json` says they are — the
  *  frontend never enumerates them, it reads them (see src/board-config.ts). */

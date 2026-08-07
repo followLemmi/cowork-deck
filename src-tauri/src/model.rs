@@ -415,6 +415,26 @@ pub struct TokenUsage {
     pub cache_read: u64,
 }
 
+/// What a session has in front of it, and what it has burned getting there.
+///
+/// Two numbers rather than one because they answer different questions and have
+/// different scopes, and conflating them is what made the old badge unreadable.
+/// `context` is what Claude Code prints in the terminal; `spend` is the bill.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub struct SessionTokens {
+    /// Tokens resident in the context window, main transcript only — a subagent
+    /// burns its own window and hands back only its final text, so counting one
+    /// here would describe a window that never existed. `None` while the session
+    /// has yet to make a request.
+    pub context: Option<u64>,
+    /// Everything the session has cost, subagents included, counted once per
+    /// API request.
+    pub spend: TokenUsage,
+    /// How many subagent transcripts fed `spend`. Surfaced because a session
+    /// whose spend is mostly delegated looks otherwise inexplicable.
+    pub subagents: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReporterEvent {
     pub session: String,
