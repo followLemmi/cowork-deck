@@ -191,7 +191,57 @@ would move: `TileNames` has exactly one slot for an automatic title, so where
 that slot's value comes from is invisible to the resolver, to persistence and to
 the editor. That is the property worth having, and this spike does not spend it.
 
-### The two candidate fixes, smallest first
+### Claude Code already hands us the answer, on a channel this app owns
+
+Found after the run above, and it supersedes everything in the next section.
+**Every hook payload carries `transcript_path`.** Not the id to guess a filename
+from — the path itself. Measured by pointing every hook at a script that does
+nothing but `cat` its stdin into a log:
+
+```
+$ cat ~/clear-spike/… claude --settings '<hooks that dump stdin>' -p "Скажи только слово: готово"
+--- SessionStart
+   session_id        'f1eaf292-1932-4152-8e6c-d179b9495c56'
+   transcript_path   '/Users/…/.claude/projects/-Users-…-clear-spike/f1eaf292-….jsonl'
+   cwd               '/Users/evgenykharetski/clear-spike'
+   hook_event_name   'SessionStart'
+   source            'startup'
+--- UserPromptSubmit
+   session_id        'f1eaf292-…'      transcript_path  '/Users/…/f1eaf292-….jsonl'
+   prompt_id         'e83ec419-…'      prompt           'Скажи только слово: готово'
+--- Stop
+   session_id        'f1eaf292-…'      transcript_path  '/Users/…/f1eaf292-….jsonl'
+   last_assistant_message 'готово'     stop_hook_active False
+```
+
+This app already subscribes to `SessionStart`, `UserPromptSubmit`, `Stop` and
+`SessionEnd` (`src-tauri/src/hooks.rs:8`), the reporter already reads the hook's
+stdin under a 300 ms timeout, and already pulls one field out of it —
+`notification_type` (`src-tauri/src/bin/cowork_report.rs:26`). It throws the rest
+away. The reporter is invoked with **this app's** session id in argv, so the
+binding "tile → its current transcript" is exact, and depends on no filename, no
+inner `session_id`, and nothing under `~/.claude/sessions/`.
+
+After a `/clear` the deck therefore does not need to detect anything: the first
+`UserPromptSubmit` of the cleared conversation — which is the whole reason
+someone clears — carries the new path.
+
+**Not measured:** whether `SessionStart` fires again on `/clear` with
+`source: "clear"`. It stopped mattering: any following hook carries the path
+regardless, so the fix does not rest on that answer.
+
+This also makes the shape smaller than either candidate below: two more fields
+out of a payload already being read, carried on a socket already open, with
+`find_transcript` left as the fallback until the first hook of a restored tile
+arrives.
+
+One trap for whoever writes it: `extract_field` in the reporter is a naive
+flat-JSON scanner that takes the **first** occurrence of a key. `transcript_path`
+is the second field of every payload and `last_assistant_message` comes much
+later, so field order saves it — which is exactly the kind of thing that wants a
+test, or a move to `serde_json`.
+
+### The two candidate fixes considered before that, smallest first
 
 1. **Ask the live process.** The app spawns `claude` itself, so
    `portable_pty`'s `child.process_id()` gives the pid, and
@@ -214,9 +264,18 @@ the editor. That is the property worth having, and this spike does not spend it.
 anticipated, and the corpus above is the reason not to: 9% coverage and not
 single-valued.
 
-This is the user's call. The token count is forked by exactly the same mechanism
-and is not mentioned in either fix above — whichever is chosen should decide
-whether tokens follow the name or stay on the launch transcript.
+**Also considered and rejected: intercepting `/clear` in the input stream and
+relaunching the session.** Detection would be unreliable — slash-command
+autocompletion, a paste, arrow-key history, broadcast mode, and the word
+appearing inside an ordinary prompt all defeat it, and modelling the prompt
+buffer is precisely what the deck avoids by keeping the PTY raw. It is also
+destructive for an operation that is meant to be instant: relaunching means
+killing the process, losing the scrollback and waiting seconds.
+
+The hook payload makes all of this unnecessary, and it is what the follow-up
+records. The token count is forked by exactly the same mechanism — whoever takes
+it should decide whether tokens follow the name or stay on the launch
+transcript — and so is `--resume`, which is the part that actually loses work.
 
 ## The scripts
 
