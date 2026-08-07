@@ -46,6 +46,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn().mockResolvedValue(undefined) }));
 
 import { Deck, resolveTileName, type TileNames } from "../src/sessions";
+import { gitStatus, saveLayout, sessionSnapshots } from "../src/ipc";
 
 const WS = { id: "w", name: "relay", path: "/p", color: "#fff" };
 
@@ -159,5 +160,131 @@ describe("the displayed name is the one the deck speaks with", () => {
     const row = listEl.querySelector<HTMLElement>(".sess-row")!;
     expect(row.textContent).toContain("the one I must not close");
     expect(row.getAttribute("aria-label")).toContain("the one I must not close");
+  });
+});
+
+/** The five-second tick already reads the transcript for token counts; these
+ *  cover it reading the name out of the same bytes. */
+describe("the poll tick names a tile from its transcript", () => {
+  const snapshots = vi.mocked(sessionSnapshots);
+  const git = vi.mocked(gitStatus);
+  const save = vi.mocked(saveLayout);
+
+  const usage = { input: 1, output: 2, cacheCreation: 0, cacheRead: 0 };
+  const snap = (title: string | null) => ({ usage, title, titleSource: title ? "ai" : null });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.innerHTML = "";
+    startMock.mockResolvedValue(undefined);
+    git.mockResolvedValue({ branch: null, dirty: false });
+    save.mockResolvedValue(undefined);
+    snapshots.mockResolvedValue({});
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("s1" as never);
+  });
+
+  /** `pollOnce` is private and fires on its own timer; a test drives it directly
+   *  rather than waiting five seconds for the interval that already exists. */
+  const tick = (deck: Deck) =>
+    (deck as unknown as { pollOnce(): Promise<void> }).pollOnce();
+
+  function mount() {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    return { deckEl, listEl, deck: new Deck(deckEl, listEl, () => [WS as never]) };
+  }
+  const shown = (deckEl: HTMLElement) => deckEl.querySelector<HTMLElement>(".tile-name")!;
+
+  it("renames a plainly launched tile to the transcript title", async () => {
+    const { deck, deckEl } = mount();
+    await deck.launch(WS as never, null);
+    expect(shown(deckEl).textContent).toBe("session · relay");
+
+    snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
+    await tick(deck);
+
+    expect(shown(deckEl).textContent).toBe("Trace the retry budget");
+    expect(shown(deckEl).title).toBe("Trace the retry budget");
+  });
+
+  it("carries the new name into the sidebar row and its aria-label", async () => {
+    const { deck, listEl } = mount();
+    await deck.launch(WS as never, null);
+    snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
+    await tick(deck);
+
+    const row = listEl.querySelector<HTMLElement>(".sess-row")!;
+    expect(row.textContent).toContain("Trace the retry budget");
+    expect(row.getAttribute("aria-label")).toContain("Trace the retry budget");
+  });
+
+  it("never overwrites a name from a tracker card", async () => {
+    const { deck, deckEl } = mount();
+    await deck.restore([
+      { sessionId: "s1", cwd: "/p", name: "☑ Fix the pill counter", workspaceId: "w" },
+    ]);
+    snapshots.mockResolvedValue({ s1: snap("Pill counter bug") } as never);
+    await tick(deck);
+    expect(shown(deckEl).textContent).toBe("☑ Fix the pill counter");
+  });
+
+  it("never overwrites a scheduled scenario's name", async () => {
+    const { deck, deckEl } = mount();
+    await deck.restore([{
+      sessionId: "s1", cwd: "/p", name: "⚡ Daily digest", workspaceId: "w",
+      scheduledSkillId: "sk-digest",
+    }]);
+    snapshots.mockResolvedValue({ s1: snap("Summarise yesterday") } as never);
+    await tick(deck);
+    expect(shown(deckEl).textContent).toBe("⚡ Daily digest");
+  });
+
+  it("follows the latest transcript title while no hand-typed name exists", async () => {
+    const { deck, deckEl } = mount();
+    await deck.launch(WS as never, null);
+    snapshots.mockResolvedValue({ s1: snap("First topic") } as never);
+    await tick(deck);
+    expect(shown(deckEl).textContent).toBe("First topic");
+
+    snapshots.mockResolvedValue({ s1: snap("Second topic") } as never);
+    await tick(deck);
+    expect(shown(deckEl).textContent).toBe("Second topic");
+  });
+
+  it("leaves the name alone when the snapshot call fails", async () => {
+    const { deck, deckEl } = mount();
+    await deck.launch(WS as never, null);
+    snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
+    await tick(deck);
+
+    snapshots.mockRejectedValue(new Error("ipc down"));
+    git.mockResolvedValue({ branch: "main", dirty: false });
+    await tick(deck);
+
+    expect(shown(deckEl).textContent).toBe("Trace the retry budget");
+    // The halves of the tick are isolated: the git badge still filled in.
+    expect(deckEl.querySelector(".tile-git")!.classList.contains("hidden")).toBe(false);
+  });
+
+  it("does not write to a tile removed while the call was in flight", async () => {
+    const { deck, deckEl } = mount();
+    await deck.launch(WS as never, null);
+    const el = shown(deckEl);
+    snapshots.mockImplementation(async () => {
+      (deck as unknown as { remove(s: string): void }).remove("s1");
+      return { s1: snap("Trace the retry budget") } as never;
+    });
+    await tick(deck);
+    expect(el.textContent).toBe("session · relay");
+  });
+
+  it("does not persist the layout when only the transcript title changed", async () => {
+    const { deck } = mount();
+    await deck.launch(WS as never, null);
+    save.mockClear();
+    snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
+    await tick(deck);
+    expect(save).not.toHaveBeenCalled();
   });
 });

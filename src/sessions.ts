@@ -245,7 +245,20 @@ export class Deck {
           t.gitBadge.classList.add("hidden");
         }
       }
-      // snapshots: one call for every session; errors isolated, plus a guard against racing with tile removal
+      // snapshots: one call for every session; errors isolated, plus a guard
+      // against racing with tile removal.
+      //
+      // Every open session is asked for, including command tiles and ones a card
+      // or a scenario already named: the same batch carries their token counts,
+      // computing a title off a buffer already in hand costs about nothing, and
+      // which name to show is a decision the resolver makes rather than a shape
+      // the IPC should encode. A tile carrying a hand-typed name is polled too,
+      // so clearing that name falls back to a title already in hand instead of
+      // going blank for a tick.
+      //
+      // Nothing here writes `sessions.json`: the automatic title is not
+      // persisted, so "do not save the layout every five seconds" is not a
+      // problem that needs a dirty check — it does not arise.
       try {
         const snaps = await sessionSnapshots(tiles.map((t) => t.session));
         for (const t of tiles) {
@@ -257,6 +270,14 @@ export class Deck {
           t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
           t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} read`;
           t.tokenBadge.classList.remove("hidden");
+          // A missing title never clears the slot. Measured over 96 transcripts a
+          // title is minted once and never revised, so a null here is either "not
+          // yet" or "this read did not see it" — and blanking a name on the
+          // second would be a visible flicker for no information gained.
+          if (snap.title) {
+            t.names.auto = snap.title;
+            this.applyName(t);
+          }
         }
       } catch (e) {
         console.debug("sessionSnapshots failed", e);
