@@ -10,6 +10,7 @@ mod pty;
 mod commands;
 mod scheduler;
 mod tasks_cmd;
+mod transcripts;
 mod which;
 use cowork_deck::tasks;
 

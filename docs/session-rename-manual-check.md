@@ -40,6 +40,9 @@ itself.
 - [ ] A session whose transcript has no title yet — the tile keeps the placeholder rather than showing an empty header.
 - [ ] Prompt in Russian: the title arrives in Russian, unchanged — nothing uppercased, nothing transliterated, no `?` boxes.
 - [ ] Launch from a tracker card (`☑ …`) and from a scheduled scenario. Both keep their names through several ticks, whatever the transcript says.
+- [ ] **`/clear` inside a session.** Prompt on a new topic and wait a tick: the tile takes the *new* topic's name, and its token count starts climbing again from the new conversation. This is the one the deck used to get wrong — it read the transcript the session was launched on, which `/clear` abandons.
+- [ ] `/clear` on a tile that carries a hand-typed name — the typed name still wins, and clearing the field afterwards reveals the *post*-`/clear` title, not the one before it.
+- [ ] `/clear`, then ⟳ or a restart of the app — **known bug, #199**: the pre-`/clear` conversation comes back. Confirm it still behaves that way rather than something worse, and leave it to that issue.
 - [ ] Rename a tile, quit the app, reopen it — the typed name is back. Rename another, clear it, quit and reopen — the automatic name is back.
 - [ ] With six sessions open, watch the token badges over a minute. One IPC call a tick, not six (add a temporary log or watch the process), and the window stays responsive throughout.
 

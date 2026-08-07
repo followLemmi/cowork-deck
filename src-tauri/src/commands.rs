@@ -1444,6 +1444,7 @@ pub fn resize_session(state: State<AppState>, session: String, cols: u16, rows: 
 #[tauri::command]
 pub fn close_session(state: State<AppState>, session: String) {
     state.pty.kill(&session);
+    crate::transcripts::forget(&session);
 }
 
 #[tauri::command]
@@ -1706,10 +1707,31 @@ pub async fn session_snapshots(
 /// The blocking half of [`session_snapshots`]: locate the transcript and read it
 /// once. A transcript that is missing or unreadable is an empty snapshot.
 fn read_session_snapshot(session_id: &str) -> SessionSnapshot {
-    match find_transcript(session_id).and_then(|p| std::fs::read_to_string(p).ok()) {
+    match current_transcript(session_id).and_then(|p| std::fs::read_to_string(p).ok()) {
         Some(content) => snapshot_from_content(&content),
         None => SessionSnapshot::default(),
     }
+}
+
+/// Which file to read for a deck session: what Claude Code last reported through
+/// a hook, else the launch id's own filename.
+///
+/// The reported path is what makes `/clear` survivable — clearing mints a new
+/// session id and a new transcript, so the launch id stops naming the
+/// conversation the person is in. The filename scan stays as the fallback, and
+/// is still the answer for the whole of a restored tile's life until its first
+/// hook arrives.
+///
+/// The reported path is checked rather than trusted: it is a path from another
+/// program, and a transcript can be deleted between the hook and the tick.
+fn current_transcript(session_id: &str) -> Option<std::path::PathBuf> {
+    if let Some(reported) = crate::transcripts::get(session_id) {
+        let path = std::path::PathBuf::from(reported);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    find_transcript(session_id)
 }
 
 /// Both answers off one buffer.
@@ -2153,6 +2175,52 @@ branch refs/heads/feature/y\n";
         for id in &ids {
             assert!(out.contains_key(id), "{id} was dropped from the batch");
         }
+    }
+
+    /// The whole point of the reported path: after `/clear` the launch id names
+    /// a file that will never grow again, and the tile has to follow the
+    /// conversation the person is actually in.
+    #[test]
+    fn a_reported_transcript_wins_over_the_launch_id_filename() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let cleared = dir.path().join("after-clear.jsonl");
+        std::fs::write(
+            &cleared,
+            concat!(
+                r#"{"type":"assistant","message":{"usage":{"input_tokens":7}}}"#, "\n",
+                r#"{"type":"ai-title","aiTitle":"The topic after clearing"}"#, "\n",
+            ),
+        )
+        .expect("write");
+
+        let session = "sess-cleared-fixture";
+        crate::transcripts::record(session, cleared.to_str().expect("utf-8 path"));
+        assert_eq!(current_transcript(session).as_deref(), Some(cleared.as_path()));
+
+        let snap = read_session_snapshot(session);
+        assert_eq!(snap.title.as_deref(), Some("The topic after clearing"));
+        assert_eq!(snap.usage.input, 7);
+        crate::transcripts::forget(session);
+    }
+
+    /// A path from another program, and a transcript can be deleted between the
+    /// hook and the tick — so it is checked, not trusted.
+    #[test]
+    fn a_reported_path_that_no_longer_exists_falls_back_to_the_scan() {
+        let session = "sess-vanished-fixture";
+        crate::transcripts::record(session, "/nowhere/at/all/gone.jsonl");
+        // No transcript under HOME for this id either, so the fallback finds
+        // nothing — the point is that it does not read the dead path.
+        assert_eq!(current_transcript(session), None);
+        assert_eq!(read_session_snapshot(session).title, None);
+        crate::transcripts::forget(session);
+    }
+
+    #[test]
+    fn a_session_nobody_reported_still_resolves_by_its_launch_id() {
+        // A restored tile, before its first hook: the filename scan is the only
+        // answer there is, and it must still be reached.
+        assert_eq!(current_transcript("sess-never-reported-fixture"), None);
     }
 
     #[tokio::test]

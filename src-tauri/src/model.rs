@@ -449,6 +449,11 @@ pub struct ReporterEvent {
     pub kind: String,
     #[serde(rename = "notificationType")]
     pub notification_type: Option<String>,
+    /// Where Claude Code says this conversation's transcript is *now*. Present
+    /// on every hook payload; absent from a line written by an older reporter,
+    /// hence `default`.
+    #[serde(rename = "transcriptPath", default)]
+    pub transcript_path: Option<String>,
 }
 
 /// Map a reporter `kind` (+ optional notification type) to a session state.

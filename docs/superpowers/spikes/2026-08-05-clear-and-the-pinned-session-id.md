@@ -183,6 +183,13 @@ But the failure is the ugly kind — **it looks correct**. A tile reading
 `Различия между HTTP и HTTPS` while the conversation is three topics further on
 is worse than a tile reading `session · relay`, because nothing signals staleness.
 
+**Since this was written, the hook-payload route below was taken and the name
+and the token count are fixed in the same branch** (`transcripts.rs`, and
+`current_transcript` in `commands.rs`). What is left of the finding is #199: the
+`--resume` path still uses the launch id, so restart and auto-restore still
+bring back the pre-`/clear` conversation. The rest of this section is the
+reasoning that led there, kept as written.
+
 ### Which task would change
 
 `session_snapshots` (#157, `src-tauri/src/commands.rs`) — specifically
