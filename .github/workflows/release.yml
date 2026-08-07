@@ -1,7 +1,9 @@
 # Builds and publishes a release when a v* tag is pushed.
 #
-# Artifacts per platform land in one draft GitHub Release, together with the
-# latest.json the in-app updater polls. Publishing the draft is the manual
+# One job creates the draft release, the matrix uploads into it by id —
+# three jobs racing to create-by-tag can produce duplicate drafts and lose
+# platforms from latest.json. A final job refuses to leave a draft whose
+# latest.json is missing a platform. Publishing the draft is the manual
 # release gate — and what makes /releases/latest/download/latest.json start
 # pointing at it.
 #
@@ -16,7 +18,58 @@ on:
       - "v*"
 
 jobs:
+  create-release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the version in tauri.conf.json
+        run: |
+          v="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "v$v" != "${{ github.ref_name }}" ]; then
+            echo "tag ${{ github.ref_name }} but tauri.conf.json says $v — bump the config or retag" >&2
+            exit 1
+          fi
+
+      - name: Create the draft release
+        id: create
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const body = [
+              '## Install',
+              '',
+              '**macOS** — download the `.dmg` for your architecture (`aarch64` for',
+              'Apple Silicon, `x64` for Intel), drag the app to Applications, then',
+              'clear the quarantine flag once:',
+              '',
+              '```',
+              'xattr -cr /Applications/cowork-deck.app',
+              '```',
+              '',
+              '**Linux** — download the `.AppImage`, `chmod +x` it and run, or',
+              'install the `.deb`.',
+              '',
+              'The app checks this page for updates on launch and installs them',
+              'in place; the `xattr` step is first-install only.',
+            ].join('\n');
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: context.ref.replace('refs/tags/', ''),
+              name: `cowork-deck ${context.ref.replace('refs/tags/', '')}`,
+              body,
+              draft: true,
+            });
+            return data.id;
+
   build:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -61,23 +114,36 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: cowork-deck ${{ github.ref_name }}
-          releaseDraft: true
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: --target ${{ matrix.target }}
-          releaseBody: |
-            ## Install
 
-            **macOS** — download the `.dmg` for your architecture (`aarch64` for
-            Apple Silicon, `x64` for Intel), drag the app to Applications, then
-            clear the quarantine flag once:
-
-            ```
-            xattr -cr /Applications/cowork-deck.app
-            ```
-
-            **Linux** — download the `.AppImage`, `chmod +x` it and run, or
-            install the `.deb`.
-
-            The app checks this page for updates on launch and installs them
-            in place; the `xattr` step is first-install only.
+  # A draft whose latest.json lacks a platform would strand those users on the
+  # old version forever, silently — the updater just says "no update".
+  verify-updater-manifest:
+    needs: [create-release, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: latest.json covers every platform
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset_id="$(gh api "repos/${{ github.repository }}/releases/${{ needs.create-release.outputs.release_id }}/assets" \
+            --jq '.[] | select(.name == "latest.json") | .id')"
+          if [ -z "$asset_id" ]; then
+            echo "the draft release has no latest.json at all" >&2
+            exit 1
+          fi
+          gh api -H "Accept: application/octet-stream" \
+            "repos/${{ github.repository }}/releases/assets/$asset_id" > latest.json
+          node -e '
+            const p = require("./latest.json").platforms ?? {};
+            const want = ["darwin-aarch64", "darwin-x86_64", "linux-x86_64"];
+            const missing = want.filter((k) => !p[k]);
+            if (missing.length) {
+              console.error("latest.json is missing:", missing.join(", "));
+              process.exit(1);
+            }
+            console.log("all platforms present:", Object.keys(p).join(", "));
+          '

@@ -94,6 +94,25 @@ describe("openDialog", () => {
     expect(document.activeElement).toBe(opener);
   });
 
+  // Two startup checks can each open a dialog; every dialog listens on
+  // document, so both hear one Enter. Only the top of the stack may act — a
+  // user must not accept a dialog whose text they never read.
+  it("routes keys to the top dialog only, then back down as dialogs close", () => {
+    const bottomAccept = vi.fn();
+    const topAccept = vi.fn();
+    openDialog({ onCancel: () => {}, onAccept: bottomAccept });
+    const top = openDialog({ onCancel: () => {}, onAccept: topAccept });
+
+    press("Enter");
+    expect(topAccept).toHaveBeenCalledOnce();
+    expect(bottomAccept).not.toHaveBeenCalled();
+
+    top.close();
+    press("Enter");
+    expect(bottomAccept).toHaveBeenCalledOnce();
+    expect(topAccept).toHaveBeenCalledOnce();
+  });
+
   it("stops listening once closed", () => {
     const onCancel = vi.fn();
     const { close } = openDialog({ onCancel, onAccept: () => {} });
