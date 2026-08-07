@@ -24,6 +24,15 @@ per-session state, token usage, and git context at a glance.
 state — green working, amber waiting on you, red broken — so twelve sessions read in one
 sweep instead of twelve labels.</sub>
 
+<br />
+<br />
+
+<img src="docs/images/demo.gif" alt="A screen recording of the deck: a working session finishes its turn and its rail changes live, one tile zooms near-full while the rest become a filmstrip, the board lists a repository's issues and opens one as a document, and a pull request unfolds into its diff." width="960" />
+
+<sub>Twenty-five seconds of the real UI: a session finishes its turn, zoom and juggle, the
+board reading a repository's issues, a pull request and its diff. Recorded against the
+screenshot harness, so everything on screen is invented fixture data.</sub>
+
 </div>
 
 ---
@@ -62,6 +71,28 @@ the tokens and the measurements are in [docs/design/slate-ember](docs/design/sla
 - **Broadcast input** — type once and send the same input to several sessions at once.
 - **Observability** — token usage per session and per project, plus a git indicator on each tile.
 - **Keyboard-first** — a command palette that lists every binding, `F6` to move between the sidebar and the terminal, and in-terminal search and clear. On Windows and Linux the bindings use `Ctrl+Shift`, leaving bare `Ctrl+W`/`Ctrl+B`/`Ctrl+K` to readline inside `claude`; macOS uses plain `Cmd`.
+
+## Install
+
+Prebuilt bundles are on the [releases page](https://github.com/followLemmi/cowork-deck/releases):
+a `.dmg` for macOS (Apple Silicon and Intel) and an AppImage, `.deb` and `.rpm` for Linux. There is
+no published Windows build yet — Windows today means building from source (see
+[Build & run](#build--run)).
+
+### macOS says the app "is damaged"
+
+It is not. That wording is Gatekeeper's, and what it actually means is that the app is not
+notarized — there is no paid Apple Developer account behind this project yet, so macOS quarantines
+the download instead of checking a signature. Clear the quarantine flag once and it opens like
+anything else:
+
+```bash
+xattr -cr /Applications/cowork-deck.app
+```
+
+System Settings → Privacy & Security → "Open Anyway" is the same decision made through the UI. And
+if you would rather not clear a flag Apple set on a stranger's binary — fair — everything the
+bundle contains is in this repository, and `npm run tauri build` produces the same app from source.
 
 ## Build & run
 
