@@ -1,6 +1,6 @@
 import { TerminalPanel } from "./terminal";
 import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionSnapshots, type TokenUsage } from "./ipc";
+import { gitStatus, sessionSnapshots, type NameKind, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
@@ -20,7 +20,8 @@ import { workingStep } from "./board-config";
 export type TileKind = "claude" | "command";
 
 interface Tile {
-  session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
+  session: string; names: TileNames; nameEl: HTMLElement;
+  panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
   authBadge: HTMLElement;
@@ -34,6 +35,39 @@ interface Tile {
   kind?: TileKind;
   /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
   taskId?: string;
+}
+
+/** The four things that can name a tile, in one place so no reader can hold a
+ *  stale copy of a name.
+ *
+ *  There is no `autoNameable` flag: "this tile may take a transcript title" is
+ *  exactly `context === null`, so the two cannot disagree — and `openCommandTile`
+ *  supplies a context name, which excludes command tiles for free without
+ *  consulting `kind`. */
+export interface TileNames {
+  /** "☑ <card>", "<icon> <scenario>", a worktree name, a command label. */
+  context: string | null;
+  /** "session · <workspace>" — the only string an automatic title may replace. */
+  placeholder: string;
+  /** The latest title read out of the transcript. */
+  auto: string | null;
+  /** Hand-typed. Wins over everything, forever. */
+  user: string | null;
+}
+
+/** What the tile, the sidebar row, the notification and the close question all
+ *  show. Every slot is trimmed and an empty one counts as absent.
+ *
+ *  A context name beating an automatic title is the row that carries the whole
+ *  decision: `☑ Fix the pill counter` and `⚡ Daily digest` are already
+ *  meaningful, and they are how the board and the sidebar say which card or
+ *  scenario a session belongs to. */
+export function resolveTileName(n: TileNames): string {
+  const some = (v: string | null) => {
+    const t = (v ?? "").trim();
+    return t === "" ? null : t;
+  };
+  return some(n.user) ?? some(n.context) ?? some(n.auto) ?? some(n.placeholder) ?? "";
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -252,6 +286,9 @@ export class Deck {
       cwd: workspace.path,
       workspaceId: workspace.id,
       titleText,
+      // A session launched without a scenario is the one tile nothing named, so
+      // it is the one a transcript title may take over.
+      nameKind: skill ? "context" : "placeholder",
       prompt: skill ? skill.prompt : null,
       resume: false,
     });
@@ -450,6 +487,13 @@ export class Deck {
 
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
+    /** What `titleText` is. A context name stands for the life of the tile; the
+     *  generic placeholder is the one string a transcript title may replace.
+     *  Absent means context — the safer of the two, since it leaves a name the
+     *  person recognises alone. */
+    nameKind?: NameKind;
+    /** A hand-typed name restored from the layout. */
+    userName?: string | null;
     scheduledSkillId?: string;
     /** Tracker card this tile is working on. */
     taskId?: string;
@@ -482,11 +526,10 @@ export class Deck {
     // `:first-child` and never got the `flex: 1` or the ellipsis that rule grants. A
     // long session name pushed the badges out of the head instead of truncating.
     title.className = "tile-name";
-    title.textContent = titleText;
-    // The tooltip is for the sighted reader of a truncated name; the accessible name
-    // comes from the text itself. Set beside the text so the two cannot drift —
-    // nothing rewrites either after this.
-    title.title = titleText;
+    // The text and the tooltip are written together by `applyName`, and only by
+    // `applyName` — the tooltip is for the sighted reader of a truncated name and
+    // the accessible name comes from the text itself, so the two must never
+    // drift. One writer is what keeps that true now that a name can change.
     const schedMark = opts.scheduled ? icon("clock", 12) : null;
     if (schedMark) {
       schedMark.classList.add("tile-sched-mark");
@@ -566,12 +609,22 @@ export class Deck {
     el.addEventListener("mousedown", () => this.focusTile(session));
 
     const panel = new TerminalPanel(session, mount);
+    const names: TileNames = {
+      // The placeholder slot always holds the launch string. On a context-named
+      // tile it is the same string as `context`, which the resolver never reaches
+      // — there is no way for the two to disagree.
+      context: opts.nameKind === "placeholder" ? null : titleText,
+      placeholder: titleText,
+      auto: null,
+      user: opts.userName ?? null,
+    };
     const tile: Tile = {
-      session, name: title.textContent!, panel, state: "idle", el, label,
+      session, names, nameEl: title, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
       gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
     };
+    this.applyName(tile);
     this.tiles.set(session, tile);
     // The first tile ends the empty deck. `applyLayout` is only reached from here when a
     // zoom has to be dropped, so this cannot wait for it — the panel would sit under the
@@ -606,6 +659,17 @@ export class Deck {
     }
   }
 
+  /** The only writer of a tile's name into the DOM — text and tooltip together.
+   *
+   *  Called wherever a slot changes, rather than by each of them, so a tile, its
+   *  tooltip, its sidebar row, the notification body and `sessions.json` cannot
+   *  come to show four different names. */
+  private applyName(tile: Tile) {
+    const name = resolveTileName(tile.names);
+    tile.nameEl.textContent = name;
+    tile.nameEl.title = name;
+  }
+
   /** Apply the active-workspace filter to one tile. Tiles used to be created
    *  without it, so a scheduled run for another workspace appeared in whatever
    *  deck was on screen and disappeared at the next switch. */
@@ -627,7 +691,8 @@ export class Deck {
         if (e.scheduledSkillId) this.scheduledSessions.set(e.scheduledSkillId, e.sessionId);
         await this.spawnTile({
           session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
-          titleText: e.name, prompt: null, resume: true,
+          titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
+          prompt: null, resume: true,
           scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
         });
       }
@@ -704,7 +769,9 @@ export class Deck {
   private async requestClose(session: string) {
     const t = this.tiles.get(session);
     const alive = t && (t.state === "working" || t.state === "waitingInput" || t.state === "done");
-    if (alive && !(await confirmModal(`Close session “${t.name}”? It is still alive.`))) return;
+    if (alive && !(await confirmModal(
+      `Close session “${resolveTileName(t.names)}”? It is still alive.`,
+    ))) return;
     this.remove(session);
   }
   searchActive() {
@@ -806,7 +873,9 @@ export class Deck {
     this.renderList();
     if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       const id = this.notify.register(session);
-      sendNotification({ id, title: `cowork-deck · ${LABEL[state]}`, body: tile.name });
+      sendNotification({
+        id, title: `cowork-deck · ${LABEL[state]}`, body: resolveTileName(tile.names),
+      });
     }
   }
 
@@ -951,7 +1020,8 @@ export class Deck {
   private persistLayout() {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
-      session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
+      session: t.session, workspacePath: t.workspacePath,
+      name: t.names.context ?? t.names.placeholder, workspaceId: t.workspaceId,
       kind: t.kind,
       scheduledSkillId: t.scheduledSkillId,
       taskId: t.taskId,
@@ -983,7 +1053,7 @@ export class Deck {
     }
     const groups = groupTilesByWorkspace(
       tiles.map((t) => ({
-        session: t.session, name: t.name, state: t.state,
+        session: t.session, name: resolveTileName(t.names), state: t.state,
         workspaceId: t.workspaceId, workspacePath: t.workspacePath,
       })),
       this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path })),
