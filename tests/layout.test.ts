@@ -27,12 +27,43 @@ describe("layout ipc", () => {
 describe("serializeTiles", () => {
   it("maps tile fields to SessionEntry shape, carrying workspaceId", () => {
     expect(serializeTiles([{ session: "s1", workspacePath: "/a", name: "▶ Fix", workspaceId: "w1" }]))
-      .toEqual([{ sessionId: "s1", cwd: "/a", name: "▶ Fix", workspaceId: "w1" }]);
+      .toEqual([{ sessionId: "s1", cwd: "/a", name: "▶ Fix", workspaceId: "w1", nameKind: "context" }]);
   });
   it("omits workspaceId when absent", () => {
     const result = serializeTiles([{ session: "s2", workspacePath: "/b", name: "N" }]);
-    expect(result).toEqual([{ sessionId: "s2", cwd: "/b", name: "N" }]);
+    expect(result).toEqual([{ sessionId: "s2", cwd: "/b", name: "N", nameKind: "context" }]);
     expect(Object.keys(result[0])).not.toContain("workspaceId");
+  });
+  it("persists the launch name, not the transcript title", () => {
+    // The caller hands over the launch name; there is no slot here for the
+    // resolved one, which is what keeps a title out of the file by construction.
+    const result = serializeTiles([
+      { session: "s1", workspacePath: "/a", name: "session · relay", nameKind: "placeholder" },
+    ]);
+    expect(result[0].name).toBe("session · relay");
+  });
+  it("persists a hand-typed name in its own field", () => {
+    const result = serializeTiles([
+      {
+        session: "s1", workspacePath: "/a", name: "session · relay",
+        nameKind: "placeholder", userName: "the one I must not close",
+      },
+    ]);
+    expect(result[0].userName).toBe("the one I must not close");
+    expect(result[0].name).toBe("session · relay");
+  });
+  it("records whether the persisted name is a context name or a placeholder", () => {
+    const result = serializeTiles([
+      { session: "s1", workspacePath: "/a", name: "☑ Fix", nameKind: "context" },
+      { session: "s2", workspacePath: "/a", name: "session · relay", nameKind: "placeholder" },
+    ]);
+    expect(result.map((e) => e.nameKind)).toEqual(["context", "placeholder"]);
+  });
+  it("omits a hand-typed name that was cleared", () => {
+    const result = serializeTiles([
+      { session: "s1", workspacePath: "/a", name: "session · relay", userName: null },
+    ]);
+    expect(Object.keys(result[0])).not.toContain("userName");
   });
   it("никогда не сохраняет служебные тайлы команд", () => {
     // Восстановление такого тайла молча перезапустило бы sudo-команду установки.

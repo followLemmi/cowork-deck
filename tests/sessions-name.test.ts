@@ -187,6 +187,8 @@ describe("the poll tick names a tile from its transcript", () => {
    *  rather than waiting five seconds for the interval that already exists. */
   const tick = (deck: Deck) =>
     (deck as unknown as { pollOnce(): Promise<void> }).pollOnce();
+  const persist = (deck: Deck) =>
+    (deck as unknown as { persistLayout(): Promise<void> }).persistLayout();
 
   function mount() {
     const deckEl = document.createElement("div");
@@ -286,5 +288,58 @@ describe("the poll tick names a tile from its transcript", () => {
     snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
     await tick(deck);
     expect(save).not.toHaveBeenCalled();
+  });
+
+  it("skips saving when the serialized layout has not changed", async () => {
+    const { deck } = mount();
+    await deck.launch(WS as never, null);
+    expect(save).toHaveBeenCalledTimes(1);
+    // The spawn, restart and remove bursts all end in this call; only the first
+    // of them has anything to write.
+    await persist(deck);
+    await persist(deck);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays dirty when the write fails, so the next attempt tries again", async () => {
+    const { deck } = mount();
+    save.mockRejectedValueOnce(new Error("disk full"));
+    await deck.launch(WS as never, null);
+    expect(save).toHaveBeenCalledTimes(1);
+    await persist(deck);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores a hand-typed name and keeps it against a new transcript title", async () => {
+    const { deck, deckEl } = mount();
+    await deck.restore([{
+      sessionId: "s1", cwd: "/p", name: "session · relay", workspaceId: "w",
+      nameKind: "placeholder", userName: "the one I must not close",
+    }]);
+    snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
+    await tick(deck);
+    expect(shown(deckEl).textContent).toBe("the one I must not close");
+  });
+
+  it("restores a legacy entry's name as a context name", async () => {
+    // Nothing on disk tells `☑ <card>` from `session · foo` in a file written
+    // before `nameKind` existed, and leaving a recognised name alone is the
+    // safer of the two mistakes.
+    const { deck, deckEl } = mount();
+    await deck.restore([{ sessionId: "s1", cwd: "/p", name: "session · relay", workspaceId: "w" }]);
+    snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
+    await tick(deck);
+    expect(shown(deckEl).textContent).toBe("session · relay");
+  });
+
+  it("restores a placeholder-marked entry so the transcript title can take over", async () => {
+    const { deck, deckEl } = mount();
+    await deck.restore([{
+      sessionId: "s1", cwd: "/p", name: "session · relay", workspaceId: "w",
+      nameKind: "placeholder",
+    }]);
+    snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
+    await tick(deck);
+    expect(shown(deckEl).textContent).toBe("Trace the retry budget");
   });
 });

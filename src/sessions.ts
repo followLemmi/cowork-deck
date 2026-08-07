@@ -120,6 +120,9 @@ export class Deck {
   private broadcasting = false;
   private bcastPanel: HTMLElement | null = null;
   private restoring = false;
+  /** The last layout `saveLayout` actually accepted, serialised. See
+   *  `persistLayout`: a write that would change nothing is skipped. */
+  private savedLayout: string | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private usage = new Map<string, TokenUsage>();
   private activeWorkspaceId: string | null = null;
@@ -1046,8 +1049,19 @@ export class Deck {
       kind: t.kind,
       scheduledSkillId: t.scheduledSkillId,
       taskId: t.taskId,
+      userName: t.names.user,
+      nameKind: t.names.context === null ? "placeholder" : "context",
     })));
-    return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
+    // Skip a write that would change nothing. Not something the naming needs —
+    // it is here because it lives in the function this change touches, and it
+    // collapses the redundant writes the spawn, restart and remove bursts
+    // already produce. The memo is assigned only once the write has resolved:
+    // a failed save has to stay dirty, or the next real change is skipped too.
+    const serialized = JSON.stringify(entries);
+    if (serialized === this.savedLayout) return Promise.resolve();
+    return saveLayout(entries)
+      .then(() => { this.savedLayout = serialized; })
+      .catch((e) => console.debug("saveLayout failed", e));
   }
 
   private renderList() {
@@ -1177,11 +1191,20 @@ export function nextWaitingAcross(
   return null;
 }
 
+/** What reaches `sessions.json`.
+ *
+ *  `name` is the **launch** name — never the resolved one. A transcript title is
+ *  not persisted at all: `startPolling()` fires a tick immediately, so a restored
+ *  tile refills it within one round trip and a stored copy could only go stale.
+ *  A hand-typed name goes in its own field, and `nameKind` records which of the
+ *  two kinds `name` is, so the next launch knows whether a title may replace it. */
 export function serializeTiles(
   tiles: {
     session: string; workspacePath: string; name: string; workspaceId?: string;
     scheduledSkillId?: string; taskId?: string;
     kind?: TileKind;
+    userName?: string | null;
+    nameKind?: NameKind;
   }[],
 ): SessionEntry[] {
   return tiles
@@ -1194,6 +1217,8 @@ export function serializeTiles(
       ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
       ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
       ...(t.taskId ? { taskId: t.taskId } : {}),
+      ...(t.userName ? { userName: t.userName } : {}),
+      nameKind: t.nameKind ?? "context",
     }));
 }
 
