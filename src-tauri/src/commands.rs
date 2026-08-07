@@ -44,6 +44,7 @@ use crate::model::{
 };
 use crate::pty::PtyManager;
 use crate::store::Store;
+use crate::which;
 use base64::Engine;
 use serde::Serialize;
 use std::sync::Mutex;
@@ -317,148 +318,41 @@ pub fn claude_available() -> bool {
     which_claude().is_some()
 }
 
-/// How the claude executable was found. `path_env` is the login shell's
-/// `$PATH`, captured when discovery had to go through that shell: an
-/// npm/nvm-installed claude is a `#!/usr/bin/env node` script, so the session
-/// that runs it needs `node` resolvable too, not just claude's own path.
-#[derive(Clone)]
-pub struct ClaudeResolution {
-    pub program: String,
-    pub path_env: Option<String>,
-}
-
 /// Successful discoveries only — a miss stays retryable so installing claude
 /// and pressing "try again" works without restarting the app. The expensive
-/// probes below run at most once per process; `start_session` reads the cache.
-static CLAUDE_CACHE: std::sync::OnceLock<ClaudeResolution> = std::sync::OnceLock::new();
+/// probes run at most once per process; `start_session` reads the cache.
+static CLAUDE_CACHE: std::sync::OnceLock<which::Resolution> = std::sync::OnceLock::new();
 
-fn which_claude() -> Option<ClaudeResolution> {
-    // Respect an explicit override, else rely on PATH resolution by the OS.
+fn which_claude() -> Option<which::Resolution> {
+    // Respect an explicit override, else run the shared discovery: PATH,
+    // known install dirs, login shell. An npm/nvm-installed claude is a
+    // `#!/usr/bin/env node` script, which is why the resolution's captured
+    // PATH matters to the session that runs it (see `which::Resolution`).
     if let Ok(p) = std::env::var("COWORK_CLAUDE_PATH") {
         if !p.is_empty() {
-            return Some(ClaudeResolution { program: p, path_env: None });
+            return Some(which::Resolution { program: p, path_env: None });
         }
     }
     if let Some(hit) = CLAUDE_CACHE.get() {
         return Some(hit.clone());
     }
-    let found = discover_claude()?;
-    Some(CLAUDE_CACHE.get_or_init(|| found).clone())
-}
-
-fn discover_claude() -> Option<ClaudeResolution> {
-    let candidates: &[&str] = if cfg!(windows) { &["claude.cmd", "claude"] } else { &["claude"] };
-    for c in candidates {
-        if claude_runs(c, None) {
-            return Some(ClaudeResolution { program: c.to_string(), path_env: None });
-        }
-    }
-    // A PATH miss doesn't mean claude is absent: an app launched from
-    // Finder/Dock inherits launchd's minimal PATH, not the login shell's.
-    // Probe where installers actually put the binary, then as a last resort
-    // ask the login shell — which also covers nvm-style versioned dirs that
-    // no fixed list can.
-    for p in known_claude_paths() {
-        if claude_runs(&p, None) {
-            return Some(ClaudeResolution { program: p, path_env: None });
-        }
-    }
-    login_shell_claude()
-}
-
-fn claude_runs(program: &str, path_env: Option<&str>) -> bool {
-    let mut cmd = std::process::Command::new(program);
-    cmd.arg("--version");
-    if let Some(p) = path_env {
-        cmd.env("PATH", p);
-    }
-    cmd.output().map(|o| o.status.success()).unwrap_or(false)
-}
-
-fn known_claude_paths() -> Vec<String> {
-    let mut paths = Vec::new();
-    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
-    if let Some(home) = home {
-        let home = std::path::PathBuf::from(home);
-        // Native installer, `claude migrate-installer`, and common npm setups.
-        let rels: &[&str] = if cfg!(windows) {
-            &[".local/bin/claude.exe", ".bun/bin/claude.exe", ".volta/bin/claude.exe"]
-        } else {
-            &[".local/bin/claude", ".claude/local/claude", ".npm-global/bin/claude", ".volta/bin/claude", ".bun/bin/claude"]
-        };
-        paths.extend(rels.iter().map(|r| home.join(r).to_string_lossy().into_owned()));
-    }
+    let names: &[&str] = if cfg!(windows) { &["claude.cmd", "claude"] } else { &["claude"] };
+    // Native installer, `claude migrate-installer`, and common npm setups.
+    let mut candidates = which::under_home(if cfg!(windows) {
+        &[".local/bin/claude.exe", ".bun/bin/claude.exe", ".volta/bin/claude.exe"]
+    } else {
+        &[".local/bin/claude", ".claude/local/claude", ".npm-global/bin/claude", ".volta/bin/claude", ".bun/bin/claude"]
+    });
     if cfg!(windows) {
         if let Ok(appdata) = std::env::var("APPDATA") {
-            paths.push(format!("{appdata}\\npm\\claude.cmd"));
+            candidates.push(format!("{appdata}\\npm\\claude.cmd"));
         }
     } else {
-        paths.push("/opt/homebrew/bin/claude".to_string());
-        paths.push("/usr/local/bin/claude".to_string());
+        candidates.push("/opt/homebrew/bin/claude".to_string());
+        candidates.push("/usr/local/bin/claude".to_string());
     }
-    paths.retain(|p| std::path::Path::new(p).exists());
-    paths
-}
-
-fn login_shell_claude() -> Option<ClaudeResolution> {
-    if cfg!(windows) {
-        return None;
-    }
-    // `-l -c` is POSIX-shell syntax; an exotic $SHELL (nushell, tcsh) fails
-    // the probe and we report "not found" rather than guess at its flags.
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut cmd = std::process::Command::new(shell);
-    cmd.args(["-l", "-c", r#"command -v claude; printf '%s\n' "$PATH""#]);
-    // A login shell runs the user's profile, which can do anything, including
-    // hang — and this can sit on a session-start path. Bound it.
-    let out = output_with_deadline(cmd, std::time::Duration::from_secs(5))?;
-    if !out.status.success() {
-        return None;
-    }
-    // Login profiles are free to echo to stdout; our answers are the last two
-    // non-empty lines — $PATH, and above it claude's path. If claude was not
-    // found its line is simply absent and verification rejects whatever
-    // profile noise took its place.
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let mut lines = stdout.lines().rev().filter(|l| !l.trim().is_empty());
-    let path_env = lines.next()?.trim().to_string();
-    let program = lines.next()?.trim().to_string();
-    claude_runs(&program, Some(&path_env))
-        .then_some(ClaudeResolution { program, path_env: Some(path_env) })
-}
-
-/// `Command::output()` with a time limit: polls, and kills the child when the
-/// deadline passes. Stdout is read only after exit, so a child that fills the
-/// pipe buffer stalls itself — and then the deadline reaps it. Fail-closed by
-/// design; this guards a discovery probe, not a result anyone waits on.
-fn output_with_deadline(
-    mut cmd: std::process::Command,
-    deadline: std::time::Duration,
-) -> Option<std::process::Output> {
-    use std::io::Read;
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let mut child = cmd.spawn().ok()?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                if let Some(mut s) = child.stdout.take() {
-                    let _ = s.read_to_end(&mut stdout);
-                }
-                return Some(std::process::Output { status, stdout, stderr: Vec::new() });
-            }
-            Ok(None) if started.elapsed() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-            Err(_) => return None,
-        }
-    }
+    let found = which::discover(names, &candidates, &which::version_runs)?;
+    Some(CLAUDE_CACHE.get_or_init(|| found).clone())
 }
 
 /// Что фронт узнаёт про аккаунт стартовавшей сессии. Токена здесь нет и быть
@@ -689,13 +583,18 @@ fn gh_invocation(
     }
     .ok_or_else(|| "no such workspace".to_string())?;
     let cfg = ws.github.clone().ok_or_else(|| "no-account".to_string())?;
-    let path = gh::which_gh().ok_or_else(|| "gh-not-found".to_string())?;
+    let resolved = gh::which_gh().ok_or_else(|| "gh-not-found".to_string())?;
     let token = workspace_token(state, &cfg);
 
     let dir = noauth_dir(state);
-    let env = gh::session_env(&cfg, token.as_deref(), &dir.to_string_lossy());
+    let mut env = gh::session_env(&cfg, token.as_deref(), &dir.to_string_lossy());
+    // A gh resolved through the login shell was validated under that shell's
+    // PATH; every spawn of it must carry the same one.
+    if let Some(path_env) = &resolved.path_env {
+        env.push(("PATH".to_string(), path_env.clone()));
+    }
 
-    Ok(GhInvocation { path, cwd: ws.path.clone(), env })
+    Ok(GhInvocation { path: resolved.program, cwd: ws.path.clone(), env })
 }
 
 /// `gh`'s own exit code for "authentication required" — the one status worth

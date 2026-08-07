@@ -77,7 +77,11 @@ function foundBlock(
   wrap.className = "gh-block";
   wrap.append(para(`${status.version ?? "gh"} — ${status.path}`, "gh-note"));
 
-  if (!status.accounts.length) {
+  if (status.error) {
+    // A failed listing is not "no accounts" — say what gh actually answered,
+    // or the user with two accounts stares at an inexplicably empty list.
+    wrap.append(para(`gh could not list accounts: ${status.error}`, "gh-error"));
+  } else if (!status.accounts.length) {
     wrap.append(para("Аккаунтов нет. Добавьте первый — вход проходит в терминале.", "gh-note"));
   }
 

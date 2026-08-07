@@ -44,6 +44,7 @@ describe("экран GitHub — gh установлен", () => {
       path: "gh",
       version: "gh version 2.82.1",
       accounts: [acc({ login: "a", active: true }), acc({ login: "b", scopes: ["gist"] })],
+      error: null,
     });
   });
 
@@ -80,7 +81,7 @@ describe("экран GitHub — gh установлен", () => {
 
 describe("экран GitHub — gh не найден", () => {
   beforeEach(() => {
-    ghStatusMock.mockResolvedValue({ path: null, version: null, accounts: [] });
+    ghStatusMock.mockResolvedValue({ path: null, version: null, accounts: [], error: null });
   });
 
   it("подставляет команду установки под платформу в РЕДАКТИРУЕМОЕ поле", async () => {
@@ -119,18 +120,31 @@ describe("экран GitHub — устойчивость", () => {
   });
 
   it("«Перечитать» повторяет опрос и подхватывает появившийся аккаунт", async () => {
-    ghStatusMock.mockResolvedValueOnce({ path: "gh", version: "v", accounts: [] });
+    ghStatusMock.mockResolvedValueOnce({ path: "gh", version: "v", accounts: [], error: null });
     await openGithubScreen(deckSpy());
     expect(text()).toContain("Аккаунтов нет");
 
-    ghStatusMock.mockResolvedValueOnce({ path: "gh", version: "v", accounts: [acc()] });
+    ghStatusMock.mockResolvedValueOnce({ path: "gh", version: "v", accounts: [acc()], error: null });
     button("Перечитать")!.click();
     await vi.waitFor(() => expect(text()).toContain("followLemmi"));
     expect(box().querySelectorAll(".gh-acc-row")).toHaveLength(1);
   });
 
+  // An empty list over live accounts is what an old gh without --json looked
+  // like: the listing failed and the UI said "no accounts". A failed listing
+  // is not emptiness.
+  it("shows the listing error instead of the no-accounts note", async () => {
+    ghStatusMock.mockResolvedValue({
+      path: "gh", version: "gh version 2.4.0", accounts: [],
+      error: "unknown flag: --json",
+    });
+    await openGithubScreen(deckSpy());
+    expect(text()).toContain("unknown flag: --json");
+    expect(text()).not.toContain("Аккаунтов нет");
+  });
+
   it("клик по фону закрывает экран", async () => {
-    ghStatusMock.mockResolvedValue({ path: "gh", version: "v", accounts: [] });
+    ghStatusMock.mockResolvedValue({ path: "gh", version: "v", accounts: [], error: null });
     await openGithubScreen(deckSpy());
     const ov = document.querySelector(".modal-overlay") as HTMLElement;
     ov.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));

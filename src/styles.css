@@ -1069,6 +1069,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .gh-block { display: flex; flex-direction: column; gap: var(--sp-2); margin: var(--sp-2) 0; }
 .gh-note { margin: 0; color: var(--fg-mid); font-size: var(--fs-sm); line-height: var(--lh-body); max-width: 64ch; }
 .gh-hint { margin: 0; color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body); max-width: 64ch; }
+.gh-error { margin: 0; color: var(--st-error); font-size: var(--fs-sm); line-height: var(--lh-body); max-width: 64ch; }
 .gh-link { color: var(--accent); font-size: var(--fs-sm); text-decoration: none; }
 .gh-link:hover { text-decoration: underline; }
 .gh-acc-row {
