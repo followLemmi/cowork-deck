@@ -22,6 +22,10 @@ pub struct GhStatus {
     pub path: Option<String>,
     pub version: Option<String>,
     pub accounts: Vec<GhAccount>,
+    /// Set when the account listing itself failed — which the UI must show as
+    /// a fault, not as "no accounts": a user with two accounts staring at an
+    /// empty list has no way to guess the difference.
+    pub error: Option<String>,
 }
 
 /// Разбирает вывод `gh auth status --json hosts`. Любой неожиданный ввод —
@@ -63,39 +67,99 @@ pub fn parse_auth_status(json: &str) -> Vec<GhAccount> {
     out
 }
 
-/// Зеркало `which_claude()` из commands.rs: сначала явный override, затем
-/// проба `gh --version` на PATH.
-pub fn which_gh() -> Option<String> {
+/// Successful discoveries only; a miss stays retryable, so installing gh
+/// does not require an app restart.
+static GH_CACHE: std::sync::OnceLock<crate::which::Resolution> = std::sync::OnceLock::new();
+
+/// Shared discovery (see `which.rs`): override, PATH, installer directories,
+/// login shell. A candidate only counts if it can do `auth status --json` —
+/// see `usable_gh`.
+pub fn which_gh() -> Option<crate::which::Resolution> {
     if let Ok(p) = std::env::var("COWORK_GH_PATH") {
         if !p.is_empty() {
-            return Some(p);
+            return Some(crate::which::Resolution { program: p, path_env: None });
         }
     }
-    match std::process::Command::new("gh").arg("--version").output() {
-        Ok(o) if o.status.success() => Some("gh".to_string()),
-        _ => None,
+    if let Some(hit) = GH_CACHE.get() {
+        return Some(hit.clone());
+    }
+    let mut candidates = crate::which::under_home(&[".local/bin/gh"]);
+    if !cfg!(windows) {
+        candidates.push("/opt/homebrew/bin/gh".to_string());
+        candidates.push("/usr/local/bin/gh".to_string());
+        candidates.push("/home/linuxbrew/.linuxbrew/bin/gh".to_string());
+    }
+    let found = crate::which::discover(&["gh"], &candidates, &usable_gh)?;
+    Some(GH_CACHE.get_or_init(|| found).clone())
+}
+
+/// gh qualifies if it runs AND knows `auth status --json`: a distro-packaged
+/// gh on the GUI PATH can be years older than the one the user's shell sees,
+/// and it answers the account listing with "unknown flag" — outwardly
+/// indistinguishable from "no accounts". Only that answer disqualifies: a
+/// healthy gh with zero accounts also exits non-zero.
+fn usable_gh(r: &crate::which::Resolution) -> bool {
+    if !crate::which::version_runs(r) {
+        return false;
+    }
+    // `gh auth status` talks to the network and the keyring, and a locked
+    // keyring on Linux can hang it behind a dialog (see `token`). The probe
+    // is bounded for that reason, and a timeout rejects the candidate:
+    // better a false "gh not found" than a frozen window.
+    let mut cmd = r.command();
+    cmd.args(["auth", "status", "--json", "hosts"]);
+    match crate::which::output_with_deadline(cmd, std::time::Duration::from_secs(5)) {
+        Some(o) if o.status.success() => true,
+        Some(o) => !String::from_utf8_lossy(&o.stderr).contains("unknown flag"),
+        None => false,
     }
 }
 
+/// Separates "no accounts" from "the listing failed": an empty parse with a
+/// non-zero exit is a fault, except for the one legitimate case of a gh that
+/// simply is not logged into any host.
+fn accounts_or_error(stdout: &str, stderr: &str, success: bool) -> (Vec<GhAccount>, Option<String>) {
+    let accounts = parse_auth_status(stdout);
+    if accounts.is_empty() && !success {
+        let msg = redact(stderr.trim());
+        // Pinned to gh's actual wording ("You are not logged into any GitHub
+        // hosts..."); gh ships unlocalized English, so the string is stable.
+        // If gh ever rephrases it, the failure is noisy — the empty state
+        // shows an error paragraph — never a silent swallow.
+        if !msg.to_lowercase().contains("not logged in") {
+            return (accounts, Some(msg));
+        }
+    }
+    (accounts, None)
+}
+
 pub fn status() -> GhStatus {
-    let path = match which_gh() {
-        Some(p) => p,
-        None => return GhStatus { path: None, version: None, accounts: Vec::new() },
+    let resolved = match which_gh() {
+        Some(r) => r,
+        None => return GhStatus { path: None, version: None, accounts: Vec::new(), error: None },
     };
-    let version = std::process::Command::new(&path)
+    let version = resolved
+        .command()
         .arg("--version")
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
-    let accounts = std::process::Command::new(&path)
-        .args(["auth", "status", "--json", "hosts"])
-        .output()
-        .ok()
-        .map(|o| parse_auth_status(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default();
-    GhStatus { path: Some(path), version, accounts }
+    // Bounded like the discovery probe, and for the same keyring reason —
+    // but here a timeout becomes a visible error, not a rejected candidate.
+    let mut listing = resolved.command();
+    listing.args(["auth", "status", "--json", "hosts"]);
+    let (accounts, error) =
+        match crate::which::output_with_deadline(listing, std::time::Duration::from_secs(10)) {
+            Some(o) => accounts_or_error(
+                &String::from_utf8_lossy(&o.stdout),
+                &String::from_utf8_lossy(&o.stderr),
+                o.status.success(),
+            ),
+            None => (Vec::new(), Some("gh did not answer in time (locked keyring?)".to_string())),
+        };
+    GhStatus { path: Some(resolved.program.clone()), version, accounts, error }
 }
 
 const TOKEN_PREFIXES: [&str; 6] = ["gho_", "ghp_", "ghu_", "ghs_", "ghr_", "github_pat_"];
@@ -133,13 +197,22 @@ pub fn redact(msg: &str) -> String {
 /// аккаунт. Таймаут обязателен: залоченный keyring на Linux умеет подвесить
 /// процесс диалогом, а старт сессии блокировать нельзя.
 pub fn token(host: &str, login: &str, timeout: std::time::Duration) -> Result<String, String> {
-    let path = which_gh().ok_or_else(|| "gh не найден".to_string())?;
     let (host, login) = (host.to_string(), login.to_string());
     let (tx, rx) = std::sync::mpsc::channel();
+    // Discovery runs INSIDE the timed thread, not before it: on a cache miss
+    // it probes the PATH, installer dirs and the login shell, and its
+    // `gh auth status` probes can stall on the same locked keyring this
+    // timeout exists for. This function is reached from `start_session` on
+    // the main thread — the caller's deadline has to cover all of it.
     std::thread::spawn(move || {
-        let out = std::process::Command::new(&path)
-            .args(["auth", "token", "--hostname", &host, "--user", &login])
-            .output();
+        let out = match which_gh() {
+            None => Err("gh not found".to_string()),
+            Some(resolved) => {
+                let mut cmd = resolved.command();
+                cmd.args(["auth", "token", "--hostname", &host, "--user", &login]);
+                cmd.output().map_err(|e| redact(&e.to_string()))
+            }
+        };
         let _ = tx.send(out);
     });
     match rx.recv_timeout(timeout) {
@@ -152,7 +225,7 @@ pub fn token(host: &str, login: &str, timeout: std::time::Duration) -> Result<St
             }
         }
         Ok(Ok(o)) => Err(redact(String::from_utf8_lossy(&o.stderr).trim())),
-        Ok(Err(e)) => Err(redact(&e.to_string())),
+        Ok(Err(e)) => Err(e),
         // Поток остаётся висеть на заблокированном keyring — он отвалится сам,
         // когда диалог закроют. Мы его не ждём.
         Err(_) => Err("gh не ответил вовремя (возможно, залочен keyring)".into()),
@@ -247,6 +320,32 @@ mod tests {
         let mut logins: Vec<String> = parse_auth_status(json).into_iter().map(|a| a.login).collect();
         logins.sort();
         assert_eq!(logins, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn a_failed_listing_is_an_error_not_an_empty_account_list() {
+        // An old gh that does not know `--json`: parse is empty, exit is
+        // non-zero — the UI must hear about it.
+        let (accs, err) = accounts_or_error("", "unknown flag: --json", false);
+        assert!(accs.is_empty());
+        assert!(err.is_some());
+
+        // Zero accounts is not a fault.
+        let (accs, err) =
+            accounts_or_error("", "You are not logged into any GitHub hosts. To log in, run: gh auth login", false);
+        assert!(accs.is_empty());
+        assert!(err.is_none(), "not-logged-in is the legitimate empty state");
+
+        // A healthy listing carries no error.
+        let (accs, err) = accounts_or_error(TWO_ACCOUNTS, "", true);
+        assert_eq!(accs.len(), 2);
+        assert!(err.is_none());
+    }
+
+    #[test]
+    fn listing_errors_are_redacted_before_leaving_the_module() {
+        let (_, err) = accounts_or_error("", "boom gho_secret123 boom", false);
+        assert_eq!(err.as_deref(), Some("boom <redacted> boom"));
     }
 
     #[test]

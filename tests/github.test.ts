@@ -46,7 +46,7 @@ describe("scopeWarning", () => {
 
 describe("accountChoices", () => {
   const status = (accounts: GhAccount[]): GhStatus =>
-    ({ path: "gh", version: "gh version 2.82.1", accounts });
+    ({ path: "gh", version: "gh version 2.82.1", accounts, error: null });
 
   it("puts the unbound option first and marks the active account", () => {
     const choices = accountChoices(status([acc({ login: "a", active: true }), acc({ login: "b" })]));
@@ -70,7 +70,7 @@ describe("accountChoices", () => {
   });
 
   it("offers only the unbound option when gh is absent", () => {
-    expect(accountChoices({ path: null, version: null, accounts: [] })).toEqual([
+    expect(accountChoices({ path: null, version: null, accounts: [], error: null })).toEqual([
       { value: "", label: "— не привязан —", missing: false },
     ]);
   });

@@ -83,7 +83,7 @@ export const removeSkill = (id: string) => invoke<Skill[]>("remove_skill", { id 
 export const claudeAvailable = () => invoke<boolean>("claude_available");
 
 export interface GhAccount { host: string; login: string; active: boolean; scopes: string[]; state: string; }
-export interface GhStatus { path: string | null; version: string | null; accounts: GhAccount[]; }
+export interface GhStatus { path: string | null; version: string | null; accounts: GhAccount[]; error: string | null; }
 export interface HostPlatform { os: "macos" | "windows" | "linux"; distro: string | null; }
 
 export const ghStatus = () => invoke<GhStatus>("gh_status");
