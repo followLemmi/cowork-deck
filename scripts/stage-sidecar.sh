@@ -23,14 +23,19 @@ mkdir -p src-tauri/binaries
 DEST="src-tauri/binaries/${BIN}-${TARGET_TRIPLE}${EXT}"
 
 # tauri-build's build.rs validates that every bundle.externalBin resource
-# already exists on disk, and it runs on *any* cargo build of this crate.
-# Seed a placeholder first so that build doesn't fail before we've produced
-# the real binary. Seed it executable too, so even the pre-build state is
+# already exists on disk, and it runs on *any* cargo build of this crate —
+# including the one below that produces just $BIN. Seed placeholders for ALL
+# sidecars listed in tauri.conf.json, not only the one being staged, or a
+# clean checkout deadlocks: staging the first sidecar fails on the missing
+# second one. Seed them executable too, so even the pre-build state is
 # correct (and so a stale placeholder left over from a failed run doesn't
 # masquerade as a valid, non-executable sidecar).
-if [ ! -e "$DEST" ]; then
-  install -m 0755 /dev/null "$DEST"
-fi
+for sidecar in $(node -p "require('./src-tauri/tauri.conf.json').bundle.externalBin.map(p => p.split('/').pop()).join(' ')"); do
+  seed="src-tauri/binaries/${sidecar}-${TARGET_TRIPLE}${EXT}"
+  if [ ! -e "$seed" ]; then
+    install -m 0755 /dev/null "$seed"
+  fi
+done
 
 cargo build --release --bin "$BIN" --manifest-path src-tauri/Cargo.toml
 
