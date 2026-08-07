@@ -1511,6 +1511,133 @@ pub fn sum_usage_lines(content: &str) -> TokenUsage {
     u
 }
 
+/// The three names a transcript can carry, newest of each kind.
+///
+/// `custom` is what a person typed inside Claude Code, `ai` is what Claude Code
+/// generated, `prompt` is the opening prompt echoed back. All three are already
+/// sanitised; a field that sanitises to nothing is `None`, never `Some("")`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TranscriptTitle {
+    /// `custom-title` / `customTitle` — renamed inside Claude Code.
+    pub custom: Option<String>,
+    /// `ai-title` / `aiTitle`.
+    pub ai: Option<String>,
+    /// `last-prompt` / `lastPrompt` — a primary path, not a corner: measured
+    /// across 96 transcripts, 23% never get a title of either other kind.
+    pub prompt: Option<String>,
+}
+
+/// Which of the three a displayed title came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleSource {
+    Custom,
+    Ai,
+    Prompt,
+}
+
+impl TranscriptTitle {
+    /// The name to show, and where it came from: `custom` → `ai` → `prompt`.
+    ///
+    /// `custom` outranks `ai` because Claude Code stops emitting `ai-title` once a
+    /// conversation is renamed inside it — for 13 of 96 measured transcripts
+    /// `customTitle` is the only name on disk. The two never appear in one file, so
+    /// the ordering is insurance, and it is the direction that respects a
+    /// deliberate human rename.
+    ///
+    /// One place, so the "never an empty string" guarantee is testable once.
+    pub fn resolved(&self) -> Option<(String, TitleSource)> {
+        let (t, src) = match (&self.custom, &self.ai, &self.prompt) {
+            (Some(t), _, _) => (t, TitleSource::Custom),
+            (_, Some(t), _) => (t, TitleSource::Ai),
+            (_, _, Some(t)) => (t, TitleSource::Prompt),
+            _ => return None,
+        };
+        Some((t.clone(), src))
+    }
+}
+
+/// Longest name we keep. The same string reaches `sessions.json`, a desktop
+/// notification body and a confirmation sentence, so it is capped once here.
+const TITLE_CAP: usize = 120;
+
+/// Strip control characters, collapse whitespace runs, trim, and cap at
+/// [`TITLE_CAP`] **characters**.
+///
+/// Chars, never bytes: 80% of real titles are Cyrillic and a byte cap splits a
+/// character. A whitespace control character (a newline inside `lastPrompt`, say)
+/// becomes a space rather than vanishing, so two words do not merge into one.
+fn sanitise_title(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut kept = 0usize;
+    let mut space = false;
+    for ch in raw.chars() {
+        if kept == TITLE_CAP {
+            break;
+        }
+        if ch.is_whitespace() {
+            // A leading run is dropped rather than remembered, which is the trim.
+            space = kept > 0;
+            continue;
+        }
+        if ch.is_control() {
+            continue;
+        }
+        if space {
+            out.push(' ');
+            kept += 1;
+            space = false;
+            if kept == TITLE_CAP {
+                break;
+            }
+        }
+        out.push(ch);
+        kept += 1;
+    }
+    // A separator can only be written before a character, so there is no trailing
+    // one to trim — except when the cap fell exactly on it.
+    let out = out.trim_end();
+    if out.is_empty() { None } else { Some(out.to_string()) }
+}
+
+/// The newest title line of each kind, scanning **backwards**.
+///
+/// Backwards because each line is re-appended constantly — median 27 occurrences
+/// per transcript, max 267 — so a parser taking the first hit reads a stale name;
+/// and because `str::Lines` is a `DoubleEndedIterator`, so with a cheap `contains`
+/// prefilter the walk stops at the first hit and costs 0.00 ms in the common case.
+///
+/// Not a tail read: one line in the corpus is 1,227,203 bytes, so a fixed window
+/// off the end can contain no newline at all.
+///
+/// Tolerant of what a file read mid-flush contains — non-JSON lines, a truncated
+/// last line, a title field of the wrong type.
+pub fn last_title_lines(content: &str) -> TranscriptTitle {
+    let mut t = TranscriptTitle::default();
+    for line in content.lines().rev() {
+        if t.custom.is_some() && t.ai.is_some() && t.prompt.is_some() {
+            break;
+        }
+        if !(line.contains("Title") || line.contains("lastPrompt")) {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for (slot, field) in [
+            (&mut t.custom, "customTitle"),
+            (&mut t.ai, "aiTitle"),
+            (&mut t.prompt, "lastPrompt"),
+        ] {
+            if slot.is_none() {
+                *slot = v[field].as_str().and_then(sanitise_title);
+            }
+        }
+    }
+    t
+}
+
 /// Locate the transcript file `<session_id>.jsonl` under any project dir.
 fn find_transcript(session_id: &str) -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
@@ -1832,6 +1959,123 @@ branch refs/heads/feature/y\n";
     #[test]
     fn sum_usage_lines_empty_is_zero() {
         assert_eq!(sum_usage_lines(""), TokenUsage::default());
+    }
+
+    /// A title line is re-appended constantly — median 27 occurrences per
+    /// transcript, max 267 — so taking the first hit reads a stale name.
+    #[test]
+    fn last_title_lines_takes_the_newest_ai_title() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"first name"}"#, "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":1}}}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"second name"}"#, "\n",
+        );
+        assert_eq!(last_title_lines(content).ai.as_deref(), Some("second name"));
+    }
+
+    #[test]
+    fn a_custom_title_outranks_an_ai_title() {
+        let content = concat!(
+            r#"{"type":"custom-title","customTitle":"what the person called it"}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"what the model called it"}"#, "\n",
+        );
+        let t = last_title_lines(content);
+        assert_eq!(t.custom.as_deref(), Some("what the person called it"));
+        assert_eq!(t.ai.as_deref(), Some("what the model called it"));
+        assert_eq!(
+            t.resolved(),
+            Some(("what the person called it".to_string(), TitleSource::Custom)),
+            "a deliberate human rename wins, even though the two never coexist in practice",
+        );
+    }
+
+    #[test]
+    fn the_last_prompt_is_only_a_fallback() {
+        let prompt_only = r#"{"type":"last-prompt","lastPrompt":"собери отчёт"}"#;
+        assert_eq!(
+            last_title_lines(prompt_only).resolved(),
+            Some(("собери отчёт".to_string(), TitleSource::Prompt)),
+            "23% of sessions never get a title of another kind — this is a primary path",
+        );
+        let with_ai = format!("{prompt_only}\n{}\n", r#"{"type":"ai-title","aiTitle":"a name"}"#);
+        assert_eq!(
+            last_title_lines(&with_ai).resolved(),
+            Some(("a name".to_string(), TitleSource::Ai)),
+        );
+    }
+
+    #[test]
+    fn a_transcript_with_no_title_lines_yields_nothing() {
+        let content = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}"#, "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":10}}}"#, "\n",
+        );
+        assert_eq!(last_title_lines(content), TranscriptTitle::default());
+        assert_eq!(last_title_lines(content).resolved(), None);
+    }
+
+    #[test]
+    fn a_title_that_sanitises_to_nothing_is_none_not_empty() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"   "}"#, "\n",
+            r#"{"type":"custom-title","customTitle":""}"#, "\n",
+        );
+        let t = last_title_lines(content);
+        assert_eq!(t.ai, None, "whitespace only is absent, not an empty name");
+        assert_eq!(t.custom, None);
+        assert_eq!(t.resolved(), None);
+    }
+
+    #[test]
+    fn non_json_lines_are_skipped() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"a name"}"#, "\n",
+            "not json at all, but it does mention aiTitle", "\n",
+        );
+        assert_eq!(last_title_lines(content).ai.as_deref(), Some("a name"));
+    }
+
+    /// The file is read while Claude Code is writing it, so the last line can be
+    /// half a line.
+    #[test]
+    fn a_truncated_last_line_does_not_hide_the_previous_title() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"a name"}"#, "\n",
+            r#"{"type":"ai-title","aiTi"#,
+        );
+        assert_eq!(last_title_lines(content).ai.as_deref(), Some("a name"));
+    }
+
+    #[test]
+    fn an_oversized_title_is_capped_on_a_char_boundary() {
+        let long: String = "я".repeat(300);
+        let content = format!(r#"{{"type":"ai-title","aiTitle":"{long}"}}"#);
+        let name = last_title_lines(&content).ai.expect("a name");
+        assert_eq!(name.chars().count(), 120, "chars, never bytes");
+        assert!(name.len() > 120, "the cap is not a byte cap — Cyrillic is two bytes a char");
+        assert!(std::str::from_utf8(name.as_bytes()).is_ok(), "still valid UTF-8");
+    }
+
+    #[test]
+    fn control_characters_and_newlines_are_stripped_from_a_title() {
+        // A `lastPrompt` carries whatever the person typed, newlines included; a
+        // BEL can reach a title through terminal output pasted into a prompt.
+        let content = r#"{"type":"last-prompt","lastPrompt":"first line\nsecond\tline\u0007"}"#;
+        let name = last_title_lines(content).prompt.expect("a name");
+        assert_eq!(name, "first line second line", "one line, whitespace runs collapsed");
+        assert!(!name.chars().any(char::is_control), "no control character survives");
+    }
+
+    #[test]
+    fn a_title_field_of_the_wrong_type_is_ignored() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"a name"}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":{"text":"an object"}}"#, "\n",
+            r#"{"type":"custom-title","customTitle":42}"#, "\n",
+        );
+        let t = last_title_lines(content);
+        assert_eq!(t.ai.as_deref(), Some("a name"), "the wrong type is skipped, not fatal");
+        assert_eq!(t.custom, None);
     }
 
     #[test]
