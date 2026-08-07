@@ -102,10 +102,16 @@ fn usable_gh(r: &crate::which::Resolution) -> bool {
     if !crate::which::version_runs(r) {
         return false;
     }
-    match r.command().args(["auth", "status", "--json", "hosts"]).output() {
-        Ok(o) if o.status.success() => true,
-        Ok(o) => !String::from_utf8_lossy(&o.stderr).contains("unknown flag"),
-        Err(_) => false,
+    // `gh auth status` talks to the network and the keyring, and a locked
+    // keyring on Linux can hang it behind a dialog (see `token`). The probe
+    // is bounded for that reason, and a timeout rejects the candidate:
+    // better a false "gh not found" than a frozen window.
+    let mut cmd = r.command();
+    cmd.args(["auth", "status", "--json", "hosts"]);
+    match crate::which::output_with_deadline(cmd, std::time::Duration::from_secs(5)) {
+        Some(o) if o.status.success() => true,
+        Some(o) => !String::from_utf8_lossy(&o.stderr).contains("unknown flag"),
+        None => false,
     }
 }
 
@@ -116,6 +122,10 @@ fn accounts_or_error(stdout: &str, stderr: &str, success: bool) -> (Vec<GhAccoun
     let accounts = parse_auth_status(stdout);
     if accounts.is_empty() && !success {
         let msg = redact(stderr.trim());
+        // Pinned to gh's actual wording ("You are not logged into any GitHub
+        // hosts..."); gh ships unlocalized English, so the string is stable.
+        // If gh ever rephrases it, the failure is noisy — the empty state
+        // shows an error paragraph — never a silent swallow.
         if !msg.to_lowercase().contains("not logged in") {
             return (accounts, Some(msg));
         }
@@ -136,14 +146,19 @@ pub fn status() -> GhStatus {
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| s.lines().next().map(|l| l.trim().to_string()));
-    let (accounts, error) = match resolved.command().args(["auth", "status", "--json", "hosts"]).output() {
-        Ok(o) => accounts_or_error(
-            &String::from_utf8_lossy(&o.stdout),
-            &String::from_utf8_lossy(&o.stderr),
-            o.status.success(),
-        ),
-        Err(e) => (Vec::new(), Some(e.to_string())),
-    };
+    // Bounded like the discovery probe, and for the same keyring reason —
+    // but here a timeout becomes a visible error, not a rejected candidate.
+    let mut listing = resolved.command();
+    listing.args(["auth", "status", "--json", "hosts"]);
+    let (accounts, error) =
+        match crate::which::output_with_deadline(listing, std::time::Duration::from_secs(10)) {
+            Some(o) => accounts_or_error(
+                &String::from_utf8_lossy(&o.stdout),
+                &String::from_utf8_lossy(&o.stderr),
+                o.status.success(),
+            ),
+            None => (Vec::new(), Some("gh did not answer in time (locked keyring?)".to_string())),
+        };
     GhStatus { path: Some(resolved.program.clone()), version, accounts, error }
 }
 
@@ -182,14 +197,22 @@ pub fn redact(msg: &str) -> String {
 /// аккаунт. Таймаут обязателен: залоченный keyring на Linux умеет подвесить
 /// процесс диалогом, а старт сессии блокировать нельзя.
 pub fn token(host: &str, login: &str, timeout: std::time::Duration) -> Result<String, String> {
-    let resolved = which_gh().ok_or_else(|| "gh не найден".to_string())?;
     let (host, login) = (host.to_string(), login.to_string());
     let (tx, rx) = std::sync::mpsc::channel();
+    // Discovery runs INSIDE the timed thread, not before it: on a cache miss
+    // it probes the PATH, installer dirs and the login shell, and its
+    // `gh auth status` probes can stall on the same locked keyring this
+    // timeout exists for. This function is reached from `start_session` on
+    // the main thread — the caller's deadline has to cover all of it.
     std::thread::spawn(move || {
-        let out = resolved
-            .command()
-            .args(["auth", "token", "--hostname", &host, "--user", &login])
-            .output();
+        let out = match which_gh() {
+            None => Err("gh not found".to_string()),
+            Some(resolved) => {
+                let mut cmd = resolved.command();
+                cmd.args(["auth", "token", "--hostname", &host, "--user", &login]);
+                cmd.output().map_err(|e| redact(&e.to_string()))
+            }
+        };
         let _ = tx.send(out);
     });
     match rx.recv_timeout(timeout) {
@@ -202,7 +225,7 @@ pub fn token(host: &str, login: &str, timeout: std::time::Duration) -> Result<St
             }
         }
         Ok(Ok(o)) => Err(redact(String::from_utf8_lossy(&o.stderr).trim())),
-        Ok(Err(e)) => Err(redact(&e.to_string())),
+        Ok(Err(e)) => Err(e),
         // Поток остаётся висеть на заблокированном keyring — он отвалится сам,
         // когда диалог закроют. Мы его не ждём.
         Err(_) => Err("gh не ответил вовремя (возможно, залочен keyring)".into()),

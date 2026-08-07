@@ -33,10 +33,12 @@ impl Resolution {
 }
 
 /// The baseline validator: the program executes and `--version` succeeds.
+/// Bounded, like every discovery probe: a probe that can hang is a window
+/// that can freeze, because discovery may sit on a session-start path.
 pub fn version_runs(r: &Resolution) -> bool {
-    r.command()
-        .arg("--version")
-        .output()
+    let mut cmd = r.command();
+    cmd.arg("--version");
+    output_with_deadline(cmd, std::time::Duration::from_secs(5))
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
@@ -104,17 +106,17 @@ fn login_shell(name: &str, usable: &dyn Fn(&Resolution) -> bool) -> Option<Resol
 }
 
 /// `Command::output()` with a time limit: polls, and kills the child when the
-/// deadline passes. Stdout is read only after exit, so a child that fills the
-/// pipe buffer stalls itself — and then the deadline reaps it. Fail-closed by
-/// design; this guards a discovery probe, not a result anyone waits on.
-fn output_with_deadline(
+/// deadline passes. Both pipes are read only after exit, so a child that
+/// fills a pipe buffer stalls itself — and then the deadline reaps it.
+/// Fail-closed by design; this guards probes, not results anyone waits on.
+pub fn output_with_deadline(
     mut cmd: std::process::Command,
     deadline: std::time::Duration,
 ) -> Option<std::process::Output> {
     use std::io::Read;
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().ok()?;
     let started = std::time::Instant::now();
     loop {
@@ -124,7 +126,11 @@ fn output_with_deadline(
                 if let Some(mut s) = child.stdout.take() {
                     let _ = s.read_to_end(&mut stdout);
                 }
-                return Some(std::process::Output { status, stdout, stderr: Vec::new() });
+                let mut stderr = Vec::new();
+                if let Some(mut s) = child.stderr.take() {
+                    let _ = s.read_to_end(&mut stderr);
+                }
+                return Some(std::process::Output { status, stdout, stderr });
             }
             Ok(None) if started.elapsed() >= deadline => {
                 let _ = child.kill();
