@@ -19,10 +19,18 @@
       "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420"
     }
   },
-  "plugins": {},
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGMjI1Nzc5MDI5MUUwRUMKUldUczRKRUNlVmNpNzd3TXMrU3MzcUdZNkZlWEl2TzBFeEh4alpzaFVyUWVXM1RrYUdidlNnaVIK",
+      "endpoints": [
+        "https://github.com/followLemmi/cowork-deck/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

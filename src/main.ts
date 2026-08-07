@@ -8,6 +8,7 @@ import {
 } from "./ui-scale";
 import type { ViewName } from "./view";
 import { claudeAvailable, loadLayout, loadUiState, onScheduledFire, onSchedulerBroken, saveUiState, scheduleAck, schedulerReady } from "./ipc";
+import { offerUpdateIfAvailable } from "./updater";
 import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
 import {
@@ -1245,6 +1246,8 @@ window.addEventListener("keydown", (e) => {
 claudeAvailable().then((ok) => {
   if (!ok) alertModal("The claude executable was not found. Set its path via the COWORK_CLAUDE_PATH environment variable and restart the app.");
 });
+
+void offerUpdateIfAvailable();
 
 /** Read the stored text size and apply it, then boot.
  *

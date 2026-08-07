@@ -5,6 +5,8 @@
   "windows": ["main", "pill"],
   "permissions": [
     "core:default",
+    "updater:default",
+    "process:default",
     "notification:default",
     "dialog:default",
     "window-state:default",
