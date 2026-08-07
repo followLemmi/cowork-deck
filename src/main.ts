@@ -1229,8 +1229,24 @@ const COMMANDS: Record<string, () => void> = {
   "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
 };
 
+/** Whether the caret is in a field where a keystroke is text, not a command.
+ *
+ *  `.xterm-helper-textarea` is the exception: it is the terminal's own hidden
+ *  input, and exempting it would disable every hotkey inside a terminal, which
+ *  is the whole app. The consequence is a decision rather than an oversight:
+ *  `F6` region cycling is suppressed while an editable field holds focus. */
+function isTextEntry(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || !(el instanceof HTMLElement)) return false;
+  if (el.classList.contains("xterm-helper-textarea")) return false;
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
+}
+
 window.addEventListener("keydown", (e) => {
   if (document.querySelector(".modal-overlay")) return; // do not intercept while a modal, the palette or a form is open
+  // Without this, Cmd+N spawned a session and Cmd+W closed the tile while the
+  // caret sat in the tile's search box or the broadcast bar.
+  if (isTextEntry(e.target)) return;
   if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
   const id = matchHotkey(e, isMacPlatform());
   if (!id) return;

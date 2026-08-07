@@ -609,7 +609,11 @@ export class Deck {
     };
     head.insertBefore(restart, close);
     head.addEventListener("dblclick", (e) => {
-      if ((e.target as HTMLElement).closest("button")) return;
+      // Buttons and anything editable. Double-clicking a word inside a header
+      // input is how a person selects it, and zooming the tile instead is a
+      // defect the broadcast checkbox already suffered from.
+      const t = e.target as HTMLElement;
+      if (t.closest("button, input, textarea, [contenteditable]")) return;
       this.toggleZoom(session);
     });
     const mount = document.createElement("div");
