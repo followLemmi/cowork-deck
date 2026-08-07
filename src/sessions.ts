@@ -21,6 +21,9 @@ export type TileKind = "claude" | "command";
 
 interface Tile {
   session: string; names: TileNames; nameEl: HTMLElement;
+  /** The open editor, when this tile is being renamed. Its presence is what
+   *  makes a commit idempotent: blur fires after Enter has already committed. */
+  renameInput: HTMLInputElement | null;
   panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
@@ -53,6 +56,21 @@ export interface TileNames {
   auto: string | null;
   /** Hand-typed. Wins over everything, forever. */
   user: string | null;
+}
+
+/** Longest name kept. The same string reaches `sessions.json`, a desktop
+ *  notification body and a confirmation sentence — and it must agree with
+ *  `TITLE_CAP` in `src-tauri/src/commands.rs`, which caps the automatic side. */
+export const NAME_CAP = 120;
+
+/** Clean up what someone typed or pasted: control characters out, whitespace
+ *  runs collapsed to one space, trimmed, capped at [`NAME_CAP`].
+ *
+ *  By code point rather than by UTF-16 unit, matching the Rust sanitiser — a cap
+ *  counted in units would split a surrogate pair and leave half a character. */
+export function normaliseName(raw: string): string {
+  const flat = raw.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+  return [...flat].slice(0, NAME_CAP).join("").trim();
 }
 
 /** What the tile, the sidebar row, the notification and the close question all
@@ -567,6 +585,13 @@ export class Deck {
     tokenBadge.className = "tile-tokens hidden";
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
+    // The pencil leads the action cluster because it is the least destructive of
+    // the four, and it sits after the state chip so the flexible name keeps one
+    // contiguous run of width. It is always in the DOM — so it is in the tab
+    // order and reachable by touch — and the stylesheet is what hides it until
+    // the tile is hovered, active or holds focus.
+    const renameBtn = iconButton("pencil", "Rename session", "tile-close tile-rename");
+    renameBtn.onclick = () => this.beginRename(session);
     const clearBtn = iconButton("eraser", "Clear terminal", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
     const close = iconButton("x", "Close session", "tile-close btn--icon--danger");
@@ -578,7 +603,7 @@ export class Deck {
     authBadge.className = "tile-auth hidden";
     head.append(
       ...(schedMark ? [schedMark] : []),
-      title, gitBadge, authBadge, tokenBadge, label, clearBtn, close,
+      title, gitBadge, authBadge, tokenBadge, label, renameBtn, clearBtn, close,
     );
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
@@ -647,7 +672,7 @@ export class Deck {
       user: opts.userName ?? null,
     };
     const tile: Tile = {
-      session, names, nameEl: title, panel, state: "idle", el, label,
+      session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
       gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
@@ -693,9 +718,84 @@ export class Deck {
    *  tooltip, its sidebar row, the notification body and `sessions.json` cannot
    *  come to show four different names. */
   private applyName(tile: Tile) {
+    // The input's value belongs to the person typing into it. The slots keep
+    // being filled while an edit is open — the tick still writes `names.auto` —
+    // and this repaints once the edit closes.
+    if (tile.renameInput) return;
     const name = resolveTileName(tile.names);
     tile.nameEl.textContent = name;
     tile.nameEl.title = name;
+  }
+
+  /** Turn the header's name into an input, in place.
+   *
+   *  The editor lives in the tile header and nowhere else: `renderList()` rebuilds
+   *  the sidebar from `innerHTML` every five seconds and restores only
+   *  `data-focus-key`, so an input there would lose its value and its caret twice
+   *  a minute. */
+  private beginRename(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile || tile.renameInput) return;
+    // One edit at a time, app-wide.
+    for (const other of this.tiles.values()) this.commitRename(other);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "tile-name-input";
+    // Felt while typing rather than sprung afterwards. The commit normalises
+    // anyway, for the paths this cannot cover — a paste, or an IME.
+    input.maxLength = NAME_CAP;
+    // No `title`: the tooltip on the span is for a name too long to read, and on
+    // an input it would sit over what the person is typing.
+    input.setAttribute("aria-label", "Session name");
+    input.value = resolveTileName(tile.names);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.commitRename(tile);
+        tile.panel.focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        // Or it also reaches the window handler and leaves the zoom.
+        e.stopPropagation();
+        this.cancelRename(tile);
+        tile.panel.focus();
+      }
+    });
+    // Committing on blur, not discarding: throwing away someone's typing because
+    // they clicked a terminal is the hostile reading of the same gesture.
+    input.addEventListener("blur", () => this.commitRename(tile));
+    tile.renameInput = input;
+    tile.nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
+  /** Take what is in the editor, or nothing if it says the same as the automatic
+   *  name — clearing the field is the whole undo story, and there is nothing to
+   *  report about any of it, so no path here produces an error. */
+  private commitRename(tile: Tile) {
+    const input = tile.renameInput;
+    if (!input) return;
+    const typed = normaliseName(input.value);
+    const automatic = resolveTileName({ ...tile.names, user: null });
+    tile.names.user = typed === "" || typed === automatic ? null : typed;
+    this.closeRename(tile, input);
+    void this.persistLayout();
+  }
+
+  private cancelRename(tile: Tile) {
+    const input = tile.renameInput;
+    if (!input) return;
+    this.closeRename(tile, input);
+  }
+
+  /** Put the span back and repaint it. Clearing `renameInput` first is what makes
+   *  the blur this removal fires a no-op instead of a second commit. */
+  private closeRename(tile: Tile, input: HTMLInputElement) {
+    tile.renameInput = null;
+    input.replaceWith(tile.nameEl);
+    this.applyName(tile);
+    this.renderList();
   }
 
   /** Apply the active-workspace filter to one tile. Tiles used to be created

@@ -45,7 +45,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn().mockResolvedValue(undefined) }));
 
-import { Deck, resolveTileName, type TileNames } from "../src/sessions";
+import { Deck, normaliseName, resolveTileName, type TileNames } from "../src/sessions";
 import { gitStatus, saveLayout, sessionSnapshots } from "../src/ipc";
 
 const WS = { id: "w", name: "relay", path: "/p", color: "#fff" };
@@ -98,6 +98,22 @@ describe("resolveTileName", () => {
   it("trims every slot before showing it", () => {
     expect(resolveTileName(names({ user: "  spaced  " }))).toBe("spaced");
     expect(resolveTileName(names({ auto: "\tTrace it\n" }))).toBe("Trace it");
+  });
+});
+
+describe("normaliseName", () => {
+  it("collapses a multi-line paste into one line", () => {
+    // The editor never sees a newline — a text input strips CR and LF itself —
+    // but this is the function that has to be right if it ever does, and it is
+    // where a tab or a doubled space is dealt with.
+    expect(normaliseName("first line\nsecond\tline")).toBe("first line second line");
+  });
+  it("caps by code point, so a name is never cut mid-character", () => {
+    const capped = normaliseName("я".repeat(300));
+    expect([...capped].length).toBe(120);
+  });
+  it("is empty for whitespace only, which is what clears a name", () => {
+    expect(normaliseName("   \t ")).toBe("");
   });
 });
 
@@ -330,6 +346,158 @@ describe("the poll tick names a tile from its transcript", () => {
     snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
     await tick(deck);
     expect(shown(deckEl).textContent).toBe("session · relay");
+  });
+
+  /* --- the inline editor ------------------------------------------------- */
+
+  const editor = (deckEl: HTMLElement) =>
+    deckEl.querySelector<HTMLInputElement>(".tile-name-input");
+  const pencil = (deckEl: HTMLElement) =>
+    deckEl.querySelector<HTMLButtonElement>('[data-action="pencil"]')!;
+  const key = (input: HTMLInputElement, k: string) =>
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+
+  async function tileToRename() {
+    const m = mount();
+    await m.deck.launch(WS as never, null);
+    snapshots.mockResolvedValue({ s1: snap("Trace the retry budget") } as never);
+    await tick(m.deck);
+    save.mockClear();
+    return m;
+  }
+
+  it("the pencil opens the editor on the name that is showing", async () => {
+    const { deckEl } = await tileToRename();
+    expect(editor(deckEl)).toBeNull();
+    pencil(deckEl).click();
+    expect(editor(deckEl)!.value).toBe("Trace the retry budget");
+    expect(editor(deckEl)!.getAttribute("aria-label")).toBe("Session name");
+    expect(editor(deckEl)!.maxLength).toBe(120);
+  });
+
+  it("commits on Enter and persists at once", async () => {
+    const { deckEl } = await tileToRename();
+    pencil(deckEl).click();
+    const input = editor(deckEl)!;
+    input.value = "the noisy one";
+    key(input, "Enter");
+
+    expect(editor(deckEl)).toBeNull();
+    expect(shown(deckEl).textContent).toBe("the noisy one");
+    expect(shown(deckEl).title).toBe("the noisy one");
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0][0][0]).toMatchObject({ userName: "the noisy one" });
+  });
+
+  it("cancels on Escape, leaving the name and the file alone", async () => {
+    const { deckEl } = await tileToRename();
+    pencil(deckEl).click();
+    const input = editor(deckEl)!;
+    input.value = "typed but not meant";
+    key(input, "Escape");
+
+    expect(shown(deckEl).textContent).toBe("Trace the retry budget");
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("commits on blur — clicking a terminal must not discard the typing", async () => {
+    const { deckEl } = await tileToRename();
+    pencil(deckEl).click();
+    const input = editor(deckEl)!;
+    input.value = "committed by blur";
+    input.dispatchEvent(new FocusEvent("blur"));
+    expect(shown(deckEl).textContent).toBe("committed by blur");
+  });
+
+  it("does not commit twice when blur follows Enter", async () => {
+    const { deckEl } = await tileToRename();
+    pencil(deckEl).click();
+    const input = editor(deckEl)!;
+    input.value = "once";
+    key(input, "Enter");
+    input.dispatchEvent(new FocusEvent("blur"));
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("opening a second editor commits the first", async () => {
+    const m = mount();
+    vi.mocked(crypto.randomUUID).mockReturnValueOnce("s1" as never)
+      .mockReturnValueOnce("s2" as never);
+    await m.deck.launch(WS as never, null);
+    await m.deck.launch(WS as never, null);
+    const [first, second] = [...m.deckEl.querySelectorAll<HTMLElement>(".tile")];
+
+    first.querySelector<HTMLButtonElement>('[data-action="pencil"]')!.click();
+    first.querySelector<HTMLInputElement>(".tile-name-input")!.value = "the first one";
+    second.querySelector<HTMLButtonElement>('[data-action="pencil"]')!.click();
+
+    expect(first.querySelector(".tile-name-input")).toBeNull();
+    expect(first.querySelector(".tile-name")!.textContent).toBe("the first one");
+    expect(second.querySelector(".tile-name-input")).not.toBeNull();
+  });
+
+  it("stores a 120-character single-line name for a 300-character paste", async () => {
+    const { deckEl } = await tileToRename();
+    pencil(deckEl).click();
+    const input = editor(deckEl)!;
+    // Past `maxlength`, which a paste or an IME can be. A newline cannot appear
+    // here at all \u2014 a text input's own value sanitisation strips CR and LF
+    // before anything of ours sees them \u2014 so the tab is what stands in for it,
+    // and `normaliseName` covers the rest below.
+    input.value = "\u0434\u0432\u0430\t\u0441\u043b\u043e\u0432\u0430 " + "\u044f".repeat(300);
+    key(input, "Enter");
+
+    const name = shown(deckEl).textContent!;
+    expect([...name].length).toBe(120);
+    expect(/\s\s|[\r\n\t]/.test(name)).toBe(false);
+    expect(name.startsWith("\u0434\u0432\u0430 \u0441\u043b\u043e\u0432\u0430 ")).toBe(true);
+  });
+
+  it("clearing the field restores the automatic name", async () => {
+    // The entire undo story: there is no other way back, and none is needed.
+    const { deckEl } = await tileToRename();
+    pencil(deckEl).click();
+    const first = editor(deckEl)!;
+    first.value = "the noisy one";
+    key(first, "Enter");
+    expect(shown(deckEl).textContent).toBe("the noisy one");
+    // `persistLayout` records what it wrote only once the write resolves, and
+    // nothing in the app renames a tile twice inside one microtask.
+    await Promise.resolve();
+
+    pencil(deckEl).click();
+    const second = editor(deckEl)!;
+    second.value = "   ";
+    key(second, "Enter");
+    expect(shown(deckEl).textContent).toBe("Trace the retry budget");
+    const last = save.mock.calls[save.mock.calls.length - 1];
+    expect(last[0][0]).not.toHaveProperty("userName");
+  });
+
+  it("typing the automatic name stores no hand-typed name", async () => {
+    const { deckEl } = await tileToRename();
+    pencil(deckEl).click();
+    const input = editor(deckEl)!;
+    input.value = "Trace the retry budget";
+    key(input, "Enter");
+    expect(shown(deckEl).textContent).toBe("Trace the retry budget");
+    // Nothing was stored, so there is nothing to write: the layout is byte for
+    // byte what it already was.
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("a tick arriving mid-edit does not repaint the input, but is visible after", async () => {
+    const { deck, deckEl } = await tileToRename();
+    pencil(deckEl).click();
+    const input = editor(deckEl)!;
+    input.value = "half-typed";
+
+    snapshots.mockResolvedValue({ s1: snap("A newer topic") } as never);
+    await tick(deck);
+    expect(input.value).toBe("half-typed");
+
+    key(input, "Escape");
+    expect(shown(deckEl).textContent).toBe("A newer topic");
   });
 
   it("restores a placeholder-marked entry so the transcript title can take over", async () => {
