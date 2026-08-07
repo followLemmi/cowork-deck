@@ -1,7 +1,7 @@
 import { TerminalPanel } from "./terminal";
 import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
-import { formatTokens, sumUsage, uniqueCwds } from "./observability";
+import { gitStatus, sessionTokens, type SessionTokens } from "./ipc";
+import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
@@ -87,7 +87,7 @@ export class Deck {
   private bcastPanel: HTMLElement | null = null;
   private restoring = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private usage = new Map<string, TokenUsage>();
+  private usage = new Map<string, SessionTokens>();
   private activeWorkspaceId: string | null = null;
   private collapsed = new Set<string>();
   private zoomedSession: string | null = null;
@@ -216,9 +216,17 @@ export class Deck {
         try {
           const u = await sessionTokens(t.session);
           if (!this.tiles.has(t.session)) return;
+          // No reading available — the transcript is gone or would not open.
+          // Hide the badge rather than render a zero, which reads as an idle
+          // session and is indistinguishable from a real one.
+          if (!u) {
+            this.usage.delete(t.session);
+            t.tokenBadge.classList.add("hidden");
+            return;
+          }
           this.usage.set(t.session, u);
-          t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
-          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} read`;
+          t.tokenBadge.textContent = formatContext(u.context);
+          t.tokenBadge.title = tokenTooltip(u);
           t.tokenBadge.classList.remove("hidden");
         } catch (e) {
           console.debug("sessionTokens failed", t.session, e);
@@ -971,11 +979,15 @@ export class Deck {
     const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
-    const total = sumUsage([...this.usage.values()]);
+    // The bill across every session, subagents included. Context does not
+    // aggregate — each session has its own window and adding them describes
+    // nothing — so the footer carries spend and the tiles carry context.
+    const total = sumUsage([...this.usage.values()].map((t) => t.spend));
     if (this.usage.size > 0) {
       const sum = document.createElement("div");
       sum.className = "sess-tokens-sum";
-      sum.textContent = `Total tokens · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      sum.textContent =
+        `Total spend · ${formatTokens(total.output)} out · ${formatTokens(spendIn(total))} in`;
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
