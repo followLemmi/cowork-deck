@@ -146,4 +146,7 @@ export function installMocks(): void {
   });
   mockWindows("main");
   mockIPC((cmd, args) => handle(cmd, (args ?? {}) as Record<string, unknown>));
+  // For harness/record.mjs, which needs to change a session's state mid-take
+  // the way the backend would; nothing in the app reads this.
+  (window as unknown as { __harness?: unknown }).__harness = { emit };
 }
