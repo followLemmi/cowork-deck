@@ -237,7 +237,7 @@ export class Deck {
   async wireEvents() {
     this.notifyOk = await isPermissionGranted();
     if (!this.notifyOk) this.notifyOk = (await requestPermission()) === "granted";
-    await onOutput((s, text) => this.tiles.get(s)?.panel.write(text));
+    await onOutput((s, bytes) => this.tiles.get(s)?.panel.write(bytes));
     await onState((s, state) => this.setState(s, state));
     await onExit((s) => { /* state already emitted; keep tile for scrollback */ void s; });
   }

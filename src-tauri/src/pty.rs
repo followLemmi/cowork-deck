@@ -45,6 +45,29 @@ impl PtyManager {
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         cmd.cwd(cwd);
+
+        // What kind of terminal is on the other end of this pty, declared here
+        // because here is where the pty is made and xterm.js is the answer for
+        // every caller.
+        //
+        // Nothing set it before, and nothing else would: `CommandBuilder`
+        // inherits the app's own environment and adds none of its own, and an
+        // .app launched from the Dock inherits launchd's, which has no `TERM` at
+        // all. A program with no `TERM` turns colour off — Claude Code decides
+        // through `supports-color`, which reports level 0 and paints its whole
+        // TUI monochrome. The symptom read as a broken theme and was an empty
+        // variable. It is the same launchd-minimal environment that the `PATH`
+        // push in `commands.rs` already exists to work around, which is why the
+        // colour was there under `tauri dev` (a shell's `TERM`, inherited) and
+        // gone in the shipped bundle.
+        //
+        // Declared, not defaulted: an inherited `TERM` describes whatever
+        // terminal launched the *app* — `dumb`, or `eterm-color` under Emacs —
+        // and none of them describes the thing actually drawing these bytes. Set
+        // before the caller's overrides, so a session can still name its own.
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+
         // Переменные задаются ТОЛЬКО дочернему процессу. Окружение самого
         // приложения и других сессий не затрагивается — именно на этом стоит
         // изоляция GitHub-аккаунтов между воркспейсами.
@@ -215,5 +238,81 @@ mod tests {
             String::from_utf8_lossy(&got)
         );
         assert!(erx.recv_timeout(Duration::from_secs(5)).is_ok(), "exit not reported");
+    }
+
+    /// Spawn a shell that prints `TERM` and `COLORTERM`, and return what it printed.
+    fn echo_terminal_env(session: &str, env: &[(String, String)]) -> String {
+        let mgr = PtyManager::new();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+
+        #[cfg(windows)]
+        let (prog, args) = ("cmd", vec!["/C".to_string(), "echo %TERM% %COLORTERM%".to_string()]);
+        #[cfg(not(windows))]
+        let (prog, args) = (
+            "/bin/sh",
+            vec!["-c".to_string(), r#"printf '%s %s' "$TERM" "$COLORTERM""#.to_string()],
+        );
+
+        mgr.spawn(session, prog, &args, ".", 80, 24, env, move |b| { let _ = tx.send(b); }, |_| {})
+            .unwrap();
+
+        let mut got = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if let Ok(b) = rx.recv_timeout(Duration::from_millis(200)) {
+                got.extend_from_slice(&b);
+                // Both values are on one line, so the newline that ends it ends the read.
+                if got.contains(&b'\n') || String::from_utf8_lossy(&got).contains("truecolor") {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&got).to_string()
+    }
+
+    /// Run `f` with the test process itself carrying a `TERM` the child must not
+    /// inherit. Without this the terminal-type tests pass in any shell that has a
+    /// `TERM` of its own — the child would inherit it and the assertion would hold
+    /// with the declaration removed, which is a green test for a broken app. The
+    /// lock keeps the two of them from editing one process's environment at once;
+    /// the other tests here spawn shells that never read `TERM`, so a sentinel
+    /// leaking into one of those costs nothing.
+    fn with_parent_term<T>(sentinel: &str, f: impl FnOnce() -> T) -> T {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let restore = std::env::var_os("TERM");
+        std::env::set_var("TERM", sentinel);
+        let out = f();
+        match restore {
+            Some(v) => std::env::set_var("TERM", v),
+            None => std::env::remove_var("TERM"),
+        }
+        out
+    }
+
+    /// Without this the child inherits the app's environment, and an .app launched
+    /// from the Dock has no `TERM` — which is a monochrome agent, because
+    /// `supports-color` reads exactly this variable to decide whether colour exists.
+    #[test]
+    fn the_child_is_told_which_terminal_it_is_talking_to() {
+        let out = with_parent_term("cowork-parent-sentinel", || echo_terminal_env("termtest", &[]));
+        assert!(out.contains("xterm-256color"), "TERM not set for the session: {out:?}");
+        assert!(out.contains("truecolor"), "COLORTERM not set for the session: {out:?}");
+        assert!(
+            !out.contains("cowork-parent-sentinel"),
+            "the session inherited the app's own TERM instead of being told one: {out:?}"
+        );
+    }
+
+    /// The declaration is a default, not a decree: it is written before the
+    /// caller's environment is applied, so a session that has reason to claim a
+    /// different terminal still can.
+    #[test]
+    fn a_caller_may_override_the_terminal_type() {
+        let out = with_parent_term("cowork-parent-sentinel", || {
+            echo_terminal_env("termoverride", &[("TERM".to_string(), "xterm-mono".to_string())])
+        });
+        assert!(out.contains("xterm-mono"), "caller's TERM did not win: {out:?}");
+        assert!(!out.contains("xterm-256color"), "default TERM survived the override: {out:?}");
     }
 }
