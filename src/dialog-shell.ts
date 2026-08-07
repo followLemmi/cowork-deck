@@ -27,6 +27,12 @@ const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), ' +
   'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+// Dialogs stack — two startup checks can each open one — and every dialog
+// listens on document, so all of them hear the same keydown. Only the one on
+// top may act on it: without this guard a single Enter accepted every open
+// dialog at once, including one whose text the user never read.
+const openStack: HTMLElement[] = [];
+
 export function openDialog({ onCancel, onAccept, labelledBy }: DialogOptions): DialogHandle {
   const previouslyFocused = document.activeElement as HTMLElement | null;
 
@@ -41,6 +47,7 @@ export function openDialog({ onCancel, onAccept, labelledBy }: DialogOptions): D
   document.body.append(overlay);
 
   const onKeyDown = (e: KeyboardEvent) => {
+    if (openStack[openStack.length - 1] !== overlay) return;
     if (e.key === "Escape") {
       e.preventDefault();
       onCancel();
@@ -77,8 +84,11 @@ export function openDialog({ onCancel, onAccept, labelledBy }: DialogOptions): D
   // Capture, so the dialog sees the key before anything inside it does.
   document.addEventListener("keydown", onKeyDown, true);
   overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) onCancel(); });
+  openStack.push(overlay);
 
   const close = () => {
+    const i = openStack.indexOf(overlay);
+    if (i >= 0) openStack.splice(i, 1);
     document.removeEventListener("keydown", onKeyDown, true);
     overlay.remove();
     previouslyFocused?.focus?.();

@@ -12,7 +12,12 @@
   "app": {
     "macOSPrivateApi": true,
     "windows": [
-      { "title": "cowork-deck", "width": 1200, "height": 800, "resizable": true }
+      {
+        "title": "cowork-deck",
+        "width": 1200,
+        "height": 800,
+        "resizable": true
+      }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost",
@@ -21,7 +26,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGMjI1Nzc5MDI5MUUwRUMKUldUczRKRUNlVmNpNzd3TXMrU3MzcUdZNkZlWEl2TzBFeEh4alpzaFVyUWVXM1RrYUdidlNnaVIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2N0M3QTNFQ0YwRTEyNgpSV1FtNGZEc284ZG5Ed2hZVzBJTHNqampFcXk5Y3c3QmYwMjFza3JaUG5lWk1wam84T2dzOG5IOAo=",
       "endpoints": [
         "https://github.com/followLemmi/cowork-deck/releases/latest/download/latest.json"
       ]
@@ -38,6 +43,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/cowork_report", "binaries/cowork_task"]
+    "externalBin": [
+      "binaries/cowork_report",
+      "binaries/cowork_task"
+    ]
   }
 }
