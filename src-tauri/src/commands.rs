@@ -1653,14 +1653,72 @@ fn find_transcript(session_id: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-#[tauri::command]
-pub fn session_tokens(session_id: String) -> TokenUsage {
-    match find_transcript(&session_id) {
-        Some(path) => std::fs::read_to_string(path)
-            .map(|c| sum_usage_lines(&c))
-            .unwrap_or_default(),
-        None => TokenUsage::default(),
+/// Everything one poll tick wants to know about one session.
+///
+/// `TokenUsage` is left exactly as it is — it is `Copy`, and hanging an
+/// `Option<String>` off it would force that off and make a value type carry a
+/// name. Wrap it, do not extend it.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SessionSnapshot {
+    pub usage: TokenUsage,
+    /// Never `Some("")` — see `sanitise_title`. The `null` is the contract.
+    pub title: Option<String>,
+    #[serde(rename = "titleSource")]
+    pub title_source: Option<TitleSource>,
+}
+
+/// One read, one pass, both results — for every requested session at once.
+///
+/// Batched rather than per-session because the title and the token sum come from
+/// the same bytes: a titles-only command beside `session_tokens` would take the
+/// tick from N invokes to N+1 and parse every transcript twice.
+///
+/// **Every requested id gets an entry**, including ids with no transcript, which
+/// return zero usage and no title. `tsconfig.json` has `strict: true` but not
+/// `noUncheckedIndexedAccess`, so a dropped key is typed as present on the TS side
+/// and becomes a runtime `undefined` with no compile error at the call site. A
+/// missing transcript is not an error.
+#[tauri::command(async)]
+pub async fn session_snapshots(
+    session_ids: Vec<String>,
+) -> std::collections::HashMap<String, SessionSnapshot> {
+    // spawn_blocking per session, then join: the worst case is roughly max-of-N
+    // rather than sum-of-N, and the reads are file I/O on a runtime that already
+    // carries `rt-multi-thread`.
+    let jobs: Vec<_> = session_ids
+        .into_iter()
+        .map(|id| {
+            tokio::task::spawn_blocking(move || {
+                let snap = read_session_snapshot(&id);
+                (id, snap)
+            })
+        })
+        .collect();
+    let mut out = std::collections::HashMap::new();
+    for job in jobs {
+        if let Ok((id, snap)) = job.await {
+            out.insert(id, snap);
+        }
     }
+    out
+}
+
+/// The blocking half of [`session_snapshots`]: locate the transcript and read it
+/// once. A transcript that is missing or unreadable is an empty snapshot.
+fn read_session_snapshot(session_id: &str) -> SessionSnapshot {
+    match find_transcript(session_id).and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(content) => snapshot_from_content(&content),
+        None => SessionSnapshot::default(),
+    }
+}
+
+/// Both answers off one buffer.
+fn snapshot_from_content(content: &str) -> SessionSnapshot {
+    let (title, title_source) = match last_title_lines(content).resolved() {
+        Some((t, src)) => (Some(t), Some(src)),
+        None => (None, None),
+    };
+    SessionSnapshot { usage: sum_usage_lines(content), title, title_source }
 }
 
 #[cfg(test)]
@@ -2066,6 +2124,46 @@ branch refs/heads/feature/y\n";
         assert!(!name.chars().any(char::is_control), "no control character survives");
     }
 
+    /// A single fixture, both facts. A future split back into two reads — one for
+    /// the tokens, one for the title — fails here.
+    #[test]
+    fn usage_and_title_come_from_one_pass_over_one_buffer() {
+        let content = concat!(
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5}}}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"Отчёт по продажам"}"#, "\n",
+        );
+        let snap = snapshot_from_content(content);
+        assert_eq!(snap.usage.input, 10);
+        assert_eq!(snap.usage.output, 5);
+        assert_eq!(snap.title.as_deref(), Some("Отчёт по продажам"));
+        assert_eq!(snap.title_source, Some(TitleSource::Ai));
+    }
+
+    /// `tsconfig.json` has `strict: true` but not `noUncheckedIndexedAccess`, so a
+    /// dropped key is typed as present on the TS side and becomes a runtime
+    /// `undefined` with no compile error at the call site.
+    #[tokio::test]
+    async fn every_requested_session_gets_an_entry() {
+        let ids: Vec<String> = ["no-such-a", "no-such-b", "no-such-c"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = session_snapshots(ids.clone()).await;
+        assert_eq!(out.len(), 3);
+        for id in &ids {
+            assert!(out.contains_key(id), "{id} was dropped from the batch");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_transcript_is_not_an_error() {
+        let out = session_snapshots(vec!["no-transcript-anywhere".to_string()]).await;
+        let snap = out.get("no-transcript-anywhere").expect("an entry");
+        assert_eq!(snap.usage, TokenUsage::default(), "zero, not absent");
+        assert_eq!(snap.title, None);
+        assert_eq!(snap.title_source, None);
+    }
+
     #[test]
     fn a_title_field_of_the_wrong_type_is_ignored() {
         let content = concat!(
@@ -2355,7 +2453,7 @@ branch refs/heads/feature/y\n";
     /// Not a style list — a list of things fast enough that arrival order is worth
     /// more than the microseconds, plus the four session commands where arrival
     /// order *is* the feature. The reasoning is at the top of this file.
-    const MAIN_THREAD_COMMANDS: [&str; 14] = [
+    const MAIN_THREAD_COMMANDS: [&str; 13] = [
         "list_workspaces",
         "save_workspace",
         "remove_workspace",
@@ -2369,7 +2467,6 @@ branch refs/heads/feature/y\n";
         "save_layout",
         "load_ui_state",
         "save_ui_state",
-        "session_tokens",
     ];
     /// The same, for the four that must not be reordered — kept apart from the list
     /// above because these are the ones where moving a command off the main thread
