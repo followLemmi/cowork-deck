@@ -42,4 +42,20 @@ describe("xterm passthrough guard", () => {
     new TerminalPanel("s", document.createElement("div"));
     expect(captured!({ type: "keydown", code: "KeyK", key: "k", metaKey: true, ctrlKey: false, shiftKey: false })).toBe(false);
   });
+
+  const f2 = { type: "keydown", code: "F2", key: "F2", metaKey: false, ctrlKey: false, shiftKey: false };
+
+  it("intercepts F2 on a session, so it renames instead of reaching claude", () => {
+    // Both halves matter: returning false is what stops xterm sending `\e[12~`
+    // AND what lets the window handler dispatch the command.
+    new TerminalPanel("s", document.createElement("div"));
+    expect(captured!(f2)).toBe(false);
+  });
+
+  it("a command tile keeps F2 — mc, htop and nano all bind it", () => {
+    new TerminalPanel("s", document.createElement("div"), true);
+    expect(captured!(f2)).toBe(true);
+    // Every other hotkey is still the app's, even there.
+    expect(captured!({ type: "keydown", code: "KeyK", key: "k", metaKey: true, ctrlKey: false, shiftKey: false })).toBe(false);
+  });
 });

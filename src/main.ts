@@ -1127,6 +1127,7 @@ function paletteCommands(): Command[] {
   return [
     { id: "new-session", title: "New session", hotkey: hotkeyLabel("N"), run: () => { void newSession(); } },
     { id: "close-active", title: "Close active session", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
+    { id: "rename-active", title: "Rename active session", hotkey: "F2", run: () => deck.renameActive() },
     { id: "next-waiting", title: "Go to next session waiting for input", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
     { id: "zoom", title: "Zoom active session", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
     { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
@@ -1217,6 +1218,7 @@ const COMMANDS: Record<string, () => void> = {
   "palette": () => openPalette(paletteCommands()),
   "new-session": () => { void newSession(); },
   "close-active": () => deck.closeActive(),
+  "rename-active": () => deck.renameActive(),
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),
   "broadcast": () => deck.toggleBroadcast(),

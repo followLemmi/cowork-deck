@@ -486,6 +486,26 @@ describe("the poll tick names a tile from its transcript", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it("renameActive opens the editor on the tile holding the keyboard", async () => {
+    const m = mount();
+    vi.mocked(crypto.randomUUID).mockReturnValueOnce("s1" as never)
+      .mockReturnValueOnce("s2" as never);
+    await m.deck.launch(WS as never, null);
+    await m.deck.launch(WS as never, null);
+    const [first, second] = [...m.deckEl.querySelectorAll<HTMLElement>(".tile")];
+    first.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+
+    m.deck.renameActive();
+    expect(first.querySelector(".tile-name-input")).not.toBeNull();
+    expect(second.querySelector(".tile-name-input")).toBeNull();
+  });
+
+  it("renameActive with no active session does nothing", async () => {
+    const { deck, deckEl } = mount();
+    expect(() => deck.renameActive()).not.toThrow();
+    expect(deckEl.querySelector(".tile-name-input")).toBeNull();
+  });
+
   it("a tick arriving mid-edit does not repaint the input, but is visible after", async () => {
     const { deck, deckEl } = await tileToRename();
     pencil(deckEl).click();

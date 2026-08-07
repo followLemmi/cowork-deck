@@ -661,7 +661,7 @@ export class Deck {
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
-    const panel = new TerminalPanel(session, mount);
+    const panel = new TerminalPanel(session, mount, isCommand);
     const names: TileNames = {
       // The placeholder slot always holds the launch string. On a context-named
       // tile it is the same string as `context`, which the resolver never reaches
@@ -901,6 +901,12 @@ export class Deck {
       `Close session “${resolveTileName(t.names)}”? It is still alive.`,
     ))) return;
     this.remove(session);
+  }
+  /** Open the editor on whichever tile has the keyboard, and do nothing when
+   *  there is none — the same shape as `closeActive` and `searchActive`. */
+  renameActive() {
+    const id = this.activeSession;
+    if (id) this.beginRename(id);
   }
   searchActive() {
     const id = this.activeSession;
