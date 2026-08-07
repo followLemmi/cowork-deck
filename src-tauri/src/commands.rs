@@ -29,8 +29,10 @@
 //!   `start`, or two writes that swapped, is lost or misdirected keyboard input.
 //!   None of them resolves a token (`workspace_token` is reached only from
 //!   `gh_invocation`), so none of them is a candidate anyway;
-//! - `host_platform` and `claude_available` — one `/etc/os-release` read and one
-//!   `which`.
+//! - `host_platform` — one `/etc/os-release` read. (`claude_available` used to
+//!   sit here as "one `which`", but discovery now probes install dirs and may
+//!   run the user's login shell, so it carries `(async)` like everything else
+//!   that shells out.)
 //!
 //! Adding a command that shells out and forgetting `(async)` reintroduces a
 //! frozen window, and it will not look like this file's fault from the frontend.
@@ -310,35 +312,67 @@ pub fn gh_status() -> gh::GhStatus {
     gh::status()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn claude_available() -> bool {
     which_claude().is_some()
 }
 
-fn which_claude() -> Option<String> {
+/// How the claude executable was found. `path_env` is the login shell's
+/// `$PATH`, captured when discovery had to go through that shell: an
+/// npm/nvm-installed claude is a `#!/usr/bin/env node` script, so the session
+/// that runs it needs `node` resolvable too, not just claude's own path.
+#[derive(Clone)]
+pub struct ClaudeResolution {
+    pub program: String,
+    pub path_env: Option<String>,
+}
+
+/// Successful discoveries only — a miss stays retryable so installing claude
+/// and pressing "try again" works without restarting the app. The expensive
+/// probes below run at most once per process; `start_session` reads the cache.
+static CLAUDE_CACHE: std::sync::OnceLock<ClaudeResolution> = std::sync::OnceLock::new();
+
+fn which_claude() -> Option<ClaudeResolution> {
     // Respect an explicit override, else rely on PATH resolution by the OS.
     if let Ok(p) = std::env::var("COWORK_CLAUDE_PATH") {
-        if !p.is_empty() { return Some(p); }
+        if !p.is_empty() {
+            return Some(ClaudeResolution { program: p, path_env: None });
+        }
     }
-    let candidate = if cfg!(windows) { "claude.cmd" } else { "claude" };
-    for c in [candidate, "claude"] {
-        if claude_runs(c) {
-            return Some(c.to_string());
+    if let Some(hit) = CLAUDE_CACHE.get() {
+        return Some(hit.clone());
+    }
+    let found = discover_claude()?;
+    Some(CLAUDE_CACHE.get_or_init(|| found).clone())
+}
+
+fn discover_claude() -> Option<ClaudeResolution> {
+    let candidates: &[&str] = if cfg!(windows) { &["claude.cmd", "claude"] } else { &["claude"] };
+    for c in candidates {
+        if claude_runs(c, None) {
+            return Some(ClaudeResolution { program: c.to_string(), path_env: None });
         }
     }
     // A PATH miss doesn't mean claude is absent: an app launched from
     // Finder/Dock inherits launchd's minimal PATH, not the login shell's.
     // Probe where installers actually put the binary, then as a last resort
-    // ask the login shell to resolve it (catches nvm-style versioned dirs).
-    known_claude_paths().into_iter().find(|p| claude_runs(p)).or_else(login_shell_claude)
+    // ask the login shell — which also covers nvm-style versioned dirs that
+    // no fixed list can.
+    for p in known_claude_paths() {
+        if claude_runs(&p, None) {
+            return Some(ClaudeResolution { program: p, path_env: None });
+        }
+    }
+    login_shell_claude()
 }
 
-fn claude_runs(program: &str) -> bool {
-    std::process::Command::new(program)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+fn claude_runs(program: &str, path_env: Option<&str>) -> bool {
+    let mut cmd = std::process::Command::new(program);
+    cmd.arg("--version");
+    if let Some(p) = path_env {
+        cmd.env("PATH", p);
+    }
+    cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 fn known_claude_paths() -> Vec<String> {
@@ -348,7 +382,7 @@ fn known_claude_paths() -> Vec<String> {
         let home = std::path::PathBuf::from(home);
         // Native installer, `claude migrate-installer`, and common npm setups.
         let rels: &[&str] = if cfg!(windows) {
-            &[".local/bin/claude.exe"]
+            &[".local/bin/claude.exe", ".bun/bin/claude.exe", ".volta/bin/claude.exe"]
         } else {
             &[".local/bin/claude", ".claude/local/claude", ".npm-global/bin/claude", ".volta/bin/claude", ".bun/bin/claude"]
         };
@@ -366,23 +400,65 @@ fn known_claude_paths() -> Vec<String> {
     paths
 }
 
-fn login_shell_claude() -> Option<String> {
+fn login_shell_claude() -> Option<ClaudeResolution> {
     if cfg!(windows) {
         return None;
     }
+    // `-l -c` is POSIX-shell syntax; an exotic $SHELL (nushell, tcsh) fails
+    // the probe and we report "not found" rather than guess at its flags.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let out = std::process::Command::new(shell)
-        .args(["-l", "-c", "command -v claude"])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(shell);
+    cmd.args(["-l", "-c", r#"command -v claude; printf '%s\n' "$PATH""#]);
+    // A login shell runs the user's profile, which can do anything, including
+    // hang — and this can sit on a session-start path. Bound it.
+    let out = output_with_deadline(cmd, std::time::Duration::from_secs(5))?;
     if !out.status.success() {
         return None;
     }
-    // Login profiles are free to echo to stdout; the resolved path is
-    // whatever `command -v` printed last.
+    // Login profiles are free to echo to stdout; our answers are the last two
+    // non-empty lines — $PATH, and above it claude's path. If claude was not
+    // found its line is simply absent and verification rejects whatever
+    // profile noise took its place.
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let path = stdout.lines().rev().find(|l| !l.trim().is_empty())?.trim().to_string();
-    claude_runs(&path).then_some(path)
+    let mut lines = stdout.lines().rev().filter(|l| !l.trim().is_empty());
+    let path_env = lines.next()?.trim().to_string();
+    let program = lines.next()?.trim().to_string();
+    claude_runs(&program, Some(&path_env))
+        .then_some(ClaudeResolution { program, path_env: Some(path_env) })
+}
+
+/// `Command::output()` with a time limit: polls, and kills the child when the
+/// deadline passes. Stdout is read only after exit, so a child that fills the
+/// pipe buffer stalls itself — and then the deadline reaps it. Fail-closed by
+/// design; this guards a discovery probe, not a result anyone waits on.
+fn output_with_deadline(
+    mut cmd: std::process::Command,
+    deadline: std::time::Duration,
+) -> Option<std::process::Output> {
+    use std::io::Read;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = cmd.spawn().ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                if let Some(mut s) = child.stdout.take() {
+                    let _ = s.read_to_end(&mut stdout);
+                }
+                return Some(std::process::Output { status, stdout, stderr: Vec::new() });
+            }
+            Ok(None) if started.elapsed() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => return None,
+        }
+    }
 }
 
 /// Что фронт узнаёт про аккаунт стартовавшей сессии. Токена здесь нет и быть
@@ -1329,7 +1405,8 @@ pub fn start_session(
     rows: u16,
     resume: bool,
 ) -> Result<SessionAuth, String> {
-    let program = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
+    let resolved = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
+    let program = resolved.program;
     let settings = build_settings_json(&state.reporter_path, state.listener_port, &session, &state.task_bin_path);
     let args = build_claude_args(&settings, &initial_prompt, &session, resume);
 
@@ -1385,6 +1462,13 @@ pub fn start_session(
         std::time::Duration::from_secs(5),
     );
     env.extend(outcome.env);
+
+    // If discovery went through the login shell, hand the session that shell's
+    // PATH: a claude that is really an `env node` script dies instantly under
+    // the app's launchd-minimal environment otherwise.
+    if let Some(path_env) = resolved.path_env {
+        env.push(("PATH".to_string(), path_env));
+    }
 
     let app_out = app.clone();
     let sess_out = session.clone();
@@ -2128,7 +2212,7 @@ branch refs/heads/feature/y\n";
     /// Not a style list — a list of things fast enough that arrival order is worth
     /// more than the microseconds, plus the four session commands where arrival
     /// order *is* the feature. The reasoning is at the top of this file.
-    const MAIN_THREAD_COMMANDS: [&str; 15] = [
+    const MAIN_THREAD_COMMANDS: [&str; 14] = [
         "list_workspaces",
         "save_workspace",
         "remove_workspace",
@@ -2143,7 +2227,6 @@ branch refs/heads/feature/y\n";
         "load_ui_state",
         "save_ui_state",
         "session_tokens",
-        "claude_available",
     ];
     /// The same, for the four that must not be reordered — kept apart from the list
     /// above because these are the ones where moving a command off the main thread
