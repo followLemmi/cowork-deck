@@ -30,12 +30,19 @@ DEST="src-tauri/binaries/${BIN}-${TARGET_TRIPLE}${EXT}"
 # second one. Seed them executable too, so even the pre-build state is
 # correct (and so a stale placeholder left over from a failed run doesn't
 # masquerade as a valid, non-executable sidecar).
-for sidecar in $(node -p "require('./src-tauri/tauri.conf.json').bundle.externalBin.map(p => p.split('/').pop()).join(' ')"); do
-  seed="src-tauri/binaries/${sidecar}-${TARGET_TRIPLE}${EXT}"
+# The list is read into a variable first: `set -e` aborts on a failed
+# assignment, but ignores a substitution failing inside a `for` header, which
+# would silently seed nothing and reproduce the very error this seeding
+# prevents. Entries are kept as full config-relative paths (not basenames),
+# so a sidecar living outside binaries/ still seeds where build.rs looks.
+SIDECARS="$(node -p "require('./src-tauri/tauri.conf.json').bundle.externalBin.join('\n')")"
+while IFS= read -r entry; do
+  seed="src-tauri/${entry}-${TARGET_TRIPLE}${EXT}"
+  mkdir -p "$(dirname "$seed")"
   if [ ! -e "$seed" ]; then
     install -m 0755 /dev/null "$seed"
   fi
-done
+done <<< "$SIDECARS"
 
 cargo build --release --bin "$BIN" --manifest-path src-tauri/Cargo.toml
 
