@@ -36,6 +36,7 @@ const STATE: Record<string, string> = {
   [F.S_WAIT]: "waitingInput",
   [F.S_DONE]: "done",
   [F.S_ERR]: "error",
+  [F.S_AUTO]: "idle",
 };
 
 /** A started session gets its scrollback and its state on the next tick — the
@@ -95,9 +96,16 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     case "close_session": return null;
     case "git_status":
       return F.gitByCwd[args.cwd as string] ?? { branch: null, dirty: false };
-    case "session_tokens":
-      return F.tokens[args.sessionId as string]
-        ?? { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 };
+    case "session_snapshots": {
+      // Every requested id gets an entry, exactly as the Rust command promises —
+      // a mock that dropped the unknown ones would hide the bug it exists to show.
+      const out: Record<string, unknown> = {};
+      for (const id of args.sessionIds as string[]) {
+        out[id] = F.snapshots[id]
+          ?? { usage: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }, title: null, titleSource: null };
+      }
+      return out;
+    }
 
     /* The tracker. */
     case "tasks_capabilities":

@@ -1,6 +1,6 @@
 import { TerminalPanel } from "./terminal";
 import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
+import { gitStatus, sessionSnapshots, type TokenUsage } from "./ipc";
 import { formatTokens, sumUsage, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
@@ -211,19 +211,22 @@ export class Deck {
           t.gitBadge.classList.add("hidden");
         }
       }
-      // tokens: per session; errors isolated, plus a guard against racing with tile removal
-      await Promise.all(tiles.map(async (t) => {
-        try {
-          const u = await sessionTokens(t.session);
-          if (!this.tiles.has(t.session)) return;
+      // snapshots: one call for every session; errors isolated, plus a guard against racing with tile removal
+      try {
+        const snaps = await sessionSnapshots(tiles.map((t) => t.session));
+        for (const t of tiles) {
+          if (!this.tiles.has(t.session)) continue;
+          const snap = snaps[t.session];
+          if (!snap) continue;
+          const u = snap.usage;
           this.usage.set(t.session, u);
           t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
           t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} read`;
           t.tokenBadge.classList.remove("hidden");
-        } catch (e) {
-          console.debug("sessionTokens failed", t.session, e);
         }
-      }));
+      } catch (e) {
+        console.debug("sessionSnapshots failed", e);
+      }
       this.renderList();
     } catch (e) {
       console.debug("pollOnce failed", e);

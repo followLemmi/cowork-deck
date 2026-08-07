@@ -35,7 +35,15 @@ export interface SessionEntry {
   /** Set when the session came from a schedule — re-arms the overlap guard
    *  on restore, so catch-up cannot duplicate a run that is already back. */
   scheduledSkillId?: string;
+  /** What a person typed for this tile. Outranks everything, including the
+   *  transcript title, and is cleared by emptying the field. */
+  userName?: string;
+  /** What `name` above is. Absent means "context": nothing on disk tells a
+   *  card name from a placeholder for an entry written before this existed,
+   *  and leaving a recognised name alone is the safer of the two mistakes. */
+  nameKind?: NameKind;
 }
+export type NameKind = "context" | "placeholder";
 export interface UiState {
   activeWorkspaceId: string | null;
   /** A multiplier on the base in `styles.css`, not a pixel size — see `ui-scale.ts`.
@@ -336,8 +344,23 @@ export const onSchedulerBroken = (cb: (message: string) => void): Promise<Unlist
 
 export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }
+/** Which of the transcript's three names the title came from. */
+export type TitleSource = "custom" | "ai" | "prompt";
+/** Everything one poll tick wants to know about one session, off one read.
+ *
+ *  `title` is `string | null`, never `string`: the null **is** the contract, and
+ *  it is what stops an empty transcript field blanking a tile's name. */
+export interface SessionSnapshot {
+  usage: TokenUsage;
+  title: string | null;
+  titleSource: TitleSource | null;
+}
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
-export const sessionTokens = (sessionId: string) => invoke<TokenUsage>("session_tokens", { sessionId });
+/** One invoke per tick for every open session — the title and the token sum come
+ *  from the same bytes, so asking per session would read each transcript twice.
+ *  Every requested id comes back, including ids with no transcript. */
+export const sessionSnapshots = (sessionIds: string[]) =>
+  invoke<Record<string, SessionSnapshot>>("session_snapshots", { sessionIds });
 
 /** A step id and a kind id are whatever `board.json` says they are — the
  *  frontend never enumerates them, it reads them (see src/board-config.ts). */
