@@ -19,12 +19,23 @@ export function isMacPlatform(): boolean {
  *  every prompt, so there the bindings require Shift as well. macOS has no
  *  such clash — Cmd is free — and keeps its plain bindings. */
 export function matchHotkey(
-  e: { code: string; key?: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
+  e: {
+    code: string; key?: string; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean;
+    altKey?: boolean;
+  },
   isMac: boolean,
 ): string | null {
   // Region cycling has no modifier: it is the only way out of the terminal,
   // which swallows Tab in both directions.
   if (e.code === "F6") return e.shiftKey ? "prev-region" : "next-region";
+  // Bare F2, the platform convention for rename. Any modifier falls through to
+  // the PTY. Routing it through here rather than through a listener of its own
+  // is the only correct wiring: `attachCustomKeyEventHandler` returns false
+  // exactly when this matches, which is what stops F2 also reaching claude as
+  // `\e[12~` while the rename happens.
+  if (e.code === "F2" && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+    return "rename-active";
+  }
 
   const mod = isMac ? e.metaKey : e.ctrlKey;
   if (!mod) return null;

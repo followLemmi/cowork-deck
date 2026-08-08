@@ -98,11 +98,11 @@ const tab = (name) => page.locator("#viewbar button", { hasText: name });
 /** Boot the deck exactly the way shoot.mjs does: tiles, states, badges. */
 async function deckReady() {
   await page.goto(`${BASE}/harness/`, { waitUntil: "load" });
-  await page.waitForFunction(() => document.querySelectorAll(".tile").length === 4);
+  await page.waitForFunction(() => document.querySelectorAll(".tile").length === 5);
   await page.waitForSelector('.tile[data-state="working"]');
   await page.waitForFunction(
-    () => document.querySelectorAll(".tile-git:not(.hidden)").length === 4
-      && document.querySelectorAll(".tile-tokens:not(.hidden)").length === 4,
+    () => document.querySelectorAll(".tile-git:not(.hidden)").length === 5
+      && document.querySelectorAll(".tile-tokens:not(.hidden)").length === 5,
     null, { timeout: 20_000 },
   );
 }
@@ -123,7 +123,7 @@ await deckReady();
 await page.mouse.move(cursor.x, cursor.y);
 const takeStart = Date.now();
 
-/* 1 — the deck: four sessions, four states, badges live. */
+/* 1 — the deck: five sessions, four states, badges live. */
 await pause(1800);
 
 /* 2 — the working session finishes its turn: green rail to done, live. */

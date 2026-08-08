@@ -38,7 +38,7 @@ const CHROME = process.env.CHROME
 const BASE = process.env.HARNESS_URL ?? "http://127.0.0.1:1420";
 const OUT = resolve(import.meta.dirname, "../docs/images");
 /* Shot at 2× of 1440 × 900 and resampled down to `FINAL` — the deck's columns are
- * `minmax(clamp(20rem, 42vw, 35rem), 1fr)`, so a narrower window puts the four
+ * `minmax(clamp(20rem, 42vw, 35rem), 1fr)`, so a narrower window puts the
  * tiles in one column and the hero shot stops being a deck. Supersampling from
  * 2880 keeps the 13px type crisp at the width GitHub actually lays out. */
 const VIEW = { width: 1680, height: 900 };
@@ -78,17 +78,17 @@ function shrink(file) {
 
 const settle = (page, ms = 400) => page.waitForTimeout(ms);
 
-/** Boot the deck with its four sessions restored and their scrollback in. */
+/** Boot the deck with its five sessions restored and their scrollback in. */
 async function deckReady(page) {
   await page.goto(`${BASE}/harness/`, { waitUntil: "load" });
-  await page.waitForFunction(() => document.querySelectorAll(".tile").length === 4);
+  await page.waitForFunction(() => document.querySelectorAll(".tile").length === 5);
   await page.waitForSelector('.tile[data-state="working"]');
   // The deck's git and token badges are filled by a five-second poll, and the
-  // first tick runs when the FIRST tile exists — so the other three carry
+  // first tick runs when the FIRST tile exists — so the other four carry
   // nothing until the second one. Both are things the README's shots are for.
   await page.waitForFunction(
-    () => document.querySelectorAll(".tile-git:not(.hidden)").length === 4
-      && document.querySelectorAll(".tile-tokens:not(.hidden)").length === 4,
+    () => document.querySelectorAll(".tile-git:not(.hidden)").length === 5
+      && document.querySelectorAll(".tile-tokens:not(.hidden)").length === 5,
     null, { timeout: 20_000 },
   );
   await settle(page, 600);

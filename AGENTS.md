@@ -18,7 +18,7 @@ This project is indexed by GitNexus as **tracker** (834 symbols, 2232 relationsh
 1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
 2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
 3. `READ gitnexus://repo/tracker/process/{processName}` — trace the full execution flow step by step
-4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
+4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "dev"})` — see what your branch changed
 
 ## When Refactoring
 

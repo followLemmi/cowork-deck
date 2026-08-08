@@ -50,6 +50,29 @@ are in Russian. They record work already finished, and a translated record can
 drift from what actually happened with no original left to check against. **Do
 not translate them.** Anything added from 2026-07-27 onward is English.
 
+## Branches and releases
+
+`dev` is the trunk and the default branch: **every pull request targets `dev`.**
+`main` is the released state and nothing else — what is installed on the
+machines of the people using the app.
+
+A release is a pull request from `dev` into `main`, a version bump in
+`src-tauri/tauri.conf.json`, and a `v*` tag pushed on the resulting `main`
+commit. `.github/workflows/release.yml` triggers on that tag rather than on any
+branch, and refuses to build when the tag and the config version disagree.
+
+Two things follow, and both are easy to get wrong:
+
+- **A pull request against `main` is a mistake unless it is the release.**
+  `gh pr create` uses the default branch, so this only goes wrong when someone
+  passes `--base main` by hand.
+- **`main`'s README describes the shipped app.** Documentation for something not
+  yet released belongs on `dev`, and reaches `main` when the release carries it
+  over.
+
+A hotfix branches from `main` and its pull request goes to `main`; `main` is then
+merged back into `dev`, or the fix is lost at the next release.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
@@ -70,7 +93,7 @@ This project is indexed by GitNexus as **tracker** (834 symbols, 2232 relationsh
 1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
 2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
 3. `READ gitnexus://repo/tracker/process/{processName}` — trace the full execution flow step by step
-4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
+4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "dev"})` — see what your branch changed
 
 ## When Refactoring
 

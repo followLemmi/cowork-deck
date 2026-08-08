@@ -565,6 +565,24 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    `flex: 1` and no ellipsis, and a long session name pushed the badges out of the head
    rather than truncating. */
 .tile-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+/* The editor takes `.tile-name`'s layout contract exactly, so opening it does not
+   move the badges: the head is nine other controls wide and the name is the only
+   flexible one. Borrowed from `.tile-search-input` — the same idea a few pixels
+   away should not be a second look, and this adds no token of its own. */
+.tile-name-input {
+  flex: 1; min-width: 0;
+  background: var(--bg-inset); border: 1px solid var(--line-strong); border-radius: var(--r-ctl);
+  color: var(--fg); font: inherit; padding: 1px var(--sp-2); outline: none;
+}
+.tile-name-input:focus { border-color: var(--accent); }
+/* Always in the DOM — so it is in the tab order and reachable by touch — and
+   invisible until the tile is one someone is working with. `:focus-within` is
+   what gives it a focus ring everywhere else, and `.is-active` is what leaves it
+   permanently visible on the tile about to be renamed. */
+.tile-rename { opacity: 0; transition: opacity var(--dur-1) var(--ease); }
+.tile:hover .tile-rename,
+.tile.is-active .tile-rename,
+.tile-head:focus-within .tile-rename { opacity: 1; }
 /* Sunk below the head, and no padding on the left: the terminal is content and it
    scrolls edge to edge under its own gutter. */
 .tile-body { flex: 1; min-height: 0; background: var(--bg-terminal); padding: var(--sp-2); }

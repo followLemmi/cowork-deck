@@ -4,7 +4,7 @@ vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/api/event");
 
 import {
-  listWorkspaces, startSession, decodeB64, onScheduledFire, scheduleAck, updateTask,
+  listWorkspaces, startSession, decodeB64Bytes, onOutput, onScheduledFire, scheduleAck, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage, prList, prMerge, prWorktreeAdd,
   issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove, trackerOpenCount,
 } from "../src/ipc";
@@ -158,10 +158,40 @@ describe("ipc", () => {
     expect(invoke).toHaveBeenCalledWith("tracker_open_count", { workspaceId: "w1" });
   });
 
-  it("decodeB64 round-trips utf8", () => {
+  it("decodeB64Bytes round-trips utf8 as bytes", () => {
     const str = "héllo";
-    const utf8Bytes = new TextEncoder().encode(str);
-    const b64 = btoa(String.fromCharCode(...utf8Bytes));
-    expect(decodeB64(b64)).toBe(str);
+    const utf8 = new TextEncoder().encode(str);
+    const b64 = btoa(String.fromCharCode(...utf8));
+    expect(decodeB64Bytes(b64)).toEqual(utf8);
+  });
+
+  // The regression this pins is a frame that stops lining up. `pty.rs` cuts the
+  // stream on a byte boundary that respects no character, and on Darwin the tty
+  // caps a read at 1024 bytes, so it cuts four times as often as on Linux. When
+  // this function decoded each event on its own, a glyph split across two of them
+  // came back as replacement characters on both sides — one cell became two or
+  // three, and the rest of the line was off by that much.
+  it("onOutput delivers bytes, so a glyph split across two events survives", async () => {
+    const received: Uint8Array[] = [];
+    await onOutput((_s, bytes) => { received.push(bytes) });
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: unknown) => void;
+
+    const glyph = new TextEncoder().encode("─");        // e2 94 80, one cell
+    const halves = [glyph.subarray(0, 1), glyph.subarray(1)];
+    const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
+    for (const half of halves) {
+      handler({ payload: { session: "s1", dataB64: b64(half) } });
+    }
+
+    const joined = new Uint8Array([...received[0], ...received[1]]);
+    expect(joined).toEqual(glyph);
+    // Intact, so xterm's own stateful decoder can hold the partial sequence and
+    // finish the glyph when the second event arrives.
+    expect(new TextDecoder().decode(joined)).toBe("─");
+    // And what the old string-returning path made of the very same two events:
+    // three replacement characters where there was one glyph — the truncated lead
+    // byte, then both orphaned continuation bytes. One cell became three, so the
+    // rest of that line sat two columns to the right of where it belonged.
+    expect(halves.map((h) => new TextDecoder().decode(h)).join("")).toBe("���");
   });
 });

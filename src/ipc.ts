@@ -35,7 +35,15 @@ export interface SessionEntry {
   /** Set when the session came from a schedule — re-arms the overlap guard
    *  on restore, so catch-up cannot duplicate a run that is already back. */
   scheduledSkillId?: string;
+  /** What a person typed for this tile. Outranks everything, including the
+   *  transcript title, and is cleared by emptying the field. */
+  userName?: string;
+  /** What `name` above is. Absent means "context": nothing on disk tells a
+   *  card name from a placeholder for an entry written before this existed,
+   *  and leaving a recognised name alone is the safer of the two mistakes. */
+  nameKind?: NameKind;
 }
+export type NameKind = "context" | "placeholder";
 export interface UiState {
   activeWorkspaceId: string | null;
   /** A multiplier on the base in `styles.css`, not a pixel size — see `ui-scale.ts`.
@@ -297,15 +305,36 @@ export const closeSession = (session: string) => invoke<void>("close_session", {
 export const loadLayout = () => invoke<SessionEntry[]>("load_layout");
 export const saveLayout = (sessions: SessionEntry[]) => invoke<void>("save_layout", { sessions });
 
-export function decodeB64(b64: string): string {
+/** Bytes, not text. **The decode is deliberately not done here**, and that is
+ *  the whole point of this function's shape.
+ *
+ *  It used to return a string, via `new TextDecoder().decode(bytes)` — a fresh
+ *  decoder per event, with no memory of the one before it. The reader thread in
+ *  `pty.rs` cuts the stream wherever a 4096-byte read happens to end, which
+ *  respects no character boundary, so a multi-byte sequence split across two
+ *  events came back as `U+FFFD` on both sides: one 3-byte glyph became two or
+ *  three cells and every column after it on that line was off by one or two.
+ *  With the agent's whole TUI drawn out of `─ │ ⏺ ✻ ⎿`, that is a frame that
+ *  visibly stops lining up.
+ *
+ *  macOS made it four times as likely: the Darwin tty caps a single read at 1024
+ *  bytes no matter how big the buffer is, so the same output arrives in four
+ *  times as many pieces, each with its own boundary. Measured against a writer
+ *  that emits a whole frame in one `write` — which is how Ink, and so Claude
+ *  Code, repaints — one line in five came out corrupted.
+ *
+ *  `Terminal.write` takes a `Uint8Array` and runs xterm's own stateful UTF-8
+ *  decoder, which holds a partial sequence until the rest of it arrives. Handing
+ *  the bytes over intact is what makes the problem cease to exist rather than
+ *  become rarer. */
+export function decodeB64Bytes(b64: string): Uint8Array {
   const bin = atob(b64);
-  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
-export const onOutput = (cb: (session: string, text: string) => void): Promise<UnlistenFn> =>
+export const onOutput = (cb: (session: string, bytes: Uint8Array) => void): Promise<UnlistenFn> =>
   listen<{ session: string; dataB64: string }>("session://output", (e) =>
-    cb(e.payload.session, decodeB64(e.payload.dataB64)));
+    cb(e.payload.session, decodeB64Bytes(e.payload.dataB64)));
 export const onState = (cb: (session: string, state: SessionState) => void): Promise<UnlistenFn> =>
   listen<{ session: string; state: SessionState }>("session://state", (e) =>
     cb(e.payload.session, e.payload.state));
@@ -336,8 +365,30 @@ export const onSchedulerBroken = (cb: (message: string) => void): Promise<Unlist
 
 export interface GitStatus { branch: string | null; dirty: boolean; }
 export interface TokenUsage { input: number; output: number; cacheCreation: number; cacheRead: number; }
+/** Two readings, deliberately kept apart: `context` is what the terminal prints
+ *  for the session and covers the main chain only, `spend` is the bill and
+ *  includes every subagent. `context` is null until the first request. */
+export interface SessionTokens { context: number | null; spend: TokenUsage; subagents: number; }
+/** Which of the transcript's three names the title came from. */
+export type TitleSource = "custom" | "ai" | "prompt";
+/** Everything one poll tick wants to know about one session, off one read.
+ *
+ *  Both fields are nullable, and both nulls carry meaning. `tokens: null` is the
+ *  reading being *unavailable* — no transcript, or one that would not open —
+ *  which is not the same as a session that has spent nothing, and is why a tile
+ *  hides the badge rather than drawing zeroes. `title: null` is what stops an
+ *  empty transcript field blanking a tile's name. */
+export interface SessionSnapshot {
+  tokens: SessionTokens | null;
+  title: string | null;
+  titleSource: TitleSource | null;
+}
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
-export const sessionTokens = (sessionId: string) => invoke<TokenUsage>("session_tokens", { sessionId });
+/** One invoke per tick for every open session — the title and the token counts
+ *  come from the same bytes, so asking per session would read each transcript
+ *  twice. Every requested id comes back, including ids with no transcript. */
+export const sessionSnapshots = (sessionIds: string[]) =>
+  invoke<Record<string, SessionSnapshot>>("session_snapshots", { sessionIds });
 
 /** A step id and a kind id are whatever `board.json` says they are — the
  *  frontend never enumerates them, it reads them (see src/board-config.ts). */

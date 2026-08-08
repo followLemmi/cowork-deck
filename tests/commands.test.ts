@@ -55,6 +55,19 @@ describe("matchHotkey", () => {
     expect(matchHotkey({ ...base, code: "F6" }, true)).toBe("next-region");
     expect(matchHotkey({ ...base, code: "F6", shiftKey: true }, true)).toBe("prev-region");
   });
+  it("maps bare F2 to rename, and lets every modified F2 through", () => {
+    expect(matchHotkey({ ...base, code: "F2" }, true)).toBe("rename-active");
+    expect(matchHotkey({ ...base, code: "F2" }, false)).toBe("rename-active");
+    for (const mod of ["metaKey", "ctrlKey", "shiftKey", "altKey"] as const) {
+      expect(matchHotkey({ ...base, code: "F2", [mod]: true }, true)).toBeNull();
+    }
+  });
+  it("matches F2 on the physical key, so a Cyrillic layout still renames", () => {
+    // The same rule as every other hotkey here: with a Cyrillic layout active
+    // `e.key` is not the physical key. F2 produces no character, but a matcher
+    // that reached for `key` at all would be one layout away from breaking.
+    expect(matchHotkey({ ...base, code: "F2", key: "б" }, true)).toBe("rename-active");
+  });
   it("maps the capture hotkey without shadowing readline", () => {
     const ev = { ...base, code: "KeyT", metaKey: true, shiftKey: true };
     expect(matchHotkey(ev, true)).toBe("new-task");

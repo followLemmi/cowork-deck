@@ -102,7 +102,14 @@ fn new_card(dir: &std::path::Path, kind: &str) -> (bool, usize) {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(b"body").unwrap();
+    // The result is dropped, as in the two helpers above, and here it is
+    // load-bearing: this helper is called with a kind the board does NOT define,
+    // and a refused kind exits before it ever reads stdin. Writing into a pipe
+    // whose reader is gone is `EPIPE` — which is the behaviour under test
+    // arriving promptly, not a failure. Linux reports it; macOS usually absorbs
+    // four bytes into the pipe buffer first and never notices, which is why
+    // `.unwrap()` here passed for as long as nothing ran the suite on Linux.
+    let _ = child.stdin.take().unwrap().write_all(b"body");
     let ok = child.wait().unwrap().success();
     let cards = std::fs::read_dir(dir)
         .unwrap()
@@ -156,7 +163,10 @@ fn missing_required_env_var_exits_nonzero_and_writes_no_file() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all("body".as_bytes()).unwrap();
+    // Same race as in `new_card`: a missing required variable exits before
+    // stdin is read, so the write may find no reader. This one has not failed
+    // yet, which is not the same as being safe.
+    let _ = child.stdin.take().unwrap().write_all("body".as_bytes());
     let status = child.wait().unwrap();
 
     assert!(!status.success(), "must exit non-zero when a required env var is missing");

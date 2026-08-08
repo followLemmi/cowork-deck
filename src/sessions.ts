@@ -1,7 +1,7 @@
 import { TerminalPanel } from "./terminal";
 import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
-import { formatTokens, sumUsage, uniqueCwds } from "./observability";
+import { gitStatus, sessionSnapshots, type NameKind, type SessionTokens } from "./ipc";
+import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
@@ -20,7 +20,11 @@ import { workingStep } from "./board-config";
 export type TileKind = "claude" | "command";
 
 interface Tile {
-  session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
+  session: string; names: TileNames; nameEl: HTMLElement;
+  /** The open editor, when this tile is being renamed. Its presence is what
+   *  makes a commit idempotent: blur fires after Enter has already committed. */
+  renameInput: HTMLInputElement | null;
+  panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
   authBadge: HTMLElement;
@@ -34,6 +38,54 @@ interface Tile {
   kind?: TileKind;
   /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
   taskId?: string;
+}
+
+/** The four things that can name a tile, in one place so no reader can hold a
+ *  stale copy of a name.
+ *
+ *  There is no `autoNameable` flag: "this tile may take a transcript title" is
+ *  exactly `context === null`, so the two cannot disagree — and `openCommandTile`
+ *  supplies a context name, which excludes command tiles for free without
+ *  consulting `kind`. */
+export interface TileNames {
+  /** "☑ <card>", "<icon> <scenario>", a worktree name, a command label. */
+  context: string | null;
+  /** "session · <workspace>" — the only string an automatic title may replace. */
+  placeholder: string;
+  /** The latest title read out of the transcript. */
+  auto: string | null;
+  /** Hand-typed. Wins over everything, forever. */
+  user: string | null;
+}
+
+/** Longest name kept. The same string reaches `sessions.json`, a desktop
+ *  notification body and a confirmation sentence — and it must agree with
+ *  `TITLE_CAP` in `src-tauri/src/commands.rs`, which caps the automatic side. */
+export const NAME_CAP = 120;
+
+/** Clean up what someone typed or pasted: control characters out, whitespace
+ *  runs collapsed to one space, trimmed, capped at [`NAME_CAP`].
+ *
+ *  By code point rather than by UTF-16 unit, matching the Rust sanitiser — a cap
+ *  counted in units would split a surrogate pair and leave half a character. */
+export function normaliseName(raw: string): string {
+  const flat = raw.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+  return [...flat].slice(0, NAME_CAP).join("").trim();
+}
+
+/** What the tile, the sidebar row, the notification and the close question all
+ *  show. Every slot is trimmed and an empty one counts as absent.
+ *
+ *  A context name beating an automatic title is the row that carries the whole
+ *  decision: `☑ Fix the pill counter` and `⚡ Daily digest` are already
+ *  meaningful, and they are how the board and the sidebar say which card or
+ *  scenario a session belongs to. */
+export function resolveTileName(n: TileNames): string {
+  const some = (v: string | null) => {
+    const t = (v ?? "").trim();
+    return t === "" ? null : t;
+  };
+  return some(n.user) ?? some(n.context) ?? some(n.auto) ?? some(n.placeholder) ?? "";
 }
 
 const LABEL: Record<SessionState, string> = {
@@ -86,8 +138,11 @@ export class Deck {
   private broadcasting = false;
   private bcastPanel: HTMLElement | null = null;
   private restoring = false;
+  /** The last layout `saveLayout` actually accepted, serialised. See
+   *  `persistLayout`: a write that would change nothing is skipped. */
+  private savedLayout: string | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private usage = new Map<string, TokenUsage>();
+  private usage = new Map<string, SessionTokens>();
   private activeWorkspaceId: string | null = null;
   private collapsed = new Set<string>();
   private zoomedSession: string | null = null;
@@ -211,19 +266,52 @@ export class Deck {
           t.gitBadge.classList.add("hidden");
         }
       }
-      // tokens: per session; errors isolated, plus a guard against racing with tile removal
-      await Promise.all(tiles.map(async (t) => {
-        try {
-          const u = await sessionTokens(t.session);
-          if (!this.tiles.has(t.session)) return;
-          this.usage.set(t.session, u);
-          t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
-          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} read`;
-          t.tokenBadge.classList.remove("hidden");
-        } catch (e) {
-          console.debug("sessionTokens failed", t.session, e);
+      // snapshots: one call for every session; errors isolated, plus a guard
+      // against racing with tile removal.
+      //
+      // Every open session is asked for, including command tiles and ones a card
+      // or a scenario already named: the same batch carries their token counts,
+      // computing a title off a buffer already in hand costs about nothing, and
+      // which name to show is a decision the resolver makes rather than a shape
+      // the IPC should encode. A tile carrying a hand-typed name is polled too,
+      // so clearing that name falls back to a title already in hand instead of
+      // going blank for a tick.
+      //
+      // Nothing here writes `sessions.json`: the automatic title is not
+      // persisted, so "do not save the layout every five seconds" is not a
+      // problem that needs a dirty check — it does not arise.
+      try {
+        const snaps = await sessionSnapshots(tiles.map((t) => t.session));
+        for (const t of tiles) {
+          if (!this.tiles.has(t.session)) continue;
+          const snap = snaps[t.session];
+          if (!snap) continue;
+          const u = snap.tokens;
+          // No reading available — the transcript is gone or would not open.
+          // Hide the badge rather than render a zero, which reads as an idle
+          // session and is indistinguishable from a real one. The name is left
+          // alone either way; the two halves of a snapshot fail separately.
+          if (!u) {
+            this.usage.delete(t.session);
+            t.tokenBadge.classList.add("hidden");
+          } else {
+            this.usage.set(t.session, u);
+            t.tokenBadge.textContent = formatContext(u.context);
+            t.tokenBadge.title = tokenTooltip(u);
+            t.tokenBadge.classList.remove("hidden");
+          }
+          // A missing title never clears the slot. Measured over 96 transcripts a
+          // title is minted once and never revised, so a null here is either "not
+          // yet" or "this read did not see it" — and blanking a name on the
+          // second would be a visible flicker for no information gained.
+          if (snap.title) {
+            t.names.auto = snap.title;
+            this.applyName(t);
+          }
         }
-      }));
+      } catch (e) {
+        console.debug("sessionSnapshots failed", e);
+      }
       this.renderList();
     } catch (e) {
       console.debug("pollOnce failed", e);
@@ -237,7 +325,7 @@ export class Deck {
   async wireEvents() {
     this.notifyOk = await isPermissionGranted();
     if (!this.notifyOk) this.notifyOk = (await requestPermission()) === "granted";
-    await onOutput((s, text) => this.tiles.get(s)?.panel.write(text));
+    await onOutput((s, bytes) => this.tiles.get(s)?.panel.write(bytes));
     await onState((s, state) => this.setState(s, state));
     await onExit((s) => { /* state already emitted; keep tile for scrollback */ void s; });
   }
@@ -249,6 +337,9 @@ export class Deck {
       cwd: workspace.path,
       workspaceId: workspace.id,
       titleText,
+      // A session launched without a scenario is the one tile nothing named, so
+      // it is the one a transcript title may take over.
+      nameKind: skill ? "context" : "placeholder",
       prompt: skill ? skill.prompt : null,
       resume: false,
     });
@@ -447,6 +538,13 @@ export class Deck {
 
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
+    /** What `titleText` is. A context name stands for the life of the tile; the
+     *  generic placeholder is the one string a transcript title may replace.
+     *  Absent means context — the safer of the two, since it leaves a name the
+     *  person recognises alone. */
+    nameKind?: NameKind;
+    /** A hand-typed name restored from the layout. */
+    userName?: string | null;
     scheduledSkillId?: string;
     /** Tracker card this tile is working on. */
     taskId?: string;
@@ -479,11 +577,10 @@ export class Deck {
     // `:first-child` and never got the `flex: 1` or the ellipsis that rule grants. A
     // long session name pushed the badges out of the head instead of truncating.
     title.className = "tile-name";
-    title.textContent = titleText;
-    // The tooltip is for the sighted reader of a truncated name; the accessible name
-    // comes from the text itself. Set beside the text so the two cannot drift —
-    // nothing rewrites either after this.
-    title.title = titleText;
+    // The text and the tooltip are written together by `applyName`, and only by
+    // `applyName` — the tooltip is for the sighted reader of a truncated name and
+    // the accessible name comes from the text itself, so the two must never
+    // drift. One writer is what keeps that true now that a name can change.
     const schedMark = opts.scheduled ? icon("clock", 12) : null;
     if (schedMark) {
       schedMark.classList.add("tile-sched-mark");
@@ -497,6 +594,13 @@ export class Deck {
     tokenBadge.className = "tile-tokens hidden";
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
+    // The pencil leads the action cluster because it is the least destructive of
+    // the four, and it sits after the state chip so the flexible name keeps one
+    // contiguous run of width. It is always in the DOM — so it is in the tab
+    // order and reachable by touch — and the stylesheet is what hides it until
+    // the tile is hovered, active or holds focus.
+    const renameBtn = iconButton("pencil", "Rename session", "tile-close tile-rename");
+    renameBtn.onclick = () => this.beginRename(session);
     const clearBtn = iconButton("eraser", "Clear terminal", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
     const close = iconButton("x", "Close session", "tile-close btn--icon--danger");
@@ -508,7 +612,7 @@ export class Deck {
     authBadge.className = "tile-auth hidden";
     head.append(
       ...(schedMark ? [schedMark] : []),
-      title, gitBadge, authBadge, tokenBadge, label, clearBtn, close,
+      title, gitBadge, authBadge, tokenBadge, label, renameBtn, clearBtn, close,
     );
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
@@ -539,7 +643,11 @@ export class Deck {
     };
     head.insertBefore(restart, close);
     head.addEventListener("dblclick", (e) => {
-      if ((e.target as HTMLElement).closest("button")) return;
+      // Buttons and anything editable. Double-clicking a word inside a header
+      // input is how a person selects it, and zooming the tile instead is a
+      // defect the broadcast checkbox already suffered from.
+      const t = e.target as HTMLElement;
+      if (t.closest("button, input, textarea, [contenteditable]")) return;
       this.toggleZoom(session);
     });
     const mount = document.createElement("div");
@@ -562,13 +670,23 @@ export class Deck {
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
-    const panel = new TerminalPanel(session, mount);
+    const panel = new TerminalPanel(session, mount, isCommand);
+    const names: TileNames = {
+      // The placeholder slot always holds the launch string. On a context-named
+      // tile it is the same string as `context`, which the resolver never reaches
+      // — there is no way for the two to disagree.
+      context: opts.nameKind === "placeholder" ? null : titleText,
+      placeholder: titleText,
+      auto: null,
+      user: opts.userName ?? null,
+    };
     const tile: Tile = {
-      session, name: title.textContent!, panel, state: "idle", el, label,
+      session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
       gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
     };
+    this.applyName(tile);
     this.tiles.set(session, tile);
     // The first tile ends the empty deck. `applyLayout` is only reached from here when a
     // zoom has to be dropped, so this cannot wait for it — the panel would sit under the
@@ -603,6 +721,92 @@ export class Deck {
     }
   }
 
+  /** The only writer of a tile's name into the DOM — text and tooltip together.
+   *
+   *  Called wherever a slot changes, rather than by each of them, so a tile, its
+   *  tooltip, its sidebar row, the notification body and `sessions.json` cannot
+   *  come to show four different names. */
+  private applyName(tile: Tile) {
+    // The input's value belongs to the person typing into it. The slots keep
+    // being filled while an edit is open — the tick still writes `names.auto` —
+    // and this repaints once the edit closes.
+    if (tile.renameInput) return;
+    const name = resolveTileName(tile.names);
+    tile.nameEl.textContent = name;
+    tile.nameEl.title = name;
+  }
+
+  /** Turn the header's name into an input, in place.
+   *
+   *  The editor lives in the tile header and nowhere else: `renderList()` rebuilds
+   *  the sidebar from `innerHTML` every five seconds and restores only
+   *  `data-focus-key`, so an input there would lose its value and its caret twice
+   *  a minute. */
+  private beginRename(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile || tile.renameInput) return;
+    // One edit at a time, app-wide.
+    for (const other of this.tiles.values()) this.commitRename(other);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "tile-name-input";
+    // Felt while typing rather than sprung afterwards. The commit normalises
+    // anyway, for the paths this cannot cover — a paste, or an IME.
+    input.maxLength = NAME_CAP;
+    // No `title`: the tooltip on the span is for a name too long to read, and on
+    // an input it would sit over what the person is typing.
+    input.setAttribute("aria-label", "Session name");
+    input.value = resolveTileName(tile.names);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.commitRename(tile);
+        tile.panel.focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        // Or it also reaches the window handler and leaves the zoom.
+        e.stopPropagation();
+        this.cancelRename(tile);
+        tile.panel.focus();
+      }
+    });
+    // Committing on blur, not discarding: throwing away someone's typing because
+    // they clicked a terminal is the hostile reading of the same gesture.
+    input.addEventListener("blur", () => this.commitRename(tile));
+    tile.renameInput = input;
+    tile.nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
+  /** Take what is in the editor, or nothing if it says the same as the automatic
+   *  name — clearing the field is the whole undo story, and there is nothing to
+   *  report about any of it, so no path here produces an error. */
+  private commitRename(tile: Tile) {
+    const input = tile.renameInput;
+    if (!input) return;
+    const typed = normaliseName(input.value);
+    const automatic = resolveTileName({ ...tile.names, user: null });
+    tile.names.user = typed === "" || typed === automatic ? null : typed;
+    this.closeRename(tile, input);
+    void this.persistLayout();
+  }
+
+  private cancelRename(tile: Tile) {
+    const input = tile.renameInput;
+    if (!input) return;
+    this.closeRename(tile, input);
+  }
+
+  /** Put the span back and repaint it. Clearing `renameInput` first is what makes
+   *  the blur this removal fires a no-op instead of a second commit. */
+  private closeRename(tile: Tile, input: HTMLInputElement) {
+    tile.renameInput = null;
+    input.replaceWith(tile.nameEl);
+    this.applyName(tile);
+    this.renderList();
+  }
+
   /** Apply the active-workspace filter to one tile. Tiles used to be created
    *  without it, so a scheduled run for another workspace appeared in whatever
    *  deck was on screen and disappeared at the next switch. */
@@ -624,7 +828,8 @@ export class Deck {
         if (e.scheduledSkillId) this.scheduledSessions.set(e.scheduledSkillId, e.sessionId);
         await this.spawnTile({
           session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
-          titleText: e.name, prompt: null, resume: true,
+          titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
+          prompt: null, resume: true,
           scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
         });
       }
@@ -701,8 +906,16 @@ export class Deck {
   private async requestClose(session: string) {
     const t = this.tiles.get(session);
     const alive = t && (t.state === "working" || t.state === "waitingInput" || t.state === "done");
-    if (alive && !(await confirmModal(`Close session “${t.name}”? It is still alive.`))) return;
+    if (alive && !(await confirmModal(
+      `Close session “${resolveTileName(t.names)}”? It is still alive.`,
+    ))) return;
     this.remove(session);
+  }
+  /** Open the editor on whichever tile has the keyboard, and do nothing when
+   *  there is none — the same shape as `closeActive` and `searchActive`. */
+  renameActive() {
+    const id = this.activeSession;
+    if (id) this.beginRename(id);
   }
   searchActive() {
     const id = this.activeSession;
@@ -803,7 +1016,9 @@ export class Deck {
     this.renderList();
     if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       const id = this.notify.register(session);
-      sendNotification({ id, title: `cowork-deck · ${LABEL[state]}`, body: tile.name });
+      sendNotification({
+        id, title: `cowork-deck · ${LABEL[state]}`, body: resolveTileName(tile.names),
+      });
     }
   }
 
@@ -948,12 +1163,24 @@ export class Deck {
   private persistLayout() {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
-      session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
+      session: t.session, workspacePath: t.workspacePath,
+      name: t.names.context ?? t.names.placeholder, workspaceId: t.workspaceId,
       kind: t.kind,
       scheduledSkillId: t.scheduledSkillId,
       taskId: t.taskId,
+      userName: t.names.user,
+      nameKind: t.names.context === null ? "placeholder" : "context",
     })));
-    return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
+    // Skip a write that would change nothing. Not something the naming needs —
+    // it is here because it lives in the function this change touches, and it
+    // collapses the redundant writes the spawn, restart and remove bursts
+    // already produce. The memo is assigned only once the write has resolved:
+    // a failed save has to stay dirty, or the next real change is skipped too.
+    const serialized = JSON.stringify(entries);
+    if (serialized === this.savedLayout) return Promise.resolve();
+    return saveLayout(entries)
+      .then(() => { this.savedLayout = serialized; })
+      .catch((e) => console.debug("saveLayout failed", e));
   }
 
   private renderList() {
@@ -971,16 +1198,20 @@ export class Deck {
     const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
-    const total = sumUsage([...this.usage.values()]);
+    // The bill across every session, subagents included. Context does not
+    // aggregate — each session has its own window and adding them describes
+    // nothing — so the footer carries spend and the tiles carry context.
+    const total = sumUsage([...this.usage.values()].map((t) => t.spend));
     if (this.usage.size > 0) {
       const sum = document.createElement("div");
       sum.className = "sess-tokens-sum";
-      sum.textContent = `Total tokens · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      sum.textContent =
+        `Total spend · ${formatTokens(total.output)} out · ${formatTokens(spendIn(total))} in`;
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
       tiles.map((t) => ({
-        session: t.session, name: t.name, state: t.state,
+        session: t.session, name: resolveTileName(t.names), state: t.state,
         workspaceId: t.workspaceId, workspacePath: t.workspacePath,
       })),
       this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path })),
@@ -1083,11 +1314,20 @@ export function nextWaitingAcross(
   return null;
 }
 
+/** What reaches `sessions.json`.
+ *
+ *  `name` is the **launch** name — never the resolved one. A transcript title is
+ *  not persisted at all: `startPolling()` fires a tick immediately, so a restored
+ *  tile refills it within one round trip and a stored copy could only go stale.
+ *  A hand-typed name goes in its own field, and `nameKind` records which of the
+ *  two kinds `name` is, so the next launch knows whether a title may replace it. */
 export function serializeTiles(
   tiles: {
     session: string; workspacePath: string; name: string; workspaceId?: string;
     scheduledSkillId?: string; taskId?: string;
     kind?: TileKind;
+    userName?: string | null;
+    nameKind?: NameKind;
   }[],
 ): SessionEntry[] {
   return tiles
@@ -1100,6 +1340,8 @@ export function serializeTiles(
       ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
       ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
       ...(t.taskId ? { taskId: t.taskId } : {}),
+      ...(t.userName ? { userName: t.userName } : {}),
+      nameKind: t.nameKind ?? "context",
     }));
 }
 

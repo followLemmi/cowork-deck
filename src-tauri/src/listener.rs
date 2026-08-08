@@ -43,6 +43,14 @@ where
                 let mut lines = BufReader::new(stream).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     if let Ok(ev) = serde_json::from_str::<ReporterEvent>(&line) {
+                        // Recorded here rather than handed to a second callback:
+                        // every event carries it, and a caller that forgot to
+                        // wire it up would leave a tile reading the transcript
+                        // it was launched on for the rest of its life — with
+                        // nothing failing. See `transcripts`.
+                        if let Some(path) = ev.transcript_path.as_deref() {
+                            crate::transcripts::record(&ev.session, path);
+                        }
                         if let Some(state) =
                             event_kind_to_state(&ev.kind, ev.notification_type.as_deref())
                         {
@@ -84,6 +92,50 @@ mod tests {
         let (sess, state) = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
         assert_eq!(sess, "sess-1");
         assert_eq!(state, SessionState::Working);
+    }
+
+    /// The line a hook produces after `/clear`: same deck session, a different
+    /// transcript. Nothing about the state changes, which is why this cannot be
+    /// left to the state callback.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reported_transcript_is_recorded_against_its_session() {
+        let port = start_listener(|_, _| {}).await.unwrap();
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(
+                b"{\"session\":\"sess-clear\",\"kind\":\"working\",\
+                  \"transcriptPath\":\"/home/u/.claude/projects/-p/new.jsonl\"}\n",
+            )
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+
+        for _ in 0..50 {
+            if crate::transcripts::get("sess-clear").is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            crate::transcripts::get("sess-clear").as_deref(),
+            Some("/home/u/.claude/projects/-p/new.jsonl"),
+        );
+    }
+
+    /// A line from an older reporter has no such field, and must still map to a
+    /// state rather than failing to parse.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_line_without_a_transcript_path_still_reports_its_state() {
+        let (tx, rx) = mpsc::channel::<(String, SessionState)>();
+        let port = start_listener(move |s, st| { tx.send((s, st)).unwrap(); }).await.unwrap();
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream.write_all(b"{\"session\":\"sess-old\",\"kind\":\"done\"}\n").await.unwrap();
+        stream.flush().await.unwrap();
+
+        let (sess, state) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(sess, "sess-old");
+        assert_eq!(state, SessionState::Done);
+        assert_eq!(crate::transcripts::get("sess-old"), None);
     }
 
     #[test]

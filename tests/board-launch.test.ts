@@ -41,7 +41,7 @@ vi.mock("../src/ipc", async (orig) => ({
   saveLayout: vi.fn().mockResolvedValue(undefined),
   closeSession: vi.fn(),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
-  sessionTokens: vi.fn().mockResolvedValue({ input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }),
+  sessionSnapshots: vi.fn().mockResolvedValue({}),
   onOutput: vi.fn().mockResolvedValue(() => {}),
   onState: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),

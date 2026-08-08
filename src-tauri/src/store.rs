@@ -191,7 +191,8 @@ impl Store {
 mod tests {
     use super::*;
     use crate::model::{
-        SessionEntry, TrackerProvider, UiState, UiStatePatch, Workspace, SCHEDULE_STATE_VERSION,
+        NameKind, SessionEntry, TrackerProvider, UiState, UiStatePatch, Workspace,
+        SCHEDULE_STATE_VERSION,
     };
 
     fn tmp() -> std::path::PathBuf {
@@ -301,11 +302,15 @@ mod tests {
             SessionEntry {
                 session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into(),
                 workspace_id: Some("w1".into()), task_id: Some("01AAA".into()),
-                scheduled_skill_id: None,
+                scheduled_skill_id: None, user_name: None,
+                name_kind: Some(NameKind::Context),
             },
             SessionEntry {
                 session_id: "s2".into(), cwd: "/tmp/b".into(), name: "terminal · P".into(),
                 workspace_id: None, task_id: None, scheduled_skill_id: None,
+                // The whole point of the field: this one survives the round trip.
+                user_name: Some("the one I must not close".into()),
+                name_kind: Some(NameKind::Placeholder),
             },
         ];
         s.save_layout(&entries).unwrap();

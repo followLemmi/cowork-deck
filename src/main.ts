@@ -1127,6 +1127,7 @@ function paletteCommands(): Command[] {
   return [
     { id: "new-session", title: "New session", hotkey: hotkeyLabel("N"), run: () => { void newSession(); } },
     { id: "close-active", title: "Close active session", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
+    { id: "rename-active", title: "Rename active session", hotkey: "F2", run: () => deck.renameActive() },
     { id: "next-waiting", title: "Go to next session waiting for input", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
     { id: "zoom", title: "Zoom active session", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
     { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
@@ -1217,6 +1218,7 @@ const COMMANDS: Record<string, () => void> = {
   "palette": () => openPalette(paletteCommands()),
   "new-session": () => { void newSession(); },
   "close-active": () => deck.closeActive(),
+  "rename-active": () => deck.renameActive(),
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),
   "broadcast": () => deck.toggleBroadcast(),
@@ -1229,8 +1231,24 @@ const COMMANDS: Record<string, () => void> = {
   "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
 };
 
+/** Whether the caret is in a field where a keystroke is text, not a command.
+ *
+ *  `.xterm-helper-textarea` is the exception: it is the terminal's own hidden
+ *  input, and exempting it would disable every hotkey inside a terminal, which
+ *  is the whole app. The consequence is a decision rather than an oversight:
+ *  `F6` region cycling is suppressed while an editable field holds focus. */
+function isTextEntry(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el || !(el instanceof HTMLElement)) return false;
+  if (el.classList.contains("xterm-helper-textarea")) return false;
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
+}
+
 window.addEventListener("keydown", (e) => {
   if (document.querySelector(".modal-overlay")) return; // do not intercept while a modal, the palette or a form is open
+  // Without this, Cmd+N spawned a session and Cmd+W closed the tile while the
+  // caret sat in the tile's search box or the broadcast bar.
+  if (isTextEntry(e.target)) return;
   if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
   const id = matchHotkey(e, isMacPlatform());
   if (!id) return;

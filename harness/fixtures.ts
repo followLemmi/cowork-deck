@@ -11,7 +11,7 @@
 
 import type {
   BoardConfig, GhStatus, MergeOptions, PrDetail, PrDiff, ProviderCapabilities,
-  PullRequest, ScheduleRun, SessionEntry, Skill, Task, TokenUsage, UiState, Workspace,
+  PullRequest, ScheduleRun, SessionEntry, SessionSnapshot, Skill, Task, UiState, Workspace,
 } from "../src/ipc";
 
 /** One fixed clock for the whole fixture, so every "2 hours ago" agrees with
@@ -86,6 +86,10 @@ export const S_WORK = "s-work-01";
 export const S_WAIT = "s-wait-02";
 export const S_DONE = "s-done-03";
 export const S_ERR = "s-err-04";
+/** The one tile nothing named at launch. Every other fixture carries a context
+ *  name, so without this one the automatic-title path is invisible in the
+ *  harness and no manual check could ever exercise it. */
+export const S_AUTO = "s-auto-05";
 
 export const layout: SessionEntry[] = [
   {
@@ -104,6 +108,10 @@ export const layout: SessionEntry[] = [
     sessionId: S_ERR, cwd: "/home/dev/code/relay-pr/128-flaky-timer", workspaceId: WS_RELAY,
     name: "⑂ #128",
   },
+  {
+    sessionId: S_AUTO, cwd: "/home/dev/code/relay", workspaceId: WS_RELAY,
+    name: "session · relay", nameKind: "placeholder",
+  },
 ];
 
 export const gitByCwd: Record<string, { branch: string | null; dirty: boolean }> = {
@@ -113,11 +121,51 @@ export const gitByCwd: Record<string, { branch: string | null; dirty: boolean }>
   "/home/dev/code/atlas": { branch: "release/3.2", dirty: false },
 };
 
-export const tokens: Record<string, TokenUsage> = {
-  [S_WORK]: { input: 48_300, output: 6_120, cacheCreation: 12_400, cacheRead: 214_000 },
-  [S_WAIT]: { input: 12_900, output: 1_840, cacheCreation: 3_100, cacheRead: 61_500 },
-  [S_DONE]: { input: 91_700, output: 9_430, cacheCreation: 20_800, cacheRead: 412_000 },
-  [S_ERR]: { input: 4_200, output: 610, cacheCreation: 900, cacheRead: 8_100 },
+/** Tokens and the transcript's own title, off one read — the shape
+ *  `session_snapshots` answers with.
+ *
+ *  `context` is the session's own window, which is what a tile shows; `spend` is
+ *  the bill, subagents included, which is what the sidebar totals.
+ *
+ *  The first four carry a title *and* a context name, which is the precedence
+ *  the deck has to get right: a card or a scenario keeps its name and the title
+ *  is ignored. Only `S_AUTO` has a placeholder for the title to replace. */
+export const snapshots: Record<string, SessionSnapshot> = {
+  [S_WORK]: {
+    tokens: {
+      context: 83_682, subagents: 2,
+      spend: { input: 48_300, output: 6_120, cacheCreation: 12_400, cacheRead: 214_000 },
+    },
+    title: "Refund webhook retries", titleSource: "ai",
+  },
+  [S_WAIT]: {
+    tokens: {
+      context: 41_205, subagents: 0,
+      spend: { input: 12_900, output: 1_840, cacheCreation: 3_100, cacheRead: 61_500 },
+    },
+    title: null, titleSource: null,
+  },
+  [S_DONE]: {
+    tokens: {
+      context: 118_440, subagents: 5,
+      spend: { input: 91_700, output: 9_430, cacheCreation: 20_800, cacheRead: 412_000 },
+    },
+    title: "Dependency sweep", titleSource: "custom",
+  },
+  [S_ERR]: {
+    tokens: {
+      context: 9_860, subagents: 0,
+      spend: { input: 4_200, output: 610, cacheCreation: 900, cacheRead: 8_100 },
+    },
+    title: null, titleSource: null,
+  },
+  [S_AUTO]: {
+    tokens: {
+      context: 27_310, subagents: 1,
+      spend: { input: 21_600, output: 2_950, cacheCreation: 5_400, cacheRead: 88_200 },
+    },
+    title: "Trace the retry budget through the gateway", titleSource: "prompt",
+  },
 };
 
 /* --- Terminal scrollback -------------------------------------------------- */
@@ -218,6 +266,15 @@ export const scrollback: Record<string, string> = {
     `  build environment.`,
     "",
     `${D}[process exited with code 101]${X}`,
+  ),
+  [S_AUTO]: lines(
+    `${D}> ${X}trace the retry budget through the gateway`,
+    "",
+    `${O}⏺${X} The gateway caps a retry chain at four`,
+    `  attempts, and the budget is per route, not`,
+    `  per request. Here is where it is spent.`,
+    "",
+    `${D}> ${X}`,
   ),
 };
 
