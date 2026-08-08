@@ -73,10 +73,6 @@ Two things follow, and both are easy to get wrong:
 A hotfix branches from `main` and its pull request goes to `main`; `main` is then
 merged back into `dev`, or the fix is lost at the next release.
 
-> **Note, to be deleted when v0.1.2 ships:** `main` currently carries four
-> commits made after `v0.1.1` — the licence, the harness's demo take, and the
-> README's install section. It becomes exactly the released state at the next tag.
-
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
