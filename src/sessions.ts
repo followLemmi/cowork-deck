@@ -1,7 +1,7 @@
 import { TerminalPanel } from "./terminal";
 import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionSnapshots, type NameKind, type TokenUsage } from "./ipc";
-import { formatTokens, sumUsage, uniqueCwds } from "./observability";
+import { gitStatus, sessionSnapshots, type NameKind, type SessionTokens } from "./ipc";
+import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
@@ -142,7 +142,7 @@ export class Deck {
    *  `persistLayout`: a write that would change nothing is skipped. */
   private savedLayout: string | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private usage = new Map<string, TokenUsage>();
+  private usage = new Map<string, SessionTokens>();
   private activeWorkspaceId: string | null = null;
   private collapsed = new Set<string>();
   private zoomedSession: string | null = null;
@@ -286,11 +286,20 @@ export class Deck {
           if (!this.tiles.has(t.session)) continue;
           const snap = snaps[t.session];
           if (!snap) continue;
-          const u = snap.usage;
-          this.usage.set(t.session, u);
-          t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
-          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} read`;
-          t.tokenBadge.classList.remove("hidden");
+          const u = snap.tokens;
+          // No reading available — the transcript is gone or would not open.
+          // Hide the badge rather than render a zero, which reads as an idle
+          // session and is indistinguishable from a real one. The name is left
+          // alone either way; the two halves of a snapshot fail separately.
+          if (!u) {
+            this.usage.delete(t.session);
+            t.tokenBadge.classList.add("hidden");
+          } else {
+            this.usage.set(t.session, u);
+            t.tokenBadge.textContent = formatContext(u.context);
+            t.tokenBadge.title = tokenTooltip(u);
+            t.tokenBadge.classList.remove("hidden");
+          }
           // A missing title never clears the slot. Measured over 96 transcripts a
           // title is minted once and never revised, so a null here is either "not
           // yet" or "this read did not see it" — and blanking a name on the
@@ -316,7 +325,7 @@ export class Deck {
   async wireEvents() {
     this.notifyOk = await isPermissionGranted();
     if (!this.notifyOk) this.notifyOk = (await requestPermission()) === "granted";
-    await onOutput((s, text) => this.tiles.get(s)?.panel.write(text));
+    await onOutput((s, bytes) => this.tiles.get(s)?.panel.write(bytes));
     await onState((s, state) => this.setState(s, state));
     await onExit((s) => { /* state already emitted; keep tile for scrollback */ void s; });
   }
@@ -1189,11 +1198,15 @@ export class Deck {
     const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
-    const total = sumUsage([...this.usage.values()]);
+    // The bill across every session, subagents included. Context does not
+    // aggregate — each session has its own window and adding them describes
+    // nothing — so the footer carries spend and the tiles carry context.
+    const total = sumUsage([...this.usage.values()].map((t) => t.spend));
     if (this.usage.size > 0) {
       const sum = document.createElement("div");
       sum.className = "sess-tokens-sum";
-      sum.textContent = `Total tokens · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      sum.textContent =
+        `Total spend · ${formatTokens(total.output)} out · ${formatTokens(spendIn(total))} in`;
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(

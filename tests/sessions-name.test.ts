@@ -186,8 +186,11 @@ describe("the poll tick names a tile from its transcript", () => {
   const git = vi.mocked(gitStatus);
   const save = vi.mocked(saveLayout);
 
-  const usage = { input: 1, output: 2, cacheCreation: 0, cacheRead: 0 };
-  const snap = (title: string | null) => ({ usage, title, titleSource: title ? "ai" : null });
+  const tokens = {
+    context: 1_234, subagents: 0,
+    spend: { input: 1, output: 2, cacheCreation: 0, cacheRead: 0 },
+  };
+  const snap = (title: string | null) => ({ tokens, title, titleSource: title ? "ai" : null });
 
   beforeEach(() => {
     vi.clearAllMocks();

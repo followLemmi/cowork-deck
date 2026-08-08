@@ -124,28 +124,46 @@ export const gitByCwd: Record<string, { branch: string | null; dirty: boolean }>
 /** Tokens and the transcript's own title, off one read — the shape
  *  `session_snapshots` answers with.
  *
+ *  `context` is the session's own window, which is what a tile shows; `spend` is
+ *  the bill, subagents included, which is what the sidebar totals.
+ *
  *  The first four carry a title *and* a context name, which is the precedence
  *  the deck has to get right: a card or a scenario keeps its name and the title
  *  is ignored. Only `S_AUTO` has a placeholder for the title to replace. */
 export const snapshots: Record<string, SessionSnapshot> = {
   [S_WORK]: {
-    usage: { input: 48_300, output: 6_120, cacheCreation: 12_400, cacheRead: 214_000 },
+    tokens: {
+      context: 83_682, subagents: 2,
+      spend: { input: 48_300, output: 6_120, cacheCreation: 12_400, cacheRead: 214_000 },
+    },
     title: "Refund webhook retries", titleSource: "ai",
   },
   [S_WAIT]: {
-    usage: { input: 12_900, output: 1_840, cacheCreation: 3_100, cacheRead: 61_500 },
+    tokens: {
+      context: 41_205, subagents: 0,
+      spend: { input: 12_900, output: 1_840, cacheCreation: 3_100, cacheRead: 61_500 },
+    },
     title: null, titleSource: null,
   },
   [S_DONE]: {
-    usage: { input: 91_700, output: 9_430, cacheCreation: 20_800, cacheRead: 412_000 },
+    tokens: {
+      context: 118_440, subagents: 5,
+      spend: { input: 91_700, output: 9_430, cacheCreation: 20_800, cacheRead: 412_000 },
+    },
     title: "Dependency sweep", titleSource: "custom",
   },
   [S_ERR]: {
-    usage: { input: 4_200, output: 610, cacheCreation: 900, cacheRead: 8_100 },
+    tokens: {
+      context: 9_860, subagents: 0,
+      spend: { input: 4_200, output: 610, cacheCreation: 900, cacheRead: 8_100 },
+    },
     title: null, titleSource: null,
   },
   [S_AUTO]: {
-    usage: { input: 21_600, output: 2_950, cacheCreation: 5_400, cacheRead: 88_200 },
+    tokens: {
+      context: 27_310, subagents: 1,
+      spend: { input: 21_600, output: 2_950, cacheCreation: 5_400, cacheRead: 88_200 },
+    },
     title: "Trace the retry budget through the gateway", titleSource: "prompt",
   },
 };

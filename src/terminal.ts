@@ -129,7 +129,12 @@ export class TerminalPanel {
     const { cols, rows } = this.term;
     await startCommandSession(this.session, cwd, command, cols, rows);
   }
-  write(text: string) { this.term.write(text); }
+  /** Agent output arrives as bytes and is written as bytes, so xterm's own UTF-8
+   *  decoder can carry a sequence split across two pty reads (see
+   *  `decodeB64Bytes`). Strings are still accepted for the app's own status
+   *  lines — `[restarting session...]` and the launch failures — which are
+   *  written by `sessions.ts` and never cross a chunk boundary. */
+  write(data: string | Uint8Array) { this.term.write(data); }
   focus() { this.term.focus(); }
   search(term: string) { if (term) { this.lastSearch = term; this.searchAddon.findNext(term); } }
   searchPrev(term?: string) { const t = term || this.lastSearch; if (t) { this.lastSearch = t; this.searchAddon.findPrevious(t); } }
