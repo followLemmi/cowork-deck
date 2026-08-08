@@ -10,6 +10,7 @@ mod pty;
 mod commands;
 mod scheduler;
 mod tasks_cmd;
+mod transcripts;
 mod which;
 use cowork_deck::tasks;
 
@@ -150,7 +151,7 @@ fn main() {
             commands::load_ui_state,
             commands::save_ui_state,
             commands::git_status,
-            commands::session_tokens,
+            commands::session_snapshots,
             commands::scheduler_ready,
             commands::schedule_ack,
             commands::load_schedule_state,

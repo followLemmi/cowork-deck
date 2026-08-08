@@ -32,9 +32,7 @@ vi.mock("../src/ipc", () => ({
   closeSession: vi.fn(),
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
-  sessionTokens: vi.fn().mockResolvedValue(
-    { context: 0, spend: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 }, subagents: 0 },
-  ),
+  sessionSnapshots: vi.fn().mockResolvedValue({}),
   updateTask: updateTaskMock,
 }));
 
@@ -106,6 +104,30 @@ describe("Deck zoom edge cases", () => {
     vi.clearAllMocks();
     document.body.innerHTML = "";
     startMock.mockResolvedValue(undefined);
+  });
+
+  it("does not zoom when a double-click lands inside a header input", async () => {
+    // Double-clicking a word is how a person selects it. The header's
+    // dblclick-to-zoom used to bail only on `closest("button")`, so the
+    // broadcast checkbox — and now the rename field — toggled the zoom instead.
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    // Two, because zooming the only tile there is has nothing to minimize and
+    // is a no-op by design.
+    await deck.launch(WS as any, null);
+    await deck.launch(WS as any, null);
+
+    const check = deckEl.querySelector<HTMLElement>(".bcast-check")!;
+    check.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+
+    // And the name itself still zooms, which is the gesture this guards.
+    deckEl.querySelector<HTMLElement>(".tile-name")!
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
   });
 
   it("closing the zoomed tile reconciles the deck to grid mode", async () => {

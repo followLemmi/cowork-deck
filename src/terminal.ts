@@ -18,7 +18,18 @@ export class TerminalPanel {
   private onScaleEvent = (e: Event) => {
     this.setFontSize((e as CustomEvent<number>).detail);
   };
-  constructor(private session: string, private mount: HTMLElement) {
+  constructor(
+    private session: string,
+    private mount: HTMLElement,
+    /** A one-shot command tile rather than a claude session. It keeps `F2`.
+     *
+     *  bash/readline, claude, vim and less bind nothing to F2, but it is a
+     *  primary key in `mc` (the user menu), `htop` (Setup) and `nano` (help) —
+     *  and a command tile is exactly where a full-screen TUI runs. `matchHotkey`
+     *  cannot know which tile it is answering for, so the panel carries the one
+     *  flag. Such a tile is renamed with the pencil or from the palette. */
+    private readonly keepsRenameKey = false,
+  ) {
     this.term = new Terminal({
       fontFamily: '"CaskaydiaCove Nerd Font Mono", "Cascadia Code", ui-monospace, monospace',
       // Not a literal 14: a panel built while a larger scale is in force has to be
@@ -82,8 +93,11 @@ export class TerminalPanel {
     // Intercept ONLY recognised app hotkeys; everything else (Ctrl+C/D/L and
     // ordinary typing included) goes to the terminal.
     this.term.attachCustomKeyEventHandler((e) => {
-      if (e.type === "keydown" && matchHotkey(e, isMacPlatform())) return false;
-      return true;
+      if (e.type !== "keydown") return true;
+      const id = matchHotkey(e, isMacPlatform());
+      if (!id) return true;
+      if (id === "rename-active" && this.keepsRenameKey) return true;
+      return false;
     });
     this.fitAddon.fit();
     if ((document as any).fonts?.ready) {

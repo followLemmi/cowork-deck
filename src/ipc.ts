@@ -35,7 +35,15 @@ export interface SessionEntry {
   /** Set when the session came from a schedule — re-arms the overlap guard
    *  on restore, so catch-up cannot duplicate a run that is already back. */
   scheduledSkillId?: string;
+  /** What a person typed for this tile. Outranks everything, including the
+   *  transcript title, and is cleared by emptying the field. */
+  userName?: string;
+  /** What `name` above is. Absent means "context": nothing on disk tells a
+   *  card name from a placeholder for an entry written before this existed,
+   *  and leaving a recognised name alone is the safer of the two mistakes. */
+  nameKind?: NameKind;
 }
+export type NameKind = "context" | "placeholder";
 export interface UiState {
   activeWorkspaceId: string | null;
   /** A multiplier on the base in `styles.css`, not a pixel size — see `ui-scale.ts`.
@@ -361,11 +369,26 @@ export interface TokenUsage { input: number; output: number; cacheCreation: numb
  *  for the session and covers the main chain only, `spend` is the bill and
  *  includes every subagent. `context` is null until the first request. */
 export interface SessionTokens { context: number | null; spend: TokenUsage; subagents: number; }
+/** Which of the transcript's three names the title came from. */
+export type TitleSource = "custom" | "ai" | "prompt";
+/** Everything one poll tick wants to know about one session, off one read.
+ *
+ *  Both fields are nullable, and both nulls carry meaning. `tokens: null` is the
+ *  reading being *unavailable* — no transcript, or one that would not open —
+ *  which is not the same as a session that has spent nothing, and is why a tile
+ *  hides the badge rather than drawing zeroes. `title: null` is what stops an
+ *  empty transcript field blanking a tile's name. */
+export interface SessionSnapshot {
+  tokens: SessionTokens | null;
+  title: string | null;
+  titleSource: TitleSource | null;
+}
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
-/** Null when the reading is unavailable — no transcript, or one that would not
- *  open — which is not the same as a session that has spent nothing. */
-export const sessionTokens = (sessionId: string) =>
-  invoke<SessionTokens | null>("session_tokens", { sessionId });
+/** One invoke per tick for every open session — the title and the token counts
+ *  come from the same bytes, so asking per session would read each transcript
+ *  twice. Every requested id comes back, including ids with no transcript. */
+export const sessionSnapshots = (sessionIds: string[]) =>
+  invoke<Record<string, SessionSnapshot>>("session_snapshots", { sessionIds });
 
 /** A step id and a kind id are whatever `board.json` says they are — the
  *  frontend never enumerates them, it reads them (see src/board-config.ts). */

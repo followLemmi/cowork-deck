@@ -1445,6 +1445,7 @@ pub fn resize_session(state: State<AppState>, session: String, cols: u16, rows: 
 #[tauri::command]
 pub fn close_session(state: State<AppState>, session: String) {
     state.pty.kill(&session);
+    crate::transcripts::forget(&session);
 }
 
 #[tauri::command]
@@ -1581,6 +1582,133 @@ pub fn last_context(content: &str) -> Option<u64> {
     ctx
 }
 
+/// The three names a transcript can carry, newest of each kind.
+///
+/// `custom` is what a person typed inside Claude Code, `ai` is what Claude Code
+/// generated, `prompt` is the opening prompt echoed back. All three are already
+/// sanitised; a field that sanitises to nothing is `None`, never `Some("")`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TranscriptTitle {
+    /// `custom-title` / `customTitle` — renamed inside Claude Code.
+    pub custom: Option<String>,
+    /// `ai-title` / `aiTitle`.
+    pub ai: Option<String>,
+    /// `last-prompt` / `lastPrompt` — a primary path, not a corner: measured
+    /// across 96 transcripts, 23% never get a title of either other kind.
+    pub prompt: Option<String>,
+}
+
+/// Which of the three a displayed title came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleSource {
+    Custom,
+    Ai,
+    Prompt,
+}
+
+impl TranscriptTitle {
+    /// The name to show, and where it came from: `custom` → `ai` → `prompt`.
+    ///
+    /// `custom` outranks `ai` because Claude Code stops emitting `ai-title` once a
+    /// conversation is renamed inside it — for 13 of 96 measured transcripts
+    /// `customTitle` is the only name on disk. The two never appear in one file, so
+    /// the ordering is insurance, and it is the direction that respects a
+    /// deliberate human rename.
+    ///
+    /// One place, so the "never an empty string" guarantee is testable once.
+    pub fn resolved(&self) -> Option<(String, TitleSource)> {
+        let (t, src) = match (&self.custom, &self.ai, &self.prompt) {
+            (Some(t), _, _) => (t, TitleSource::Custom),
+            (_, Some(t), _) => (t, TitleSource::Ai),
+            (_, _, Some(t)) => (t, TitleSource::Prompt),
+            _ => return None,
+        };
+        Some((t.clone(), src))
+    }
+}
+
+/// Longest name we keep. The same string reaches `sessions.json`, a desktop
+/// notification body and a confirmation sentence, so it is capped once here.
+const TITLE_CAP: usize = 120;
+
+/// Strip control characters, collapse whitespace runs, trim, and cap at
+/// [`TITLE_CAP`] **characters**.
+///
+/// Chars, never bytes: 80% of real titles are Cyrillic and a byte cap splits a
+/// character. A whitespace control character (a newline inside `lastPrompt`, say)
+/// becomes a space rather than vanishing, so two words do not merge into one.
+fn sanitise_title(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut kept = 0usize;
+    let mut space = false;
+    for ch in raw.chars() {
+        if kept == TITLE_CAP {
+            break;
+        }
+        if ch.is_whitespace() {
+            // A leading run is dropped rather than remembered, which is the trim.
+            space = kept > 0;
+            continue;
+        }
+        if ch.is_control() {
+            continue;
+        }
+        if space {
+            out.push(' ');
+            kept += 1;
+            space = false;
+            if kept == TITLE_CAP {
+                break;
+            }
+        }
+        out.push(ch);
+        kept += 1;
+    }
+    // A separator can only be written before a character, so there is no trailing
+    // one to trim — except when the cap fell exactly on it.
+    let out = out.trim_end();
+    if out.is_empty() { None } else { Some(out.to_string()) }
+}
+
+/// The newest title line of each kind, scanning **backwards**.
+///
+/// Backwards because each line is re-appended constantly — median 27 occurrences
+/// per transcript, max 267 — so a parser taking the first hit reads a stale name;
+/// and because `str::Lines` is a `DoubleEndedIterator`, so with a cheap `contains`
+/// prefilter the walk stops at the first hit and costs 0.00 ms in the common case.
+///
+/// Not a tail read: one line in the corpus is 1,227,203 bytes, so a fixed window
+/// off the end can contain no newline at all.
+///
+/// Tolerant of what a file read mid-flush contains — non-JSON lines, a truncated
+/// last line, a title field of the wrong type.
+pub fn last_title_lines(content: &str) -> TranscriptTitle {
+    let mut t = TranscriptTitle::default();
+    for line in content.lines().rev() {
+        if t.custom.is_some() && t.ai.is_some() && t.prompt.is_some() {
+            break;
+        }
+        if !(line.contains("Title") || line.contains("lastPrompt")) {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for (slot, field) in [
+            (&mut t.custom, "customTitle"),
+            (&mut t.ai, "aiTitle"),
+            (&mut t.prompt, "lastPrompt"),
+        ] {
+            if slot.is_none() {
+                *slot = v[field].as_str().and_then(sanitise_title);
+            }
+        }
+    }
+    t
+}
+
 /// Locate the transcript file `<session_id>.jsonl` under any project dir.
 ///
 /// Scanning every project dir rather than deriving one from the workspace path
@@ -1636,31 +1764,119 @@ fn subagent_transcripts(transcript: &std::path::Path) -> Vec<std::path::PathBuf>
     out
 }
 
-/// `None` means the reading is unavailable — no transcript, or one that would
-/// not open. That is not the same as a session which has spent nothing, and
-/// reporting four zeroes for a file we never opened made a lost transcript look
-/// like an idle session. Transcripts do go missing under a running app: they are
-/// rotated, and entering a worktree moves them.
+/// Everything one poll tick wants to know about one session.
 ///
-/// A session that is present but has yet to make a request reports
-/// `context: None` with a zero `spend` — genuinely zero, and distinguishable.
+/// `SessionTokens` is wrapped rather than extended: it is the token reading and
+/// nothing else, and hanging a name off it would make a measurement carry a
+/// label. `tokens: None` keeps its own meaning — the reading is *unavailable*,
+/// which is not the same as a session that has spent nothing, and it is why a
+/// lost transcript hides the badge instead of drawing four zeroes.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SessionSnapshot {
+    pub tokens: Option<SessionTokens>,
+    /// Never `Some("")` — see `sanitise_title`. The `null` is the contract.
+    pub title: Option<String>,
+    #[serde(rename = "titleSource")]
+    pub title_source: Option<TitleSource>,
+}
+
+/// One read, one pass, both results — for every requested session at once.
+///
+/// Batched rather than per-session because the title and the token counts come
+/// from the same bytes: a titles-only command beside `session_tokens` would take
+/// the tick from N invokes to N+1 and parse every transcript twice.
+///
+/// **Every requested id gets an entry**, including ids with no transcript, whose
+/// entry carries `tokens: null` and no title. `tsconfig.json` has `strict: true`
+/// but not `noUncheckedIndexedAccess`, so a dropped key is typed as present on
+/// the TS side and becomes a runtime `undefined` with no compile error at the
+/// call site. A missing transcript is not an error.
 #[tauri::command(async)]
-pub fn session_tokens(session_id: String) -> Option<SessionTokens> {
-    let path = find_transcript(&session_id)?;
-    let main = std::fs::read_to_string(&path).ok()?;
-    let mut seen = std::collections::HashSet::new();
-    let mut spend = TokenUsage::default();
-    fold_usage_lines(&main, &mut seen, &mut spend);
-    let mut subagents = 0;
-    for sub in subagent_transcripts(&path) {
-        // One unreadable subagent understates the bill; it should not discard
-        // the main chain's figure along with it.
-        if let Ok(content) = std::fs::read_to_string(&sub) {
-            fold_usage_lines(&content, &mut seen, &mut spend);
-            subagents += 1;
+pub async fn session_snapshots(
+    session_ids: Vec<String>,
+) -> std::collections::HashMap<String, SessionSnapshot> {
+    // spawn_blocking per session, then join: the worst case is roughly max-of-N
+    // rather than sum-of-N, and the reads are file I/O on a runtime that already
+    // carries `rt-multi-thread`.
+    let jobs: Vec<_> = session_ids
+        .into_iter()
+        .map(|id| {
+            tokio::task::spawn_blocking(move || {
+                let snap = read_session_snapshot(&id);
+                (id, snap)
+            })
+        })
+        .collect();
+    let mut out = std::collections::HashMap::new();
+    for job in jobs {
+        if let Ok((id, snap)) = job.await {
+            out.insert(id, snap);
         }
     }
-    Some(SessionTokens { context: last_context(&main), spend, subagents })
+    out
+}
+
+/// The blocking half of [`session_snapshots`]: locate the transcript, read it
+/// once, and take every answer off that one buffer. A transcript that is missing
+/// or unreadable is an empty snapshot — no reading, no title.
+fn read_session_snapshot(session_id: &str) -> SessionSnapshot {
+    let path = match current_transcript(session_id) {
+        Some(p) => p,
+        None => return SessionSnapshot::default(),
+    };
+    let main = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return SessionSnapshot::default(),
+    };
+    snapshot_from_main(&main, &subagent_transcripts(&path))
+}
+
+/// Which file to read for a deck session: what Claude Code last reported through
+/// a hook, else the launch id's own filename.
+///
+/// The reported path is what makes `/clear` survivable — clearing mints a new
+/// session id and a new transcript, so the launch id stops naming the
+/// conversation the person is in. The filename scan stays as the fallback, and
+/// is still the answer for the whole of a restored tile's life until its first
+/// hook arrives.
+///
+/// The reported path is checked rather than trusted: it is a path from another
+/// program, and a transcript can be deleted between the hook and the tick.
+fn current_transcript(session_id: &str) -> Option<std::path::PathBuf> {
+    if let Some(reported) = crate::transcripts::get(session_id) {
+        let path = std::path::PathBuf::from(reported);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    find_transcript(session_id)
+}
+
+/// Every answer off the main transcript's one buffer, plus whatever the
+/// subagents spent. `seen` is threaded across all of them so one shared set of
+/// request ids deduplicates the lot.
+fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSnapshot {
+    let (title, title_source) = match last_title_lines(main).resolved() {
+        Some((t, src)) => (Some(t), Some(src)),
+        None => (None, None),
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut spend = TokenUsage::default();
+    fold_usage_lines(main, &mut seen, &mut spend);
+    let mut counted = 0;
+    for sub in subagents {
+        // One unreadable subagent understates the bill; it should not discard
+        // the main chain's figure along with it.
+        if let Ok(content) = std::fs::read_to_string(sub) {
+            fold_usage_lines(&content, &mut seen, &mut spend);
+            counted += 1;
+        }
+    }
+    SessionSnapshot {
+        tokens: Some(SessionTokens { context: last_context(main), spend, subagents: counted }),
+        title,
+        title_source,
+    }
 }
 
 #[cfg(test)]
@@ -2011,6 +2227,214 @@ branch refs/heads/feature/y\n";
         assert_eq!(sum_usage_lines(""), TokenUsage::default());
     }
 
+    /// A title line is re-appended constantly — median 27 occurrences per
+    /// transcript, max 267 — so taking the first hit reads a stale name.
+    #[test]
+    fn last_title_lines_takes_the_newest_ai_title() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"first name"}"#, "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":1}}}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"second name"}"#, "\n",
+        );
+        assert_eq!(last_title_lines(content).ai.as_deref(), Some("second name"));
+    }
+
+    #[test]
+    fn a_custom_title_outranks_an_ai_title() {
+        let content = concat!(
+            r#"{"type":"custom-title","customTitle":"what the person called it"}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":"what the model called it"}"#, "\n",
+        );
+        let t = last_title_lines(content);
+        assert_eq!(t.custom.as_deref(), Some("what the person called it"));
+        assert_eq!(t.ai.as_deref(), Some("what the model called it"));
+        assert_eq!(
+            t.resolved(),
+            Some(("what the person called it".to_string(), TitleSource::Custom)),
+            "a deliberate human rename wins, even though the two never coexist in practice",
+        );
+    }
+
+    #[test]
+    fn the_last_prompt_is_only_a_fallback() {
+        let prompt_only = r#"{"type":"last-prompt","lastPrompt":"собери отчёт"}"#;
+        assert_eq!(
+            last_title_lines(prompt_only).resolved(),
+            Some(("собери отчёт".to_string(), TitleSource::Prompt)),
+            "23% of sessions never get a title of another kind — this is a primary path",
+        );
+        let with_ai = format!("{prompt_only}\n{}\n", r#"{"type":"ai-title","aiTitle":"a name"}"#);
+        assert_eq!(
+            last_title_lines(&with_ai).resolved(),
+            Some(("a name".to_string(), TitleSource::Ai)),
+        );
+    }
+
+    #[test]
+    fn a_transcript_with_no_title_lines_yields_nothing() {
+        let content = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"hi"}}"#, "\n",
+            r#"{"type":"assistant","message":{"usage":{"input_tokens":10}}}"#, "\n",
+        );
+        assert_eq!(last_title_lines(content), TranscriptTitle::default());
+        assert_eq!(last_title_lines(content).resolved(), None);
+    }
+
+    #[test]
+    fn a_title_that_sanitises_to_nothing_is_none_not_empty() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"   "}"#, "\n",
+            r#"{"type":"custom-title","customTitle":""}"#, "\n",
+        );
+        let t = last_title_lines(content);
+        assert_eq!(t.ai, None, "whitespace only is absent, not an empty name");
+        assert_eq!(t.custom, None);
+        assert_eq!(t.resolved(), None);
+    }
+
+    #[test]
+    fn non_json_lines_are_skipped() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"a name"}"#, "\n",
+            "not json at all, but it does mention aiTitle", "\n",
+        );
+        assert_eq!(last_title_lines(content).ai.as_deref(), Some("a name"));
+    }
+
+    /// The file is read while Claude Code is writing it, so the last line can be
+    /// half a line.
+    #[test]
+    fn a_truncated_last_line_does_not_hide_the_previous_title() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"a name"}"#, "\n",
+            r#"{"type":"ai-title","aiTi"#,
+        );
+        assert_eq!(last_title_lines(content).ai.as_deref(), Some("a name"));
+    }
+
+    #[test]
+    fn an_oversized_title_is_capped_on_a_char_boundary() {
+        let long: String = "я".repeat(300);
+        let content = format!(r#"{{"type":"ai-title","aiTitle":"{long}"}}"#);
+        let name = last_title_lines(&content).ai.expect("a name");
+        assert_eq!(name.chars().count(), 120, "chars, never bytes");
+        assert!(name.len() > 120, "the cap is not a byte cap — Cyrillic is two bytes a char");
+        assert!(std::str::from_utf8(name.as_bytes()).is_ok(), "still valid UTF-8");
+    }
+
+    #[test]
+    fn control_characters_and_newlines_are_stripped_from_a_title() {
+        // A `lastPrompt` carries whatever the person typed, newlines included; a
+        // BEL can reach a title through terminal output pasted into a prompt.
+        let content = r#"{"type":"last-prompt","lastPrompt":"first line\nsecond\tline\u0007"}"#;
+        let name = last_title_lines(content).prompt.expect("a name");
+        assert_eq!(name, "first line second line", "one line, whitespace runs collapsed");
+        assert!(!name.chars().any(char::is_control), "no control character survives");
+    }
+
+    /// A single fixture, both facts. A future split back into two reads — one for
+    /// the tokens, one for the title — fails here.
+    #[test]
+    fn usage_and_title_come_from_one_pass_over_one_buffer() {
+        let content = [
+            turn("msg_one", 10, 5, 0, 0, &["text"]),
+            r#"{"type":"ai-title","aiTitle":"Отчёт по продажам"}"#.to_string(),
+        ]
+        .join("\n");
+        let snap = snapshot_from_main(&content, &[]);
+        let tokens = snap.tokens.expect("a reading");
+        assert_eq!(tokens.spend.input, 10);
+        assert_eq!(tokens.spend.output, 5);
+        assert_eq!(snap.title.as_deref(), Some("Отчёт по продажам"));
+        assert_eq!(snap.title_source, Some(TitleSource::Ai));
+    }
+
+    /// `tsconfig.json` has `strict: true` but not `noUncheckedIndexedAccess`, so a
+    /// dropped key is typed as present on the TS side and becomes a runtime
+    /// `undefined` with no compile error at the call site.
+    #[tokio::test]
+    async fn every_requested_session_gets_an_entry() {
+        let ids: Vec<String> = ["no-such-a", "no-such-b", "no-such-c"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let out = session_snapshots(ids.clone()).await;
+        assert_eq!(out.len(), 3);
+        for id in &ids {
+            assert!(out.contains_key(id), "{id} was dropped from the batch");
+        }
+    }
+
+    /// The whole point of the reported path: after `/clear` the launch id names
+    /// a file that will never grow again, and the tile has to follow the
+    /// conversation the person is actually in.
+    #[test]
+    fn a_reported_transcript_wins_over_the_launch_id_filename() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let cleared = dir.path().join("after-clear.jsonl");
+        std::fs::write(
+            &cleared,
+            [
+                turn("msg_after_clear", 7, 0, 0, 0, &["text"]),
+                r#"{"type":"ai-title","aiTitle":"The topic after clearing"}"#.to_string(),
+            ]
+            .join("\n"),
+        )
+        .expect("write");
+
+        let session = "sess-cleared-fixture";
+        crate::transcripts::record(session, cleared.to_str().expect("utf-8 path"));
+        assert_eq!(current_transcript(session).as_deref(), Some(cleared.as_path()));
+
+        let snap = read_session_snapshot(session);
+        assert_eq!(snap.title.as_deref(), Some("The topic after clearing"));
+        assert_eq!(snap.tokens.expect("a reading").spend.input, 7);
+        crate::transcripts::forget(session);
+    }
+
+    /// A path from another program, and a transcript can be deleted between the
+    /// hook and the tick — so it is checked, not trusted.
+    #[test]
+    fn a_reported_path_that_no_longer_exists_falls_back_to_the_scan() {
+        let session = "sess-vanished-fixture";
+        crate::transcripts::record(session, "/nowhere/at/all/gone.jsonl");
+        // No transcript under HOME for this id either, so the fallback finds
+        // nothing — the point is that it does not read the dead path.
+        assert_eq!(current_transcript(session), None);
+        assert_eq!(read_session_snapshot(session).title, None);
+        crate::transcripts::forget(session);
+    }
+
+    #[test]
+    fn a_session_nobody_reported_still_resolves_by_its_launch_id() {
+        // A restored tile, before its first hook: the filename scan is the only
+        // answer there is, and it must still be reached.
+        assert_eq!(current_transcript("sess-never-reported-fixture"), None);
+    }
+
+    #[tokio::test]
+    async fn a_missing_transcript_is_not_an_error() {
+        let out = session_snapshots(vec!["no-transcript-anywhere".to_string()]).await;
+        let snap = out.get("no-transcript-anywhere").expect("an entry");
+        // An entry, and an empty one: `tokens: None` says the reading is
+        // unavailable, which a tile draws as no badge rather than as four zeroes.
+        assert!(snap.tokens.is_none(), "unavailable, not zero");
+        assert_eq!(snap.title, None);
+        assert_eq!(snap.title_source, None);
+    }
+
+    #[test]
+    fn a_title_field_of_the_wrong_type_is_ignored() {
+        let content = concat!(
+            r#"{"type":"ai-title","aiTitle":"a name"}"#, "\n",
+            r#"{"type":"ai-title","aiTitle":{"text":"an object"}}"#, "\n",
+            r#"{"type":"custom-title","customTitle":42}"#, "\n",
+        );
+        let t = last_title_lines(content);
+        assert_eq!(t.ai.as_deref(), Some("a name"), "the wrong type is skipped, not fatal");
+        assert_eq!(t.custom, None);
+    }
+
     /// The exact arithmetic behind a terminal reading of 83 682, from the last
     /// request of a real session. The `output` term is the one a reimplementation
     /// tends to drop.
@@ -2340,10 +2764,11 @@ branch refs/heads/feature/y\n";
     /// Not a style list — a list of things fast enough that arrival order is worth
     /// more than the microseconds, plus the four session commands where arrival
     /// order *is* the feature. The reasoning is at the top of this file.
-    /// `session_tokens` used to sit here as "one file read". It now opens a
-    /// session's transcript *and* every subagent transcript beside it — fifty of
-    /// them on a delegation-heavy session — so it carries `(async)` like
-    /// everything else that does real I/O.
+    /// `session_tokens` used to sit here as "one file read". Its successor
+    /// `session_snapshots` opens a transcript *and* every subagent transcript
+    /// beside it — fifty of them on a delegation-heavy session — for every open
+    /// session at once, so it carries `(async)` like everything else that does
+    /// real I/O.
     const MAIN_THREAD_COMMANDS: [&str; 13] = [
         "list_workspaces",
         "save_workspace",
