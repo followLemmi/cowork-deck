@@ -298,11 +298,13 @@ const boot = () => runBoot({
       const missedAt = catchUp
         ? new Date(occurrenceMs).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
         : undefined;
-      void handleScheduledFire(skillId, missedAt).then(async (outcome) => {
+      void handleScheduledFire(skillId, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
         if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
         // Tell the backend what came of it: an occurrence it emitted counts as
-        // a run only once a session has actually started.
-        await scheduleAck(skillId, occurrenceMs, outcome).catch((e) =>
+        // a run only once a session has actually started. Anything else also
+        // becomes a `failed-to-launch` record in the run journal — "the
+        // schedule silently did nothing" is what people open a history to find.
+        await scheduleAck(skillId, occurrenceMs, outcome, workspaceId).catch((e) =>
           console.warn("schedule ack failed:", skillId, e));
         // Show the outcome in the scenario row now, rather than at the next
         // minute tick — a skip or a refusal is what the user needs to see.
@@ -988,17 +990,35 @@ async function reopenPr(pr: PullRequest) {
  *  only logs it; a user-initiated run surfaces it in a modal. */
 type FireOutcome = "launched" | "skipped-overlap" | "no-workspace" | "not-scheduled";
 
+/** What a fire produced, and where. The workspace travels with the outcome
+ *  because `schedule_ack` turns anything but `launched` into a
+ *  `failed-to-launch` journal record, and that record has to know which
+ *  workspace it belongs to. `no-workspace` has none, by definition. */
+interface FireResult { outcome: FireOutcome; workspaceId: string | null }
+
 /** A scheduled scenario came due (from the backend scheduler or from the ⏰
  *  button): resolve it to a scenario + workspace, fill placeholder defaults (a
  *  scheduled run cannot ask) and launch it as a fresh tile. */
-async function handleScheduledFire(skillId: string, catchUpFor?: string): Promise<FireOutcome> {
+async function handleScheduledFire(
+  skillId: string,
+  /** Which path the fire came down. Both are journalled — the question a
+   *  history answers is "when did this scenario last run", not "who pressed
+   *  it" — and both are told apart, so the screen can filter one out. */
+  trigger: "schedule" | "runNow",
+  catchUpFor?: string,
+): Promise<FireResult> {
   const skill = skills.find(skillId);
-  if (!skill?.schedule?.enabled) return "not-scheduled";
+  if (!skill?.schedule?.enabled) return { outcome: "not-scheduled", workspaceId: null };
   const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
-  if (!res.ok) return res.reason;
+  if (!res.ok) return { outcome: res.reason, workspaceId: null };
   const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
-  const launched = await deck.launchScheduled(res.workspace, skill, filled, catchUpFor);
-  return launched ? "launched" : "skipped-overlap";
+  const launched = await deck.launchScheduled(res.workspace, skill, filled, trigger, catchUpFor);
+  return {
+    outcome: launched ? "launched" : "skipped-overlap",
+    // Carried even when nothing launched: a skipped fire still happened
+    // somewhere, and the history screen it lands on is scoped to one workspace.
+    workspaceId: res.workspace.id,
+  };
 }
 
 /** ⏰ button: run a scheduled scenario now, exactly as the schedule would. The
@@ -1006,7 +1026,7 @@ async function handleScheduledFire(skillId: string, catchUpFor?: string): Promis
  *  loop, so the regular occurrence still fires. Unlike a backend-driven fire,
  *  a click must say why nothing happened. */
 async function runScheduledNow(skill: Skill) {
-  const outcome = await handleScheduledFire(skill.id);
+  const { outcome } = await handleScheduledFire(skill.id, "runNow");
   if (outcome === "skipped-overlap") {
     await alertModal("Run skipped: the previous one is still active.");
   } else if (outcome === "no-workspace") {
@@ -1069,9 +1089,12 @@ async function requireWorkspace(): Promise<Workspace | null> {
 const launchScenario = async (skill: Skill) => {
   const ws = await requireWorkspace();
   if (!ws) return;
-  const prompt = await resolvePrompt(skill.prompt, placeholderForm);
-  if (prompt === null) return;
-  deck.launch(ws, { ...skill, prompt });
+  const resolved = await resolvePrompt(skill.prompt, placeholderForm);
+  if (resolved === null) return;
+  // The values go through as well as the text. The journal records what a run
+  // was launched with, so it can later be offered again with those values
+  // visible in the form rather than silently reapplied to today's branch.
+  void deck.launch(ws, { ...skill, prompt: resolved.prompt }, resolved.params);
 };
 const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null,
   (skill) => { void launchScenario(skill); },

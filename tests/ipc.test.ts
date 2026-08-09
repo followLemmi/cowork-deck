@@ -29,8 +29,26 @@ describe("ipc", () => {
     await startSession("s1", "/proj", "w1", "do the thing", "01AAA", 80, 24, false);
     expect(invoke).toHaveBeenCalledWith("start_session", {
       session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing",
-      taskId: "01AAA", cols: 80, rows: 24, resume: false,
+      taskId: "01AAA", cols: 80, rows: 24, resume: false, scenario: null,
     });
+  });
+
+  // The scenario half of a launch, and the only route by which anything reaches
+  // the run journal. A card, an issue or a bare "+ session" sends `null` here,
+  // which is what keeps the journal answering "what did my scenarios do" rather
+  // than "what did I run yesterday".
+  it("startSession carries the scenario a launch came from", async () => {
+    vi.mocked(invoke).mockResolvedValue({ account: null, degraded: null });
+    await startSession("s1", "/proj", "w1", "go", null, 80, 24, false, {
+      runId: "r1", skillId: "sk1", trigger: "manual", params: { branch: "dev" },
+      continuesRunId: null,
+    });
+    expect(invoke).toHaveBeenCalledWith("start_session", expect.objectContaining({
+      scenario: {
+        runId: "r1", skillId: "sk1", trigger: "manual", params: { branch: "dev" },
+        continuesRunId: null,
+      },
+    }));
   });
 
   it("startSession forwards the workspace id so the backend can resolve its account", async () => {
@@ -38,7 +56,7 @@ describe("ipc", () => {
     const auth = await startSession("s1", "/proj", "w1", null, null, 80, 24, false);
     expect(invoke).toHaveBeenCalledWith("start_session", {
       session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: null,
-      taskId: null, cols: 80, rows: 24, resume: false,
+      taskId: null, cols: 80, rows: 24, resume: false, scenario: null,
     });
     expect(auth).toEqual({ account: "followLemmi", degraded: null });
   });
@@ -61,7 +79,19 @@ describe("ipc", () => {
     await scheduleAck("s1", 1_700_000_000_000, "no-workspace");
     expect(invoke).toHaveBeenCalledWith("schedule_ack", {
       skillId: "s1", occurrenceMs: 1_700_000_000_000, outcome: "no-workspace",
+      workspaceId: null,
     });
+  });
+
+  // A fire that resolved a workspace and then skipped still happened
+  // somewhere, and the `failed-to-launch` record it produces lands on a screen
+  // scoped to one workspace.
+  it("scheduleAck carries the workspace a skipped fire resolved to", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await scheduleAck("s1", 1_700_000_000_000, "skipped-overlap", "w1");
+    expect(invoke).toHaveBeenCalledWith("schedule_ack", expect.objectContaining({
+      outcome: "skipped-overlap", workspaceId: "w1",
+    }));
   });
 
   it("updateTask sends only the fields named in the patch", async () => {

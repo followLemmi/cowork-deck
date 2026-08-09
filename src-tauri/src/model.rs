@@ -340,6 +340,26 @@ pub struct SessionEntry {
     /// placeholder staying generic until that session is closed.
     #[serde(rename = "nameKind", default, skip_serializing_if = "Option::is_none")]
     pub name_kind: Option<NameKind>,
+    /// Scenario this session was launched from, by **any** route — a click in
+    /// the sidebar, ⏰, or a schedule.
+    ///
+    /// Deliberately not `scheduled_skill_id` above, which means the narrower
+    /// "this tile was raised by a schedule" and is read by the overlap guard;
+    /// widening that one to cover every scenario launch would silently make the
+    /// guard skip hand-pressed runs. Without this field the backend cannot tell,
+    /// after a restart, that a restored tile is a scenario run at all — so the
+    /// `resume` record could never be opened.
+    ///
+    /// Read the NOTE on `task_id` before touching the rename.
+    #[serde(rename = "skillId", default, skip_serializing_if = "Option::is_none")]
+    pub skill_id: Option<String>,
+    /// The journal record this tile currently belongs to.
+    ///
+    /// Needed separately from `skill_id`, or `continuesRunId` degrades into
+    /// guessing "the previous run of this scenario" — which is wrong the moment
+    /// a scenario ran twice in one day.
+    #[serde(rename = "runId", default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 /// Which of the two kinds of launch name `SessionEntry::name` holds.
@@ -375,6 +395,24 @@ pub struct UiState {
     /// on disk predates it.
     #[serde(rename = "prDiffCols", default = "default_pr_diff_cols")]
     pub pr_diff_cols: u32,
+    /// Whether scenario runs are journalled at all. **Default on.**
+    ///
+    /// Off means: write nothing new, delete nothing already written. Reads keep
+    /// working, so turning it off does not hide the history already collected.
+    ///
+    /// `#[serde(default)]` for the reason spelled out above `ui_scale`, and this
+    /// field is the newest proof it was worth writing: every `ui_state.json` on
+    /// disk predates it, and a missing key on a non-`Option` fails the *whole*
+    /// parse — which `Store::ui_state` swallows, so the symptom would be the
+    /// active workspace silently forgotten rather than an error.
+    #[serde(rename = "recordScenarioRuns", default = "default_record_runs")]
+    pub record_scenario_runs: bool,
+}
+
+/// On. A journal nobody switched on records nothing, and the first thing anyone
+/// would ask of a history screen is why it is empty.
+fn default_record_runs() -> bool {
+    true
 }
 
 /// Must agree with the `width` on `.pr-drawer` in `src/styles.css`, which is the
@@ -403,6 +441,7 @@ impl Default for UiState {
             active_workspace_id: None,
             ui_scale: default_ui_scale(),
             pr_diff_cols: default_pr_diff_cols(),
+            record_scenario_runs: default_record_runs(),
         }
     }
 }
@@ -425,6 +464,8 @@ pub struct UiStatePatch {
     pub ui_scale: Option<f32>,
     #[serde(rename = "prDiffCols")]
     pub pr_diff_cols: Option<u32>,
+    #[serde(rename = "recordScenarioRuns")]
+    pub record_scenario_runs: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -620,6 +661,7 @@ mod tests {
         let entry = SessionEntry {
             session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
             task_id: None, scheduled_skill_id: None, user_name: None, name_kind: None,
+            skill_id: None, run_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
@@ -655,6 +697,7 @@ mod tests {
             session_id: "s3".into(), cwd: "/c".into(), name: "session · deck".into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: Some("relay".into()), name_kind: Some(NameKind::Placeholder),
+            skill_id: None, run_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""userName":"relay""#), "got {json}");
