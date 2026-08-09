@@ -123,6 +123,19 @@ fn main() {
             .skip_taskbar(true)
             .transparent(true)
             .visible(false)
+            // A status indicator must never take the keyboard. `show()` reaches
+            // `makeKeyAndOrderFront:`, and a focusable window duly becomes the
+            // *key* window — so every re-show stole the keyboard from the
+            // session the person was typing into, mid-question. `focusable(false)`
+            // makes `canBecomeKeyWindow` answer false: the pill still orders
+            // front, which is all it ever wanted.
+            //
+            // The pair matters: a window that cannot become key would otherwise
+            // swallow the first click into it, and the pill's only interaction
+            // *is* that first click (focus the next waiting session, plus the
+            // drag region). `accept_first_mouse` delivers it to the webview.
+            .focusable(false)
+            .accept_first_mouse(true)
             .build();
 
             Ok(())

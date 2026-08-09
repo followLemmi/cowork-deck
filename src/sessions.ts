@@ -141,6 +141,11 @@ export class Deck {
   /** The last layout `saveLayout` actually accepted, serialised. See
    *  `persistLayout`: a write that would change nothing is skipped. */
   private savedLayout: string | null = null;
+  /** The last count handed to `pill://count`, `null` before the first emit.
+   *  `renderList` runs on every state transition *and* on every poll tick, and
+   *  the pill answered each event by re-showing itself — every five seconds,
+   *  for as long as a session sat waiting for an answer. See `renderList`. */
+  private emittedWaiting: number | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private usage = new Map<string, SessionTokens>();
   private activeWorkspaceId: string | null = null;
@@ -1194,7 +1199,13 @@ export class Deck {
       : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
-    void emit("pill://count", { n: waiting });
+    // Only on a change. The header and title below are rebuilt regardless —
+    // they are this document's own DOM — but the event crosses into another
+    // window, and repeating it there is what stole the keyboard.
+    if (waiting !== this.emittedWaiting) {
+      this.emittedWaiting = waiting;
+      void emit("pill://count", { n: waiting });
+    }
     const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
