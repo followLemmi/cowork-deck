@@ -292,14 +292,7 @@ pub fn list_runs(
     skill_id: Option<String>,
 ) -> Vec<crate::runs::RunRecord> {
     let runs = { state.store.lock().unwrap().runs() };
-    runs.into_iter()
-        .filter(|r| match (&workspace_id, &r.workspace_id) {
-            (Some(want), Some(have)) => want == have,
-            (Some(_), None) => true,
-            (None, _) => true,
-        })
-        .filter(|r| skill_id.as_ref().is_none_or(|want| *want == r.skill_id))
-        .collect()
+    crate::runs::scoped(runs, workspace_id.as_deref(), skill_id.as_deref())
 }
 
 /// Erase one scenario's history. The only erasure there is — see

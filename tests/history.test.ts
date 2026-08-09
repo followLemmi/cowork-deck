@@ -1,0 +1,183 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi } from "vitest";
+import type { RunRecord, Skill } from "../src/ipc";
+import { HistoryView, type HistoryState } from "../src/history";
+
+const MIN = 60_000, HOUR = 60 * MIN;
+const NOW = new Date(2026, 7, 9, 12, 0).getTime();
+
+function rec(o: Partial<RunRecord> & Pick<RunRecord, "runId">): RunRecord {
+  return {
+    startedAt: NOW - HOUR, closedAt: NOW - HOUR + 5 * MIN, trigger: "manual", status: "ended",
+    skillId: "s1", name: "Nightly review", icon: "shield", workspaceId: "w1",
+    cwd: "/p", branch: "main", sessionId: "sess", params: {}, prompt: "go",
+    continuesRunId: null, transcriptPath: "/t/a.jsonl", cleared: false,
+    result: "all green", reason: null, tokens: null, resultSource: "transcript",
+    ...o,
+  };
+}
+
+const SKILLS: Skill[] = [
+  { id: "s1", name: "Nightly review", icon: "shield", prompt: "go", workspaceId: null },
+];
+
+function state(o: Partial<HistoryState> = {}): HistoryState {
+  return {
+    runs: [], anyRuns: true, workspaceName: "relay", recording: true,
+    filters: { skillId: null, trigger: null }, skills: SKILLS,
+    ...o,
+  };
+}
+
+function mount(o: Partial<HistoryState> = {}, handlers = {}) {
+  const view = new HistoryView({ onFilter: () => {}, onRecording: () => {}, ...handlers });
+  document.body.replaceChildren(view.mount);
+  view.render(state(o), NOW);
+  return view;
+}
+
+const text = () => document.body.textContent ?? "";
+
+describe("the history screen", () => {
+  it("says which workspace it is the history of", () => {
+    mount({ runs: [rec({ runId: "r" })] });
+    expect(document.querySelector(".hist-where")!.textContent).toBe("relay");
+  });
+
+  // The whole reason a record stores a name rather than a `skillId` to look one
+  // up by: a run of a scenario that has since been deleted still reads
+  // correctly, under the name it was launched with.
+  it("renders a deleted scenario's run under its snapshot name", () => {
+    mount({ runs: [rec({ runId: "r", skillId: "gone", name: "Tidy the changelog" })], skills: SKILLS });
+    expect(document.querySelector(".hist-name")!.textContent).toContain("Tidy the changelog");
+    // And the filter can still reach it, or those rows would be unfindable.
+    const options = [...document.querySelectorAll<HTMLOptionElement>('[data-fk="filter-skill"] option')];
+    expect(options.map((o) => o.value)).toContain("gone");
+    expect(options.find((o) => o.value === "gone")!.textContent).toContain("deleted");
+  });
+
+  it("puts every status on its own chip and its own rail", () => {
+    mount({
+      runs: [
+        rec({ runId: "a", status: "running" }),
+        rec({ runId: "b", status: "ended" }),
+        rec({ runId: "c", status: "error" }),
+        rec({ runId: "d", status: "interrupted" }),
+        rec({ runId: "e", status: "failed-to-launch" }),
+      ],
+    });
+    const rails = [...document.querySelectorAll<HTMLElement>(".hist-row")].map((r) => r.dataset.status);
+    expect(rails).toEqual(["running", "ended", "error", "interrupted", "failed-to-launch"]);
+    const chips = [...document.querySelectorAll(".run-state")].map((c) => c.className);
+    expect(new Set(chips).size).toBe(5);
+  });
+
+  // The run happening and the run producing nothing are different facts, and a
+  // blank space says the second while meaning the first.
+  it("reads a null result as an explicit sentence, never as an empty box", () => {
+    mount({ runs: [rec({ runId: "r", result: null, resultSource: "none", transcriptPath: null })] });
+    expect(document.querySelector(".hist-result")).toBeNull();
+    expect(document.querySelector(".hist-noresult")!.textContent).toContain("No transcript");
+  });
+
+  // Presenting the tail of a conversation as the whole of it is the one lie the
+  // marker exists to prevent.
+  it("says out loud when a result is only the tail after a /clear", () => {
+    mount({ runs: [rec({ runId: "r", cleared: true, result: "the last thing" })] });
+    expect(document.querySelector(".hist-cleared")!.textContent).toContain("/clear");
+    expect(document.querySelector(".hist-result")!.textContent).toBe("the last thing");
+  });
+
+  it("clamps a result and expands it in place", () => {
+    mount({ runs: [rec({ runId: "r", result: "a\nb\nc\nd\ne" })] });
+    const body = document.querySelector(".hist-result")!;
+    const toggle = document.querySelector<HTMLButtonElement>(".hist-expand")!;
+    expect(body.classList.contains("hist-result--clamped")).toBe(true);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    toggle.click();
+    expect(body.classList.contains("hist-result--clamped")).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  // A restart is one piece of work continued, not two unrelated runs. A flat
+  // list would show three rows in reverse order with nothing saying so.
+  it("draws a chain as one chain", () => {
+    mount({
+      runs: [
+        rec({ runId: "new", startedAt: NOW - MIN, continuesRunId: "old", trigger: "resume" }),
+        rec({ runId: "old", startedAt: NOW - HOUR }),
+        rec({ runId: "unrelated", startedAt: NOW - 2 * HOUR }),
+      ],
+    });
+    const chains = [...document.querySelectorAll(".hist-chain")];
+    expect(chains).toHaveLength(2);
+    expect(chains[0].querySelectorAll(".hist-row")).toHaveLength(2);
+    expect(chains[0].classList.contains("hist-chain--multi")).toBe(true);
+    expect(chains[0].textContent).toContain("2 runs");
+    // The earlier link is drawn quieter so the newest run is where the eye lands.
+    expect(chains[0].querySelectorAll(".hist-row")[1].classList.contains("hist-row--continued"))
+      .toBe(true);
+    expect(chains[1].classList.contains("hist-chain--multi")).toBe(false);
+  });
+
+  it("filters by scenario and by trigger through the handler", () => {
+    const onFilter = vi.fn();
+    mount({ runs: [rec({ runId: "r" })] }, { onFilter });
+
+    const bySkill = document.querySelector<HTMLSelectElement>('[data-fk="filter-skill"]')!;
+    bySkill.value = "s1";
+    bySkill.onchange!(new Event("change"));
+    expect(onFilter).toHaveBeenCalledWith({ skillId: "s1", trigger: null });
+
+    const byTrigger = document.querySelector<HTMLSelectElement>('[data-fk="filter-trigger"]')!;
+    byTrigger.value = "schedule";
+    byTrigger.onchange!(new Event("change"));
+    expect(onFilter).toHaveBeenCalledWith({ skillId: null, trigger: "schedule" });
+  });
+
+  it("arrives with the scenario filter already applied when it was opened from one", () => {
+    mount({
+      runs: [rec({ runId: "r" })],
+      filters: { skillId: "s1", trigger: null },
+    });
+    expect(document.querySelector<HTMLSelectElement>('[data-fk="filter-skill"]')!.value).toBe("s1");
+  });
+
+  it("offers the recording switch and reports it", () => {
+    const onRecording = vi.fn();
+    mount({ runs: [rec({ runId: "r" })], recording: true }, { onRecording });
+    const box = document.querySelector<HTMLInputElement>('[data-fk="record-toggle"]')!;
+    expect(box.checked).toBe(true);
+    box.checked = false;
+    box.onchange!(new Event("change"));
+    expect(onRecording).toHaveBeenCalledWith(false);
+  });
+
+  // An empty history with recording silently disabled is a bug report waiting
+  // to happen.
+  it("states that recording is off rather than leaving an unexplained void", () => {
+    mount({ runs: [], recording: false });
+    expect(text()).toContain("not being recorded");
+    // The switch is still there to turn back on — the sentence and the control
+    // in one place is the reason this lives here and not in a text-size dialog.
+    expect(document.querySelector('[data-fk="record-toggle"]')).not.toBeNull();
+  });
+
+  it("tells a new journal from a workspace with nothing in it", () => {
+    mount({ runs: [], anyRuns: false });
+    expect(text()).toContain("No scenario runs yet");
+    mount({ runs: [], anyRuns: true });
+    expect(text()).toContain("No scenario runs in relay");
+  });
+
+  // The list is rebuilt whenever a record opens or closes. Losing an expanded
+  // result on every scheduled fire would make the screen unreadable while
+  // anything is running.
+  it("keeps an expanded result expanded across a repaint", () => {
+    const view = mount({ runs: [rec({ runId: "r", result: "a\nb\nc\nd" })] });
+    document.querySelector<HTMLButtonElement>(".hist-expand")!.click();
+    view.render(state({ runs: [rec({ runId: "r", result: "a\nb\nc\nd" })] }), NOW);
+    expect(document.querySelector(".hist-result")!.classList.contains("hist-result--clamped"))
+      .toBe(false);
+  });
+});

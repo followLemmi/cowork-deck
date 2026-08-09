@@ -7,7 +7,10 @@ import {
   applyScale, broadcastScale, clampScale, currentScale, nextScale, prevScale, scaleLabel,
 } from "./ui-scale";
 import type { ViewName } from "./view";
-import { claudeAvailable, loadLayout, loadUiState, onScheduledFire, onSchedulerBroken, saveUiState, scheduleAck, schedulerReady } from "./ipc";
+import {
+  claudeAvailable, listRuns, loadLayout, loadUiState, onRunsChanged, onScheduledFire,
+  onSchedulerBroken, saveUiState, scheduleAck, schedulerReady,
+} from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
 import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
@@ -19,7 +22,7 @@ import {
   prWorktreePath, prWorktreeRemove,
   issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove,
 } from "./ipc";
-import type { MigrationOffer, PullRequest, StepId, Task } from "./ipc";
+import type { MigrationOffer, PullRequest, RunRecord, StepId, Task } from "./ipc";
 import { firstTerminal, isTerminal } from "./board-config";
 import { issuePrompt } from "./tasks";
 import { pollIntervalMs } from "./pr";
@@ -27,6 +30,8 @@ import {
   boardPollMs, CLOSED_PAGE_LIMIT, needsCloseConfirmation, needsTotals, nextPageLimit,
   repoFromIssueUrl, sourceOf, unavailableFrom,
 } from "./issues";
+import { HistoryView } from "./history";
+import type { RunFilters } from "./runs";
 import { PrView } from "./pr-view";
 import { DiffDrawer } from "./diff-drawer";
 import type { GhUnavailable } from "./gh-unavailable";
@@ -86,7 +91,9 @@ const boardBtn = document.createElement("button");
 boardBtn.textContent = "Board";
 const prBtn = document.createElement("button");
 prBtn.textContent = "Pull requests";
-views.append(termBtn, boardBtn, prBtn);
+const historyBtn = document.createElement("button");
+historyBtn.textContent = "History";
+views.append(termBtn, boardBtn, prBtn, historyBtn);
 viewbar.append(views);
 
 // The rest of the top bar: the wordmark on the left, the global actions on the
@@ -221,6 +228,60 @@ prEl.append(prView.mount, diffDrawer.live);
 boardEl.after(prEl);
 diffDrawer.attach(prEl, prView.mount);
 
+/* --- the scenario run history -------------------------------------------- */
+
+/** Which scenario and which trigger the screen is narrowed to. Held here rather
+ *  than inside the view because the sidebar's state dot sets it on the way in:
+ *  clicking a dot opens the screen already filtered to that scenario. */
+let runFilters: RunFilters = { skillId: null, trigger: null };
+/** Whether new runs are being journalled. Read once at boot and written by the
+ *  screen's own checkbox — the switch lives beside the sentence that explains
+ *  what being off looks like, rather than inside a text-size dialog whose own
+ *  doc comment argues against growing it casually. */
+let recordingRuns = true;
+
+const historyView = new HistoryView({
+  onFilter: (f) => { runFilters = f; void refreshHistory(); },
+  onRecording: (on) => {
+    recordingRuns = on;
+    // A patch, so it cannot take the active workspace or the text size with it.
+    saveUiState({ recordScenarioRuns: on })
+      .catch((e) => console.debug("run recording save failed", e));
+    void refreshHistory();
+  },
+});
+const historyEl = document.createElement("div");
+historyEl.id = "history";
+historyEl.classList.add("hidden");
+historyEl.append(historyView.mount);
+prEl.after(historyEl);
+
+/** Re-read the journal for the active workspace and repaint.
+ *
+ *  Scoped by the record's **own** `workspaceId`, in Rust — so a run of a
+ *  scenario pinned to nothing appears in the workspace it actually ran in, not
+ *  in all of them. A record with no workspace at all (a scheduled fire that
+ *  never resolved one) passes every filter, the way an orphaned tile stays
+ *  visible everywhere. */
+async function refreshHistory() {
+  const ws = workspaces.active;
+  let runs: RunRecord[] = [];
+  let all: RunRecord[] = [];
+  try {
+    runs = await listRuns(ws?.id ?? null, null);
+    // Asked separately so the empty state can tell "nothing has ever run" from
+    // "nothing ran here" — two different sentences with two different next
+    // steps, and only this call can distinguish them.
+    all = ws ? await listRuns(null, null) : runs;
+  } catch (e) {
+    console.debug("listRuns failed", e);
+  }
+  historyView.render({
+    runs, anyRuns: all.length > 0, workspaceName: ws?.name ?? null,
+    recording: recordingRuns, filters: runFilters, skills: skills.all,
+  }, Date.now());
+}
+
 let boardVisible = false;
 let boardTimer: ReturnType<typeof setTimeout> | null = null;
 let currentView: ViewName = "deck";
@@ -267,7 +328,8 @@ async function boardTick() {
 function setView(view: ViewName) {
   currentView = view;
   boardVisible = view === "board";
-  applyView({ deck: deckEl, board: boardEl, pr: prEl, termBtn, boardBtn, prBtn,
+  applyView({ deck: deckEl, board: boardEl, pr: prEl, history: historyEl,
+              termBtn, boardBtn, prBtn, historyBtn,
               terminalsOnly: [skMount, newBtn, listMount] },
              view);
   if (view === "board") {
@@ -284,10 +346,22 @@ function setView(view: ViewName) {
   // is looking at.
   if (view === "pr") void refreshPrs();
   else stopPrPolling();
+  // Always on entering, and only then: the screen re-reads on `runs://changed`
+  // while it is visible and does not poll at all. Opening it is a deliberate
+  // act, so the read is unconditional.
+  if (view === "history") void refreshHistory();
 }
 termBtn.onclick = () => setView("deck");
 boardBtn.onclick = () => setView("board");
 prBtn.onclick = () => setView("pr");
+historyBtn.onclick = () => setView("history");
+
+/** Open the history filtered to one scenario — what the sidebar's state dot
+ *  does, and the only thing it does. */
+function openHistoryFor(skill: Skill) {
+  runFilters = { skillId: skill.id, trigger: null };
+  setView("history");
+}
 
 const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
@@ -312,6 +386,14 @@ const boot = () => runBoot({
       });
     }).then(() => {}),
     () => onSchedulerBroken((message) => { void alertModal(message); }).then(() => {}),
+    // A record opened or closed. The sidebar's dot is repainted whatever screen
+    // is showing — it is the one always-visible reader of the journal, and a
+    // handful of events per run is not polling. The list re-reads only while it
+    // is on screen; nothing here runs on a timer.
+    () => onRunsChanged(() => {
+      void skills.refreshRuns();
+      if (currentView === "history") void refreshHistory();
+    }).then(() => {}),
     () => workspaces.load(),
     () => skills.load(),
     () => onTasksChanged((workspaceId) => {
@@ -1066,6 +1148,11 @@ const workspaces = new WorkspacesPanel(wsMount, (ws) => {
   // stale mark would land on whichever row happens to share the number.
   prView.setOpenDiff(null, null);
   if (currentView === "pr") void refreshPrs();
+  // The records on screen belong to the workspace that was active a moment ago.
+  // A run belongs to the workspace it actually happened in, so switching
+  // workspace switches what is listed — the same rule the other three screens
+  // already follow.
+  if (currentView === "history") void refreshHistory();
 }, () => {
   // A workspace was added, edited or deleted: its tracker root may have moved,
   // so re-point the watcher and re-read the sidebar counts.
@@ -1099,7 +1186,8 @@ const launchScenario = async (skill: Skill) => {
 const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null,
   (skill) => { void launchScenario(skill); },
   (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
-   () => workspaces.active?.name ?? null);
+   () => workspaces.active?.name ?? null,
+   (skill) => openHistoryFor(skill));
 // Deleting a workspace strands the scenarios pinned to it — the confirmation
 // says how many before it happens.
 workspaces.setSkillsSource(() => skills.all);
@@ -1160,6 +1248,7 @@ function paletteCommands(): Command[] {
     { id: "scenarios", title: "Scenarios: focus the sidebar list", run: () => focusRegion("sidebar") },
     { id: "board", title: "Open the task board", run: () => setView("board") },
     { id: "prs", title: "Open pull requests", run: () => setView("pr") },
+    { id: "history", title: "Open the scenario run history", run: () => setView("history") },
     { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
     { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
     // The two steps are direct commands because stepping is what a person wants
@@ -1250,6 +1339,7 @@ const COMMANDS: Record<string, () => void> = {
   "prev-region": () => cycleRegion(-1),
   "board": () => setView("board"),
   "prs": () => setView("pr"),
+  "history": () => setView("history"),
   "new-task": () => { void captureTask(); },
   "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
 };
@@ -1311,6 +1401,11 @@ async function bootWithStoredScale(): Promise<void> {
     // moment it first appears — set later, the first open would flash the
     // stylesheet's fallback.
     diffDrawer.setCols(ui.prDiffCols);
+    // Read before the screen can be opened. A default of `true` that turned out
+    // to be false would have the history screen say runs are being recorded
+    // while the backend writes nothing — the one thing its empty state exists
+    // to prevent.
+    recordingRuns = ui.recordScenarioRuns;
   } catch (e) {
     console.debug("ui state read failed, using the defaults", e);
   }

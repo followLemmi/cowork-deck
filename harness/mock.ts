@@ -77,6 +77,18 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     case "save_skill":
     case "remove_skill": return F.skills;
     case "load_schedule_state": return F.scheduleState;
+    // Both filters applied here exactly as Rust applies them, including the rule
+    // that a record with no workspace of its own passes every workspace filter.
+    // A mock that skipped either would show the screen data the app can never
+    // actually be handed — the caution the `pr_detail` case above already makes.
+    case "list_runs": {
+      const ws = args.workspaceId as string | null;
+      const sk = args.skillId as string | null;
+      return F.runs.filter((r) =>
+        (ws === null || r.workspaceId === null || r.workspaceId === ws)
+        && (sk === null || r.skillId === sk));
+    }
+    case "delete_skill_history": return null;
     case "schedule_ack": return null;
     case "scheduler_ready": return null;
     case "claude_available": return true;

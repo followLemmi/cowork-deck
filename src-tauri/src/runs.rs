@@ -461,6 +461,28 @@ pub fn retain_recent(records: Vec<RunRecord>, per_skill: usize) -> Vec<RunRecord
         .collect()
 }
 
+/// Narrow a journal to one workspace and/or one scenario.
+///
+/// Records with **no** `workspaceId` pass every workspace filter. An unpinned
+/// scenario whose scheduled fire never resolved a folder belongs to no
+/// workspace, and hiding it everywhere would hide precisely the failure worth
+/// seeing — the same rule the deck already applies to orphaned tiles.
+pub fn scoped(
+    records: Vec<RunRecord>,
+    workspace_id: Option<&str>,
+    skill_id: Option<&str>,
+) -> Vec<RunRecord> {
+    records
+        .into_iter()
+        .filter(|r| match (workspace_id, &r.workspace_id) {
+            (Some(want), Some(have)) => want == have,
+            (Some(_), None) => true,
+            (None, _) => true,
+        })
+        .filter(|r| skill_id.is_none_or(|want| want == r.skill_id))
+        .collect()
+}
+
 /// The final assistant message of a transcript, sanitised for display.
 ///
 /// Scanned **backwards**: the last assistant turn is at the end, and a
@@ -777,6 +799,46 @@ mod tests {
             let line = ev.to_line().unwrap();
             assert!(line.contains(&format!(r#""trigger":"{spelling}""#)), "{line}");
         }
+    }
+
+    /// The screen is scoped to one workspace, like every other screen in the
+    /// app — so a run of an unpinned scenario appears in the workspace it
+    /// actually ran in, not in all of them.
+    #[test]
+    fn scoping_narrows_to_one_workspace_and_one_scenario() {
+        let mut evs = Vec::new();
+        for (id, skill, ws) in [
+            ("a", "s1", Some("w1")),
+            ("b", "s2", Some("w1")),
+            ("c", "s1", Some("w2")),
+        ] {
+            let mut ev = started(id, skill, 1);
+            if let RunEvent::Started(e) = &mut ev {
+                e.workspace_id = ws.map(str::to_string);
+            }
+            evs.push(ev);
+        }
+        let all = fold_events(&journal(&evs));
+        let ids = |v: Vec<RunRecord>| v.into_iter().map(|r| r.run_id).collect::<Vec<_>>();
+        assert_eq!(ids(scoped(all.clone(), Some("w1"), None)), vec!["a", "b"]);
+        assert_eq!(ids(scoped(all.clone(), None, Some("s1"))), vec!["a", "c"]);
+        assert_eq!(ids(scoped(all.clone(), Some("w2"), Some("s1"))), vec!["c"]);
+        assert_eq!(ids(scoped(all, None, None)).len(), 3);
+    }
+
+    /// A scheduled fire that resolved no workspace belongs to none — and hiding
+    /// it everywhere would hide precisely the failure worth seeing. It passes
+    /// every workspace filter, the way an orphaned tile stays visible in every
+    /// deck.
+    #[test]
+    fn a_record_with_no_workspace_shows_up_under_every_one() {
+        let mut ev = started("homeless", "s1", 1);
+        if let RunEvent::Started(e) = &mut ev {
+            e.workspace_id = None;
+        }
+        let all = fold_events(&journal(&[ev]));
+        assert_eq!(scoped(all.clone(), Some("w1"), None).len(), 1);
+        assert_eq!(scoped(all, Some("w2"), None).len(), 1);
     }
 
     #[test]
