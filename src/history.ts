@@ -1,8 +1,9 @@
 import type { RunRecord, RunTrigger, Skill } from "./ipc";
 import { icon, SCENARIO_ICONS, type IconName } from "./icons";
 import {
-  agoLabel, chainRuns, durationLabel, emptyHistoryCopy, filterRuns, noResultReason,
-  RUN_STATUS_LABEL, RUN_TRIGGER_LABEL, runStatusClass, type RunFilters,
+  agoLabel, canJump, canRerun, canReveal, chainRuns, durationLabel, emptyHistoryCopy,
+  filterRuns, noResultReason, RUN_STATUS_LABEL, RUN_TRIGGER_LABEL, runStatusClass,
+  type ActionVerdict, type RunFilters,
 } from "./runs";
 
 export interface HistoryState {
@@ -15,19 +16,46 @@ export interface HistoryState {
   workspaceName: string | null;
   recording: boolean;
   filters: RunFilters;
-  /** Scenarios that currently exist, for the filter's own list. Records name
-   *  their scenario themselves, so this is only the picker's vocabulary — a
-   *  deleted scenario's rows still render under the name they ran with. */
+  /** Scenarios that currently exist, for the filter's own list and for whether
+   *  a row can be run again. Records name their scenario themselves, so this is
+   *  never where a row's *name* comes from — a deleted scenario's rows still
+   *  render under the name they ran with. */
   skills: Skill[];
+  /** Sessions with a live tile, so "jump to it" is offered only where there is
+   *  something to jump to. */
+  liveSessions: string[];
+  /** Workspaces that still exist, for the orphan case a re-run has to refuse. */
+  workspaceIds: string[];
 }
 
 export interface HistoryHandlers {
   onFilter: (f: RunFilters) => void;
+  /** Go to the tile this record is running in, switching workspace if it is
+   *  running in another one. */
+  onJump: (rec: RunRecord) => void;
+  /** Launch this record's scenario again — through the usual "Launch
+   *  parameters" form, with the recorded values visible. Never silent. */
+  onRerun: (rec: RunRecord, skill: Skill) => void;
+  /** Show the transcript in the file manager. Not an in-app viewer. */
+  onReveal: (rec: RunRecord) => void;
+  /** Erase one scenario's history, wholesale, after asking. */
+  onDeleteHistory: (skillId: string, name: string) => void;
   /** Turn recording on or off. The switch lives here rather than in
    *  `settingsDialog`: that dialog is a text-size chooser and its own doc
    *  comment argues against growing it casually, and this screen is already the
    *  one place that has to explain what being off looks like. */
   onRecording: (on: boolean) => void;
+}
+
+/** Refuse before the click, with the reason on the control itself.
+ *
+ *  `title` as well as `aria-describedby`-free plain text, because a disabled
+ *  button is not focusable and a tooltip is the only channel a mouse has. The
+ *  reason is also the accessible name's suffix, so a reader gets it too. */
+function disable(btn: HTMLButtonElement, verdict: { ok: false; reason: string }): void {
+  btn.disabled = true;
+  btn.title = verdict.reason;
+  btn.setAttribute("aria-label", `${btn.textContent} — ${verdict.reason}`);
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -80,7 +108,7 @@ export class HistoryView {
       return;
     }
     const list = el("div", "hist-list");
-    for (const chain of chainRuns(rows)) list.append(this.chain(chain.runs, now));
+    for (const chain of chainRuns(rows)) list.append(this.chain(chain.runs, now, state));
     this.mount.append(list);
     this.hideUselessToggles();
 
@@ -155,6 +183,22 @@ export class HistoryView {
 
     filters.append(bySkill, byTrigger, record);
     head.append(filters);
+
+    // Erasing is per scenario and wholesale, and it is offered only while the
+    // screen is narrowed to one — which is what makes it readable rather than a
+    // button somebody presses next to a list of everything. `SkillsPanel`'s row
+    // already carries four controls and its dot is an indicator; a destructive
+    // fifth there would sit one pixel from ▶.
+    const only = state.filters.skillId;
+    if (only !== null) {
+      const named = state.runs.find((r) => r.skillId === only);
+      if (named) {
+        const erase = el("button", "hist-erase", "Delete this scenario’s history");
+        erase.dataset.fk = "delete-history";
+        erase.onclick = () => this.handlers.onDeleteHistory(only, named.name);
+        head.append(erase);
+      }
+    }
     return head;
   }
 
@@ -175,10 +219,10 @@ export class HistoryView {
 
   /** One chain, folded: one line per run, grouped, so a restart does not read as
    *  an unrelated second run. `runs[0]` is the newest and describes the chain. */
-  private chain(runs: RunRecord[], now: number): HTMLElement {
+  private chain(runs: RunRecord[], now: number, state: HistoryState): HTMLElement {
     const box = el("div", "hist-chain");
     if (runs.length > 1) box.classList.add("hist-chain--multi");
-    for (const [i, rec] of runs.entries()) box.append(this.row(rec, now, i > 0));
+    for (const [i, rec] of runs.entries()) box.append(this.row(rec, now, i > 0, state));
     if (runs.length > 1) {
       const note = el("div", "hist-chain-note",
         `${runs.length} runs — this scenario was resumed after a restart.`);
@@ -187,7 +231,7 @@ export class HistoryView {
     return box;
   }
 
-  private row(rec: RunRecord, now: number, continued: boolean): HTMLElement {
+  private row(rec: RunRecord, now: number, continued: boolean, state: HistoryState): HTMLElement {
     const row = el("div", "hist-row");
     if (continued) row.classList.add("hist-row--continued");
     row.dataset.status = rec.status;
@@ -217,7 +261,46 @@ export class HistoryView {
       row.append(branch);
     }
 
-    row.append(this.result(rec));
+    row.append(this.result(rec), this.actions(rec, state));
+    return row;
+  }
+
+  /** Three actions, and deliberately no fourth.
+   *
+   *  None of them is destructive, and none of them edits or deletes a single
+   *  record: history is immutable, and a journal whose rows can be revised
+   *  answers nothing. Erasing exists at one granularity only — the whole of one
+   *  scenario's history, offered from the head above when the screen is narrowed
+   *  to that scenario. */
+  private actions(rec: RunRecord, state: HistoryState): HTMLElement {
+    const row = el("div", "hist-actions");
+    if (canJump(rec, state.liveSessions)) {
+      const jump = el("button", "hist-action", "Go to the session");
+      jump.dataset.fk = `jump-${rec.runId}`;
+      jump.onclick = () => this.handlers.onJump(rec);
+      row.append(jump);
+    }
+    const skill = state.skills.find((s) => s.id === rec.skillId);
+    // The scenario as it stands now, not as the record remembers it: whether it
+    // can run again is a fact about today.
+    const rerunOk = canRerun(
+      skill,
+      !skill?.workspaceId || state.workspaceIds.includes(skill.workspaceId),
+    );
+    const rerun = el("button", "hist-action", "Re-run…");
+    rerun.dataset.fk = `rerun-${rec.runId}`;
+    // The ellipsis is a promise: this opens the parameters form and launches
+    // nothing until it is confirmed.
+    if (rerunOk.ok) rerun.onclick = () => this.handlers.onRerun(rec, skill!);
+    else disable(rerun, rerunOk);
+    row.append(rerun);
+
+    const revealOk = canReveal(rec);
+    const reveal = el("button", "hist-action", "Reveal the transcript");
+    reveal.dataset.fk = `reveal-${rec.runId}`;
+    if (revealOk.ok) reveal.onclick = () => this.handlers.onReveal(rec);
+    else disable(reveal, revealOk);
+    row.append(reveal);
     return row;
   }
 

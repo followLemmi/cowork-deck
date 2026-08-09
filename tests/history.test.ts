@@ -25,12 +25,16 @@ function state(o: Partial<HistoryState> = {}): HistoryState {
   return {
     runs: [], anyRuns: true, workspaceName: "relay", recording: true,
     filters: { skillId: null, trigger: null }, skills: SKILLS,
+    liveSessions: [], workspaceIds: ["w1"],
     ...o,
   };
 }
 
 function mount(o: Partial<HistoryState> = {}, handlers = {}) {
-  const view = new HistoryView({ onFilter: () => {}, onRecording: () => {}, ...handlers });
+  const view = new HistoryView({
+    onFilter: () => {}, onRecording: () => {}, onJump: () => {}, onRerun: () => {},
+    onReveal: () => {}, onDeleteHistory: () => {}, ...handlers,
+  });
   document.body.replaceChildren(view.mount);
   view.render(state(o), NOW);
   return view;
@@ -179,5 +183,100 @@ describe("the history screen", () => {
     view.render(state({ runs: [rec({ runId: "r", result: "a\nb\nc\nd" })] }), NOW);
     expect(document.querySelector(".hist-result")!.classList.contains("hist-result--clamped"))
       .toBe(false);
+  });
+});
+
+describe("the row actions", () => {
+  const action = (kind: string, runId: string) =>
+    document.querySelector<HTMLButtonElement>(`[data-fk="${kind}-${runId}"]`);
+
+  it("offers the jump only for a running record with a live tile", () => {
+    const onJump = vi.fn();
+    mount({
+      runs: [
+        rec({ runId: "live", status: "running", sessionId: "s1", closedAt: null }),
+        rec({ runId: "over", status: "ended", sessionId: "s2" }),
+      ],
+      liveSessions: ["s1"],
+    }, { onJump });
+    expect(action("jump", "live")).not.toBeNull();
+    expect(action("jump", "over")).toBeNull();
+    action("jump", "live")!.click();
+    expect(onJump).toHaveBeenCalledWith(expect.objectContaining({ runId: "live" }));
+  });
+
+  // Re-run is offered as a form, never as a launch: the ellipsis is the promise
+  // and the handler is what keeps it.
+  it("hands a re-run its scenario as it stands now", () => {
+    const onRerun = vi.fn();
+    mount({ runs: [rec({ runId: "r" })] }, { onRerun });
+    action("rerun", "r")!.click();
+    expect(onRerun).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "r" }),
+      expect.objectContaining({ id: "s1" }),
+    );
+  });
+
+  it("disables the re-run of a deleted scenario, with the reason on the control", () => {
+    const onRerun = vi.fn();
+    mount({ runs: [rec({ runId: "r", skillId: "gone" })] }, { onRerun });
+    const btn = action("rerun", "r")!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toContain("deleted");
+    // A reader gets the reason too, not only a mouse.
+    expect(btn.getAttribute("aria-label")).toContain("deleted");
+    btn.click();
+    expect(onRerun).not.toHaveBeenCalled();
+  });
+
+  it("disables the re-run of a scenario whose workspace is gone", () => {
+    mount({
+      runs: [rec({ runId: "r" })],
+      skills: [{ id: "s1", name: "N", icon: "shield", prompt: "go", workspaceId: "w-deleted" }],
+      workspaceIds: ["w1"],
+    });
+    expect(action("rerun", "r")!.disabled).toBe(true);
+    expect(action("rerun", "r")!.title).toContain("workspace was deleted");
+  });
+
+  it("disables the reveal when there is no transcript to reveal", () => {
+    const onReveal = vi.fn();
+    mount({ runs: [rec({ runId: "r", transcriptPath: null })] }, { onReveal });
+    const btn = action("reveal", "r")!;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toContain("No transcript");
+    btn.click();
+    expect(onReveal).not.toHaveBeenCalled();
+  });
+
+  it("reveals the transcript when there is one", () => {
+    const onReveal = vi.fn();
+    mount({ runs: [rec({ runId: "r" })] }, { onReveal });
+    action("reveal", "r")!.click();
+    expect(onReveal).toHaveBeenCalledWith(expect.objectContaining({ runId: "r" }));
+  });
+
+  // History is immutable. Erasing exists at one granularity only, and it is
+  // offered only while the screen is narrowed to the scenario it would erase.
+  it("offers the erase only when narrowed to one scenario", () => {
+    const onDeleteHistory = vi.fn();
+    mount({ runs: [rec({ runId: "r" })] }, { onDeleteHistory });
+    expect(document.querySelector('[data-fk="delete-history"]')).toBeNull();
+
+    mount({
+      runs: [rec({ runId: "r" })], filters: { skillId: "s1", trigger: null },
+    }, { onDeleteHistory });
+    document.querySelector<HTMLButtonElement>('[data-fk="delete-history"]')!.click();
+    expect(onDeleteHistory).toHaveBeenCalledWith("s1", "Nightly review");
+  });
+
+  // No path in the UI edits or deletes an individual record: a row is a
+  // snapshot of what ran, and a journal whose rows can be revised answers
+  // nothing.
+  it("offers no way to edit or delete a single record", () => {
+    mount({ runs: [rec({ runId: "r" })] });
+    const labels = [...document.querySelectorAll(".hist-row button")]
+      .map((b) => (b.textContent ?? "").toLowerCase());
+    expect(labels.some((l) => l.includes("delete") || l.includes("edit"))).toBe(false);
   });
 });

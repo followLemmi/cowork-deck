@@ -478,6 +478,18 @@ const CASES = [
     threshold: TEXT, sc: "1.4.3",
   },
   {
+    what: "history row action",
+    where: "the three row controls, on their own inset ground inside a row",
+    fg: "--fg-mid", backdrop: ["--bg-void"], group: ["--bg-island", "--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history erase control",
+    where: "the one erasing control, on the screen's ground beside the filters",
+    fg: "--fg-mid", backdrop: ["--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
     what: "history workspace label",
     where: "which workspace the screen is scoped to, beside its heading",
     fg: "--fg-dim", backdrop: ["--bg-void"],

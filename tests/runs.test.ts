@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import type { RunRecord, RunStatus } from "../src/ipc";
 import {
-  agoLabel, chainRuns, durationLabel, emptyHistoryCopy, filterRuns, noResultReason,
-  RUN_STATUS_LABEL, RUN_TRIGGER_LABEL, runStatusClass,
+  agoLabel, canJump, canRerun, canReveal, chainRuns, durationLabel, emptyHistoryCopy,
+  filterRuns, noResultReason, reconcileParams, RUN_STATUS_LABEL, RUN_TRIGGER_LABEL,
+  runStatusClass,
 } from "../src/runs";
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -204,5 +205,61 @@ describe("noResultReason", () => {
     // owns those files' lifetime, so this is ordinary rather than a fault.
     expect(noResultReason(rec({ runId: "r", status: "ended", resultSource: "none" })))
       .toContain("transcript is gone");
+  });
+});
+
+describe("the three row actions", () => {
+  // Offered only where there is something to go to. A closed record has no live
+  // tile, and a `failed-to-launch` one never had a session at all.
+  it("offers a jump only for a running record with a live tile", () => {
+    expect(canJump(rec({ runId: "r", status: "running", sessionId: "s" }), ["s"])).toBe(true);
+    expect(canJump(rec({ runId: "r", status: "running", sessionId: "s" }), [])).toBe(false);
+    expect(canJump(rec({ runId: "r", status: "ended", sessionId: "s" }), ["s"])).toBe(false);
+    expect(canJump(rec({ runId: "r", status: "failed-to-launch", sessionId: null }), ["s"]))
+      .toBe(false);
+  });
+
+  // A deleted scenario is refused rather than silently recreated from the
+  // record's snapshot. Somebody removed it; the honest answer is to say so.
+  it("refuses to re-run a deleted scenario, in words", () => {
+    const verdict = canRerun(undefined, true);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toContain("deleted");
+  });
+
+  // The orphan case `isOrphan` already covers in the sidebar, with the wording
+  // that row already uses.
+  it("refuses when the scenario's workspace is gone", () => {
+    const verdict = canRerun({ workspaceId: "w-deleted" }, false);
+    expect(verdict.ok).toBe(false);
+    if (!verdict.ok) expect(verdict.reason).toContain("workspace was deleted");
+    // An unpinned scenario has no workspace to lose.
+    expect(canRerun({ workspaceId: null }, false).ok).toBe(true);
+    expect(canRerun({ workspaceId: "w1" }, true).ok).toBe(true);
+  });
+
+  // The record says what ran once, not what the scenario is now. A prompt
+  // edited since would otherwise be pre-filled wrong in exactly the fields
+  // somebody changed.
+  it("reconciles recorded values against the current template", () => {
+    const recorded = { branch: "release/3.2", gone: "stale" };
+    expect(reconcileParams(["branch", "brandNew"], recorded))
+      .toEqual({ branch: "release/3.2", brandNew: "" });
+    expect(reconcileParams([], recorded)).toEqual({});
+  });
+
+  // Claude Code owns those files and they legitimately disappear, so this is an
+  // ordinary "no" rather than a fault — and it is said before the click.
+  it("refuses to reveal a transcript it knows is not there", () => {
+    expect(canReveal(rec({ runId: "r" })).ok).toBe(true);
+    const never = canReveal(rec({ runId: "r", transcriptPath: null }));
+    expect(never.ok).toBe(false);
+    if (!never.ok) expect(never.reason).toContain("No transcript was ever reported");
+    // A path that could not be read when the run closed is a file already gone.
+    const gone = canReveal(rec({ runId: "r", closedAt: 1, resultSource: "none" }));
+    expect(gone.ok).toBe(false);
+    // A run still going has read nothing yet, which is not the same as a file
+    // that is missing — the path is there and the reveal will work.
+    expect(canReveal(rec({ runId: "r", closedAt: null, resultSource: "none" })).ok).toBe(true);
   });
 });

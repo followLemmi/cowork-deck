@@ -196,6 +196,94 @@ export function emptyHistoryCopy(o: {
   };
 }
 
+/* --- the three row actions ------------------------------------------------ */
+
+/** Whether an action is offered, and if not, the sentence the disabled control
+ *  carries. A refusal shown before the click beats one that arrives after it. */
+export type ActionVerdict = { ok: true } | { ok: false; reason: string };
+
+/** Whether there is a live tile to jump to.
+ *
+ *  Offered only while the record is `running` **and** its session still has a
+ *  tile. A closed record has nothing to go to, and a `failed-to-launch` one
+ *  never had a session at all. */
+export function canJump(rec: RunRecord, liveSessions: readonly string[]): boolean {
+  return rec.status === "running"
+    && rec.sessionId !== null
+    && liveSessions.includes(rec.sessionId);
+}
+
+/** Whether this run's scenario can be launched again.
+ *
+ *  `skill` is the scenario **as it stands now**, or undefined if it is gone;
+ *  `workspaceExists` is whether the workspace it is pinned to is still there.
+ *  Both are the caller's to resolve, which is what keeps this pure and keeps
+ *  `runs.ts` and `skills.ts` from importing each other.
+ *
+ *  A deleted scenario is refused rather than silently recreated from the
+ *  record's snapshot. The record holds the expanded prompt, so launching it as
+ *  a one-off would be possible — and would be a second concept ("a run that
+ *  belongs to no scenario") bolted on to make one button work. Somebody deleted
+ *  that scenario; the honest answer is to say so. */
+export function canRerun(
+  skill: { workspaceId?: string | null } | undefined,
+  workspaceExists: boolean,
+): ActionVerdict {
+  if (!skill) {
+    return {
+      ok: false,
+      reason: "This scenario has been deleted, so there is nothing to run again. "
+        + "The record keeps what it ran, but re-creating a scenario somebody removed "
+        + "is not something a history row should do.",
+    };
+  }
+  if (skill.workspaceId && !workspaceExists) {
+    return {
+      ok: false,
+      reason: "This scenario’s workspace was deleted — it cannot run. "
+        + "Open it for editing and pick a workspace.",
+    };
+  }
+  return { ok: true };
+}
+
+/** The values to offer when re-running, matched against the **current**
+ *  template's placeholders.
+ *
+ *  A placeholder the prompt no longer has is dropped; one it has gained comes up
+ *  empty. The record says what ran once, not what the scenario is now, and a
+ *  form pre-filled from a prompt that has since been edited would be quietly
+ *  wrong in exactly the fields somebody changed. */
+export function reconcileParams(
+  names: readonly string[],
+  recorded: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const n of names) out[n] = recorded[n] ?? "";
+  return out;
+}
+
+/** Whether the transcript can be revealed.
+ *
+ *  Claude Code owns those files and they legitimately disappear, so this is an
+ *  ordinary "no" rather than a fault. Two ways to know before trying: the record
+ *  never had a path, or it had one and could not be read at close — which is
+ *  precisely what `resultSource: "none"` on a closed record means. The file can
+ *  still go between the render and the click, and the backend refuses that too. */
+export function canReveal(rec: RunRecord): ActionVerdict {
+  if (rec.transcriptPath === null) {
+    return { ok: false, reason: "No transcript was ever reported for this run." };
+  }
+  if (rec.closedAt !== null && rec.resultSource === "none") {
+    return {
+      ok: false,
+      reason: "The transcript was already gone when this run finished — Claude Code owns "
+        + "those files and they do not last forever.",
+    };
+  }
+  return { ok: true };
+}
+
 /** What the row says about the result, when there is no result to show.
  *
  *  Never an empty line and never an empty string: the run happening and the run

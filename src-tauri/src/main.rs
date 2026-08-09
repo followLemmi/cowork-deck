@@ -204,6 +204,7 @@ fn main() {
             commands::load_schedule_state,
             commands::list_runs,
             commands::delete_skill_history,
+            commands::reveal_path,
             commands::start_command_session,
             commands::gh_status,
             commands::pr_list,

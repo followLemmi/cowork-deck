@@ -8,8 +8,8 @@ import {
 } from "./ui-scale";
 import type { ViewName } from "./view";
 import {
-  claudeAvailable, listRuns, loadLayout, loadUiState, onRunsChanged, onScheduledFire,
-  onSchedulerBroken, saveUiState, scheduleAck, schedulerReady,
+  claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
+  onScheduledFire, onSchedulerBroken, revealPath, saveUiState, scheduleAck, schedulerReady,
 } from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
 import type { Skill, Workspace } from "./ipc";
@@ -31,7 +31,7 @@ import {
   repoFromIssueUrl, sourceOf, unavailableFrom,
 } from "./issues";
 import { HistoryView } from "./history";
-import type { RunFilters } from "./runs";
+import { reconcileParams, type RunFilters } from "./runs";
 import { PrView } from "./pr-view";
 import { DiffDrawer } from "./diff-drawer";
 import type { GhUnavailable } from "./gh-unavailable";
@@ -43,7 +43,7 @@ import { openPalette } from "./palette";
 import { runBoot } from "./boot";
 import { appMark, iconButton, installSprite } from "./icons";
 import { openGithubScreen } from "./github-screen";
-import { resolvePrompt, fillPlaceholders } from "./placeholders";
+import { fillPlaceholders, parsePlaceholders, resolvePrompt } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
@@ -249,6 +249,19 @@ const historyView = new HistoryView({
       .catch((e) => console.debug("run recording save failed", e));
     void refreshHistory();
   },
+  onJump: (rec) => {
+    // The tile may live in another workspace — an unpinned scenario runs
+    // wherever it was launched — so this goes through the same path the pill
+    // and a notification click take, which switches workspace first.
+    if (rec.sessionId !== null && deck.focusSession(rec.sessionId)) setView("deck");
+    else void alertModal("That session is no longer open.");
+  },
+  onRerun: (rec, skill) => { void rerunScenario(rec, skill); },
+  onReveal: (rec) => {
+    if (rec.transcriptPath === null) return;
+    revealPath(rec.transcriptPath).catch((e) => void alertModal(String(e)));
+  },
+  onDeleteHistory: (skillId, name) => { void eraseHistory(skillId, name); },
 });
 const historyEl = document.createElement("div");
 historyEl.id = "history";
@@ -279,7 +292,57 @@ async function refreshHistory() {
   historyView.render({
     runs, anyRuns: all.length > 0, workspaceName: ws?.name ?? null,
     recording: recordingRuns, filters: runFilters, skills: skills.all,
+    liveSessions: deck.liveSessions(),
+    workspaceIds: workspaces.all.map((w) => w.id),
   }, Date.now());
+}
+
+/** Run a recorded scenario again.
+ *
+ *  An ordinary `manual` launch that opens its own record, deliberately **not**
+ *  chained through `continuesRunId`: that field means "this PTY resumed that
+ *  conversation", and a re-run is a fresh one.
+ *
+ *  The form opens with the recorded values in the fields and launches nothing
+ *  until it is confirmed. A scenario's parameters may name a branch, a target or
+ *  a person, and re-running one from history without showing what is in the
+ *  fields is how somebody re-runs yesterday's parameters against today's branch.
+ *  The values are matched against the *current* template first — the record is
+ *  not authoritative over a prompt that has been edited since. */
+async function rerunScenario(rec: RunRecord, skill: Skill) {
+  const target = skill.workspaceId
+    ? workspaces.all.find((w) => w.id === skill.workspaceId) ?? null
+    : workspaces.active;
+  if (!target) {
+    await alertModal(
+      "This scenario has no workspace available: pin it to one or pick a workspace.");
+    return;
+  }
+  const names = parsePlaceholders(skill.prompt);
+  let params: Record<string, string> = {};
+  if (names.length > 0) {
+    const filled = await placeholderForm(names, reconcileParams(names, rec.params));
+    if (filled === null) return;
+    params = filled;
+  }
+  await deck.launch(target, { ...skill, prompt: fillPlaceholders(skill.prompt, params) }, params);
+  setView("deck");
+}
+
+/** Erase one scenario's history — the only erasure there is, and it asks first
+ *  exactly as `Delete scenario?` does. There is no deleting of a single record:
+ *  a row is a snapshot of what ran, and a journal whose rows can be revised
+ *  answers nothing. */
+async function eraseHistory(skillId: string, name: string) {
+  if (!(await confirmModal(`Delete every recorded run of “${name}”?`))) return;
+  try {
+    await deleteSkillHistory(skillId);
+  } catch (e) {
+    await alertModal(`Could not delete the history: ${String(e)}`);
+    return;
+  }
+  await skills.refreshRuns();
+  await refreshHistory();
 }
 
 let boardVisible = false;

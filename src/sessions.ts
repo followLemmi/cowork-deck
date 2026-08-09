@@ -1021,6 +1021,25 @@ export class Deck {
     for (const t of this.tiles.values()) t.bcastCheck.checked = false;
   }
 
+  /** Go to a session wherever it is, switching workspace when it lives in
+   *  another one — a tile the deck is not currently showing cannot take focus,
+   *  and focusing it silently would look like the control did nothing.
+   *
+   *  Public because the history screen's "go to the session" needs exactly the
+   *  path the pill and the notification already take. Returns false when there
+   *  is no such tile: the caller decides whether that is worth saying. */
+  focusSession(session: string): boolean {
+    if (!this.tiles.has(session)) return false;
+    this.focusSessionAnywhere(session);
+    return true;
+  }
+
+  /** Sessions with a live tile, for callers deciding whether to offer a way to
+   *  one. Command tiles included: they are tiles. */
+  liveSessions(): string[] {
+    return [...this.tiles.keys()];
+  }
+
   private focusSessionAnywhere(session: string) {
     const tile = this.tiles.get(session);
     if (!tile) return;

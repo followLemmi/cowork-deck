@@ -89,6 +89,9 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
         && (sk === null || r.skillId === sk));
     }
     case "delete_skill_history": return null;
+    // Reveal is a real shell call in the app; the harness has no file manager
+    // and no transcripts, so it answers the way a missing file would.
+    case "reveal_path": throw new Error("The transcript is no longer there.");
     case "schedule_ack": return null;
     case "scheduler_ready": return null;
     case "claude_available": return true;

@@ -2629,6 +2629,31 @@ h6.md-head { font-size: var(--fs-sm); }
 .hist-noresult { font-size: var(--fs-xs); color: var(--fg-dim); margin: 0; font-style: italic; }
 .hist-cleared { font-size: var(--fs-xs); color: var(--st-waiting); margin: 0; line-height: var(--lh-body); }
 
+/* Three actions, and none of them destructive. Quiet by default — a history is
+   read far more often than acted on — and they stay in the DOM rather than
+   appearing on hover, so they are in the tab order and reachable by touch. */
+.hist-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: 2px; }
+.hist-action {
+  font-size: var(--fs-xs); color: var(--fg-mid); background: var(--bg-void);
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px var(--sp-2);
+  cursor: pointer;
+}
+.hist-action:hover:not(:disabled) { color: var(--fg); background: var(--bg-hover); }
+.hist-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The reason is on the control's own `title`, since a disabled button takes no
+   focus and a tooltip is the only channel a mouse has. `cursor: help` says there
+   is one to read. */
+.hist-action:disabled { cursor: help; }
+/* The one erasing control in the whole feature, and it only appears while the
+   screen is narrowed to the scenario it would erase. */
+.hist-erase {
+  font-size: var(--fs-xs); color: var(--fg-mid); background: none;
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px var(--sp-2);
+  cursor: pointer; margin-left: auto;
+}
+.hist-erase:hover { color: var(--st-error); border-color: var(--st-error); }
+.hist-erase:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
 .hist-empty { max-width: 64ch; padding: var(--sp-4) 0; }
 .hist-empty-title { font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--fg); margin: 0 0 var(--sp-2); }
 .hist-empty-body { font-size: var(--fs-sm); color: var(--fg-mid); line-height: var(--lh-body); margin: 0; }

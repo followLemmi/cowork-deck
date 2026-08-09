@@ -303,6 +303,49 @@ pub fn delete_skill_history(state: State<AppState>, skill_id: String) -> Result<
     store.delete_skill_history(&skill_id).map_err(|e| e.to_string())
 }
 
+/// The argv that shows `path` in the platform's file manager, selected.
+///
+/// **Reveal only.** Not `open <path>`, which would hand a `.jsonl` to whatever
+/// is registered for it — the point is to show somebody where the file is, not
+/// to launch something with it. Linux has no standard "select this file", so it
+/// gets the containing folder, which is the honest approximation rather than a
+/// silently different action.
+///
+/// Argv, never a shell string: the path comes off a record and may hold spaces,
+/// quotes or a newline, and there is no interpreter here for any of them to
+/// mean anything to.
+pub fn reveal_argv(path: &std::path::Path) -> (String, Vec<String>) {
+    let p = path.to_string_lossy().to_string();
+    if cfg!(target_os = "macos") {
+        ("open".into(), vec!["-R".into(), p])
+    } else if cfg!(windows) {
+        ("explorer".into(), vec![format!("/select,{p}")])
+    } else {
+        let dir = path.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or(p);
+        ("xdg-open".into(), vec![dir])
+    }
+}
+
+/// Show a run's transcript in the file manager.
+///
+/// Claude Code owns those files' lifetime and they legitimately disappear, so a
+/// missing one is an ordinary answer rather than a fault — and it is refused
+/// here as well as being disabled in the UI, because the file can go between
+/// the render and the click.
+#[tauri::command(async)]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_file() {
+        return Err("The transcript is no longer there.".into());
+    }
+    let (program, args) = reveal_argv(&p);
+    std::process::Command::new(&program)
+        .args(&args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open the file manager ({program}): {e}"))
+}
+
 /// The frontend calls this once, after its `schedule://fire` listener is
 /// attached, to release the scheduler loop's first tick.
 #[tauri::command]
@@ -1971,6 +2014,40 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reveal, never "open with". `open <path>` would hand a `.jsonl` to
+    /// whatever is registered for it; the point is to show somebody where the
+    /// file is. Argv rather than a shell string, so a path holding a space, a
+    /// quote or a newline is one argument and means nothing to any interpreter.
+    #[test]
+    fn revealing_selects_the_file_rather_than_opening_it() {
+        let path = std::path::Path::new("/home/u/.claude/projects/-p/a b'c.jsonl");
+        let (program, args) = reveal_argv(path);
+        if cfg!(target_os = "macos") {
+            assert_eq!(program, "open");
+            assert_eq!(args[0], "-R");
+            assert_eq!(args[1], "/home/u/.claude/projects/-p/a b'c.jsonl");
+        } else if cfg!(windows) {
+            assert_eq!(program, "explorer");
+            assert!(args[0].starts_with("/select,"), "{args:?}");
+        } else {
+            // No standard "select this file" on Linux, so the containing folder
+            // is the honest approximation rather than a silently different
+            // action on some other file.
+            assert_eq!(program, "xdg-open");
+            assert_eq!(args[0], "/home/u/.claude/projects/-p");
+        }
+    }
+
+    /// Claude Code owns those files and they legitimately disappear. The UI
+    /// disables the control where it can tell in advance; this covers the file
+    /// going between the render and the click.
+    #[test]
+    fn revealing_a_file_that_is_gone_refuses_rather_than_spawning_anything() {
+        let err = reveal_path("/nowhere/at/all/missing.jsonl".into())
+            .expect_err("a missing transcript must not reach the file manager");
+        assert!(err.contains("no longer there"), "{err}");
+    }
 
     #[test]
     fn session_env_carries_tracker_paths_when_configured() {
