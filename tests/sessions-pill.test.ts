@@ -63,31 +63,33 @@ describe("Deck — the pill count on the wire", () => {
   });
 
   // `renderList` runs on every state transition of every session and on every
-  // poll tick. Its own DOM is cheap to rebuild; the event is not, because the
-  // window at the other end re-shows itself and takes the keyboard with it.
-  it("says nothing when a re-render leaves the count where it was", async () => {
+  // poll tick, and says the count each time even when it has not moved. The
+  // pill window registers its listener asynchronously and drops what arrives
+  // before it is ready, so the repeat is the only way an early count lands at
+  // all — and the pill no longer re-shows itself on hearing it.
+  it("repeats the count on a re-render that left it where it was", async () => {
     const { deck, emitState } = await makeDeck();
     await deck.launch(WS as never, null);
     await deck.launch(WS as never, null);
-    const [a, b] = [...(deck as never as { tiles: Map<string, unknown> }).tiles.keys()];
+    const [a, b] = [...(deck as unknown as { tiles: Map<string, unknown> }).tiles.keys()];
 
     emitState(a, "waitingInput");
     emitState(b, "working"); // re-renders the list, one session still waiting
 
-    expect(counts()).toEqual([0, 1]);
+    expect(counts().slice(-2)).toEqual([1, 1]);
   });
 
-  it("reports every count that actually changed", async () => {
+  it("reports every count that changed", async () => {
     const { deck, emitState } = await makeDeck();
     await deck.launch(WS as never, null);
     await deck.launch(WS as never, null);
-    const [a, b] = [...(deck as never as { tiles: Map<string, unknown> }).tiles.keys()];
+    const [a, b] = [...(deck as unknown as { tiles: Map<string, unknown> }).tiles.keys()];
 
     emitState(a, "waitingInput");
     emitState(b, "waitingInput");
     emitState(a, "working");
     emitState(b, "working");
 
-    expect(counts()).toEqual([0, 1, 2, 1, 0]);
+    expect(counts().slice(-4)).toEqual([1, 2, 1, 0]);
   });
 });

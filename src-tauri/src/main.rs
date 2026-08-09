@@ -18,6 +18,7 @@ use commands::AppState;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
+use tauri_plugin_window_state::StateFlags;
 
 fn reporter_name() -> &'static str {
     if cfg!(windows) { "cowork_report.exe" } else { "cowork_report" }
@@ -66,7 +67,18 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Geometry survives a restart; visibility does not. The plugin's restore
+        // runs `show()` *and* `set_focus()` on every window it manages, and it
+        // does so for a window with no saved entry too — so the pill, hidden by
+        // default and up only while a session waits, arrived blank and holding
+        // the keyboard at every launch. Whether the pill is up is the deck's
+        // answer to give (`pill://count`, see src/pill.ts); the plugin is here to
+        // remember where the person dragged it to.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
@@ -111,7 +123,7 @@ fn main() {
             // window shown/hidden via the `pill://count` event (see src/pill.ts).
             // Transparent + always-on-top confirmed working on macOS with
             // macOSPrivateApi + the `macos-private-api` Cargo feature (spike).
-            let _ = tauri::WebviewWindowBuilder::new(
+            let pill = tauri::WebviewWindowBuilder::new(
                 app,
                 "pill",
                 tauri::WebviewUrl::App("pill.html".into()),
@@ -134,9 +146,21 @@ fn main() {
             // swallow the first click into it, and the pill's only interaction
             // *is* that first click (focus the next waiting session, plus the
             // drag region). `accept_first_mouse` delivers it to the webview.
+            //
+            // Both calls are cross-platform in Tauri, but only the first has an
+            // effect off macOS: on Linux `focusable(false)` becomes
+            // `gtk_window_set_accept_focus(false)` and `accept_first_mouse` is a
+            // no-op, so whether the click still reaches the webview there is
+            // down to the compositor and has not been tried on a Linux machine.
             .focusable(false)
             .accept_first_mouse(true)
             .build();
+            // Without the pill there is no waiting indicator at all, and every
+            // `pill://count` afterwards goes nowhere — worth a line to diagnose
+            // it by rather than a silently discarded `Result`.
+            if let Err(e) = pill {
+                eprintln!("error: failed to create the status pill window ({e})");
+            }
 
             Ok(())
         })
