@@ -1194,6 +1194,12 @@ export class Deck {
       : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
+    // Sent on every render, unchanged count included. The pill window registers
+    // its listener asynchronously, and an event that arrives before it is ready
+    // is dropped rather than queued — re-sending is the only way back from that,
+    // and from a send that failed. Repeating is free now that the pill asks the
+    // window before showing itself (src/pill.ts); it was the unconditional
+    // `show()` at the other end, not this line, that stole the keyboard.
     void emit("pill://count", { n: waiting });
     const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
