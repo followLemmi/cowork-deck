@@ -1,7 +1,11 @@
-import { listSkills, saveSkill, removeSkill, loadScheduleState, type ScheduleRun, type Skill } from "./ipc";
+import {
+  listRuns, listSkills, saveSkill, removeSkill, loadScheduleState,
+  type RunRecord, type ScheduleRun, type Skill,
+} from "./ipc";
 import { confirmModal } from "./modal";
 import { skillForm } from "./forms";
 import { scheduleRowText } from "./schedule";
+import { RUN_STATUS_LABEL, agoLabel, runStatusClass } from "./runs";
 import { icon, iconButton, SCENARIO_ICONS, type IconName } from "./icons";
 
 /** A scenario pinned to a workspace that no longer exists. It cannot run —
@@ -50,9 +54,18 @@ export class SkillsPanel {
      *  pinned to a deleted one. Defaults to "unknown", which marks nothing. */
     private getWorkspaceIds: () => string[] = () => [],
     private getActiveWorkspaceName: () => string | null = () => null,
+    /** Open the history screen filtered to this scenario. The dot is an
+     *  indicator, not a launcher: this row has learned that lesson once
+     *  already, when a single ⏰ was both a status badge and a real launch and
+     *  reaching for information started a session. */
+    private onOpenHistory: (skill: Skill) => void = () => {},
   ) {}
 
   private runs: Record<string, ScheduleRun> = {};
+  /** The newest journal record per scenario, whichever workspace it ran in —
+   *  the dot answers "what happened last time", and a scenario pinned to no
+   *  workspace runs wherever it was launched. */
+  private lastRun: Record<string, RunRecord> = {};
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   async load() {
@@ -67,15 +80,37 @@ export class SkillsPanel {
   }
 
   /** Re-read what the backend knows about past runs, then repaint. Called on
-   *  load and after every fire, so an outcome shows up without a restart. */
+   *  load, after every fire, and whenever a record opens or closes.
+   *
+   *  Two sources, and they answer different questions.
+   *  `schedule_state.json` is the scheduler's **gate** — when the next
+   *  occurrence is, and whether one was already attempted — and it stays that.
+   *  What actually happened comes from the run journal now: `lastOutcome` only
+   *  ever knew about scheduled fires, so a scenario run by hand had no outcome
+   *  to show at all. */
   async refreshRuns() {
     try {
       this.runs = await loadScheduleState();
     } catch (e) {
       console.debug("loadScheduleState failed", e);
     }
+    try {
+      // Newest first, so the first record naming a scenario is its latest run.
+      const recent: Record<string, RunRecord> = {};
+      for (const r of await listRuns(null, null)) {
+        if (!(r.skillId in recent)) recent[r.skillId] = r;
+      }
+      this.lastRun = recent;
+    } catch (e) {
+      console.debug("listRuns failed", e);
+    }
     this.render();
   }
+
+  /** The record the dot is drawn from. Exposed because clicking the dot has to
+   *  land on that same record, and the history screen is scoped to one
+   *  workspace while this is scoped to none. */
+  lastRunOf(id: string): RunRecord | null { return this.lastRun[id] ?? null; }
 
   find(id: string): Skill | undefined { return this.items.find((s) => s.id === id); }
   get all(): Skill[] { return this.items; }
@@ -136,18 +171,39 @@ export class SkillsPanel {
         now.onclick = () => this.onRunScheduled(s);
       }
 
+      // A state dot for the last run, and nothing more. It follows the name —
+      // which is itself the launcher — and its 24px button is mostly
+      // transparent padding, so the 10px it draws stands clear of everything
+      // that starts a session. An indicator that launched something is the
+      // exact mistake the ⏰ button was split in two to undo. Absent until the
+      // scenario has run at all: a dot with no state to show would be a
+      // decoration.
+      const last = this.lastRun[s.id];
+      let dot: HTMLButtonElement | null = null;
+      if (last) {
+        dot = document.createElement("button");
+        dot.className = `sk-dot ${runStatusClass(last.status)}`;
+        dot.type = "button";
+        const label = `Last run: ${RUN_STATUS_LABEL[last.status]}, ${agoLabel(last.startedAt, Date.now())}`;
+        dot.title = `${label} — open this scenario's history`;
+        dot.setAttribute("aria-label", `${label}. Open this scenario's history.`);
+        dot.onclick = () => this.onOpenHistory(s);
+      }
+
       const edit = iconButton("pencil", `Edit scenario: ${s.name}`, "sk-edit");
       edit.onclick = () => this.edit(s.id);
       const x = iconButton("trash", `Delete scenario: ${s.name}`, "sk-del btn--icon--danger");
       x.onclick = () => this.del(s.id);
-      row.append(run, ...(now ? [now] : []), edit, x);
+      row.append(run, ...(dot ? [dot] : []), ...(now ? [now] : []), edit, x);
       this.mount.appendChild(row);
       if (sched) {
         // Visible text, not a title attribute: a tooltip is unreachable from
         // the keyboard and does not survive a stale render.
         const line = document.createElement("div");
         line.className = sched.enabled ? "sk-sched" : "sk-sched sk-sched-off";
-        line.textContent = scheduleRowText(sched, this.runs[s.id] ?? null, new Date());
+        line.textContent = scheduleRowText(
+          sched, this.runs[s.id] ?? null, new Date(), this.lastRun[s.id] ?? null,
+        );
         this.mount.appendChild(line);
       }
       if (orphan) {
