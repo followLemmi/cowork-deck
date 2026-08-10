@@ -254,15 +254,66 @@ pub fn schedule_ack(
     skill_id: String,
     occurrence_ms: i64,
     outcome: String,
+    // The workspace the fire resolved to, when it resolved to one. A
+    // `skipped-overlap` happened somewhere, and the history screen is
+    // workspace-scoped; `no-workspace` has none by definition and says so.
+    workspace_id: Option<String>,
 ) -> Result<(), String> {
+    // The gate here is `schedule_state.json`, which stays what it always was — a
+    // gate, not a log: it is read and written every tick and must remember
+    // attempts that launched nothing, and deriving "did we already fire" by
+    // scanning the journal would be both slower and semantically wrong.
+    {
+        let store = state.store.lock().unwrap();
+        let mut st = store.schedule_state();
+        let Some(updated) = crate::scheduler::apply_ack(st.get(&skill_id), occurrence_ms, &outcome)
+        else {
+            return Ok(());
+        };
+        st.insert(skill_id.clone(), updated);
+        store.save_schedule_state(&st).map_err(|e| e.to_string())?;
+    }
+    // A fire that launched nothing gets a record of its own — but only once the
+    // ack has been accepted. An ack `apply_ack` drops as stale or replayed is not
+    // an event that happened twice, and a journal that disagreed with the gate
+    // would report the same failed occurrence again on every retry.
+    if outcome != "launched" {
+        crate::run_journal::failed_to_launch(&skill_id, workspace_id.as_deref(), &outcome);
+    }
+    Ok(())
+}
+
+/// The run journal, newest first, optionally narrowed.
+///
+/// Both filters are applied here rather than in the frontend so that the screen
+/// and the sidebar's state dot ask the same question of the same code. Records
+/// with **no** `workspaceId` pass every workspace filter: an unpinned scenario
+/// whose scheduled fire never resolved a folder belongs to no workspace, and
+/// hiding it everywhere would hide precisely the failure worth seeing — the same
+/// rule the deck already applies to orphaned tiles.
+#[tauri::command(async)]
+pub fn list_runs(
+    state: State<AppState>,
+    workspace_id: Option<String>,
+    skill_id: Option<String>,
+) -> Vec<crate::runs::RunRecord> {
+    let runs = { state.store.lock().unwrap().runs() };
+    runs.into_iter()
+        .filter(|r| match (&workspace_id, &r.workspace_id) {
+            (Some(want), Some(have)) => want == have,
+            (Some(_), None) => true,
+            (None, _) => true,
+        })
+        .filter(|r| skill_id.as_ref().is_none_or(|want| *want == r.skill_id))
+        .collect()
+}
+
+/// Erase one scenario's history. The only erasure there is — see
+/// `Store::delete_skill_history`.
+#[tauri::command(async)]
+pub fn delete_skill_history(state: State<AppState>, skill_id: String) -> Result<(), String> {
     let store = state.store.lock().unwrap();
-    let mut st = store.schedule_state();
-    let Some(updated) = crate::scheduler::apply_ack(st.get(&skill_id), occurrence_ms, &outcome)
-    else {
-        return Ok(());
-    };
-    st.insert(skill_id, updated);
-    store.save_schedule_state(&st).map_err(|e| e.to_string())
+    store.delete_skill_history(&skill_id).map_err(|e| e.to_string())
 }
 
 /// The frontend calls this once, after its `schedule://fire` listener is
@@ -1304,6 +1355,10 @@ pub fn start_session(
     cols: u16,
     rows: u16,
     resume: bool,
+    // Set when this launch comes from a scenario, by any route. Absent for a
+    // card, an issue, a pull request or a bare "+ session" — the journal
+    // answers "what did my scenarios do", not "what did I run yesterday".
+    scenario: Option<crate::run_journal::ScenarioLaunch>,
 ) -> Result<SessionAuth, String> {
     let resolved = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let program = resolved.program;
@@ -1381,13 +1436,36 @@ pub fn start_session(
     let sess_exit = session.clone();
     let on_exit = move |ok: bool| {
         let state = if ok { crate::model::SessionState::Ended } else { crate::model::SessionState::Error };
+        // The record closes here rather than on the frontend's say-so: a
+        // scheduled run's tile may have no window to report from, and the
+        // process dying is the fact the journal is about.
+        crate::run_journal::close(
+            &sess_exit,
+            if ok { crate::runs::RunStatus::Ended } else { crate::runs::RunStatus::Error },
+        );
         let _ = app_exit.emit("session://state", StatePayload { session: sess_exit.clone(), state });
         let _ = app_exit.emit("session://exit", ExitPayload { session: sess_exit.clone(), ok });
     };
 
-    state.pty
+    // Before the spawn, because `pty.spawn` starts the waiter thread that calls
+    // `on_exit` before it returns: a process that dies on the spot — a rejected
+    // `--resume`, a shim that refuses — would otherwise fire `on_exit` while the
+    // record did not yet exist, and nothing would ever close it. A launch that
+    // never happened is closed below instead of going unrecorded, which is the
+    // more useful of the two silences: "the schedule fired and died instantly" is
+    // exactly what somebody opens a history to find out.
+    if let Some(launch) = &scenario {
+        crate::run_journal::open(
+            &session, launch, &cwd, workspace_id.as_deref(), initial_prompt.as_deref(),
+        );
+    }
+    if let Err(e) = state.pty
         .spawn(&session, &program, &args, &cwd, cols, rows, &env, on_output, on_exit)
-        .map_err(|e| e.to_string())?;
+    {
+        let e = e.to_string();
+        crate::run_journal::failed_to_start(&session, &e);
+        return Err(e);
+    }
     Ok(outcome.auth)
 }
 
@@ -1444,6 +1522,11 @@ pub fn resize_session(state: State<AppState>, session: String, cols: u16, rows: 
 }
 #[tauri::command]
 pub fn close_session(state: State<AppState>, session: String) {
+    // Before the kill, so the result is read off the transcript this session was
+    // still reporting. `run_journal::close` takes the record out of its own map,
+    // so the PTY's `on_exit` arriving a moment later finds nothing to close and
+    // cannot overwrite `ended` with an exit code nobody asked for.
+    crate::run_journal::close(&session, crate::runs::RunStatus::Ended);
     state.pty.kill(&session);
     crate::transcripts::forget(&session);
 }
@@ -1469,7 +1552,15 @@ pub fn save_ui_state(state: State<AppState>, ui: UiStatePatch) -> Result<(), Str
 }
 
 /// Called by main during setup to emit state changes coming from the listener.
+///
+/// `Ended` closes the session's journal record; `Done` deliberately does not.
+/// The agent finishing a turn and parking at the prompt leaves a tile the person
+/// can keep typing into, and the last thing it said is read at close time off
+/// the same transcript either way — see `run_journal::close`.
 pub fn emit_state(app: &AppHandle, session: String, state: crate::model::SessionState) {
+    if state == crate::model::SessionState::Ended {
+        crate::run_journal::close(&session, crate::runs::RunStatus::Ended);
+    }
     let _ = app.emit("session://state", StatePayload { session, state });
 }
 
@@ -1745,7 +1836,7 @@ fn find_transcript(session_id: &str) -> Option<std::path::PathBuf> {
 /// Do not go looking for `isSidechain` instead: it is present on every line of a
 /// current transcript and false on all of them. Subagents were moved out to
 /// their own files and that marker now finds nothing.
-fn subagent_transcripts(transcript: &std::path::Path) -> Vec<std::path::PathBuf> {
+pub(crate) fn subagent_transcripts(transcript: &std::path::Path) -> Vec<std::path::PathBuf> {
     let dir = match (transcript.parent(), transcript.file_stem()) {
         (Some(parent), Some(stem)) => parent.join(stem).join("subagents"),
         _ => return Vec::new(),
@@ -1762,6 +1853,25 @@ fn subagent_transcripts(transcript: &std::path::Path) -> Vec<std::path::PathBuf>
         .collect();
     out.sort();
     out
+}
+
+/// What one transcript and its subagents cost, off a buffer already in hand.
+///
+/// Subagents included, because leaving them out understated a session's spend by
+/// up to two thirds — in one measured case a single subagent outspent the entire
+/// main chain (#189). One unreadable subagent understates the bill rather than
+/// discarding the main chain's figure with it, exactly as `snapshot_from_main`
+/// treats the same case.
+pub(crate) fn transcript_spend(main: &str, path: &std::path::Path) -> TokenUsage {
+    let mut seen = std::collections::HashSet::new();
+    let mut spend = TokenUsage::default();
+    fold_usage_lines(main, &mut seen, &mut spend);
+    for sub in subagent_transcripts(path) {
+        if let Ok(content) = std::fs::read_to_string(&sub) {
+            fold_usage_lines(&content, &mut seen, &mut spend);
+        }
+    }
+    spend
 }
 
 /// Everything one poll tick wants to know about one session.

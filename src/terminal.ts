@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
-import { startSession, startCommandSession, writeSession, resizeSession, type SessionAuth } from "./ipc";
+import { startSession, startCommandSession, writeSession, resizeSession, type ScenarioLaunch, type SessionAuth } from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
 
@@ -117,10 +117,14 @@ export class TerminalPanel {
   async start(
     cwd: string, workspaceId: string | null, initialPrompt: string | null,
     taskId: string | null = null, resume = false,
+    /** Set when this launch came from a scenario — the backend opens a run
+     *  journal record for it. Absent for a card, an issue, a pull request or a
+     *  bare "+ session". */
+    scenario: ScenarioLaunch | null = null,
   ): Promise<SessionAuth> {
     const { cols, rows } = this.term;
     return await startSession(
-      this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
+      this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario,
     );
   }
   /** Разовый запуск пользовательской команды. Не сессия агента: ни хуков

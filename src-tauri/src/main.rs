@@ -8,6 +8,8 @@ mod hooks;
 mod listener;
 mod pty;
 mod commands;
+mod run_journal;
+mod runs;
 mod scheduler;
 mod tasks_cmd;
 mod transcripts;
@@ -87,6 +89,14 @@ fn main() {
             // Config dir for the store.
             let dir = app.path().app_config_dir().expect("app config dir");
             let store = store::Store::new(dir.clone());
+
+            // Before the listener, and long before the frontend can launch
+            // anything: a hook or a PTY exit arriving with the journal unwired
+            // would be a run nobody recorded. `sweep_and_compact` then closes
+            // whatever a crash left open — nothing has a live PTY behind it at
+            // this point, so every record still `running` is one of those.
+            run_journal::init(dir.clone(), handle.clone());
+            run_journal::sweep_and_compact();
 
             // Start the status listener on the tokio runtime Tauri provides.
             let handle_for_cb = handle.clone();
@@ -192,6 +202,8 @@ fn main() {
             commands::scheduler_ready,
             commands::schedule_ack,
             commands::load_schedule_state,
+            commands::list_runs,
+            commands::delete_skill_history,
             commands::start_command_session,
             commands::gh_status,
             commands::pr_list,

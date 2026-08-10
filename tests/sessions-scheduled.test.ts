@@ -69,11 +69,11 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
   it("launches the next run once the previous one has finished", async () => {
     const { deck, emitState } = await makeDeck();
 
-    expect(await deck.launchScheduled(WS as never, SKILL as never, "review")).toBe(true);
+    expect(await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule")).toBe(true);
     const first = panelSessions[0];
     emitState(first, "done");
 
-    expect(await deck.launchScheduled(WS as never, SKILL as never, "review")).toBe(true);
+    expect(await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule")).toBe(true);
     expect(panelSessions).toHaveLength(2);
   });
 
@@ -82,10 +82,10 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
   it("closes the finished tile instead of accumulating one per run", async () => {
     const { deck, deckEl, emitState } = await makeDeck();
 
-    await deck.launchScheduled(WS as never, SKILL as never, "review");
+    await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
     const first = panelSessions[0];
     emitState(first, "done");
-    await deck.launchScheduled(WS as never, SKILL as never, "review");
+    await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
 
     expect(vi.mocked(closeSession)).toHaveBeenCalledWith(first);
     expect(deckEl.querySelectorAll(".tile")).toHaveLength(1);
@@ -96,7 +96,7 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
   // whole point of running something unattended.
   it("notifies when a run finishes its task", async () => {
     const { deck, emitState } = await makeDeck();
-    await deck.launchScheduled(WS as never, SKILL as never, "review");
+    await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
 
     emitState(panelSessions[0], "done");
 
@@ -111,7 +111,7 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
   // must not inflate it. The notification above is what reports completion.
   it("does not count a finished run as waiting for input", async () => {
     const { deck, emitState } = await makeDeck();
-    await deck.launchScheduled(WS as never, SKILL as never, "review");
+    await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
 
     emitState(panelSessions[0], "done");
 
@@ -129,7 +129,7 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     ]);
     emitState("yesterday", "working");
 
-    expect(await deck.launchScheduled(WS as never, SKILL as never, "review")).toBe(false);
+    expect(await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule")).toBe(false);
   });
 
   // Unattended work must not yank the user out of what they are typing. The
@@ -139,7 +139,7 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     await deck.launch(WS as never, null);
     const manual = deckEl.querySelector<HTMLElement>(".tile")!;
 
-    await deck.launchScheduled(WS as never, SKILL as never, "review");
+    await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
 
     expect(manual.classList.contains("is-active")).toBe(true);
   });
@@ -150,7 +150,7 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     const { deck, deckEl } = await makeDeck();
     deck.setActiveWorkspace("other");
 
-    await deck.launchScheduled(WS as never, SKILL as never, "review");
+    await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
 
     expect(deckEl.querySelector(".tile")!.classList.contains("ws-hidden")).toBe(true);
   });
@@ -161,10 +161,10 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
   it("still skips while the previous run waits for a decision", async () => {
     const { deck, deckEl, emitState } = await makeDeck();
 
-    await deck.launchScheduled(WS as never, SKILL as never, "review");
+    await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
     emitState(panelSessions[0], "waitingInput");
 
-    expect(await deck.launchScheduled(WS as never, SKILL as never, "review")).toBe(false);
+    expect(await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule")).toBe(false);
     expect(vi.mocked(closeSession)).not.toHaveBeenCalled();
     expect(deckEl.querySelectorAll(".tile")).toHaveLength(1);
   });

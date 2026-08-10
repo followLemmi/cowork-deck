@@ -42,6 +42,17 @@ export interface SessionEntry {
    *  card name from a placeholder for an entry written before this existed,
    *  and leaving a recognised name alone is the safer of the two mistakes. */
   nameKind?: NameKind;
+  /** Scenario this session was launched from, by **any** route — a click, ⏰,
+   *  or a schedule. Deliberately not `scheduledSkillId` above, which means the
+   *  narrower "raised by a schedule" and keys the overlap guard. Without this
+   *  the backend cannot tell, after a restart, that a restored tile is a
+   *  scenario run at all. */
+  skillId?: string;
+  /** The journal record this tile currently belongs to, so a restart can chain
+   *  its new record to this one. Separate from `skillId`, or the chain
+   *  degrades into guessing "the previous run of this scenario" — wrong the
+   *  moment a scenario ran twice in a day. */
+  runId?: string;
 }
 export type NameKind = "context" | "placeholder";
 export interface UiState {
@@ -57,6 +68,10 @@ export interface UiState {
    *  is for. Required for the same reason as `uiScale`: Rust fills it from a
    *  `serde` default, so an optional here would guard a case that cannot happen. */
   prDiffCols: number;
+  /** Whether scenario runs are journalled. Default on; off writes nothing new
+   *  and deletes nothing already written, and reads keep working. Required for
+   *  the same reason as the two above: Rust fills it from a `serde` default. */
+  recordScenarioRuns: boolean;
 }
 
 /** A change to the stored state, which is what `save_ui_state` takes.
@@ -69,6 +84,7 @@ export interface UiStatePatch {
   activeWorkspaceId?: string;
   uiScale?: number;
   prDiffCols?: number;
+  recordScenarioRuns?: boolean;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
@@ -287,11 +303,30 @@ export const prWorktreeRemove = (workspaceId: string, number: number, branch: st
  *  аккаунта и, если резолв не удался, причина — её показывает бейдж на тайле. */
 export interface SessionAuth { account: string | null; degraded: string | null; }
 
+/** How a scenario launch describes itself to the run journal.
+ *
+ *  `runId` is minted here, beside the session id, and for the same reason: the
+ *  tile has to persist it into `SessionEntry.runId` the moment it exists, so a
+ *  restart can chain to it. Passing an identifier is not writing a record —
+ *  every line of `runs.jsonl` is written in Rust and nowhere else. */
+export interface ScenarioLaunch {
+  runId: string;
+  skillId: string;
+  trigger: RunTrigger;
+  /** The placeholder values this run was launched with. */
+  params: Record<string, string>;
+  /** The run being resumed, when the caller knows it — auto-restore reads it
+   *  out of `SessionEntry.runId`. A ⟳ inside a live app leaves it out: the
+   *  backend still has the predecessor open. */
+  continuesRunId?: string | null;
+}
+
 export const startSession = (
   session: string, cwd: string, workspaceId: string | null, initialPrompt: string | null,
   taskId: string | null, cols: number, rows: number, resume: boolean,
+  scenario: ScenarioLaunch | null = null,
 ) => invoke<SessionAuth>("start_session", {
-  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
+  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario,
 });
 /** Разовый запуск пользовательской команды в тайле-терминале (установка gh,
  *  `gh auth login`). Не сессия агента: хуков состояния нет. */
@@ -352,9 +387,83 @@ export const onScheduledFire = (
     cb(e.payload.skillId, e.payload.occurrenceMs, e.payload.catchUp ?? false));
 
 /** Report what a fire produced. The backend records only that it attempted a
- *  run; `lastRun` advances only when this says a session actually started. */
-export const scheduleAck = (skillId: string, occurrenceMs: number, outcome: string) =>
-  invoke<void>("schedule_ack", { skillId, occurrenceMs, outcome });
+ *  run; `lastRun` advances only when this says a session actually started.
+ *
+ *  `workspaceId` is what the fire resolved to, when it resolved to anything. An
+ *  outcome other than `launched` also becomes a `failed-to-launch` record in the
+ *  run journal, and that record has to know which workspace it belongs to —
+ *  the history screen is scoped to one. `no-workspace` has none, by definition,
+ *  and says so. */
+export const scheduleAck = (
+  skillId: string, occurrenceMs: number, outcome: string, workspaceId: string | null = null,
+) => invoke<void>("schedule_ack", { skillId, occurrenceMs, outcome, workspaceId });
+
+/** How a run started. `runNow` is the ⏰ button; `resume` is auto-restore or ⟳,
+ *  which opens a new record chained to its predecessor. */
+export type RunTrigger = "manual" | "runNow" | "schedule" | "resume";
+/** What a record is, or how it ended. `running` is the only one that is not a
+ *  close. `failed-to-launch` is a scheduled fire that started no session at all. */
+export type RunStatus = "running" | "ended" | "error" | "interrupted" | "failed-to-launch";
+/** Where `result` came from. `none` means no transcript was ever reported, or
+ *  the file is gone — `result` is then null, never an invented empty string. */
+export type ResultSource = "transcript" | "none";
+
+/** One scenario run, as the backend folded it out of `runs.jsonl`.
+ *
+ *  `name`, `icon`, `prompt` and `params` are a **snapshot** of the launch:
+ *  `skillId` is a filter key only, so a record whose scenario has since been
+ *  renamed or deleted still reads correctly. Never look a name up through
+ *  `skillId` — that is the whole reason the snapshot is stored. */
+export interface RunRecord {
+  runId: string;
+  /** Epoch millis, true epochs on both. */
+  startedAt: number;
+  closedAt: number | null;
+  trigger: RunTrigger;
+  status: RunStatus;
+  skillId: string;
+  name: string;
+  icon: string;
+  /** The workspace this run actually happened in. Null for a scheduled fire
+   *  that never resolved one — such a record passes every workspace filter,
+   *  the way an orphaned tile stays visible everywhere. */
+  workspaceId: string | null;
+  cwd: string;
+  branch: string | null;
+  /** Absent on a `failed-to-launch` record: nothing was launched. */
+  sessionId: string | null;
+  params: Record<string, string>;
+  /** The **expanded** prompt, placeholders substituted. Null on a `resume`
+   *  record whose chain root could not be found. */
+  prompt: string | null;
+  continuesRunId: string | null;
+  transcriptPath: string | null;
+  /** A `/clear` happened during this run, so `result` is the tail of a
+   *  conversation whose beginning is in another file. Say so; presenting the
+   *  tail as the whole is the lie this flag exists to prevent. */
+  cleared: boolean;
+  /** The final assistant message. `null` with `resultSource: "none"` reads as
+   *  "no transcript" — never as an empty result. */
+  result: string | null;
+  /** Why nothing came of the run, where there is a reason: the scheduler's own
+   *  `no-workspace` / `skipped-overlap` / `not-scheduled`. */
+  reason: string | null;
+  tokens: TokenUsage | null;
+  resultSource: ResultSource;
+}
+
+/** The journal, newest first. Both filters are applied in Rust so the screen
+ *  and the sidebar's state dot ask the same question of the same code. */
+export const listRuns = (workspaceId: string | null, skillId: string | null) =>
+  invoke<RunRecord[]>("list_runs", { workspaceId, skillId });
+/** Erase one scenario's history — the only erasure there is. A record is a
+ *  snapshot of what ran, so single rows are neither editable nor deletable. */
+export const deleteSkillHistory = (skillId: string) =>
+  invoke<void>("delete_skill_history", { skillId });
+/** A record opened or closed. Follows the `tasks://changed` precedent, and is
+ *  deliberately not a polling timer. */
+export const onRunsChanged = (cb: (skillId: string) => void): Promise<UnlistenFn> =>
+  listen<{ skillId: string }>("runs://changed", (e) => cb(e.payload.skillId));
 /** Runtime schedule state, keyed by scenario id. The backend owns it — the
  *  frontend must not compute "did this run" from anything else. */
 export const loadScheduleState = () => invoke<Record<string, ScheduleRun>>("load_schedule_state");
