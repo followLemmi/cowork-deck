@@ -4,8 +4,9 @@
 //! `<launch-id>.jsonl`. That holds until someone types `/clear`: Claude Code
 //! then mints a **new** session id, opens a new transcript, and never writes to
 //! the old file again — so the tile's name and its token count freeze on the
-//! conversation the person just left. Measured, with raw output, in
-//! `docs/superpowers/spikes/2026-08-05-clear-and-the-pinned-session-id.md`.
+//! conversation the person just left. That is measured behaviour, not a guess:
+//! a `/clear` in a live session was observed writing a second `<new-id>.jsonl`
+//! beside the first and leaving the first untouched from that moment on.
 //!
 //! Every Claude Code hook payload carries `transcript_path`, and the reporter is
 //! invoked with **this app's** session id in argv, so each event says exactly

@@ -8,9 +8,6 @@ dist/
 src-tauri/gen/
 src-tauri/binaries/
 
-# superpowers SDD scratch (ledger, briefs, review packages)
-.superpowers/
-
 # Code-intelligence and MCP caches: per-machine, disposable, and large
 # (.gitnexus is ~80 MB). The GitNexus instructions in CLAUDE.md are committed;
 # the index they read is not.
