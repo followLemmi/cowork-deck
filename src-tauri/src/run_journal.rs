@@ -47,9 +47,11 @@ pub struct ScenarioLaunch {
     /// again with them visible.
     #[serde(default)]
     pub params: HashMap<String, String>,
-    /// The run this one resumes, when the caller knows it — auto-restore reads
-    /// it out of `SessionEntry.runId`. A ⟳ inside a live app does not need to
-    /// pass it: the predecessor is still open here.
+    /// The run this one resumes. The frontend always names it when there is one
+    /// — auto-restore reads it out of `SessionEntry.runId`, and a ⟳ names the
+    /// record its tile is leaving, because that button is only offered on a
+    /// session that has already ended and whose record is therefore already
+    /// closed here.
     #[serde(rename = "continuesRunId", default)]
     pub continues_run_id: Option<String>,
 }
@@ -179,10 +181,9 @@ pub fn open(
     if !recording() {
         return;
     }
-    // A ⟳ inside a live app reuses the session id, so the predecessor is still
-    // open right here. Closing it first is what keeps one PTY to one record —
-    // and gives the new record something to chain to without the caller having
-    // to know.
+    // A relaunch under a session id that is still open. The caller normally
+    // names its predecessor, but this is the case where it cannot be wrong:
+    // whatever is open under this id ends here, because one PTY is one record.
     let predecessor = take_open(session);
     if let Some(prev) = &predecessor {
         close_record(
@@ -277,6 +278,21 @@ pub fn note_transcript(session: &str, path: &str) {
     }));
 }
 
+/// The PTY never started, so close the record the launch had just opened.
+///
+/// The record is opened before the spawn (see `start_session`) because the
+/// waiter thread that reports the exit is running before `spawn` returns.
+/// Closing it here with the spawn error in `reason` is what keeps a failed
+/// launch from reading as `running` until the next startup relabels it
+/// `interrupted` — a launch that failed instantly and a run cut short by a
+/// crash are different facts.
+pub fn failed_to_start(session: &str, reason: &str) {
+    let Some((open, _)) = take_for_close(session) else { return };
+    // No transcript to read: nothing ever ran to write one, and the read this
+    // skips is the one `close` has to hand to a thread.
+    close_record(&open.run_id, &open.skill_id, RunStatus::Error, Some(reason.to_string()), None);
+}
+
 /// Close the record this session is in, if it is in one.
 ///
 /// `Done` deliberately never reaches here: the agent finished a turn and parked
@@ -284,14 +300,33 @@ pub fn note_transcript(session: &str, path: &str) {
 /// have written — the last known result — is read at close time anyway, off the
 /// same transcript, so a record closed by a crash three turns later still
 /// carries the last thing the agent said.
-pub fn close(session: &str, status: RunStatus) {
-    let Some(open) = take_open(session) else { return };
-    close_record(
-        &open.run_id, &open.skill_id, status, None, crate::transcripts::get(session),
-    );
+/// The cheap half of a close: claim the record and let go of the session.
+///
+/// Separated because this is the part with an ordering requirement —
+/// `close_session` runs it before killing the PTY so that the exit arriving a
+/// moment later finds nothing to close — while the read below has none.
+fn take_for_close(session: &str) -> Option<(OpenRun, Option<String>)> {
+    let open = take_open(session)?;
+    let transcript = crate::transcripts::get(session);
     if let Ok(mut m) = journalled_paths().lock() {
         m.remove(session);
     }
+    Some((open, transcript))
+}
+
+pub fn close(session: &str, status: RunStatus) {
+    let Some((open, transcript)) = take_for_close(session) else { return };
+    // The read is the expensive half: `close_record` reads the whole transcript
+    // and, through `transcript_spend`, every subagent transcript beside it —
+    // megabytes for a long session. `close_session` is one of the commands that
+    // stays on the main thread by design (see this crate's `commands` module
+    // docs, where ordering is the reason), and on Linux that thread paints the
+    // window, so the read would be a freeze between the click and the tile
+    // going. Landing the line a moment later costs nothing: `fold_events` keys
+    // by run id, so no other event depends on this one arriving first.
+    std::thread::spawn(move || {
+        close_record(&open.run_id, &open.skill_id, status, None, transcript);
+    });
 }
 
 /// The record a live session belongs to.
@@ -428,4 +463,265 @@ fn close_record(
         result_source: source,
     }));
     announce(skill_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::UiStatePatch;
+
+    /// [`close`] hands the read to a thread, which a test cannot wait on without
+    /// the writer being observable. This is the same close, run to completion.
+    fn close_blocking(session: &str, status: RunStatus) {
+        let Some((open, transcript)) = take_for_close(session) else { return };
+        close_record(&open.run_id, &open.skill_id, status, None, transcript);
+    }
+
+    /// One directory for the whole test binary, because `dir()` is the process-
+    /// wide `OnceLock` the module is built around and a test that wanted its own
+    /// would be testing a different module. [`fresh`] serialises the tests and
+    /// wipes the journal between them, which is what makes that safe.
+    fn test_dir() -> PathBuf {
+        dir()
+            .get_or_init(|| {
+                let mut p = std::env::temp_dir();
+                p.push(format!("coworkdeck-journal-test-{}", std::process::id()));
+                std::fs::create_dir_all(&p).unwrap();
+                p
+            })
+            .clone()
+    }
+
+    /// An empty journal, the recording switch where the test wants it, and no
+    /// session left open by whatever ran before. The guard is what keeps two
+    /// tests from sharing the one directory at the same time; a panicking test
+    /// poisons it, and recovering rather than cascading keeps the failure to the
+    /// one test that caused it.
+    fn fresh(recording: bool) -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = test_dir();
+        let _ = std::fs::remove_file(dir.join("runs.jsonl"));
+        Store::new(dir)
+            .save_ui_state(&UiStatePatch {
+                record_scenario_runs: Some(recording),
+                ..Default::default()
+            })
+            .unwrap();
+        open_runs().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        journalled_paths().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        guard
+    }
+
+    fn store_now() -> Store {
+        Store::new(test_dir())
+    }
+
+    fn lines() -> Vec<String> {
+        std::fs::read_to_string(test_dir().join("runs.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn launch(run_id: &str, continues: Option<&str>) -> ScenarioLaunch {
+        ScenarioLaunch {
+            run_id: run_id.to_string(),
+            skill_id: "s1".to_string(),
+            trigger: RunTrigger::Manual,
+            params: HashMap::new(),
+            continues_run_id: continues.map(str::to_string),
+        }
+    }
+
+    /// The switch means "open no new records", and that is the whole of what it
+    /// means — see the pair below.
+    #[test]
+    fn recording_off_opens_nothing() {
+        let _g = fresh(false);
+        open("sess", &launch("r1", None), "/tmp", Some("w"), Some("hello"));
+        assert!(lines().is_empty());
+        assert_eq!(current_run("sess"), None);
+    }
+
+    /// Deliberate, and the reason `close` does not check the switch: a record
+    /// this app opened is finished by this app. Leaving it `running` forever
+    /// would be a worse answer to "stop recording" than finishing it.
+    #[test]
+    fn a_run_already_open_is_still_closed_after_recording_stops() {
+        let _g = fresh(true);
+        open("sess", &launch("r1", None), "/tmp", Some("w"), Some("hello"));
+        store_now()
+            .save_ui_state(&UiStatePatch { record_scenario_runs: Some(false), ..Default::default() })
+            .unwrap();
+
+        close_blocking("sess", RunStatus::Ended);
+
+        let runs = store_now().runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, RunStatus::Ended);
+    }
+
+    /// A transcript path arriving twice is one fact, not two, and the first one
+    /// is not a `/clear` — there was nothing before it to clear.
+    #[test]
+    fn the_first_transcript_is_not_a_clear_and_repeats_write_nothing() {
+        let _g = fresh(true);
+        open("sess", &launch("r1", None), "/tmp", Some("w"), None);
+        let after_open = lines().len();
+
+        note_transcript("sess", "/t/a.jsonl");
+        note_transcript("sess", "/t/a.jsonl");
+
+        assert_eq!(lines().len(), after_open + 1);
+        close_blocking("sess", RunStatus::Ended);
+        let runs = store_now().runs();
+        assert_eq!(runs[0].transcript_path.as_deref(), Some("/t/a.jsonl"));
+        assert!(!runs[0].cleared);
+    }
+
+    /// A changed path **is** a `/clear`, and saying so is what stops the screen
+    /// presenting the tail of a conversation as the whole of it.
+    #[test]
+    fn a_changed_transcript_path_is_recorded_as_a_clear() {
+        let _g = fresh(true);
+        open("sess", &launch("r1", None), "/tmp", Some("w"), None);
+        note_transcript("sess", "/t/a.jsonl");
+        note_transcript("sess", "/t/b.jsonl");
+
+        close_blocking("sess", RunStatus::Ended);
+        let runs = store_now().runs();
+        assert_eq!(runs[0].transcript_path.as_deref(), Some("/t/b.jsonl"));
+        assert!(runs[0].cleared);
+    }
+
+    /// A hook for a session in no record has nothing to attach to, and must not
+    /// invent one.
+    #[test]
+    fn a_transcript_for_a_session_in_no_record_writes_nothing() {
+        let _g = fresh(true);
+        note_transcript("nobody", "/t/a.jsonl");
+        assert!(lines().is_empty());
+    }
+
+    /// The record is opened before the spawn, so the spawn failing has to close
+    /// it. Left `running`, it would be relabelled `interrupted` at the next
+    /// start — reporting a launch that failed instantly as a run cut short.
+    #[test]
+    fn a_spawn_that_failed_closes_the_record_with_its_reason() {
+        let _g = fresh(true);
+        open("sess", &launch("r1", None), "/tmp", Some("w"), None);
+        failed_to_start("sess", "claude-not-found");
+
+        let runs = store_now().runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, RunStatus::Error);
+        assert_eq!(runs[0].reason.as_deref(), Some("claude-not-found"));
+        // And the session is out of the map, so a late exit cannot reopen it.
+        assert_eq!(current_run("sess"), None);
+    }
+
+    /// Whichever of the two closes arrives first takes the record; the second
+    /// finds nothing. `Ended` comes from both the reporter's hook and the PTY.
+    #[test]
+    fn closing_twice_writes_one_close() {
+        let _g = fresh(true);
+        open("sess", &launch("r1", None), "/tmp", Some("w"), None);
+        close_blocking("sess", RunStatus::Ended);
+        let after_first = lines().len();
+        close_blocking("sess", RunStatus::Error);
+
+        assert_eq!(lines().len(), after_first);
+        assert_eq!(store_now().runs()[0].status, RunStatus::Ended);
+    }
+
+    /// Nothing has a live PTY behind it at startup, so every record still open
+    /// is one a crash or a closed lid left behind.
+    #[test]
+    fn the_startup_sweep_closes_a_running_record_as_interrupted() {
+        let _g = fresh(true);
+        open("sess", &launch("r1", None), "/tmp", Some("w"), None);
+        // The app restarts: the map is gone, the line on disk is not.
+        open_runs().lock().unwrap_or_else(|e| e.into_inner()).clear();
+
+        sweep_and_compact();
+
+        let runs = store_now().runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, RunStatus::Interrupted);
+    }
+
+    /// Retention is storage policy, not a preference — the sweep runs whether or
+    /// not recording is on, or a switched-off app would never finish the records
+    /// it left open.
+    #[test]
+    fn the_sweep_runs_with_recording_off() {
+        let _g = fresh(true);
+        open("sess", &launch("r1", None), "/tmp", Some("w"), None);
+        open_runs().lock().unwrap_or_else(|e| e.into_inner()).clear();
+        store_now()
+            .save_ui_state(&UiStatePatch { record_scenario_runs: Some(false), ..Default::default() })
+            .unwrap();
+
+        sweep_and_compact();
+
+        assert_eq!(store_now().runs()[0].status, RunStatus::Interrupted);
+    }
+
+    /// A resume carries no prompt of its own — nothing was sent, the
+    /// conversation was picked up — so the chain's own text is inherited. This is
+    /// the path both auto-restore and the tile's ⟳ take.
+    #[test]
+    fn a_resume_chains_to_its_predecessor_and_inherits_its_prompt() {
+        let _g = fresh(true);
+        open("first", &launch("r1", None), "/tmp", Some("w"), Some("review the diff"));
+        close_blocking("first", RunStatus::Ended);
+
+        open("second", &launch("r2", Some("r1")), "/tmp", Some("w"), None);
+        close_blocking("second", RunStatus::Ended);
+
+        let runs = store_now().runs();
+        let second = runs.iter().find(|r| r.run_id == "r2").unwrap();
+        assert_eq!(second.continues_run_id.as_deref(), Some("r1"));
+        assert_eq!(second.prompt.as_deref(), Some("review the diff"));
+    }
+
+    /// A relaunch under a session id that is still open ends what is open there,
+    /// whatever the caller did or did not name: one PTY is one record.
+    #[test]
+    fn relaunching_a_live_session_closes_what_was_open_under_it() {
+        let _g = fresh(true);
+        open("sess", &launch("r1", None), "/tmp", Some("w"), Some("first prompt"));
+        open("sess", &launch("r2", None), "/tmp", Some("w"), None);
+
+        let runs = store_now().runs();
+        let first = runs.iter().find(|r| r.run_id == "r1").unwrap();
+        let second = runs.iter().find(|r| r.run_id == "r2").unwrap();
+        assert_eq!(first.status, RunStatus::Ended);
+        assert_eq!(second.status, RunStatus::Running);
+        assert_eq!(second.continues_run_id.as_deref(), Some("r1"));
+    }
+
+    /// The schedule fired and nothing started. One record, opened and closed
+    /// together, with no `sessionId` because there never was a session.
+    #[test]
+    fn a_fire_that_launched_nothing_is_one_closed_record() {
+        let _g = fresh(true);
+        failed_to_launch("s1", Some("w"), "no-workspace");
+
+        let runs = store_now().runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, RunStatus::FailedToLaunch);
+        assert_eq!(runs[0].reason.as_deref(), Some("no-workspace"));
+        assert_eq!(runs[0].trigger, RunTrigger::Schedule);
+        assert_eq!(runs[0].session_id, None);
+    }
+
+    #[test]
+    fn recording_off_records_no_failed_fire_either() {
+        let _g = fresh(false);
+        failed_to_launch("s1", Some("w"), "no-workspace");
+        assert!(lines().is_empty());
+    }
 }

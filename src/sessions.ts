@@ -661,8 +661,9 @@ export class Deck {
       try {
         // A new record rather than a reopened one: a run is one launched PTY,
         // and a record spanning a restart could never say which side of it a
-        // result came from. The predecessor is still open in the backend under
-        // this same session id, so it closes — and is chained to — there.
+        // result came from. The chain comes from `scenarioLaunch` reading the
+        // tile's outgoing `runId`: by the time this button is on screen the
+        // session has ended, and the backend has already closed that record.
         tile.auth = await tile.panel.start(
           tile.workspacePath, tile.workspaceId ?? null, null, tile.taskId ?? null, true,
           scenarioLaunch(tile, "resume", null),
@@ -1366,13 +1367,20 @@ function scenarioLaunch(
   tile: Tile, trigger: RunTrigger | undefined, continuesRunId: string | null,
 ): ScenarioLaunch | null {
   if (!tile.skillId || !trigger) return null;
+  // The record this tile is leaving, captured before the new id overwrites it.
+  // A ⟳ is only offered once the session has ended or errored, and both of
+  // those have already closed the predecessor in Rust and dropped it from
+  // `open_runs` — so the backend has nothing left to chain to and the link has
+  // to come from here. A tile being built for the first time has no `runId`,
+  // which is why this stays a fallback rather than an override.
+  const previous = tile.runId ?? null;
   tile.runId = crypto.randomUUID();
   return {
     runId: tile.runId,
     skillId: tile.skillId,
     trigger,
     params: tile.params ?? {},
-    continuesRunId,
+    continuesRunId: continuesRunId ?? previous,
   };
 }
 
