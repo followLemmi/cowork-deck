@@ -71,6 +71,19 @@ export class WorkspacesPanel {
     this.render();
   }
 
+  /** Switch to a workspace named by something other than this panel — today the
+   *  scenario row's state dot, which reports a run that may have happened
+   *  somewhere else and would otherwise open a history screen not containing
+   *  it. Answers whether it switched: the workspace a record names can have
+   *  been deleted since, and the caller has to be able to say so rather than
+   *  silently show the wrong list. */
+  activate(id: string): boolean {
+    if (id === this.activeId) return true;
+    if (!this.items.some((w) => w.id === id)) return false;
+    this.select(id);
+    return true;
+  }
+
   /** Public because the empty deck offers the same action: with no workspace there is
    *  nowhere for a session to run, so "add one" is the only thing that screen can
    *  usefully say — and it must be the same form the sidebar's own button opens. */

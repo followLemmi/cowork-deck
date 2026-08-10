@@ -2,6 +2,10 @@ import type {
   RunRecord, Schedule, SchedulePreset, ScheduleRun, SessionState, Skill, Workspace,
 } from "./ipc";
 import { parsePlaceholders } from "./placeholders";
+// One phrasing for one outcome code, wherever it is shown. Lives with the run
+// vocabulary because the history screen says the same thing about the same
+// record.
+import { OUTCOME_TEXT } from "./runs";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const pad = (n: number): string => String(n).padStart(2, "0");
@@ -62,13 +66,6 @@ export function schedulePreview(
     : "in whichever workspace is active at the time";
   return `Runs ${rule} · next run ${nextRunLabel(p, now)} · ${where}.`;
 }
-
-/** Why an attempt produced nothing, in words the user can act on. */
-const OUTCOME_TEXT: Record<string, string> = {
-  "no-workspace": "no workspace",
-  "skipped-overlap": "previous run still active",
-  "not-scheduled": "schedule is off",
-};
 
 /** The line under a scenario's name: rule, next run, and what came of the
  *  last run. Replaces a native tooltip that no keyboard user could reach

@@ -107,6 +107,11 @@ export class SkillsPanel {
     this.render();
   }
 
+  /** The record the dot is drawn from. Exposed because clicking the dot has to
+   *  land on that same record, and the history screen is scoped to one
+   *  workspace while this is scoped to none. */
+  lastRunOf(id: string): RunRecord | null { return this.lastRun[id] ?? null; }
+
   find(id: string): Skill | undefined { return this.items.find((s) => s.id === id); }
   get all(): Skill[] { return this.items; }
 
@@ -166,11 +171,13 @@ export class SkillsPanel {
         now.onclick = () => this.onRunScheduled(s);
       }
 
-      // A state dot for the last run, and nothing more. It sits before the
-      // actions and visibly apart from ▶ — an indicator that launched something
-      // is the exact mistake the ⏰ button was split in two to undo. Absent
-      // until the scenario has run at all: a dot with no state to show would be
-      // a decoration.
+      // A state dot for the last run, and nothing more. It follows the name —
+      // which is itself the launcher — and its 24px button is mostly
+      // transparent padding, so the 10px it draws stands clear of everything
+      // that starts a session. An indicator that launched something is the
+      // exact mistake the ⏰ button was split in two to undo. Absent until the
+      // scenario has run at all: a dot with no state to show would be a
+      // decoration.
       const last = this.lastRun[s.id];
       let dot: HTMLButtonElement | null = null;
       if (last) {

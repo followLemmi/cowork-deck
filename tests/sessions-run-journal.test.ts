@@ -192,7 +192,11 @@ describe("resuming a scenario run", () => {
     expect(starts[0].scenario).toMatchObject({ trigger: "resume", continuesRunId: null });
   });
 
-  it("the tile's ⟳ opens a new record too", async () => {
+  // The ⟳ button is only offered on an ended or errored tile, and both states
+  // have already closed the predecessor in Rust and taken it out of
+  // `open_runs`. So the link cannot come from the backend the way a live
+  // restart's would — the tile has to name the record it is leaving.
+  it("the tile's ⟳ opens a new record chained to the one it replaces", async () => {
     const { deck, deckEl } = await makeDeck();
     await deck.launch(WS as never, SKILL as never);
     const first = starts[0].scenario!.runId;
@@ -204,9 +208,7 @@ describe("resuming a scenario run", () => {
     expect(starts[1].resume).toBe(true);
     expect(starts[1].scenario).toMatchObject({ skillId: "s1", trigger: "resume" });
     expect(starts[1].scenario!.runId).not.toBe(first);
-    // The predecessor is not named here: the backend still has it open under
-    // this same session id, and closing plus chaining is its business.
-    expect(starts[1].scenario!.continuesRunId).toBeNull();
+    expect(starts[1].scenario!.continuesRunId).toBe(first);
     // And the layout now points at the new record, not the finished one.
     expect(lastSavedLayout()[0].runId).toBe(starts[1].scenario!.runId);
   });

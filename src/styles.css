@@ -2611,7 +2611,7 @@ h6.md-head { font-size: var(--fs-sm); }
   background: var(--bg-void); border-radius: var(--r-sm); padding: var(--sp-2);
   margin: 0; width: 100%; white-space: pre-wrap; overflow-wrap: anywhere;
 }
-/* Two lines, then a button. Not `max-height` in px: the whole interface scales
+/* Three lines, then a button. Not `max-height` in px: the whole interface scales
    between an 11px and an 18.85px root, and a pixel clamp would show four lines
    at one end and one at the other. */
 .hist-result--clamped {
@@ -2662,12 +2662,23 @@ h6.md-head { font-size: var(--fs-sm); }
    It reuses the run chips' hues at chip size so the sidebar and the history
    screen cannot come to disagree about what a colour means. */
 .sk-dot {
-  flex: none; width: 10px; height: 10px; padding: 0; border-radius: 50%;
-  background: currentColor; border: none; cursor: pointer;
+  flex: none; width: 24px; height: 24px; padding: 0; justify-content: center;
+  background: none; border: none; border-radius: 50%; cursor: pointer;
 }
-.sk-dot.run-ended, .sk-dot.run-error, .sk-dot.run-interrupted, .sk-dot.run-failed-to-launch,
-.sk-dot.run-running { background: currentColor; }
-.sk-dot::before { content: none; }
+/* The button is 24px and the dot inside it is 10px. A 10px target sitting at a
+   6px gap from two controls that do launch something is the wrong ergonomics
+   for the row that learned that lesson from ⏰, and 2.5.8's spacing exception
+   does not reach across a 6px gap. The extra area is transparent padding, so
+   nothing in the row looks any bigger. */
+.sk-dot::before { width: 10px; height: 10px; }
+/* `error` and `failed-to-launch` share a hue. On the chip the dashed border and
+   the label are what separate them; the dot has neither, so the fill goes and a
+   ring stands in for the dash. Colour is not the only channel here either. */
+.sk-dot.run-failed-to-launch::before {
+  background: none; border: 2px solid currentColor; box-sizing: border-box;
+}
+/* Something is actually happening — the breathing the chip has, for its reason. */
+.sk-dot.run-running::before { animation: breathe 1.8s ease-in-out infinite; }
 .sk-dot:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .sk-dot:hover { transform: scale(1.25); }
 
@@ -2678,5 +2689,6 @@ h6.md-head { font-size: var(--fs-sm); }
   .run-state { border-color: CanvasText; }
   .run-failed-to-launch { border-style: dashed; }
   /* A 10px dot with no text has nothing left once its fill is forced. */
-  .sk-dot { border: 1px solid CanvasText; }
+  .sk-dot::before { border: 1px solid CanvasText; box-sizing: border-box; }
+  .sk-dot.run-failed-to-launch::before { border-width: 2px; border-style: dashed; }
 }
