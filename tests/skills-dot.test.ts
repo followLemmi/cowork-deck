@@ -4,6 +4,7 @@
 // has learned that lesson once already, when one ⏰ was both a status badge and
 // a real launch and reaching for information started a session.
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import styles from "../src/styles.css?raw";
 import type { RunRecord, Skill } from "../src/ipc";
 
 vi.mock("../src/ipc", () => ({
@@ -89,6 +90,20 @@ describe("the scenario row's state dot", () => {
     expect(dot()!.previousElementSibling!.className).toContain("sk-run");
   });
 
+  // The click has to land on the record the dot was drawn from, and only the
+  // panel knows which one that is — the history screen is scoped to one
+  // workspace and this is scoped to none.
+  it("hands out the record it drew, workspace and all", async () => {
+    vi.mocked(listSkills).mockResolvedValue([SKILL]);
+    vi.mocked(listRuns).mockResolvedValue([run({ runId: "r", workspaceId: "somewhere-else" })]);
+    const mount = document.createElement("div");
+    document.body.replaceChildren(mount);
+    const p = new SkillsPanel(mount, () => "w1", vi.fn(), vi.fn(), () => ["w1"], () => "relay", vi.fn());
+    await p.load();
+    expect(p.lastRunOf("s1")?.workspaceId).toBe("somewhere-else");
+    expect(p.lastRunOf("never-ran")).toBeNull();
+  });
+
   // `schedule_state.json` stays the scheduler's gate — when the next occurrence
   // is — but what actually happened now comes from the journal, which is wider
   // than `lastOutcome` ever was: a scenario run by hand left no trace in it.
@@ -101,5 +116,39 @@ describe("the scenario row's state dot", () => {
     await p.load();
     expect(document.querySelectorAll(".sk-row")).toHaveLength(1);
     expect(dot()).toBeNull();
+  });
+});
+
+// Read against the real stylesheet, because this is where the dot differs from
+// the chip it borrows its hues from: the chip carries a dashed border and a text
+// label, and the dot has room for neither.
+describe("the dot's stylesheet", () => {
+  const rules = (): CSSStyleRule[] => {
+    document.head.replaceChildren();
+    const style = document.createElement("style");
+    style.textContent = styles;
+    document.head.append(style);
+    return [...document.styleSheets[0].cssRules].filter(
+      (r): r is CSSStyleRule => r instanceof CSSStyleRule);
+  };
+  const rule = (sel: string) => rules().find((r) => r.selectorText === sel);
+
+  // `error` and `failed-to-launch` are both failures on the same hue. On the
+  // chip the dashed border and the label separate them; strip both, as a 10px
+  // dot must, and colour is left as the only channel — which is exactly what
+  // WCAG 1.4.1 forbids and what `runs.ts` says this palette does not do.
+  it("separates error from failed-to-launch by shape, not by hue alone", () => {
+    const ring = rule(".sk-dot.run-failed-to-launch::before");
+    expect(ring).toBeDefined();
+    expect(ring!.style.cssText).toContain("none");
+    expect(ring!.style.cssText).toMatch(/border[^;]*2px/);
+  });
+
+  // 2.5.8: the dot sits at a 6px gap from two controls that start real
+  // sessions, so the 24px-spacing exception cannot apply. The drawn dot stays
+  // 10px — the rest is transparent padding.
+  it("gives the dot a 24px target and a 10px face", () => {
+    expect(rule(".sk-dot")!.style.getPropertyValue("width")).toBe("24px");
+    expect(rule(".sk-dot::before")!.style.getPropertyValue("width")).toBe("10px");
   });
 });

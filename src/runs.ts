@@ -1,5 +1,18 @@
 import type { RunRecord, RunStatus, RunTrigger } from "./ipc";
 
+/** Why an attempt produced nothing, in words the user can act on.
+ *
+ *  Run vocabulary, not schedule vocabulary, and it lives here because two
+ *  places say it: the line under a scenario's name and the history row for the
+ *  same record. `reason` is the scheduler's outcome code — it reaches the
+ *  journal verbatim from `handle_scheduled_fire` — and one record phrased two
+ *  ways in two places is the disagreement the dot exists to rule out. */
+export const OUTCOME_TEXT: Record<string, string> = {
+  "no-workspace": "no workspace",
+  "skipped-overlap": "previous run still active",
+  "not-scheduled": "schedule is off",
+};
+
 /** What a row says a run ended as.
  *
  *  `failed-to-launch` reads as "did not launch" rather than as its own tag: it
@@ -203,9 +216,11 @@ export function emptyHistoryCopy(o: {
  *  while meaning the first. */
 export function noResultReason(rec: RunRecord): string {
   if (rec.status === "failed-to-launch") {
-    return rec.reason === null
-      ? "No session was started."
-      : `No session was started — ${rec.reason}.`;
+    // Through `OUTCOME_TEXT`, never raw: `skipped-overlap` is an identifier,
+    // and this screen's whole claim is that a run producing nothing reads as
+    // why. An unknown code still shows — a code beats a blank.
+    const why = rec.reason === null ? null : OUTCOME_TEXT[rec.reason] ?? rec.reason;
+    return why === null ? "No session was started." : `No session was started — ${why}.`;
   }
   if (rec.status === "running") return "Still running.";
   if (rec.transcriptPath === null) {

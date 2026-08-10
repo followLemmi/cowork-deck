@@ -194,8 +194,16 @@ describe("noResultReason", () => {
   // run happening and the run producing nothing are different facts.
   it("says why there is nothing to read, per case", () => {
     expect(noResultReason(rec({ runId: "r", status: "running" }))).toBe("Still running.");
+    // Through `OUTCOME_TEXT`, the same words the line under the scenario's name
+    // uses: one record phrased two ways in two places is the disagreement the
+    // dot exists to rule out.
     expect(noResultReason(rec({ runId: "r", status: "failed-to-launch", reason: "no-workspace" })))
-      .toBe("No session was started — no-workspace.");
+      .toBe("No session was started — no workspace.");
+    expect(noResultReason(rec({ runId: "r", status: "failed-to-launch", reason: "skipped-overlap" })))
+      .toBe("No session was started — previous run still active.");
+    // A code the frontend has never heard of still shows: a code beats a blank.
+    expect(noResultReason(rec({ runId: "r", status: "failed-to-launch", reason: "who-knows" })))
+      .toBe("No session was started — who-knows.");
     expect(noResultReason(rec({ runId: "r", status: "failed-to-launch", reason: null })))
       .toBe("No session was started.");
     expect(noResultReason(rec({ runId: "r", status: "ended", transcriptPath: null })))

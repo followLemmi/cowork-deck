@@ -271,8 +271,11 @@ async function refreshHistory() {
     runs = await listRuns(ws?.id ?? null, null);
     // Asked separately so the empty state can tell "nothing has ever run" from
     // "nothing ran here" — two different sentences with two different next
-    // steps, and only this call can distinguish them.
-    all = ws ? await listRuns(null, null) : runs;
+    // steps, and only this call can distinguish them. Only asked when the
+    // question arises: `anyRuns` is read solely to choose between those two
+    // sentences, so a workspace with records of its own has already answered
+    // it, and a second full read of the journal per repaint buys nothing.
+    all = ws && runs.length === 0 ? await listRuns(null, null) : runs;
   } catch (e) {
     console.debug("listRuns failed", e);
   }
@@ -357,8 +360,20 @@ prBtn.onclick = () => setView("pr");
 historyBtn.onclick = () => setView("history");
 
 /** Open the history filtered to one scenario — what the sidebar's state dot
- *  does, and the only thing it does. */
+ *  does, and the only thing it does.
+ *
+ *  The dot reports the last run in **any** workspace, because a scenario with a
+ *  schedule is on screen in all of them and fires wherever it was pinned. The
+ *  screen is scoped to one workspace, and its own empty state says why:
+ *  switching workspace switches what is listed. So the click does that
+ *  switching rather than landing on a list that cannot contain the run the dot
+ *  just described. A record naming a workspace since deleted switches nothing —
+ *  the screen then honestly shows the current one. */
 function openHistoryFor(skill: Skill) {
+  const last = skills.lastRunOf(skill.id);
+  if (last?.workspaceId != null && last.workspaceId !== workspaces.active?.id) {
+    workspaces.activate(last.workspaceId);
+  }
   runFilters = { skillId: skill.id, trigger: null };
   setView("history");
 }
