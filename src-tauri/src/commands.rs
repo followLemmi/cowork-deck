@@ -259,22 +259,28 @@ pub fn schedule_ack(
     // workspace-scoped; `no-workspace` has none by definition and says so.
     workspace_id: Option<String>,
 ) -> Result<(), String> {
-    // A fire that launched nothing gets a record of its own. The gate below is
-    // `schedule_state.json`, which stays what it always was — a gate, not a log:
-    // it is read and written every tick and must remember attempts that launched
-    // nothing, and deriving "did we already fire" by scanning the journal would
-    // be both slower and semantically wrong.
+    // The gate here is `schedule_state.json`, which stays what it always was — a
+    // gate, not a log: it is read and written every tick and must remember
+    // attempts that launched nothing, and deriving "did we already fire" by
+    // scanning the journal would be both slower and semantically wrong.
+    {
+        let store = state.store.lock().unwrap();
+        let mut st = store.schedule_state();
+        let Some(updated) = crate::scheduler::apply_ack(st.get(&skill_id), occurrence_ms, &outcome)
+        else {
+            return Ok(());
+        };
+        st.insert(skill_id.clone(), updated);
+        store.save_schedule_state(&st).map_err(|e| e.to_string())?;
+    }
+    // A fire that launched nothing gets a record of its own — but only once the
+    // ack has been accepted. An ack `apply_ack` drops as stale or replayed is not
+    // an event that happened twice, and a journal that disagreed with the gate
+    // would report the same failed occurrence again on every retry.
     if outcome != "launched" {
         crate::run_journal::failed_to_launch(&skill_id, workspace_id.as_deref(), &outcome);
     }
-    let store = state.store.lock().unwrap();
-    let mut st = store.schedule_state();
-    let Some(updated) = crate::scheduler::apply_ack(st.get(&skill_id), occurrence_ms, &outcome)
-    else {
-        return Ok(());
-    };
-    st.insert(skill_id, updated);
-    store.save_schedule_state(&st).map_err(|e| e.to_string())
+    Ok(())
 }
 
 /// The run journal, newest first, optionally narrowed.
@@ -1434,16 +1440,24 @@ pub fn start_session(
         let _ = app_exit.emit("session://exit", ExitPayload { session: sess_exit.clone(), ok });
     };
 
-    state.pty
-        .spawn(&session, &program, &args, &cwd, cols, rows, &env, on_output, on_exit)
-        .map_err(|e| e.to_string())?;
-    // After the spawn, so a launch that never happened leaves no record of
-    // having happened. The record's own `at` is a moment later than the process
-    // it describes, which is the honest direction to be wrong in.
+    // Before the spawn, because `pty.spawn` starts the waiter thread that calls
+    // `on_exit` before it returns: a process that dies on the spot — a rejected
+    // `--resume`, a shim that refuses — would otherwise fire `on_exit` while the
+    // record did not yet exist, and nothing would ever close it. A launch that
+    // never happened is closed below instead of going unrecorded, which is the
+    // more useful of the two silences: "the schedule fired and died instantly" is
+    // exactly what somebody opens a history to find out.
     if let Some(launch) = &scenario {
         crate::run_journal::open(
             &session, launch, &cwd, workspace_id.as_deref(), initial_prompt.as_deref(),
         );
+    }
+    if let Err(e) = state.pty
+        .spawn(&session, &program, &args, &cwd, cols, rows, &env, on_output, on_exit)
+    {
+        let e = e.to_string();
+        crate::run_journal::failed_to_start(&session, &e);
+        return Err(e);
     }
     Ok(outcome.auth)
 }
