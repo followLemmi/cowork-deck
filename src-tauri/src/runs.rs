@@ -152,8 +152,8 @@ pub struct RunStarted {
 /// Written on the first hook that reports a path and again whenever the path
 /// changes — the same "forward, never back" rule as `transcripts::record`. A
 /// change of path **is** a `/clear`: Claude Code mints a new session id and a
-/// new file mid-conversation (measured in
-/// `docs/superpowers/spikes/2026-08-05-clear-and-the-pinned-session-id.md`).
+/// new file mid-conversation, and never writes to the old one again — see the
+/// module comment on `transcripts` for the measured behaviour.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunTranscript {
     #[serde(rename = "v", default = "journal_version")]

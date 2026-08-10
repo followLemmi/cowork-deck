@@ -2114,9 +2114,9 @@ h6.md-head { font-size: var(--fs-sm); }
 .pr-detail-minus { color: var(--st-error); flex: 0 0 auto; }
 
 /* --- The diff drawer ------------------------------------------------------ */
-/* Design: docs/superpowers/specs/2026-08-04-pr-diff-drawer-design.md. Every colour
-   below was measured through `scripts/contrast.mjs` before it was written here; the
-   ratios in the comments are that script's numbers, not estimates. */
+/* Every colour below was measured through `scripts/contrast.mjs` before it was
+   written here; the ratios in the comments are that script's numbers, not
+   estimates. */
 
 /* It mirrors `#sidebar` — `--bg-panel` and a one-pixel border on the edge it meets —
    and deliberately not `.bcast-panel`. `.bcast-panel` is an overlay: absolute, a

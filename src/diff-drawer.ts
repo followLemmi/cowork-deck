@@ -1,7 +1,7 @@
 /** The pull request diff drawer: the DOM half of `src/diff.ts`.
  *
- *  Design: `docs/superpowers/specs/2026-08-04-pr-diff-drawer-design.md`. Every
- *  decision below that looks arbitrary has a measurement behind it there.
+ *  Every decision below that looks arbitrary has a measurement behind it, and
+ *  the comment that states the decision states the measurement with it.
  *
  *  **This does not live inside `PrView`, and that is the load-bearing fact about
  *  the whole module.** `PrView.render` calls `replaceChildren()` on its mount
