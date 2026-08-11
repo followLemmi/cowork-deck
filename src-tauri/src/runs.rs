@@ -474,13 +474,20 @@ pub fn scoped(
 ) -> Vec<RunRecord> {
     records
         .into_iter()
-        .filter(|r| match (workspace_id, &r.workspace_id) {
-            (Some(want), Some(have)) => want == have,
-            (Some(_), None) => true,
-            (None, _) => true,
-        })
-        .filter(|r| skill_id.is_none_or(|want| want == r.skill_id))
+        .filter(|r| in_scope(r, workspace_id, skill_id))
         .collect()
+}
+
+/// The one record's worth of `scoped`, so that what a screen *shows* and what an
+/// erase *reaches* cannot come to disagree: `delete_skill_history` asks this the
+/// same question `list_runs` did.
+pub fn in_scope(r: &RunRecord, workspace_id: Option<&str>, skill_id: Option<&str>) -> bool {
+    let ws = match (workspace_id, &r.workspace_id) {
+        (Some(want), Some(have)) => want == have,
+        (Some(_), None) => true,
+        (None, _) => true,
+    };
+    ws && skill_id.is_none_or(|want| want == r.skill_id)
 }
 
 /// The final assistant message of a transcript, sanitised for display.

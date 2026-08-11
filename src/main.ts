@@ -43,7 +43,7 @@ import { openPalette } from "./palette";
 import { runBoot } from "./boot";
 import { appMark, iconButton, installSprite } from "./icons";
 import { openGithubScreen } from "./github-screen";
-import { fillPlaceholders, parsePlaceholders, resolvePrompt } from "./placeholders";
+import { fillPlaceholders, resolvePrompt } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
@@ -250,11 +250,21 @@ const historyView = new HistoryView({
     void refreshHistory();
   },
   onJump: (rec) => {
+    // The deck is revealed *before* the tile is focused, and the order is the
+    // whole of it: `#deck.tk-hidden` is `display: none`, and `focus()` on an
+    // unrendered element does nothing at all — as does `scrollIntoView` inside a
+    // hidden container. Focusing first left the reader on the deck with the tile
+    // merely marked active, keyboard focus back on `document.body`, and the
+    // first thing they typed going nowhere.
+    if (rec.sessionId === null || !deck.liveSessions().includes(rec.sessionId)) {
+      void alertModal("That session is no longer open.");
+      return;
+    }
+    setView("deck");
     // The tile may live in another workspace — an unpinned scenario runs
     // wherever it was launched — so this goes through the same path the pill
     // and a notification click take, which switches workspace first.
-    if (rec.sessionId !== null && deck.focusSession(rec.sessionId)) setView("deck");
-    else void alertModal("That session is no longer open.");
+    deck.focusSession(rec.sessionId);
   },
   onRerun: (rec, skill) => { void rerunScenario(rec, skill); },
   onReveal: (rec) => {
@@ -262,6 +272,7 @@ const historyView = new HistoryView({
     revealPath(rec.transcriptPath).catch((e) => void alertModal(String(e)));
   },
   onDeleteHistory: (skillId, name) => { void eraseHistory(skillId, name); },
+  onRefused: (reason) => { void alertModal(reason); },
 });
 const historyEl = document.createElement("div");
 historyEl.id = "history";
@@ -311,25 +322,28 @@ async function refreshHistory() {
  *  a person, and re-running one from history without showing what is in the
  *  fields is how somebody re-runs yesterday's parameters against today's branch.
  *  The values are matched against the *current* template first — the record is
- *  not authoritative over a prompt that has been edited since. */
+ *  not authoritative over a prompt that has been edited since.
+ *
+ *  Down `launchScenario`'s own path — `requireWorkspace` then `resolvePrompt` —
+ *  rather than re-deriving either. Resolving a target from the record instead
+ *  broke the invariant every other manual launch keeps: that a manual launch
+ *  lands in the *active* workspace. A record with no workspace of its own shows
+ *  in every workspace's history, so pressing this in workspace A could put a
+ *  tile in B — running in B's folder, sitting in A's deck under A's header,
+ *  gone at the next workspace switch, since `applyWorkspaceVisibility` is only
+ *  applied on the unattended path. */
 async function rerunScenario(rec: RunRecord, skill: Skill) {
-  const target = skill.workspaceId
-    ? workspaces.all.find((w) => w.id === skill.workspaceId) ?? null
-    : workspaces.active;
-  if (!target) {
-    await alertModal(
-      "This scenario has no workspace available: pin it to one or pick a workspace.");
-    return;
-  }
-  const names = parsePlaceholders(skill.prompt);
-  let params: Record<string, string> = {};
-  if (names.length > 0) {
-    const filled = await placeholderForm(names, reconcileParams(names, rec.params));
-    if (filled === null) return;
-    params = filled;
-  }
-  await deck.launch(target, { ...skill, prompt: fillPlaceholders(skill.prompt, params) }, params);
+  const ws = await requireWorkspace();
+  if (!ws) return;
+  const resolved = await resolvePrompt(
+    skill.prompt,
+    // The only difference from an ordinary launch: the fields start at what
+    // this run used, reconciled against today's template.
+    (names) => placeholderForm(names, reconcileParams(names, rec.params)),
+  );
+  if (resolved === null) return;
   setView("deck");
+  await deck.launch(ws, { ...skill, prompt: resolved.prompt }, resolved.params);
 }
 
 /** Erase one scenario's history — the only erasure there is, and it asks first
@@ -337,9 +351,15 @@ async function rerunScenario(rec: RunRecord, skill: Skill) {
  *  a row is a snapshot of what ran, and a journal whose rows can be revised
  *  answers nothing. */
 async function eraseHistory(skillId: string, name: string) {
-  if (!(await confirmModal(`Delete every recorded run of “${name}”?`))) return;
+  // Scoped to the workspace the screen is showing, and said so in the question.
+  // The rows on screen are one workspace's; erasing every workspace's records of
+  // that scenario from a screen that shows two of them, with no undo and no
+  // second copy, is not what the button appears to offer.
+  const ws = workspaces.active;
+  const where = ws ? ` in ${ws.name}` : "";
+  if (!(await confirmModal(`Delete every recorded run of “${name}”${where}?`))) return;
   try {
-    await deleteSkillHistory(skillId);
+    await deleteSkillHistory(skillId, ws?.id ?? null);
   } catch (e) {
     await alertModal(`Could not delete the history: ${String(e)}`);
     return;

@@ -301,12 +301,19 @@ pub fn list_runs(
     crate::runs::scoped(runs, workspace_id.as_deref(), skill_id.as_deref())
 }
 
-/// Erase one scenario's history. The only erasure there is — see
-/// `Store::delete_skill_history`.
+/// Erase one scenario's history, within the workspace scope the screen was
+/// showing. The only erasure there is — see `Store::delete_skill_history`, which
+/// also refuses while one of those runs is still open.
 #[tauri::command(async)]
-pub fn delete_skill_history(state: State<AppState>, skill_id: String) -> Result<(), String> {
+pub fn delete_skill_history(
+    state: State<AppState>,
+    skill_id: String,
+    workspace_id: Option<String>,
+) -> Result<(), String> {
     let store = state.store.lock().unwrap();
-    store.delete_skill_history(&skill_id).map_err(|e| e.to_string())
+    store
+        .delete_skill_history(&skill_id, workspace_id.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 /// The argv that shows `path` in the platform's file manager, selected.
@@ -320,12 +327,21 @@ pub fn delete_skill_history(state: State<AppState>, skill_id: String) -> Result<
 /// Argv, never a shell string: the path comes off a record and may hold spaces,
 /// quotes or a newline, and there is no interpreter here for any of them to
 /// mean anything to.
+///
+/// Windows is the exception that proves it. Explorer parses its own command
+/// line rather than taking the argv the OS handed it, and it does not recognise
+/// `/select` once Rust's quoting rules have wrapped the switch and the path
+/// together — which is what happens the moment the path holds a space, as
+/// `C:\Users\John Smith\…` does. The form it accepts is `/select,"<path>"`, so
+/// the quotes are placed here and the argument goes through `raw_arg` in
+/// `reveal_path`, unquoted again by nobody. A Windows path cannot itself contain
+/// a `"`, so there is nothing inside for the quoting to get wrong.
 pub fn reveal_argv(path: &std::path::Path) -> (String, Vec<String>) {
     let p = path.to_string_lossy().to_string();
     if cfg!(target_os = "macos") {
         ("open".into(), vec!["-R".into(), p])
     } else if cfg!(windows) {
-        ("explorer".into(), vec![format!("/select,{p}")])
+        ("explorer".into(), vec![format!("/select,\"{p}\"")])
     } else {
         let dir = path.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or(p);
         ("xdg-open".into(), vec![dir])
@@ -338,6 +354,14 @@ pub fn reveal_argv(path: &std::path::Path) -> (String, Vec<String>) {
 /// missing one is an ordinary answer rather than a fault — and it is refused
 /// here as well as being disabled in the UI, because the file can go between
 /// the render and the click.
+///
+/// The helper is waited on, on a thread of its own. `Child`'s `Drop` does not
+/// reap, and this screen invites one press per row: fifty reveals would
+/// otherwise mean fifty `<defunct>` children holding PID slots for as long as
+/// the app runs. Waiting on a thread rather than inline because `open`,
+/// `explorer` and `xdg-open` all return immediately in the ordinary case and
+/// this must not become the one that does not. Their stdio is discarded too —
+/// `xdg-open`'s diagnostics belong nowhere near the app's own output.
 #[tauri::command(async)]
 pub fn reveal_path(path: String) -> Result<(), String> {
     let p = std::path::PathBuf::from(&path);
@@ -345,11 +369,29 @@ pub fn reveal_path(path: String) -> Result<(), String> {
         return Err("The transcript is no longer there.".into());
     }
     let (program, args) = reveal_argv(&p);
-    std::process::Command::new(&program)
-        .args(&args)
+    let mut cmd = std::process::Command::new(&program);
+    // See `reveal_argv`: Explorer re-parses its own command line, so its one
+    // argument is already quoted and must reach it untouched.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        for a in &args {
+            cmd.raw_arg(a);
+        }
+    }
+    #[cfg(not(windows))]
+    cmd.args(&args);
+    let child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Could not open the file manager ({program}): {e}"))
+        .map_err(|e| format!("Could not open the file manager ({program}): {e}"))?;
+    std::thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// The frontend calls this once, after its `schedule://fire` listener is
@@ -2043,7 +2085,14 @@ mod tests {
             assert_eq!(args[1], "/home/u/.claude/projects/-p/a b'c.jsonl");
         } else if cfg!(windows) {
             assert_eq!(program, "explorer");
-            assert!(args[0].starts_with("/select,"), "{args:?}");
+            // The path is quoted and the switch is not: Explorer re-parses its
+            // own command line and stops recognising `/select` once Rust's
+            // quoting has wrapped the two together, which is what happens the
+            // moment the path holds a space. `reveal_path` passes this through
+            // `raw_arg` so nothing quotes it a second time.
+            assert_eq!(args.len(), 1, "{args:?}");
+            assert!(args[0].starts_with("/select,\""), "{args:?}");
+            assert!(args[0].ends_with('"'), "{args:?}");
         } else {
             // No standard "select this file" on Linux, so the containing folder
             // is the honest approximation rather than a silently different

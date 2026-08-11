@@ -217,13 +217,18 @@ export type ActionVerdict = { ok: true } | { ok: false; reason: string };
 
 /** Whether there is a live tile to jump to.
  *
- *  Offered only while the record is `running` **and** its session still has a
- *  tile. A closed record has nothing to go to, and a `failed-to-launch` one
- *  never had a session at all. */
+ *  The question is whether a tile for this session exists, and nothing else.
+ *  Deliberately **not** also `status === "running"`: `onExit` keeps a tile on
+ *  the deck after the session ends, for scrollback, so a run that has just
+ *  finished still has its terminal — with the whole of the output the row can
+ *  only clamp — sitting there. Refusing on status would hide the way back to it
+ *  at exactly the moment somebody reads the result and wants the rest.
+ *
+ *  A closed record whose tile has been shut has no tile, and a
+ *  `failed-to-launch` one never had a session at all; both fall out of the
+ *  liveness test on their own. */
 export function canJump(rec: RunRecord, liveSessions: readonly string[]): boolean {
-  return rec.status === "running"
-    && rec.sessionId !== null
-    && liveSessions.includes(rec.sessionId);
+  return rec.sessionId !== null && liveSessions.includes(rec.sessionId);
 }
 
 /** Whether this run's scenario can be launched again.
@@ -266,14 +271,53 @@ export function canRerun(
  *  A placeholder the prompt no longer has is dropped; one it has gained comes up
  *  empty. The record says what ran once, not what the scenario is now, and a
  *  form pre-filled from a prompt that has since been edited would be quietly
- *  wrong in exactly the fields somebody changed. */
+ *  wrong in exactly the fields somebody changed.
+ *
+ *  The lookup is guarded, the way `fillPlaceholders` guards its mirror image:
+ *  the placeholder name comes out of a prompt somebody typed and the record is
+ *  JSON, so `{{constructor}}` would otherwise resolve through the prototype and
+ *  put `function Object() { [native code] }` in the field. */
 export function reconcileParams(
   names: readonly string[],
   recorded: Record<string, string>,
 ): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const n of names) out[n] = recorded[n] ?? "";
+  // Null-prototype for the write as well as guarded on the read: `{{__proto__}}`
+  // is a name the placeholder regex accepts, and on an ordinary object
+  // `out["__proto__"] = ""` sets nothing at all — the field would then be
+  // missing rather than empty, and the placeholder would go to claude verbatim.
+  const out: Record<string, string> = Object.create(null);
+  for (const n of names) {
+    out[n] = Object.prototype.hasOwnProperty.call(recorded, n) ? recorded[n] : "";
+  }
   return out;
+}
+
+/** Whether one scenario's history can be erased, and if not, why.
+ *
+ *  Refused while any of the records on screen is still `running`. The journal is
+ *  append-only and the erase rewrites it: taking out an open record does not
+ *  merely lose the past runs, it loses the one in flight — its `Closed` event
+ *  arrives later with no `Started` to attach to, is folded away, and the run is
+ *  never journalled at all. Somebody asked to erase history, not to un-record
+ *  something still happening.
+ *
+ *  `runs` is what the screen is showing, which is also what the erase will
+ *  reach: the same workspace scope, narrowed to the same scenario. */
+export function canEraseHistory(
+  runs: readonly RunRecord[],
+  skillId: string,
+): ActionVerdict {
+  const live = runs.filter((r) => r.skillId === skillId && r.status === "running").length;
+  if (live === 0) return { ok: true };
+  return {
+    ok: false,
+    reason: live === 1
+      ? "One of this scenario’s runs is still going. Erasing now would take its record "
+        + "with it, and the run would never be journalled at all — wait for it to finish."
+      : `${live} of this scenario’s runs are still going. Erasing now would take their `
+        + "records with them, and those runs would never be journalled at all — wait for "
+        + "them to finish.",
+  };
 }
 
 /** Whether the transcript can be revealed.

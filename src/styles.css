@@ -953,13 +953,13 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 
 /* Pressing and being disabled had no feedback at all: one :active rule for the
    whole app and not a single :disabled. */
-button:active:not(:disabled) { transform: translateY(1px); }
+button:active:not(:disabled):not([aria-disabled="true"]) { transform: translateY(1px); }
 /* .62 rather than .5. A disabled control is exempt from 1.4.3, so this is not a
    conformance fix — but "exempt" means nobody can be made to fix it, not that
    2.89:1 is readable, and a person who cannot read *why* a button is refused is
    left guessing. The grayscale stays: with the opacity raised it is what still
    says "inactive" rather than "quiet". */
-button:disabled, .sk-run:disabled {
+button:disabled, .sk-run:disabled, button[aria-disabled="true"] {
   opacity: 0.62; cursor: not-allowed; filter: grayscale(0.4);
 }
 
@@ -2638,12 +2638,14 @@ h6.md-head { font-size: var(--fs-sm); }
   border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px var(--sp-2);
   cursor: pointer;
 }
-.hist-action:hover:not(:disabled) { color: var(--fg); background: var(--bg-hover); }
+.hist-action:hover:not([aria-disabled="true"]) { color: var(--fg); background: var(--bg-hover); }
 .hist-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-/* The reason is on the control's own `title`, since a disabled button takes no
-   focus and a tooltip is the only channel a mouse has. `cursor: help` says there
-   is one to read. */
-.hist-action:disabled { cursor: help; }
+/* A refused control is `aria-disabled`, not `disabled`, so that it keeps its
+   place in the tab order and its reason has a keyboard route — activating it
+   says the reason rather than doing anything. `cursor: help` says there is one
+   to read; the app-wide `[aria-disabled]` rule does the dimming. */
+.hist-action[aria-disabled="true"], .hist-erase[aria-disabled="true"] { cursor: help; }
+.hist-erase[aria-disabled="true"]:hover { color: var(--fg-mid); border-color: var(--line); }
 /* The one erasing control in the whole feature, and it only appears while the
    screen is narrowed to the scenario it would erase. */
 .hist-erase {

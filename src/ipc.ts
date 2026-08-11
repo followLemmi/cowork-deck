@@ -457,9 +457,14 @@ export interface RunRecord {
 export const listRuns = (workspaceId: string | null, skillId: string | null) =>
   invoke<RunRecord[]>("list_runs", { workspaceId, skillId });
 /** Erase one scenario's history — the only erasure there is. A record is a
- *  snapshot of what ran, so single rows are neither editable nor deletable. */
-export const deleteSkillHistory = (skillId: string) =>
-  invoke<void>("delete_skill_history", { skillId });
+ *  snapshot of what ran, so single rows are neither editable nor deletable.
+ *
+ *  Scoped by workspace exactly as `listRuns` is, and by the same code, so what
+ *  is erased is what the screen was showing. Rejects while one of those runs is
+ *  still going: the journal is append-only, and rewriting an open record out of
+ *  it means the run is never journalled at all — not even when it ends. */
+export const deleteSkillHistory = (skillId: string, workspaceId: string | null) =>
+  invoke<void>("delete_skill_history", { skillId, workspaceId });
 /** Show a run's transcript in the file manager — reveal only, never "open with".
  *
  *  Not an in-app viewer: Claude Code owns those files, they run to megabytes,

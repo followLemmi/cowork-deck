@@ -33,7 +33,7 @@ function state(o: Partial<HistoryState> = {}): HistoryState {
 function mount(o: Partial<HistoryState> = {}, handlers = {}) {
   const view = new HistoryView({
     onFilter: () => {}, onRecording: () => {}, onJump: () => {}, onRerun: () => {},
-    onReveal: () => {}, onDeleteHistory: () => {}, ...handlers,
+    onReveal: () => {}, onDeleteHistory: () => {}, onRefused: () => {}, ...handlers,
   });
   document.body.replaceChildren(view.mount);
   view.render(state(o), NOW);
@@ -190,16 +190,20 @@ describe("the row actions", () => {
   const action = (kind: string, runId: string) =>
     document.querySelector<HTMLButtonElement>(`[data-fk="${kind}-${runId}"]`);
 
-  it("offers the jump only for a running record with a live tile", () => {
+  it("offers the jump wherever the session still has a tile", () => {
     const onJump = vi.fn();
     mount({
       runs: [
         rec({ runId: "live", status: "running", sessionId: "s1", closedAt: null }),
-        rec({ runId: "over", status: "ended", sessionId: "s2" }),
+        // The tile is deliberately kept after the session ends, for scrollback —
+        // so the way back to it is offered for as long as it is there.
+        rec({ runId: "read", status: "ended", sessionId: "s2" }),
+        rec({ runId: "over", status: "ended", sessionId: "s3" }),
       ],
-      liveSessions: ["s1"],
+      liveSessions: ["s1", "s2"],
     }, { onJump });
     expect(action("jump", "live")).not.toBeNull();
+    expect(action("jump", "read")).not.toBeNull();
     expect(action("jump", "over")).toBeNull();
     action("jump", "live")!.click();
     expect(onJump).toHaveBeenCalledWith(expect.objectContaining({ runId: "live" }));
@@ -217,11 +221,11 @@ describe("the row actions", () => {
     );
   });
 
-  it("disables the re-run of a deleted scenario, with the reason on the control", () => {
+  it("refuses the re-run of a deleted scenario, with the reason on the control", () => {
     const onRerun = vi.fn();
     mount({ runs: [rec({ runId: "r", skillId: "gone" })] }, { onRerun });
     const btn = action("rerun", "r")!;
-    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute("aria-disabled")).toBe("true");
     expect(btn.title).toContain("deleted");
     // A reader gets the reason too, not only a mouse.
     expect(btn.getAttribute("aria-label")).toContain("deleted");
@@ -229,21 +233,39 @@ describe("the row actions", () => {
     expect(onRerun).not.toHaveBeenCalled();
   });
 
-  it("disables the re-run of a scenario whose workspace is gone", () => {
+  // The refusals are `aria-disabled`, never `disabled`: a `disabled` button
+  // leaves the tab order, and the sentence saying why would then be reachable by
+  // hovering a mouse and by nothing else. Activating one says it out loud.
+  it("keeps a refused control reachable, and it explains itself when pressed", () => {
+    const onRefused = vi.fn();
+    mount({ runs: [rec({ runId: "r", skillId: "gone", transcriptPath: null })] }, { onRefused });
+    for (const kind of ["rerun", "reveal"]) {
+      const btn = action(kind, "r")!;
+      expect(btn.disabled).toBe(false);
+      btn.focus();
+      expect(document.activeElement).toBe(btn);
+      btn.click();
+    }
+    expect(onRefused).toHaveBeenCalledTimes(2);
+    expect(onRefused.mock.calls[0][0]).toContain("deleted");
+    expect(onRefused.mock.calls[1][0]).toContain("No transcript");
+  });
+
+  it("refuses the re-run of a scenario whose workspace is gone", () => {
     mount({
       runs: [rec({ runId: "r" })],
       skills: [{ id: "s1", name: "N", icon: "shield", prompt: "go", workspaceId: "w-deleted" }],
       workspaceIds: ["w1"],
     });
-    expect(action("rerun", "r")!.disabled).toBe(true);
+    expect(action("rerun", "r")!.getAttribute("aria-disabled")).toBe("true");
     expect(action("rerun", "r")!.title).toContain("workspace was deleted");
   });
 
-  it("disables the reveal when there is no transcript to reveal", () => {
+  it("refuses the reveal when there is no transcript to reveal", () => {
     const onReveal = vi.fn();
     mount({ runs: [rec({ runId: "r", transcriptPath: null })] }, { onReveal });
     const btn = action("reveal", "r")!;
-    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute("aria-disabled")).toBe("true");
     expect(btn.title).toContain("No transcript");
     btn.click();
     expect(onReveal).not.toHaveBeenCalled();
@@ -268,6 +290,47 @@ describe("the row actions", () => {
     }, { onDeleteHistory });
     document.querySelector<HTMLButtonElement>('[data-fk="delete-history"]')!.click();
     expect(onDeleteHistory).toHaveBeenCalledWith("s1", "Nightly review");
+  });
+
+  // The confirmation is the last thing between a person and a file with no
+  // second copy, so it names the scenario as it is *now*: a record's snapshot
+  // name would have it ask about something the reader no longer has.
+  it("names the erase after the scenario's current name, not the record's", () => {
+    const onDeleteHistory = vi.fn();
+    mount({
+      runs: [rec({ runId: "r", name: "Nightly review" })],
+      skills: [{ id: "s1", name: "Nightly triage", icon: "shield", prompt: "go", workspaceId: null }],
+      filters: { skillId: "s1", trigger: null },
+    }, { onDeleteHistory });
+    document.querySelector<HTMLButtonElement>('[data-fk="delete-history"]')!.click();
+    expect(onDeleteHistory).toHaveBeenCalledWith("s1", "Nightly triage");
+  });
+
+  // Erasing rewrites the journal, and rewriting an open record out of it means
+  // the run is never journalled at all — not even when it finishes.
+  it("refuses the erase while one of that scenario's runs is still going", () => {
+    const onDeleteHistory = vi.fn();
+    const onRefused = vi.fn();
+    mount({
+      runs: [
+        rec({ runId: "live", status: "running", closedAt: null }),
+        rec({ runId: "done" }),
+      ],
+      filters: { skillId: "s1", trigger: null },
+    }, { onDeleteHistory, onRefused });
+    const erase = document.querySelector<HTMLButtonElement>('[data-fk="delete-history"]')!;
+    expect(erase.getAttribute("aria-disabled")).toBe("true");
+    expect(erase.title).toContain("still going");
+    erase.click();
+    expect(onDeleteHistory).not.toHaveBeenCalled();
+    expect(onRefused).toHaveBeenCalledWith(expect.stringContaining("still going"));
+  });
+
+  // The erase reaches exactly the rows on screen, so with none on screen there
+  // is nothing for it to do.
+  it("does not offer the erase in a workspace holding none of that scenario's runs", () => {
+    mount({ runs: [], filters: { skillId: "s1", trigger: null } });
+    expect(document.querySelector('[data-fk="delete-history"]')).toBeNull();
   });
 
   // No path in the UI edits or deletes an individual record: a row is a

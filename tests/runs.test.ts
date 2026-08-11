@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import type { RunRecord, RunStatus } from "../src/ipc";
 import {
-  agoLabel, canJump, canRerun, canReveal, chainRuns, durationLabel, emptyHistoryCopy,
-  filterRuns, noResultReason, reconcileParams, RUN_STATUS_LABEL, RUN_TRIGGER_LABEL,
-  runStatusClass,
+  agoLabel, canEraseHistory, canJump, canRerun, canReveal, chainRuns, durationLabel,
+  emptyHistoryCopy, filterRuns, noResultReason, reconcileParams, RUN_STATUS_LABEL,
+  RUN_TRIGGER_LABEL, runStatusClass,
 } from "../src/runs";
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
@@ -217,12 +217,17 @@ describe("noResultReason", () => {
 });
 
 describe("the three row actions", () => {
-  // Offered only where there is something to go to. A closed record has no live
-  // tile, and a `failed-to-launch` one never had a session at all.
-  it("offers a jump only for a running record with a live tile", () => {
+  // Offered wherever there is something to go to, and the status is not what
+  // decides that: `onExit` keeps a tile after the session ends, so a run that
+  // has just finished still has its terminal — and the whole of the output the
+  // row can only clamp — on the deck. A tile that has been shut, and a
+  // `failed-to-launch` record that never had a session at all, both fall out of
+  // the liveness test on their own.
+  it("offers a jump wherever the session still has a tile", () => {
     expect(canJump(rec({ runId: "r", status: "running", sessionId: "s" }), ["s"])).toBe(true);
+    expect(canJump(rec({ runId: "r", status: "ended", sessionId: "s" }), ["s"])).toBe(true);
     expect(canJump(rec({ runId: "r", status: "running", sessionId: "s" }), [])).toBe(false);
-    expect(canJump(rec({ runId: "r", status: "ended", sessionId: "s" }), ["s"])).toBe(false);
+    expect(canJump(rec({ runId: "r", status: "ended", sessionId: "s" }), ["other"])).toBe(false);
     expect(canJump(rec({ runId: "r", status: "failed-to-launch", sessionId: null }), ["s"]))
       .toBe(false);
   });
@@ -254,6 +259,36 @@ describe("the three row actions", () => {
     expect(reconcileParams(["branch", "brandNew"], recorded))
       .toEqual({ branch: "release/3.2", brandNew: "" });
     expect(reconcileParams([], recorded)).toEqual({});
+  });
+
+  // A placeholder name comes out of a prompt somebody typed, and the regex takes
+  // any letters: an unguarded lookup on a JSON object would reach through the
+  // prototype and open the field holding `function Object() { [native code] }`,
+  // which then goes into the prompt sent to claude if it is not noticed.
+  it("does not resolve a placeholder through Object.prototype", () => {
+    const out = reconcileParams(["constructor", "toString", "__proto__"], {});
+    expect(out).toEqual({ constructor: "", toString: "", ["__proto__"]: "" });
+    for (const v of Object.values(out)) expect(typeof v).toBe("string");
+    // A recorded value of that name is still its own answer.
+    expect(reconcileParams(["constructor"], { constructor: "v2" } as Record<string, string>))
+      .toEqual({ constructor: "v2" });
+  });
+
+  // The journal is the only copy and the erase rewrites it: taking out an open
+  // record does not merely lose the past runs, it loses the one in flight — the
+  // `Closed` event arrives later with no `Started` to attach to and is dropped.
+  it("refuses to erase a history one of whose runs is still going", () => {
+    const done = rec({ runId: "a" });
+    const live = rec({ runId: "b", status: "running", closedAt: null });
+    expect(canEraseHistory([done], "s1").ok).toBe(true);
+    // Another scenario's open run is not this scenario's business.
+    expect(canEraseHistory([done, rec({ runId: "c", skillId: "s2", status: "running" })], "s1").ok)
+      .toBe(true);
+    const refused = canEraseHistory([done, live], "s1");
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.reason).toContain("still going");
+    const two = canEraseHistory([live, rec({ runId: "d", status: "running" })], "s1");
+    if (!two.ok) expect(two.reason).toContain("2 of this scenario’s runs");
   });
 
   // Claude Code owns those files and they legitimately disappear, so this is an

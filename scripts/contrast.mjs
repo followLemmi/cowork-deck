@@ -225,8 +225,8 @@ const REMOVED_BAND = ["--bg-void", "--diff-del-weak"];
  *  putting `opacity` back cannot happen quietly. */
 const ICON_REST_COLOR = decl(css, ".btn--icon", "color");
 const ICON_ROW_HOVER = decl(css, ".btn--icon:hover", "color");
-const DISABLED = Number(decl(css, "button:disabled, .sk-run:disabled", "opacity"));
-const GRAY = Number(decl(css, "button:disabled, .sk-run:disabled", "filter").match(/grayscale\(([\d.]+)\)/)[1]);
+const DISABLED = Number(decl(css, "button:disabled, .sk-run:disabled, button[aria-disabled=\"true\"]", "opacity"));
+const GRAY = Number(decl(css, "button:disabled, .sk-run:disabled, button[aria-disabled=\"true\"]", "filter").match(/grayscale\(([\d.]+)\)/)[1]);
 const ERROR_FILL = decl(css, ".state-error", "background");
 const ENDED_FILL = decl(css, ".state-ended", "background");
 const IDLE_FILL = decl(css, ".state-idle", "background");

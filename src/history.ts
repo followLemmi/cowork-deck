@@ -1,8 +1,9 @@
 import type { RunRecord, RunTrigger, Skill } from "./ipc";
 import { icon, SCENARIO_ICONS, type IconName } from "./icons";
 import {
-  agoLabel, canJump, canRerun, canReveal, chainRuns, durationLabel, emptyHistoryCopy,
-  filterRuns, noResultReason, RUN_STATUS_LABEL, RUN_TRIGGER_LABEL, runStatusClass,
+  agoLabel, canEraseHistory, canJump, canRerun, canReveal, chainRuns, durationLabel,
+  emptyHistoryCopy, filterRuns, noResultReason, RUN_STATUS_LABEL, RUN_TRIGGER_LABEL,
+  runStatusClass,
   type ActionVerdict, type RunFilters,
 } from "./runs";
 
@@ -40,6 +41,10 @@ export interface HistoryHandlers {
   onReveal: (rec: RunRecord) => void;
   /** Erase one scenario's history, wholesale, after asking. */
   onDeleteHistory: (skillId: string, name: string) => void;
+  /** Say why a control will not do anything, when somebody activates it anyway.
+   *  The refusals are `aria-disabled`, not `disabled`, precisely so they can be
+   *  reached and read without a mouse — see `refuse`. */
+  onRefused: (reason: string) => void;
   /** Turn recording on or off. The switch lives here rather than in
    *  `settingsDialog`: that dialog is a text-size chooser and its own doc
    *  comment argues against growing it casually, and this screen is already the
@@ -47,15 +52,24 @@ export interface HistoryHandlers {
   onRecording: (on: boolean) => void;
 }
 
-/** Refuse before the click, with the reason on the control itself.
+/** Refuse before the click, with the reason on the control itself — and
+ *  reachable without a mouse.
  *
- *  `title` as well as `aria-describedby`-free plain text, because a disabled
- *  button is not focusable and a tooltip is the only channel a mouse has. The
- *  reason is also the accessible name's suffix, so a reader gets it too. */
-function disable(btn: HTMLButtonElement, verdict: { ok: false; reason: string }): void {
-  btn.disabled = true;
+ *  `aria-disabled` rather than `disabled`. A `disabled` button is out of the tab
+ *  order entirely, so its `title` (hover) and its accessible name (focus) are
+ *  both mouse-only channels: a keyboard user, or anyone on a touch screen where
+ *  there is no hover at all, would get a grey dead control and no way to reach
+ *  the sentence saying why. The button stays focusable and inert instead, and
+ *  says the reason out loud when it is activated. */
+function refuse(
+  btn: HTMLButtonElement,
+  verdict: { ok: false; reason: string },
+  say: (reason: string) => void,
+): void {
+  btn.setAttribute("aria-disabled", "true");
   btn.title = verdict.reason;
   btn.setAttribute("aria-label", `${btn.textContent} — ${verdict.reason}`);
+  btn.onclick = () => say(verdict.reason);
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -190,14 +204,21 @@ export class HistoryView {
     // already carries four controls and its dot is an indicator; a destructive
     // fifth there would sit one pixel from ▶.
     const only = state.filters.skillId;
-    if (only !== null) {
-      const named = state.runs.find((r) => r.skillId === only);
-      if (named) {
-        const erase = el("button", "hist-erase", "Delete this scenario’s history");
-        erase.dataset.fk = "delete-history";
-        erase.onclick = () => this.handlers.onDeleteHistory(only, named.name);
-        head.append(erase);
-      }
+    // The name off `named`, which holds the scenario's *current* one (and marks
+    // a deleted one as such), rather than off whichever record happens to come
+    // first: a rename would otherwise make the confirmation ask about a name
+    // the reader no longer has, on the one path with no undo.
+    const eraseName = only === null ? undefined : named.get(only);
+    // And only when this workspace actually holds records of it — the erase
+    // reaches exactly the rows the screen is showing, so with none on screen it
+    // is a button that would do nothing.
+    if (only !== null && eraseName !== undefined && state.runs.some((r) => r.skillId === only)) {
+      const erase = el("button", "hist-erase", "Delete this scenario’s history");
+      erase.dataset.fk = "delete-history";
+      const verdict = canEraseHistory(state.runs, only);
+      if (verdict.ok) erase.onclick = () => this.handlers.onDeleteHistory(only, eraseName);
+      else refuse(erase, verdict, this.handlers.onRefused);
+      head.append(erase);
     }
     return head;
   }
@@ -292,14 +313,14 @@ export class HistoryView {
     // The ellipsis is a promise: this opens the parameters form and launches
     // nothing until it is confirmed.
     if (rerunOk.ok) rerun.onclick = () => this.handlers.onRerun(rec, skill!);
-    else disable(rerun, rerunOk);
+    else refuse(rerun, rerunOk, this.handlers.onRefused);
     row.append(rerun);
 
     const revealOk = canReveal(rec);
     const reveal = el("button", "hist-action", "Reveal the transcript");
     reveal.dataset.fk = `reveal-${rec.runId}`;
     if (revealOk.ok) reveal.onclick = () => this.handlers.onReveal(rec);
-    else disable(reveal, revealOk);
+    else refuse(reveal, revealOk, this.handlers.onRefused);
     row.append(reveal);
     return row;
   }

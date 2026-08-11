@@ -746,7 +746,12 @@ export function placeholderForm(
       const inp = document.createElement("input");
       inp.className = "modal-input form-ph"; inp.type = "text";
       inp.dataset.name = n;
-      inp.value = prefill[n] ?? "";
+      // Guarded, not `prefill[n] ?? ""`: `n` is a placeholder name out of a
+      // prompt somebody typed, and `{{constructor}}` would otherwise reach
+      // through the prototype and open the field holding
+      // `function Object() { [native code] }`. `fillPlaceholders` guards the
+      // mirror-image lookup for the same reason.
+      inp.value = Object.prototype.hasOwnProperty.call(prefill, n) ? prefill[n] : "";
       inputs.set(n, inp);
       rows.push(labeled(n, inp));
     }
