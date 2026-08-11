@@ -209,6 +209,138 @@ export function emptyHistoryCopy(o: {
   };
 }
 
+/* --- the three row actions ------------------------------------------------ */
+
+/** Whether an action is offered, and if not, the sentence the disabled control
+ *  carries. A refusal shown before the click beats one that arrives after it. */
+export type ActionVerdict = { ok: true } | { ok: false; reason: string };
+
+/** Whether there is a live tile to jump to.
+ *
+ *  The question is whether a tile for this session exists, and nothing else.
+ *  Deliberately **not** also `status === "running"`: `onExit` keeps a tile on
+ *  the deck after the session ends, for scrollback, so a run that has just
+ *  finished still has its terminal — with the whole of the output the row can
+ *  only clamp — sitting there. Refusing on status would hide the way back to it
+ *  at exactly the moment somebody reads the result and wants the rest.
+ *
+ *  A closed record whose tile has been shut has no tile, and a
+ *  `failed-to-launch` one never had a session at all; both fall out of the
+ *  liveness test on their own. */
+export function canJump(rec: RunRecord, liveSessions: readonly string[]): boolean {
+  return rec.sessionId !== null && liveSessions.includes(rec.sessionId);
+}
+
+/** Whether this run's scenario can be launched again.
+ *
+ *  `skill` is the scenario **as it stands now**, or undefined if it is gone;
+ *  `workspaceExists` is whether the workspace it is pinned to is still there.
+ *  Both are the caller's to resolve, which is what keeps this pure and keeps
+ *  `runs.ts` and `skills.ts` from importing each other.
+ *
+ *  A deleted scenario is refused rather than silently recreated from the
+ *  record's snapshot. The record holds the expanded prompt, so launching it as
+ *  a one-off would be possible — and would be a second concept ("a run that
+ *  belongs to no scenario") bolted on to make one button work. Somebody deleted
+ *  that scenario; the honest answer is to say so. */
+export function canRerun(
+  skill: { workspaceId?: string | null } | undefined,
+  workspaceExists: boolean,
+): ActionVerdict {
+  if (!skill) {
+    return {
+      ok: false,
+      reason: "This scenario has been deleted, so there is nothing to run again. "
+        + "The record keeps what it ran, but re-creating a scenario somebody removed "
+        + "is not something a history row should do.",
+    };
+  }
+  if (skill.workspaceId && !workspaceExists) {
+    return {
+      ok: false,
+      reason: "This scenario’s workspace was deleted — it cannot run. "
+        + "Open it for editing and pick a workspace.",
+    };
+  }
+  return { ok: true };
+}
+
+/** The values to offer when re-running, matched against the **current**
+ *  template's placeholders.
+ *
+ *  A placeholder the prompt no longer has is dropped; one it has gained comes up
+ *  empty. The record says what ran once, not what the scenario is now, and a
+ *  form pre-filled from a prompt that has since been edited would be quietly
+ *  wrong in exactly the fields somebody changed.
+ *
+ *  The lookup is guarded, the way `fillPlaceholders` guards its mirror image:
+ *  the placeholder name comes out of a prompt somebody typed and the record is
+ *  JSON, so `{{constructor}}` would otherwise resolve through the prototype and
+ *  put `function Object() { [native code] }` in the field. */
+export function reconcileParams(
+  names: readonly string[],
+  recorded: Record<string, string>,
+): Record<string, string> {
+  // Null-prototype for the write as well as guarded on the read: `{{__proto__}}`
+  // is a name the placeholder regex accepts, and on an ordinary object
+  // `out["__proto__"] = ""` sets nothing at all — the field would then be
+  // missing rather than empty, and the placeholder would go to claude verbatim.
+  const out: Record<string, string> = Object.create(null);
+  for (const n of names) {
+    out[n] = Object.prototype.hasOwnProperty.call(recorded, n) ? recorded[n] : "";
+  }
+  return out;
+}
+
+/** Whether one scenario's history can be erased, and if not, why.
+ *
+ *  Refused while any of the records on screen is still `running`. The journal is
+ *  append-only and the erase rewrites it: taking out an open record does not
+ *  merely lose the past runs, it loses the one in flight — its `Closed` event
+ *  arrives later with no `Started` to attach to, is folded away, and the run is
+ *  never journalled at all. Somebody asked to erase history, not to un-record
+ *  something still happening.
+ *
+ *  `runs` is what the screen is showing, which is also what the erase will
+ *  reach: the same workspace scope, narrowed to the same scenario. */
+export function canEraseHistory(
+  runs: readonly RunRecord[],
+  skillId: string,
+): ActionVerdict {
+  const live = runs.filter((r) => r.skillId === skillId && r.status === "running").length;
+  if (live === 0) return { ok: true };
+  return {
+    ok: false,
+    reason: live === 1
+      ? "One of this scenario’s runs is still going. Erasing now would take its record "
+        + "with it, and the run would never be journalled at all — wait for it to finish."
+      : `${live} of this scenario’s runs are still going. Erasing now would take their `
+        + "records with them, and those runs would never be journalled at all — wait for "
+        + "them to finish.",
+  };
+}
+
+/** Whether the transcript can be revealed.
+ *
+ *  Claude Code owns those files and they legitimately disappear, so this is an
+ *  ordinary "no" rather than a fault. Two ways to know before trying: the record
+ *  never had a path, or it had one and could not be read at close — which is
+ *  precisely what `resultSource: "none"` on a closed record means. The file can
+ *  still go between the render and the click, and the backend refuses that too. */
+export function canReveal(rec: RunRecord): ActionVerdict {
+  if (rec.transcriptPath === null) {
+    return { ok: false, reason: "No transcript was ever reported for this run." };
+  }
+  if (rec.closedAt !== null && rec.resultSource === "none") {
+    return {
+      ok: false,
+      reason: "The transcript was already gone when this run finished — Claude Code owns "
+        + "those files and they do not last forever.",
+    };
+  }
+  return { ok: true };
+}
+
 /** What the row says about the result, when there is no result to show.
  *
  *  Never an empty line and never an empty string: the run happening and the run

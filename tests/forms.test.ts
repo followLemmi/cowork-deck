@@ -420,6 +420,26 @@ describe("placeholderForm", () => {
     document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
     expect(await p).toBeNull();
   });
+
+  // A placeholder name is whatever somebody typed between braces, and the regex
+  // takes any letters. An unguarded `prefill[n]` reaches through the prototype
+  // and opens the field holding `function Object() { [native code] }`, which
+  // goes into the prompt sent to claude if it is accepted unread. Ordinary
+  // launches pass no prefill at all, so `{}` has to be as safe as a real one.
+  it("does not prefill a field from Object.prototype", async () => {
+    const p = placeholderForm(["constructor", "toString"]);
+    const inputs = document.querySelectorAll<HTMLInputElement>(".form-ph");
+    expect([...inputs].map((i) => i.value)).toEqual(["", ""]);
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await p;
+  });
+
+  it("prefills from a recorded value of that name, though", async () => {
+    const p = placeholderForm(["constructor"], { constructor: "v2" } as Record<string, string>);
+    expect(document.querySelector<HTMLInputElement>(".form-ph")!.value).toBe("v2");
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    await p;
+  });
 });
 
 describe("mergeForm", () => {

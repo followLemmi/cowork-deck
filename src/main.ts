@@ -8,8 +8,8 @@ import {
 } from "./ui-scale";
 import type { ViewName } from "./view";
 import {
-  claudeAvailable, listRuns, loadLayout, loadUiState, onRunsChanged, onScheduledFire,
-  onSchedulerBroken, saveUiState, scheduleAck, schedulerReady,
+  claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
+  onScheduledFire, onSchedulerBroken, revealPath, saveUiState, scheduleAck, schedulerReady,
 } from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
 import type { Skill, Workspace } from "./ipc";
@@ -31,7 +31,7 @@ import {
   repoFromIssueUrl, sourceOf, unavailableFrom,
 } from "./issues";
 import { HistoryView } from "./history";
-import type { RunFilters } from "./runs";
+import { reconcileParams, type RunFilters } from "./runs";
 import { PrView } from "./pr-view";
 import { DiffDrawer } from "./diff-drawer";
 import type { GhUnavailable } from "./gh-unavailable";
@@ -43,7 +43,7 @@ import { openPalette } from "./palette";
 import { runBoot } from "./boot";
 import { appMark, iconButton, installSprite } from "./icons";
 import { openGithubScreen } from "./github-screen";
-import { resolvePrompt, fillPlaceholders } from "./placeholders";
+import { fillPlaceholders, resolvePrompt } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
@@ -249,6 +249,30 @@ const historyView = new HistoryView({
       .catch((e) => console.debug("run recording save failed", e));
     void refreshHistory();
   },
+  onJump: (rec) => {
+    // The deck is revealed *before* the tile is focused, and the order is the
+    // whole of it: `#deck.tk-hidden` is `display: none`, and `focus()` on an
+    // unrendered element does nothing at all — as does `scrollIntoView` inside a
+    // hidden container. Focusing first left the reader on the deck with the tile
+    // merely marked active, keyboard focus back on `document.body`, and the
+    // first thing they typed going nowhere.
+    if (rec.sessionId === null || !deck.liveSessions().includes(rec.sessionId)) {
+      void alertModal("That session is no longer open.");
+      return;
+    }
+    setView("deck");
+    // The tile may live in another workspace — an unpinned scenario runs
+    // wherever it was launched — so this goes through the same path the pill
+    // and a notification click take, which switches workspace first.
+    deck.focusSession(rec.sessionId);
+  },
+  onRerun: (rec, skill) => { void rerunScenario(rec, skill); },
+  onReveal: (rec) => {
+    if (rec.transcriptPath === null) return;
+    revealPath(rec.transcriptPath).catch((e) => void alertModal(String(e)));
+  },
+  onDeleteHistory: (skillId, name) => { void eraseHistory(skillId, name); },
+  onRefused: (reason) => { void alertModal(reason); },
 });
 const historyEl = document.createElement("div");
 historyEl.id = "history";
@@ -282,7 +306,66 @@ async function refreshHistory() {
   historyView.render({
     runs, anyRuns: all.length > 0, workspaceName: ws?.name ?? null,
     recording: recordingRuns, filters: runFilters, skills: skills.all,
+    liveSessions: deck.liveSessions(),
+    workspaceIds: workspaces.all.map((w) => w.id),
   }, Date.now());
+}
+
+/** Run a recorded scenario again.
+ *
+ *  An ordinary `manual` launch that opens its own record, deliberately **not**
+ *  chained through `continuesRunId`: that field means "this PTY resumed that
+ *  conversation", and a re-run is a fresh one.
+ *
+ *  The form opens with the recorded values in the fields and launches nothing
+ *  until it is confirmed. A scenario's parameters may name a branch, a target or
+ *  a person, and re-running one from history without showing what is in the
+ *  fields is how somebody re-runs yesterday's parameters against today's branch.
+ *  The values are matched against the *current* template first — the record is
+ *  not authoritative over a prompt that has been edited since.
+ *
+ *  Down `launchScenario`'s own path — `requireWorkspace` then `resolvePrompt` —
+ *  rather than re-deriving either. Resolving a target from the record instead
+ *  broke the invariant every other manual launch keeps: that a manual launch
+ *  lands in the *active* workspace. A record with no workspace of its own shows
+ *  in every workspace's history, so pressing this in workspace A could put a
+ *  tile in B — running in B's folder, sitting in A's deck under A's header,
+ *  gone at the next workspace switch, since `applyWorkspaceVisibility` is only
+ *  applied on the unattended path. */
+async function rerunScenario(rec: RunRecord, skill: Skill) {
+  const ws = await requireWorkspace();
+  if (!ws) return;
+  const resolved = await resolvePrompt(
+    skill.prompt,
+    // The only difference from an ordinary launch: the fields start at what
+    // this run used, reconciled against today's template.
+    (names) => placeholderForm(names, reconcileParams(names, rec.params)),
+  );
+  if (resolved === null) return;
+  setView("deck");
+  await deck.launch(ws, { ...skill, prompt: resolved.prompt }, resolved.params);
+}
+
+/** Erase one scenario's history — the only erasure there is, and it asks first
+ *  exactly as `Delete scenario?` does. There is no deleting of a single record:
+ *  a row is a snapshot of what ran, and a journal whose rows can be revised
+ *  answers nothing. */
+async function eraseHistory(skillId: string, name: string) {
+  // Scoped to the workspace the screen is showing, and said so in the question.
+  // The rows on screen are one workspace's; erasing every workspace's records of
+  // that scenario from a screen that shows two of them, with no undo and no
+  // second copy, is not what the button appears to offer.
+  const ws = workspaces.active;
+  const where = ws ? ` in ${ws.name}` : "";
+  if (!(await confirmModal(`Delete every recorded run of “${name}”${where}?`))) return;
+  try {
+    await deleteSkillHistory(skillId, ws?.id ?? null);
+  } catch (e) {
+    await alertModal(`Could not delete the history: ${String(e)}`);
+    return;
+  }
+  await skills.refreshRuns();
+  await refreshHistory();
 }
 
 let boardVisible = false;

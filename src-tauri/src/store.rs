@@ -267,14 +267,42 @@ impl Store {
         Ok(before - keep.len())
     }
 
-    /// Erase one scenario's history, wholesale.
+    /// Erase one scenario's history, wholesale, within one workspace's scope.
     ///
     /// The only erasure there is. A record is a snapshot of what ran, so there
     /// is no editing or deleting of a single one — a journal whose rows can be
     /// revised answers nothing.
-    pub fn delete_skill_history(&self, skill_id: &str) -> std::io::Result<()> {
+    ///
+    /// **Scoped**, through the same `in_scope` the screen's `list_runs` used, so
+    /// that what is erased is what was on screen. Erasing every workspace's
+    /// records of a scenario from a screen showing one workspace's two of them
+    /// would silently take the other forty, and this file is the only copy.
+    ///
+    /// **Refused while one of those runs is still `running`.** The rewrite is
+    /// the one place this journal is not append-only, and taking out an open
+    /// record loses more than the past: the run's `Closed` event arrives later
+    /// with no `Started` left to attach to, `fold_events` drops it, and the run
+    /// is never journalled at all — not even when it finishes. The UI disables
+    /// the control for the same reason; this covers a run that starts between
+    /// the render and the click.
+    pub fn delete_skill_history(
+        &self,
+        skill_id: &str,
+        workspace_id: Option<&str>,
+    ) -> std::io::Result<()> {
         let all = fold_events(&self.runs_body());
-        let keep: Vec<RunRecord> = all.into_iter().filter(|r| r.skill_id != skill_id).collect();
+        let doomed = |r: &RunRecord| crate::runs::in_scope(r, workspace_id, Some(skill_id));
+        if all
+            .iter()
+            .any(|r| doomed(r) && r.status == crate::runs::RunStatus::Running)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "one of this scenario's runs is still going — its record would be erased out \
+                 from under it, and the run would never be journalled at all",
+            ));
+        }
+        let keep: Vec<RunRecord> = all.into_iter().filter(|r| !doomed(r)).collect();
         self.rewrite_runs(&keep)
     }
 
@@ -730,6 +758,10 @@ mod tests {
     /* --- the run journal ------------------------------------------------- */
 
     fn a_run(run_id: &str, skill: &str, at: i64) -> RunEvent {
+        a_run_in(run_id, skill, at, Some("w1"))
+    }
+
+    fn a_run_in(run_id: &str, skill: &str, at: i64, workspace: Option<&str>) -> RunEvent {
         RunEvent::Started(crate::runs::RunStarted {
             version: crate::runs::RUN_JOURNAL_VERSION,
             run_id: run_id.into(),
@@ -738,7 +770,7 @@ mod tests {
             skill_id: skill.into(),
             name: "Triage".into(),
             icon: "bolt".into(),
-            workspace_id: Some("w1".into()),
+            workspace_id: workspace.map(str::to_string),
             cwd: "/p".into(),
             branch: None,
             session_id: Some(format!("sess-{run_id}")),
@@ -855,16 +887,69 @@ mod tests {
     fn deleting_one_scenarios_history_leaves_the_rest() {
         let s = Store::new(tmp());
         s.append_run_event(&a_run("r1", "gone", 10)).unwrap();
+        // Closed, because an open record refuses the erase — see
+        // `erasing_a_history_is_refused_while_one_of_its_runs_is_still_open`.
+        s.append_run_event(&a_close("r1", 15)).unwrap();
         s.append_run_event(&a_run("r2", "kept", 20)).unwrap();
         s.append_run_event(&a_close("r2", 30)).unwrap();
-        s.delete_skill_history("gone").unwrap();
+        s.delete_skill_history("gone", None).unwrap();
         let runs = s.runs();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].skill_id, "kept");
         assert_eq!(runs[0].status, crate::runs::RunStatus::Ended);
         // Deleting a scenario nobody ran is not an error.
-        s.delete_skill_history("never-ran").unwrap();
+        s.delete_skill_history("never-ran", None).unwrap();
         assert_eq!(s.runs().len(), 1);
+    }
+
+    /// The screen is one workspace's, and so is the erase. Somebody clearing the
+    /// two rows in front of them must not also lose the forty this scenario has
+    /// in the workspaces they are not looking at — the journal is the only copy
+    /// and there is no undo.
+    #[test]
+    fn erasing_a_history_reaches_only_the_workspace_that_was_on_screen() {
+        let s = Store::new(tmp());
+        s.append_run_event(&a_run_in("here", "s1", 10, Some("w1"))).unwrap();
+        s.append_run_event(&a_close("here", 11)).unwrap();
+        s.append_run_event(&a_run_in("elsewhere", "s1", 20, Some("w2"))).unwrap();
+        s.append_run_event(&a_close("elsewhere", 21)).unwrap();
+        // No workspace of its own: it shows in every workspace's history, so it
+        // is also erased from any of them — `in_scope` answers both questions.
+        s.append_run_event(&a_run_in("nowhere", "s1", 30, None)).unwrap();
+        s.append_run_event(&a_close("nowhere", 31)).unwrap();
+
+        s.delete_skill_history("s1", Some("w1")).unwrap();
+        let left: Vec<String> = s.runs().into_iter().map(|r| r.run_id).collect();
+        assert_eq!(left, vec!["elsewhere".to_string()]);
+    }
+
+    /// Erasing rewrites the journal, and rewriting an open record out of it
+    /// loses more than the past: the run's `Closed` event would arrive later
+    /// with no `Started` left to attach to, `fold_events` would drop it, and the
+    /// run would never be journalled at all.
+    #[test]
+    fn erasing_a_history_is_refused_while_one_of_its_runs_is_still_open() {
+        let s = Store::new(tmp());
+        s.append_run_event(&a_run("done", "s1", 10)).unwrap();
+        s.append_run_event(&a_close("done", 11)).unwrap();
+        s.append_run_event(&a_run("live", "s1", 20)).unwrap();
+
+        let err = s
+            .delete_skill_history("s1", Some("w1"))
+            .expect_err("an open run must not be erased out from under itself");
+        assert!(err.to_string().contains("still going"), "{err}");
+        assert_eq!(s.runs().len(), 2, "nothing may have been rewritten");
+
+        // The refusal is scoped too: an open run in another workspace is not a
+        // reason to refuse the erase of the one on screen.
+        s.append_run_event(&a_run_in("far", "s2", 30, Some("w2"))).unwrap();
+        s.delete_skill_history("s2", Some("w1")).unwrap();
+
+        // And once it closes, the erase goes through.
+        s.append_run_event(&a_close("live", 40)).unwrap();
+        s.delete_skill_history("s1", Some("w1")).unwrap();
+        let left: Vec<String> = s.runs().into_iter().map(|r| r.run_id).collect();
+        assert_eq!(left, vec!["far".to_string()]);
     }
 
     /// The journal outlives the definitions it names. Deleting the scenario

@@ -225,8 +225,8 @@ const REMOVED_BAND = ["--bg-void", "--diff-del-weak"];
  *  putting `opacity` back cannot happen quietly. */
 const ICON_REST_COLOR = decl(css, ".btn--icon", "color");
 const ICON_ROW_HOVER = decl(css, ".btn--icon:hover", "color");
-const DISABLED = Number(decl(css, "button:disabled, .sk-run:disabled", "opacity"));
-const GRAY = Number(decl(css, "button:disabled, .sk-run:disabled", "filter").match(/grayscale\(([\d.]+)\)/)[1]);
+const DISABLED = Number(decl(css, "button:disabled, .sk-run:disabled, button[aria-disabled=\"true\"]", "opacity"));
+const GRAY = Number(decl(css, "button:disabled, .sk-run:disabled, button[aria-disabled=\"true\"]", "filter").match(/grayscale\(([\d.]+)\)/)[1]);
 const ERROR_FILL = decl(css, ".state-error", "background");
 const ENDED_FILL = decl(css, ".state-ended", "background");
 const IDLE_FILL = decl(css, ".state-idle", "background");
@@ -475,6 +475,18 @@ const CASES = [
     what: "history /clear warning",
     where: "the line saying the result is only the tail of the conversation",
     fg: "--st-waiting", backdrop: ["--bg-void"], group: ["--bg-island"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history row action",
+    where: "the three row controls, on their own inset ground inside a row",
+    fg: "--fg-mid", backdrop: ["--bg-void"], group: ["--bg-island", "--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history erase control",
+    where: "the one erasing control, on the screen's ground beside the filters",
+    fg: "--fg-mid", backdrop: ["--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
   {

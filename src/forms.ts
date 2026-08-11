@@ -719,7 +719,18 @@ export function skillForm(
 
 /** Prompt for one value per placeholder name (order preserved). Resolves a
  *  name→value map on OK, or null on Cancel/backdrop click. */
-export function placeholderForm(names: string[]): Promise<Record<string, string> | null> {
+export function placeholderForm(
+  names: string[],
+  /** Values to start the fields at. Empty for an ordinary launch; a previous
+   *  run's own values when the launch is a re-run from the history.
+   *
+   *  Pre-filled and **shown**, never applied silently: a scenario's parameters
+   *  may name a branch, a target or a person, and re-running yesterday's values
+   *  against today's branch is exactly what a form the person can read prevents.
+   *  Reconciled against the *current* template by the caller — the record is not
+   *  authoritative over a prompt that has been edited since. */
+  prefill: Record<string, string> = {},
+): Promise<Record<string, string> | null> {
   return new Promise((resolve) => {
     const { box, close: closeDialog } = openDialog({
       onCancel: () => close(null),
@@ -735,6 +746,12 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
       const inp = document.createElement("input");
       inp.className = "modal-input form-ph"; inp.type = "text";
       inp.dataset.name = n;
+      // Guarded, not `prefill[n] ?? ""`: `n` is a placeholder name out of a
+      // prompt somebody typed, and `{{constructor}}` would otherwise reach
+      // through the prototype and open the field holding
+      // `function Object() { [native code] }`. `fillPlaceholders` guards the
+      // mirror-image lookup for the same reason.
+      inp.value = Object.prototype.hasOwnProperty.call(prefill, n) ? prefill[n] : "";
       inputs.set(n, inp);
       rows.push(labeled(n, inp));
     }
@@ -750,7 +767,12 @@ export function placeholderForm(names: string[]): Promise<Record<string, string>
     };
     ok.onclick = submit;
     cancel.onclick = () => close(null);
-    inputs.get(names[0])?.focus();
+    const first = inputs.get(names[0]);
+    first?.focus();
+    // Selected rather than left with the caret at the end: a pre-filled field is
+    // a suggestion, and the fastest thing to do with a suggestion you disagree
+    // with is type over it.
+    first?.select();
   });
 }
 
