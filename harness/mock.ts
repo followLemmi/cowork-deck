@@ -112,6 +112,13 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     // Reveal is a real shell call in the app; the harness has no file manager
     // and no transcripts, so it answers the way a missing file would.
     case "reveal_path": throw new Error("The transcript is no longer there.");
+    // Named rather than left to the `plugin:` default below, which answers null
+    // and says nothing — indistinguishable from #252, where a link did nothing
+    // at all. Shooting the README must not launch a browser; a line in the
+    // console is how a manual check sees that the click arrived.
+    case "plugin:opener|open_url":
+      console.debug("[harness] would open in the system browser:", args.url);
+      return null;
     case "schedule_ack": return null;
     case "scheduler_ready": return null;
     case "claude_available": return true;

@@ -21,6 +21,7 @@ import {
   canRefetch, classifyHunk, diffCacheNext, fileNote, hunkHeading, lineMarker,
   type DiffCacheReason, type DiffLine, type DiffLineKind, type DiffSlot,
 } from "./diff";
+import { wireExternal } from "./external";
 import type { DiffFile, PrDiff, PullRequest } from "./ipc";
 import { firstFocusable } from "./view";
 
@@ -695,12 +696,10 @@ export class DiffDrawer {
       again.onclick = () => this.refetchFile(again);
       row.append(again);
     }
-    // An anchor and not a button with a handler: the project has no URL-opening
-    // plugin, and `pr-view.ts` already links out exactly this way.
+    // An anchor and not a button, and it leaves through the one gate every link
+    // out of the app leaves through — see `external.ts`.
     const link = el("a", "pr-detail-retry", "Open on GitHub");
-    link.href = file.blobUrl;
-    link.target = "_blank";
-    link.rel = "noreferrer";
+    wireExternal(link, file.blobUrl);
     row.append(link);
     return row;
   }

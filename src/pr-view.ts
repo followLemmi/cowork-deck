@@ -1,4 +1,5 @@
 import type { PrDetail, PullRequest } from "./ipc";
+import { wireExternal } from "./external";
 import { ghUnavailable, type GhUnavailable } from "./gh-unavailable";
 import { renderMarkdown } from "./markdown";
 import { ago, canMerge, checksLabel, reviewLabel, sortPrs } from "./pr";
@@ -497,14 +498,11 @@ export class PrView {
     close.onclick = () => this.h.onClose(pr);
     actions.append(close);
 
-    // An anchor, not a button with a handler: the project has no URL-opening
-    // plugin, and `github-screen.ts` already links out exactly this way.
-    // Whether Tauri routes target=_blank to the system browser is unverified
-    // there too — it is on the manual checklist in Task 13.
+    // An anchor, because that is what it is — but one that opens the URL through
+    // the opener plugin rather than by navigating. `target="_blank"` is what this
+    // used to be, and it did nothing whatsoever: see `external.ts`.
     const link = fk(el("a", "pr-open", "Open in browser"), `open-${pr.number}`);
-    link.href = pr.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
+    wireExternal(link, pr.url);
     actions.append(link);
 
     row.append(actions);
