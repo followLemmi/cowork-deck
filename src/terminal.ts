@@ -5,6 +5,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { startSession, startCommandSession, writeSession, resizeSession, type ScenarioLaunch, type SessionAuth } from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
+import { terminalKeyBytes } from "./terminal-keys";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
 
 export class TerminalPanel {
@@ -90,13 +91,28 @@ export class TerminalPanel {
     // the mocked terminal in unit tests, which lacks it, doesn't throw.
     if (this.term.unicode) this.term.unicode.activeVersion = "11";
     this.term.open(mount);
-    // Intercept ONLY recognised app hotkeys; everything else (Ctrl+C/D/L and
+    // Intercept ONLY recognised app hotkeys and the handful of combinations the
+    // legacy terminal encoding cannot express; everything else (Ctrl+C/D/L and
     // ordinary typing included) goes to the terminal.
+    //
+    // The order is the contract: an app hotkey wins, and `terminalKeyBytes` only
+    // ever sees what no command claimed. See its doc comment.
     this.term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       const id = matchHotkey(e, isMacPlatform());
-      if (!id) return true;
-      if (id === "rename-active" && this.keepsRenameKey) return true;
+      if (id) {
+        if (id === "rename-active" && this.keepsRenameKey) return true;
+        return false;
+      }
+      const bytes = terminalKeyBytes(e);
+      if (bytes === null) return true;
+      // Written straight to the session rather than through `term.write`: these
+      // are input for the process, not output to paint. Returning false stops
+      // xterm sending its own `\r` on top; `preventDefault` stops the browser
+      // leaving a stray newline in xterm's hidden textarea, which returning
+      // false alone does not do.
+      e.preventDefault();
+      void writeSession(this.session, bytes);
       return false;
     });
     this.fitAddon.fit();

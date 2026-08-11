@@ -21,9 +21,11 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 vi.mock("../src/ipc", () => ({ startSession: vi.fn(), writeSession: vi.fn(), resizeSession: vi.fn() }));
 
 import { TerminalPanel } from "../src/terminal";
+import { writeSession } from "../src/ipc";
 
 beforeEach(() => {
   captured = null;
+  vi.mocked(writeSession).mockClear();
   // Force macOS so the passthrough guard treats Cmd (not Ctrl) as the app modifier.
   Object.defineProperty(navigator, "platform", { value: "MacIntel", configurable: true });
 });
@@ -57,5 +59,57 @@ describe("xterm passthrough guard", () => {
     expect(captured!(f2)).toBe(true);
     // Every other hotkey is still the app's, even there.
     expect(captured!({ type: "keydown", code: "KeyK", key: "k", metaKey: true, ctrlKey: false, shiftKey: false })).toBe(false);
+  });
+});
+
+// The bytes themselves are `terminal-keys.test.ts`'s subject. What is under test
+// here is the wiring: that the panel consults `terminalKeyBytes` only after
+// `matchHotkey`, writes what it returns to the session, and stops xterm adding
+// its own `\r` on top.
+describe("modifier+Enter reaches the session as ESC+CR", () => {
+  const enter = (mods: Record<string, boolean>) => ({
+    type: "keydown", code: "Enter", key: "Enter",
+    metaKey: false, ctrlKey: false, shiftKey: false, altKey: false,
+    preventDefault: vi.fn(), ...mods,
+  });
+
+  it("writes ESC+CR on Shift+Enter and does not let xterm send CR too", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    const e = enter({ shiftKey: true });
+    expect(captured!(e)).toBe(false);
+    expect(writeSession).toHaveBeenCalledWith("s", "\x1b\r");
+    // Returning false stops xterm; only preventDefault stops the browser
+    // dropping a newline into xterm's hidden textarea.
+    expect(e.preventDefault).toHaveBeenCalled();
+  });
+
+  it("leaves a bare Enter to xterm, which submits", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    expect(captured!(enter({}))).toBe(true);
+    expect(writeSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps Cmd+Enter on zoom — the hotkey is consulted first", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    // False because the command claimed it, and with nothing written to the pty:
+    // this is an app action, not input.
+    expect(captured!(enter({ metaKey: true }))).toBe(false);
+    expect(writeSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps Ctrl+Shift+Enter on zoom on Windows and Linux", () => {
+    Object.defineProperty(navigator, "platform", { value: "Linux x86_64", configurable: true });
+    new TerminalPanel("s", document.createElement("div"));
+    expect(captured!(enter({ ctrlKey: true, shiftKey: true }))).toBe(false);
+    expect(writeSession).not.toHaveBeenCalled();
+    // Ctrl+Enter without Shift is nobody's hotkey there, so it is the newline.
+    expect(captured!(enter({ ctrlKey: true }))).toBe(false);
+    expect(writeSession).toHaveBeenCalledWith("s", "\x1b\r");
+  });
+
+  it("ignores keyup, so the newline is written once per press", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    expect(captured!({ ...enter({ shiftKey: true }), type: "keyup" })).toBe(true);
+    expect(writeSession).not.toHaveBeenCalled();
   });
 });
