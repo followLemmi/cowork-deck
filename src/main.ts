@@ -472,9 +472,21 @@ deck.wireNotificationFocus();
 /** The terminal drawer reads the active workspace at the moment a terminal is
  *  opened rather than being told about it: the active one changes under it, and
  *  a shell already running in another workspace must not follow along. */
+/** Show one workspace: its deck tiles and its terminals.
+ *
+ *  One function because they have to agree. A terminal belongs to a workspace
+ *  the way a tile does, so switching hides the ones that belong elsewhere and
+ *  brings back the ones that belong here — with their scrollback, since nothing
+ *  was closed, and with the drawer up or down as that workspace last left it.
+ *  A workspace nobody has opened a terminal in has no drawer at all. */
+function activateWorkspace(id: string | null): void {
+  deck.setActiveWorkspace(id);
+  terminals.setWorkspace(id);
+}
+
 /** How the drawer was left last time, read once with the rest of the stored ui
  *  state (see `bootWithStoredScale`) and applied when the drawer restores. */
-let storedDrawer = { open: false, rows: DEFAULT_TERMINAL_ROWS };
+let storedDrawer = { rows: DEFAULT_TERMINAL_ROWS };
 const terminalsEl = document.getElementById("terminals")!;
 const terminals = new TerminalDrawer(
   terminalsEl,
@@ -483,6 +495,7 @@ const terminals = new TerminalDrawer(
     name: workspaces.active?.name ?? null,
     path: workspaces.active?.path ?? ".",
   }),
+  () => workspaces.all,
 );
 const boot = () => runBoot({
   steps: [
@@ -551,7 +564,7 @@ const boot = () => runBoot({
     // window. A shell cannot be resumed the way a session can: each of these is
     // a new shell in the directory the old one was in.
     () => terminals.restore(storedDrawer),
-    () => { deck.setActiveWorkspace(workspaces.active?.id ?? null); },
+    () => { activateWorkspace(workspaces.active?.id ?? null); },
   ],
   // Sent last so a catch-up fire arriving immediately can be resolved to a
   // scenario — but sent even if a step above failed, or the scheduler stays
@@ -1273,9 +1286,10 @@ void listen("pill://focus-next", async () => {
 });
 
 // Selecting a workspace (click, startup restore of the active one, or after a
-// deletion re-selects the next one) switches the deck to that workspace's tiles.
+// deletion re-selects the next one) switches the deck to that workspace's tiles
+// — and the terminal drawer with it, which is why both go through one call.
 const workspaces = new WorkspacesPanel(wsMount, (ws) => {
-  deck.setActiveWorkspace(ws.id);
+  activateWorkspace(ws.id);
   // `boardTick`, not `refreshBoard` — deliberate, and not a copy of the line
   // below. A switch changes which source the board has, and the pending tick was
   // armed for the old one: github→fs would wait 30 s once, fs→github would fire
@@ -1570,8 +1584,9 @@ async function bootWithStoredScale(): Promise<void> {
     recordingRuns = ui.recordScenarioRuns;
     // Read here rather than again inside `boot()`: one read of one file, and
     // the drawer's own restore step below runs after the deck's layout so its
-    // height lands on a window that is already laid out.
-    storedDrawer = { open: ui.terminalsOpen, rows: ui.terminalRows };
+    // height lands on a window that is already laid out. *Whether* it is up is
+    // not here — that is per workspace and comes with the tabs.
+    storedDrawer = { rows: ui.terminalRows };
   } catch (e) {
     console.debug("ui state read failed, using the defaults", e);
   }

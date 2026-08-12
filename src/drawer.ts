@@ -94,9 +94,17 @@ export function rowsForHeight(px: number, scale: number, barPx: number): number 
  */
 export class TerminalDrawer {
   private tabs: Tab[] = [];
-  private activeSession: string | null = null;
+  /** The tab in front, per workspace. Keyed the way it is persisted: a
+   *  workspace id, or `""` for a terminal opened with no workspace active. */
+  private activeByWorkspace = new Map<string, string>();
+  /** The workspaces whose drawer is up. Per workspace because the drawer is:
+   *  switching to a project you never opened a terminal in should not shorten
+   *  its deck by a strip belonging to another project. */
+  private openWorkspaces = new Set<string>();
+  /** The workspace the drawer is currently showing. Written by
+   *  `setWorkspace`, which the app calls wherever the deck is switched. */
+  private workspaceId: string | null = null;
   private rows = DEFAULT_TERMINAL_ROWS;
-  private open = false;
   private tabsEl!: HTMLElement;
   private bodiesEl!: HTMLElement;
   private unlisten: UnlistenFn[] = [];
@@ -109,8 +117,44 @@ export class TerminalDrawer {
     /** The workspace a new terminal opens against, read at the moment it is
      *  opened rather than held: the active workspace changes under us. */
     private context: () => TerminalContext,
+    /** Every workspace that still exists, for deciding what is an orphan — a
+     *  terminal whose workspace was deleted. Those stay reachable from
+     *  everywhere, exactly as an orphaned deck tile does: it is still running,
+     *  and a terminal nobody can see is a terminal nobody can close. */
+    private knownWorkspaces: () => { id: string }[] = () => [],
   ) {
     this.build();
+  }
+
+  /** The key this workspace's drawer state is filed under. */
+  private key(id: string | null = this.workspaceId): string { return id ?? ""; }
+
+  /** Whether a tab belongs on screen while `id` is the active workspace. */
+  private visibleIn(tab: Tab, id: string | null): boolean {
+    if (!tab.workspaceId) return true;
+    const known = this.knownWorkspaces();
+    // A workspace that no longer exists cannot be switched to, so a tab bound to
+    // one would be unreachable — and it is still running.
+    if (known.length && !known.some((w) => w.id === tab.workspaceId)) return true;
+    return tab.workspaceId === id;
+  }
+
+  /** The tabs on screen right now. */
+  private visible(): Tab[] { return this.tabs.filter((t) => this.visibleIn(t, this.workspaceId)); }
+
+  /** Show this workspace's terminals and no others.
+   *
+   *  A workspace with none has no drawer at all — not an empty strip, which
+   *  would be chrome around nothing and would shorten the deck for no reason.
+   *  One with terminals gets its own drawer back, open or shut as it was left,
+   *  with the tab that was in front still in front. */
+  setWorkspace(id: string | null): void {
+    this.workspaceId = id;
+    const mine = this.visible();
+    const remembered = this.activeByWorkspace.get(this.key());
+    const front = mine.find((t) => t.session === remembered) ?? mine[0];
+    if (front) this.activeByWorkspace.set(this.key(), front.session);
+    this.render();
   }
 
   private build() {
@@ -236,7 +280,7 @@ export class TerminalDrawer {
    *  honest most that can be offered, and it is still most of the value: the
    *  directories are what a person arranged, and typing `npm test` again is not
    *  the part they minded. */
-  async restore(stored: { open: boolean; rows: number }): Promise<void> {
+  async restore(stored: { rows: number }): Promise<void> {
     this.rows = clampRows(stored.rows);
     let layout;
     try {
@@ -246,15 +290,19 @@ export class TerminalDrawer {
       return;
     }
     for (const entry of layout.items) await this.spawnTab(entry);
-    const wanted = layout.active && this.tabs.some((t) => t.session === layout.active)
-      ? layout.active
-      : this.tabs[0]?.session ?? null;
-    if (wanted) this.activate(wanted, { focus: false });
-    // Last, so the height is applied against tabs that already exist.
-    if (stored.open && this.tabs.length) await this.setOpen(true, { focus: false });
+    for (const [ws, session] of Object.entries(layout.active ?? {})) {
+      if (this.tabs.some((t) => t.session === session)) this.activeByWorkspace.set(ws, session);
+    }
+    for (const ws of layout.open ?? []) this.openWorkspaces.add(ws);
+    // Nothing is drawn until `setWorkspace` says which workspace this is —
+    // which the app does at the end of boot, after the deck's own restore.
   }
 
-  isOpen(): boolean { return this.open; }
+  /** Whether the drawer is up **for the workspace on screen**. A workspace with
+   *  no terminals has no drawer, however the last one was left. */
+  isOpen(): boolean {
+    return this.openWorkspaces.has(this.key()) && this.visible().length > 0;
+  }
 
   /** Whether this session is one of the drawer's — what the quit question asks
    *  before it decides who can name a session. */
@@ -267,34 +315,34 @@ export class TerminalDrawer {
    *  with a `+` and nothing else is a worse answer to "give me a terminal" than
    *  a terminal. */
   async toggle(): Promise<void> {
-    if (this.open) { await this.setOpen(false); return; }
-    await this.setOpen(true);
-    if (!this.tabs.length) await this.newTerminal();
+    if (this.isOpen()) { this.setOpen(false); void this.persist(); return; }
+    this.setOpen(true);
+    if (!this.visible().length) await this.newTerminal();
+    else { this.render(); this.focusActive(); void this.persist(); }
   }
 
-  private async setOpen(open: boolean, opts: { focus?: boolean } = {}) {
-    this.open = open;
-    this.el.hidden = !open;
-    if (open) {
-      this.applyHeight();
-      if (opts.focus !== false) this.active()?.panel.focus();
-    } else {
-      this.el.style.height = "";
-    }
-    await saveUiState({ terminalsOpen: open }).catch((e) =>
-      console.debug("saveUiState failed", e));
+  /** Up or down for the workspace on screen, and only for it. */
+  private setOpen(open: boolean) {
+    if (open) this.openWorkspaces.add(this.key());
+    else this.openWorkspaces.delete(this.key());
+    this.render();
   }
 
-  /** Open a shell in the active workspace. */
+  /** Open a shell in the active workspace. It belongs to that workspace from
+   *  here on: switching away takes it off screen, and switching back brings it
+   *  and its scrollback straight back. */
   async newTerminal(): Promise<void> {
     const ws = this.context();
-    if (!this.open) await this.setOpen(true, { focus: false });
+    // Read before the await: the active workspace can change under a spawn, and
+    // the terminal belongs to the one it was asked for.
+    const workspaceId = ws.id ?? null;
+    this.setOpen(true);
     const session = crypto.randomUUID();
     await this.spawnTab({
       sessionId: session,
       cwd: ws.path,
       name: ws.name ? `shell · ${ws.name}` : "shell",
-      workspaceId: ws.id ?? undefined,
+      ...(workspaceId ? { workspaceId } : {}),
     });
     this.activate(session);
     void this.persist();
@@ -377,29 +425,43 @@ export class TerminalDrawer {
     close.onclick = (e) => { e.stopPropagation(); void this.close(tab.session); };
     tab.el.replaceChildren(tab.label, close);
     if (!tab.el.parentElement) this.tabsEl.append(tab.el);
-    this.markActive();
+    this.render();
   }
 
   private active(): Tab | undefined {
-    return this.tabs.find((t) => t.session === this.activeSession);
+    const session = this.activeByWorkspace.get(this.key());
+    return this.visible().find((t) => t.session === session);
   }
 
-  private markActive() {
+  /** The whole of what is on screen, from the state above: which tabs belong to
+   *  this workspace, which of them is in front, and whether the drawer is up at
+   *  all. One writer, because "the drawer disappeared" and "the wrong tab is in
+   *  front" are the same bug seen from two angles. */
+  private render() {
+    const front = this.active()?.session ?? null;
     for (const t of this.tabs) {
-      const on = t.session === this.activeSession;
+      const mine = this.visibleIn(t, this.workspaceId);
+      // `hidden` on the tab strip entry as well as the body: a tab from another
+      // workspace is not a tab you can click.
+      t.el.hidden = !mine;
+      const on = mine && t.session === front;
       t.el.classList.toggle("is-active", on);
       t.label.setAttribute("aria-selected", String(on));
       t.body.classList.toggle("hidden", !on);
     }
+    const up = this.isOpen();
+    this.el.hidden = !up;
+    if (up) this.applyHeight();
+    else this.el.style.height = "";
   }
 
   activate(session: string, opts: { focus?: boolean } = {}) {
-    if (!this.tabs.some((t) => t.session === session)) return;
-    this.activeSession = session;
-    this.markActive();
-    const tab = this.active();
-    tab?.panel.fit();
-    if (opts.focus !== false) tab?.panel.focus();
+    const tab = this.tabs.find((t) => t.session === session);
+    if (!tab || !this.visibleIn(tab, this.workspaceId)) return;
+    this.activeByWorkspace.set(this.key(), session);
+    this.render();
+    tab.panel.fit();
+    if (opts.focus !== false) tab.panel.focus();
     void this.persist();
   }
 
@@ -437,35 +499,44 @@ export class TerminalDrawer {
     tab.body.remove();
     this.tabs = this.tabs.filter((t) => t.session !== session);
     this.holding.delete(session);
-    if (this.activeSession === session) {
-      this.activeSession = this.tabs[this.tabs.length - 1]?.session ?? null;
-      this.markActive();
-      if (this.open) this.active()?.panel.focus();
+    // Whichever workspaces had this tab in front need another one, and only the
+    // one on screen needs the keyboard moved.
+    for (const [ws, front] of [...this.activeByWorkspace]) {
+      if (front !== session) continue;
+      const siblings = this.tabs.filter((t) => this.visibleIn(t, ws || null));
+      const next = siblings[siblings.length - 1];
+      if (next) this.activeByWorkspace.set(ws, next.session);
+      else this.activeByWorkspace.delete(ws);
     }
-    // An empty drawer is a strip of chrome around nothing.
-    if (!this.tabs.length && this.open) await this.setOpen(false);
+    // A workspace whose last terminal just went has no drawer to leave up: an
+    // empty strip is chrome around nothing, and it would keep shortening the
+    // deck.
+    if (!this.visible().length) this.setOpen(false);
+    this.render();
+    if (this.isOpen()) this.active()?.panel.focus();
     void this.persist();
   }
 
   /** Close whichever tab is in front — what Cmd+W means while the drawer holds
    *  the keyboard. */
   async closeActive(): Promise<boolean> {
-    if (!this.open || !this.activeSession) return false;
-    await this.close(this.activeSession);
+    const tab = this.active();
+    if (!this.isOpen() || !tab) return false;
+    await this.close(tab.session);
     return true;
   }
 
   /** Whether the keyboard is inside the drawer, which is what lets the deck's
    *  own shortcuts stay the deck's while the drawer is in use. */
   hasFocus(): boolean {
-    return this.open && this.el.contains(document.activeElement);
+    return this.isOpen() && this.el.contains(document.activeElement);
   }
 
   /** Put the keyboard in the terminal that is in front. False when there is
    *  none, so the region cycle can move on rather than dropping focus. */
   focusActive(): boolean {
     const tab = this.active();
-    if (!this.open || !tab) return false;
+    if (!this.isOpen() || !tab) return false;
     tab.panel.focus();
     return true;
   }
@@ -479,7 +550,8 @@ export class TerminalDrawer {
           name: t.name,
           ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
         })),
-        active: this.activeSession,
+        active: Object.fromEntries(this.activeByWorkspace),
+        open: [...this.openWorkspaces],
       });
     } catch (e) {
       console.debug("saveTerminals failed", e);

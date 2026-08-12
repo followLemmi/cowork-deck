@@ -95,6 +95,9 @@ export const S_AUTO = "s-auto-05";
  *  a PTY session like any other and shares the id space with the tiles. */
 export const SH_ONE = "sh-one-01";
 export const SH_TWO = "sh-two-02";
+/** A terminal in a *different* workspace, so the harness can show that switching
+ *  projects switches terminals. */
+export const SH_THREE = "sh-three-03";
 
 export const layout: SessionEntry[] = [
   {
@@ -213,6 +216,11 @@ export const shellScrollback: Record<string, string> = {
     `${D}dev@relay${X}:${C}~/relay${X}$ cargo build --release`,
     `   ${G}Compiling${X} relay v0.4.1`,
     `    ${D}Building${X} [====================>      ] 43/61`,
+  ].join("\r\n"),
+  [SH_THREE]: [
+    `${D}dev@harbor${X}:${C}~/harbor${X}$ npm test -- --watch`,
+    ` ${G}✓${X} 128 passed`,
+    `${D}dev@harbor${X}:${C}~/harbor${X}$ `,
   ].join("\r\n"),
 };
 
@@ -653,21 +661,26 @@ export const mergeOptions: MergeOptions = {
 
 export const uiState: UiState = {
   activeWorkspaceId: WS_RELAY, uiScale: 1, prDiffCols: 96, recordScenarioRuns: true,
-  // Up, and with a terminal in it: the drawer is a surface the shots have to be
-  // able to show, and one that has to be opened by hand before every shot is one
-  // that will be forgotten in half of them.
-  terminalsOpen: true, terminalRows: 12,
+  terminalRows: 12,
 };
 
-/** What the terminal drawer reopens with. Two tabs, because one tab cannot show
- *  what a tab strip looks like, and the second carries a hand-typed name — the
- *  only thing a person can put on this surface. */
+/** What the terminal drawer reopens with.
+ *
+ *  Two tabs in the workspace the harness starts on — one tab cannot show what a
+ *  tab strip looks like, and the second carries a hand-typed name, the only
+ *  thing a person can put on this surface. A third in *another* workspace, which
+ *  is what makes the scoping visible at all: switch to harbor and the drawer is
+ *  a different drawer; switch to atlas, which has none, and there is no drawer.
+ *
+ *  Up in relay and in harbor, because that is per workspace now. */
 export const terminals = {
   items: [
     { sessionId: SH_ONE, cwd: "/home/dev/code/relay", name: "zsh · relay", workspaceId: WS_RELAY },
     { sessionId: SH_TWO, cwd: "/home/dev/code/relay", name: "release build", workspaceId: WS_RELAY },
+    { sessionId: SH_THREE, cwd: "/home/dev/code/harbor", name: "zsh · harbor", workspaceId: WS_HARBOR },
   ],
-  active: SH_ONE,
+  active: { [WS_RELAY]: SH_ONE, [WS_HARBOR]: SH_THREE },
+  open: [WS_RELAY, WS_HARBOR],
 };
 
 /* --- the scenario run journal -------------------------------------------- */

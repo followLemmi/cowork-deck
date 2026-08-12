@@ -2740,6 +2740,13 @@ h6.md-head { font-size: var(--fs-sm); }
   display: flex; align-items: center; border-radius: var(--r-ctl) var(--r-ctl) 0 0;
   border: 1px solid transparent; border-bottom: none; max-width: 22ch;
 }
+/* A tab belonging to another workspace. Required, not tidy-up: the UA sheet's
+   `[hidden] { display: none }` is a bare attribute selector and loses to the
+   `display: flex` above, so `el.hidden = true` alone left every other
+   workspace's tabs on screen — visibly, while `el.hidden` read `true` and any
+   test asking the DOM would have agreed with the bug. `#deck` needs `tk-hidden`
+   for the same reason, one specificity level up. */
+.term-tab[hidden] { display: none; }
 .term-tab.is-active { background: var(--bg-terminal); border-color: var(--line-strong); }
 /* A shell whose process is gone. Not hidden and not removed: its scrollback is
    the only record of what it was doing, and a tab that vanished on `exit` would

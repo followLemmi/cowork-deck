@@ -72,14 +72,13 @@ export interface UiState {
    *  and deletes nothing already written, and reads keep working. Required for
    *  the same reason as the two above: Rust fills it from a `serde` default. */
   recordScenarioRuns: boolean;
-  /** Whether the terminal drawer is up. Its *contents* live in their own file
-   *  (`loadTerminals`); this is only whether the strip is drawn. Required for
-   *  the same reason as the fields above: Rust fills it from a `serde` default. */
-  terminalsOpen: boolean;
   /** How tall the drawer is, **in rows of the terminal's own type** — not
    *  pixels, and for a sharper version of `prDiffCols`' reason: the thing being
    *  sized is a grid of characters, so "show me twenty rows" has to keep meaning
-   *  twenty rows after the next text-size change. */
+   *  twenty rows after the next text-size change. One value for the app, unlike
+   *  *whether* the drawer is up, which is per workspace and lives with the tabs:
+   *  the height is how much of this window to give a terminal, and that does not
+   *  change with the project. */
   terminalRows: number;
 }
 
@@ -94,7 +93,6 @@ export interface UiStatePatch {
   uiScale?: number;
   prDiffCols?: number;
   recordScenarioRuns?: boolean;
-  terminalsOpen?: boolean;
   terminalRows?: number;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
@@ -391,7 +389,14 @@ export interface TerminalEntry {
   name: string;
   workspaceId?: string;
 }
-export interface TerminalLayout { items: TerminalEntry[]; active?: string | null }
+/** The drawer is per workspace, so both of these are too: `active` is the tab in
+ *  front keyed by workspace id (`""` for a terminal opened with no workspace),
+ *  and `open` is the workspaces whose drawer is up. */
+export interface TerminalLayout {
+  items: TerminalEntry[];
+  active: Record<string, string>;
+  open: string[];
+}
 
 export const loadTerminals = () => invoke<TerminalLayout>("load_terminals");
 export const saveTerminals = (layout: TerminalLayout) =>

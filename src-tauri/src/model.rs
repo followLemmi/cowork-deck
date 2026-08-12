@@ -320,18 +320,61 @@ pub struct TerminalEntry {
     pub workspace_id: Option<String>,
 }
 
-/// The drawer's contents: the tabs, left to right, and which one was in front.
+/// The drawer's contents, and it is a drawer **per workspace**.
 ///
-/// A struct rather than the bare `Vec` the deck layout uses, because the active
-/// tab has nowhere else to live. It could have gone in `UiState` beside the
-/// drawer's height, but `UiStatePatch` cannot express "set this back to
-/// nothing", and closing the last tab is exactly that.
+/// Switching workspace changes which terminals exist as far as a person is
+/// concerned — the same rule the deck already follows for its tiles, and for the
+/// same reason: a workspace is the unit of "what I am working on", and a shell
+/// standing in another project's directory under another project's account is
+/// not part of it. So the tab in front and whether the drawer is up are both
+/// per workspace, not one answer for the app.
+///
+/// A struct rather than the bare `Vec` the deck layout uses, because neither of
+/// those two has anywhere else to live. They could have gone in `UiState` beside
+/// the drawer's height, but `UiStatePatch` cannot express "set this back to
+/// nothing", and closing a workspace's last tab is exactly that.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TerminalLayout {
     #[serde(default)]
     pub items: Vec<TerminalEntry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active: Option<String>,
+    /// The tab in front, per workspace id. A terminal opened with no workspace
+    /// active is keyed by the empty string — one key rather than an
+    /// `Option<String>` key, because JSON object keys are strings and a
+    /// `null` one is not expressible.
+    #[serde(default, deserialize_with = "active_tabs")]
+    pub active: std::collections::BTreeMap<String, String>,
+    /// The workspaces whose drawer is up. Absent means shut, which is what a
+    /// person who has never opened a terminal gets — the deck should not be
+    /// shortened by a strip nobody asked for.
+    #[serde(default)]
+    pub open: Vec<String>,
+}
+
+/// Reads the map, and reads anything else as no map at all.
+///
+/// This field was one session id — the app's single active tab — before the
+/// drawer was scoped per workspace. `#[serde(default)]` does not cover that: a
+/// default fills an *absent* key, and a key of the wrong shape fails the whole
+/// struct, which `Store::terminals` would swallow into an empty drawer. The
+/// consequence would be an upgrade quietly eating every terminal tab a person
+/// had, to save one line here.
+fn active_tabs<'de, D>(d: D) -> Result<std::collections::BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Shape {
+        Current(std::collections::BTreeMap<String, String>),
+        /// Anything else, including the old lone session id. There is no
+        /// workspace to attribute it to, so it is dropped and the drawer opens
+        /// on the first tab of whatever workspace is active.
+        Older(serde_json::Value),
+    }
+    Ok(match Shape::deserialize(d)? {
+        Shape::Current(map) => map,
+        Shape::Older(_) => std::collections::BTreeMap::new(),
+    })
 }
 
 /// A persisted tile in the deck layout — enough to reopen it and resume its
@@ -445,16 +488,10 @@ pub struct UiState {
     /// active workspace silently forgotten rather than an error.
     #[serde(rename = "recordScenarioRuns", default = "default_record_runs")]
     pub record_scenario_runs: bool,
-    /// Whether the terminal drawer is up. Its *contents* are in
-    /// `terminals.json`; this is only whether the drawer is drawn, which is a
-    /// view preference like the two fields above and belongs with them.
-    ///
-    /// Off by default: a person who has never opened a terminal should not find
-    /// the deck shortened by a strip they did not ask for.
-    #[serde(rename = "terminalsOpen", default)]
-    pub terminals_open: bool,
     /// How tall the drawer is, **in rows of the terminal's own type** rather
-    /// than in pixels — the same decision as `pr_diff_cols`, and here it is
+    /// than in pixels. One value for the app, unlike whether the drawer is up
+    /// (`TerminalLayout::open`): the height is how much of this window a person
+    /// wants given to a terminal, and that does not change with the project — the same decision as `pr_diff_cols`, and here it is
     /// even harder to argue with: the thing being sized is a grid of characters,
     /// and a person who sets it to show twenty rows means twenty rows at every
     /// text size, not however many fit in 260 pixels after the next change.
@@ -503,7 +540,6 @@ impl Default for UiState {
             ui_scale: default_ui_scale(),
             pr_diff_cols: default_pr_diff_cols(),
             record_scenario_runs: default_record_runs(),
-            terminals_open: false,
             terminal_rows: default_terminal_rows(),
         }
     }
@@ -529,8 +565,6 @@ pub struct UiStatePatch {
     pub pr_diff_cols: Option<u32>,
     #[serde(rename = "recordScenarioRuns")]
     pub record_scenario_runs: Option<bool>,
-    #[serde(rename = "terminalsOpen")]
-    pub terminals_open: Option<bool>,
     #[serde(rename = "terminalRows")]
     pub terminal_rows: Option<u32>,
 }
