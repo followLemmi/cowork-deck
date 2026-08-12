@@ -100,6 +100,17 @@ describe("wireExternal", () => {
     expect(openUrl).not.toHaveBeenCalled();
   });
 
+  // The plugin gets what the gate returned, not what the caller passed. Pinned
+  // because the difference is invisible until a URL needs normalising, and a
+  // refactor that hands `openUrl` the raw string would put an unchecked value in
+  // front of the OS.
+  it("hands the plugin the normalised URL, not the raw one", () => {
+    const a = anchor();
+    wireExternal(a, "https://example.test");
+    a.dispatchEvent(new MouseEvent("click", { cancelable: true, bubbles: true }));
+    expect(vi.mocked(openUrl).mock.calls).toEqual([["https://example.test/"]]);
+  });
+
   it("leaves the anchor untouched when the URL is refused", () => {
     const a = anchor();
     expect(wireExternal(a, "javascript:alert(1)")).toBe(false);

@@ -127,6 +127,18 @@ describe("PrView", () => {
     expect(vi.mocked(openUrl).mock.calls).toEqual([["https://example.test/pr/7"]]);
   });
 
+  // `url` comes through an `unwrap_or("")` in `gh_pr.rs`. An anchor the gate
+  // refused looks like the other three controls, takes no focus and does nothing
+  // when clicked — the same dead button #252 was about. Absent is honest.
+  it("leaves out the browser link when there is no URL to open", () => {
+    const { view } = mk();
+    view.render(state({ prs: [pr({ url: "" })] }), NOW);
+    expect(document.querySelector(".pr-open")).toBeNull();
+    // The row is otherwise intact — this costs one action, not the row.
+    expect(document.querySelector(".pr-launch")).not.toBeNull();
+    expect(document.querySelector(".pr-close")).not.toBeNull();
+  });
+
   it("shows how old the data is, always", () => {
     const { view } = mk();
     view.render(state({ fetchedAt: NOW - 120_000 }), NOW);

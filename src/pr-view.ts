@@ -501,9 +501,15 @@ export class PrView {
     // An anchor, because that is what it is — but one that opens the URL through
     // the opener plugin rather than by navigating. `target="_blank"` is what this
     // used to be, and it did nothing whatsoever: see `external.ts`.
+    //
+    // Absent rather than dead when the gate refuses the URL. `url` comes out of
+    // `gh_pr.rs` through an `unwrap_or("")`, and a refused anchor keeps neither
+    // `href` nor handler: it would look like the other three controls, ignore
+    // every click, and — since `view.ts` finds controls by `a[href]` — refuse
+    // focus, which would also make the focus key below restore focus to nothing
+    // after a poll redraw. The row's other three actions still work.
     const link = fk(el("a", "pr-open", "Open in browser"), `open-${pr.number}`);
-    wireExternal(link, pr.url);
-    actions.append(link);
+    if (wireExternal(link, pr.url)) actions.append(link);
 
     row.append(actions);
     // Under the buttons rather than beside them: the reason is a sentence, and a
