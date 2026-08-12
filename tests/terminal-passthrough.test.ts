@@ -123,10 +123,30 @@ describe("modifier+Enter reaches the session as ESC+CR", () => {
 
   // Claiming Enter mid-composition would skip xterm's composition helper — this
   // handler runs before it — and eat the IME's commit.
+  //
+  // What this case can pin is thin, and worth saying out loud: returning `true`
+  // is also what the broken placement of the guard did, so the assertions below
+  // hold either way. The whole consequence lives in what xterm does next, which
+  // the mock does not model. The case that actually pins the placement is the
+  // F6 one below; this one guards the bytes.
   it("leaves Enter to the IME while a composition is open", () => {
     new TerminalPanel("s", document.createElement("div"));
     expect(captured!({ ...enter({ shiftKey: true }), isComposing: true })).toBe(true);
     expect(captured!({ ...enter({ shiftKey: true }), keyCode: 229 })).toBe(true);
+    expect(writeSession).not.toHaveBeenCalled();
+  });
+
+  // The regression this ordering exists to prevent. `F2` and `F6` are bare keys
+  // xterm knows how to encode, so passing one through mid-composition makes
+  // xterm write `\x1bOQ`/`\x1b[17~` to the pty and then `stopPropagation` the
+  // event, which loses the command at the window listener. An app hotkey wins
+  // over the composition guard, exactly as it wins over everything else here.
+  it("keeps F2 and F6 for the app even while a composition is open", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    for (const code of ["F2", "F6"]) {
+      expect(captured!({ ...enter({}), code, key: code, isComposing: true })).toBe(false);
+      expect(captured!({ ...enter({}), code, key: code, keyCode: 229 })).toBe(false);
+    }
     expect(writeSession).not.toHaveBeenCalled();
   });
 

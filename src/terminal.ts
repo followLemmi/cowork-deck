@@ -99,18 +99,27 @@ export class TerminalPanel {
     // ever sees what no command claimed. See its doc comment.
     this.term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
-      // Nothing is the app's while an IME is composing. Returning false here
-      // would skip xterm's own composition helper — this handler runs before
-      // it — and `Enter` is exactly the key a candidate window commits on, so
-      // claiming it would eat the commit and write `ESC`+`CR` in its place.
-      // `keyCode === 229` is the older spelling of the same fact, still what
-      // some browsers send for a composing keydown.
-      if (e.isComposing || e.keyCode === 229) return true;
       const id = matchHotkey(e, isMacPlatform());
       if (id) {
         if (id === "rename-active" && this.keepsRenameKey) return true;
         return false;
       }
+      // The table below is not ours while an IME is composing, because it claims
+      // `Enter` and `Enter` is what a candidate window commits on. Returning
+      // false would skip xterm's composition helper — this handler runs before
+      // it — so the commit would be eaten and `ESC`+`CR` written in its place.
+      // `keyCode === 229` is the older spelling of the same fact.
+      //
+      // This sits *below* `matchHotkey` on purpose, and moving it above is a
+      // regression, not a tidy-up. `F2` and `F6` are bare keys that xterm knows
+      // how to encode (`\x1bOQ` and `\x1b[17~`), so passing one through mid-
+      // composition makes xterm send that sequence to claude and then call
+      // `cancel(ev, true)` — `preventDefault` plus `stopPropagation`, which stops
+      // the event ever reaching the window listener that dispatches the command.
+      // The rename or the region move is lost and a stray escape lands in the
+      // prompt. Modifier hotkeys survive it only because xterm leaves
+      // `result.key` undefined for them and bails before `cancel`.
+      if (e.isComposing || e.keyCode === 229) return true;
       const bytes = terminalKeyBytes(e);
       if (bytes === null) return true;
       // `input`, not `write`: these are input for the process, not output to
