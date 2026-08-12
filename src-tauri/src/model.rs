@@ -366,10 +366,11 @@ where
     #[serde(untagged)]
     enum Shape {
         Current(std::collections::BTreeMap<String, String>),
-        /// Anything else, including the old lone session id. There is no
-        /// workspace to attribute it to, so it is dropped and the drawer opens
-        /// on the first tab of whatever workspace is active.
-        Older(serde_json::Value),
+        /// Anything else, including the old lone session id. `IgnoredAny`
+        /// rather than a `Value` nobody reads: it accepts any shape and keeps
+        /// none of it, which is exactly the intent and leaves no field for the
+        /// compiler to point out as dead.
+        Older(serde::de::IgnoredAny),
     }
     Ok(match Shape::deserialize(d)? {
         Shape::Current(map) => map,
