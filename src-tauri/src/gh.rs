@@ -258,7 +258,17 @@ pub fn session_env(
                 put("GH_HOST", &cfg.host);
             }
         }
-        None => put("GH_CONFIG_DIR", noauth_dir),
+        None => {
+            put("GH_CONFIG_DIR", noauth_dir);
+            // With `gh` pointed at an empty directory, `gh auth git-credential`
+            // returns nothing — and git's answer to no credential helper is to
+            // ask, in the terminal, for a username and a password. A person may
+            // well answer it with a personal access token, and a token typed at
+            // that prompt is cached globally and defeats the per-workspace
+            // binding for good. `0` makes git fail with "could not read
+            // Username" instead of soliciting the wrong credential.
+            put("GIT_TERMINAL_PROMPT", "0");
+        }
     }
 
     if let Some(n) = cfg.git_name.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -270,9 +280,33 @@ pub fn session_env(
         put("GIT_COMMITTER_EMAIL", e);
     }
     if let Some(k) = cfg.ssh_key.as_deref().filter(|s| !s.trim().is_empty()) {
-        put("GIT_SSH_COMMAND", &format!("ssh -i {k} -o IdentitiesOnly=yes"));
+        // Quoted, because git hands this string to `/bin/sh`. A key at
+        // `/Users/e/My Keys/id_ed25519` — an entirely ordinary path on macOS —
+        // otherwise makes ssh read `Keys/id_ed25519` as the destination host.
+        //
+        // No `IdentitiesOnly=yes`. It tells ssh to offer only this key and to
+        // ignore the agent, and `GIT_SSH_COMMAND` is not scoped per remote: with
+        // it set, a push to gitlab.com, a corporate GHES or a deploy remote
+        // fails `Permission denied (publickey)` from inside the app while
+        // working in the person's own terminal. Worse, it is inherited by
+        // everything that shells out to git — `cargo build` with
+        // `net.git-fetch-with-cli`, an `npm install` of a `git+ssh://`
+        // dependency — so the app looks broken rather than the scoping looking
+        // wrong. A bare `-i` still makes ssh prefer this key for the bound host
+        // and lets the agent answer for every other one: a marginally weaker
+        // guarantee against a much more common failure.
+        put("GIT_SSH_COMMAND", &format!("ssh -i {}", sh_quote(k)));
     }
     env
+}
+
+/// Wrap a path so that `/bin/sh` reads it as one word, whatever is in it.
+///
+/// Single quotes take everything literally, which leaves exactly one character
+/// to handle: a single quote itself, which closes the run, contributes an
+/// escaped quote and opens a new one.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 #[cfg(test)]
@@ -412,10 +446,7 @@ mod tests {
         assert_eq!(get(&env, "GIT_COMMITTER_NAME"), Some("Evgeny"));
         assert_eq!(get(&env, "GIT_AUTHOR_EMAIL"), Some("e@example.com"));
         assert_eq!(get(&env, "GIT_COMMITTER_EMAIL"), Some("e@example.com"));
-        assert_eq!(
-            get(&env, "GIT_SSH_COMMAND"),
-            Some("ssh -i /home/u/.ssh/id_work -o IdentitiesOnly=yes")
-        );
+        assert_eq!(get(&env, "GIT_SSH_COMMAND"), Some("ssh -i '/home/u/.ssh/id_work'"));
         assert_eq!(get(&env, "GH_CONFIG_DIR"), None, "успешный резолв не трогает GH_CONFIG_DIR");
         assert_eq!(get(&env, "GH_HOST"), None, "для github.com GH_HOST не нужен");
     }
@@ -456,6 +487,50 @@ mod tests {
         assert_eq!(get(&env, "GH_TOKEN"), None, "молчаливый уход на чужой активный аккаунт недопустим");
         assert_eq!(get(&env, "GITHUB_PERSONAL_ACCESS_TOKEN"), None);
         assert_eq!(get(&env, "GIT_AUTHOR_NAME"), Some("Evgeny"), "идентичность известна и без токена");
+    }
+
+    /// A degraded session has no credential helper, and git's fallback is to ask
+    /// for a username and password at the terminal — where a personal access
+    /// token typed once is cached globally and defeats the binding for good.
+    #[test]
+    fn a_degraded_session_may_not_solicit_a_credential() {
+        let env = session_env(&cfg_full(), None, "/tmp/noauth");
+        assert_eq!(get(&env, "GIT_TERMINAL_PROMPT"), Some("0"));
+        // The resolved path has a helper, so the prompt is git's business again.
+        let ok = session_env(&cfg_full(), Some("gho_secret"), "/tmp/noauth");
+        assert_eq!(get(&ok, "GIT_TERMINAL_PROMPT"), None);
+    }
+
+    /// git hands `GIT_SSH_COMMAND` to `/bin/sh`, so an unquoted path with a
+    /// space in it — ordinary on macOS — turns the rest of the path into ssh's
+    /// destination host. The space-free path in the test above passes either
+    /// way, which is why this one exists.
+    #[test]
+    fn an_ssh_key_path_survives_the_shell_that_reads_it() {
+        let spaced = WorkspaceGithub {
+            ssh_key: Some("/Users/e/My Keys/id_ed25519".into()),
+            ..cfg_bare()
+        };
+        assert_eq!(
+            get(&session_env(&spaced, Some("t"), "/tmp/noauth"), "GIT_SSH_COMMAND"),
+            Some("ssh -i '/Users/e/My Keys/id_ed25519'"),
+        );
+
+        let quoted = WorkspaceGithub { ssh_key: Some("/keys/o'brien/id".into()), ..cfg_bare() };
+        assert_eq!(
+            get(&session_env(&quoted, Some("t"), "/tmp/noauth"), "GIT_SSH_COMMAND"),
+            Some(r"ssh -i '/keys/o'\''brien/id'"),
+        );
+    }
+
+    /// `IdentitiesOnly=yes` is not scoped per remote: it tells ssh to ignore the
+    /// agent for *every* host, so a push to gitlab.com or a corporate GHES fails
+    /// inside the app and works in the person's own terminal.
+    #[test]
+    fn the_bound_key_does_not_lock_out_every_other_host() {
+        let env = session_env(&cfg_full(), Some("t"), "/tmp/noauth");
+        let cmd = get(&env, "GIT_SSH_COMMAND").unwrap_or_default();
+        assert!(!cmd.contains("IdentitiesOnly"), "the agent is shut out of other hosts: {cmd}");
     }
 
     #[test]

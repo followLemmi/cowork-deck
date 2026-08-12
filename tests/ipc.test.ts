@@ -4,7 +4,8 @@ vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/api/event");
 
 import {
-  listWorkspaces, startSession, decodeB64Bytes, onOutput, onScheduledFire, scheduleAck, updateTask,
+  listWorkspaces, startSession, prepareWorkspace, describeExit, onExit,
+  decodeB64Bytes, onOutput, onScheduledFire, scheduleAck, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage, prList, prMerge, prWorktreeAdd,
   issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove, trackerOpenCount,
 } from "../src/ipc";
@@ -29,8 +30,47 @@ describe("ipc", () => {
     await startSession("s1", "/proj", "w1", "do the thing", "01AAA", 80, 24, false);
     expect(invoke).toHaveBeenCalledWith("start_session", {
       session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing",
-      taskId: "01AAA", cols: 80, rows: 24, resume: false, scenario: null,
+      taskId: "01AAA", cols: 80, rows: 24, resume: false, scenario: null, replace: false,
     });
+  });
+
+  // Replacing a live process is the restart button's business and nobody
+  // else's. Every other launch leaves it false, and the backend then refuses an
+  // id it is already running rather than killing what is there — which is what
+  // makes a double-spawn harmless instead of destructive.
+  it("startSession only replaces a live session when it is asked to", async () => {
+    vi.mocked(invoke).mockResolvedValue({ account: null, degraded: null });
+    await startSession("s1", "/proj", "w1", null, null, 80, 24, true, null, true);
+    expect(invoke).toHaveBeenCalledWith("start_session", expect.objectContaining({
+      replace: true,
+    }));
+  });
+
+  it("prepareWorkspace resolves a binding ahead of the launch that needs it", async () => {
+    vi.mocked(invoke).mockResolvedValue({ account: "followLemmi", degraded: null });
+    const auth = await prepareWorkspace("w1");
+    expect(invoke).toHaveBeenCalledWith("prepare_workspace", { workspaceId: "w1" });
+    expect(auth).toEqual({ account: "followLemmi", degraded: null });
+  });
+
+  // The three outcomes one boolean used to flatten into "error".
+  it("describeExit tells a failure, a signal and an unreadable outcome apart", () => {
+    expect(describeExit({ ok: false, code: 1, signal: null, unknown: false }))
+      .toBe("exited with code 1");
+    expect(describeExit({ ok: false, code: null, signal: "Hangup", unknown: false }))
+      .toBe("terminated by Hangup");
+    expect(describeExit({ ok: false, code: null, signal: null, unknown: true }))
+      .toContain("could not read");
+    // A clean exit needs no epitaph — the state chip already says "ended".
+    expect(describeExit({ ok: true, code: 0, signal: null, unknown: false })).toBeNull();
+  });
+
+  it("onExit carries the whole outcome, not just whether it went well", async () => {
+    const seen: unknown[] = [];
+    await onExit((s, exit) => { seen.push([s, exit]) });
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: unknown) => void;
+    handler({ payload: { session: "s1", ok: false, code: null, signal: "Terminated", unknown: false } });
+    expect(seen).toEqual([["s1", { ok: false, code: null, signal: "Terminated", unknown: false }]]);
   });
 
   // The scenario half of a launch, and the only route by which anything reaches
@@ -56,7 +96,7 @@ describe("ipc", () => {
     const auth = await startSession("s1", "/proj", "w1", null, null, 80, 24, false);
     expect(invoke).toHaveBeenCalledWith("start_session", {
       session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: null,
-      taskId: null, cols: 80, rows: 24, resume: false, scenario: null,
+      taskId: null, cols: 80, rows: 24, resume: false, scenario: null, replace: false,
     });
     expect(auth).toEqual({ account: "followLemmi", degraded: null });
   });

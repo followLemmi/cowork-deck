@@ -325,9 +325,26 @@ export const startSession = (
   session: string, cwd: string, workspaceId: string | null, initialPrompt: string | null,
   taskId: string | null, cols: number, rows: number, resume: boolean,
   scenario: ScenarioLaunch | null = null,
+  /** Deliberately replacing a process still live under this id — the restart
+   *  button, and nothing else. Left false, the backend refuses rather than
+   *  killing what is there: both spawn paths are unguarded async, so two
+   *  launches can be in flight before the first resolves. */
+  replace = false,
 ) => invoke<SessionAuth>("start_session", {
-  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario,
+  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario, replace,
 });
+
+/** Resolve a workspace's account binding and `claude`'s location ahead of a
+ *  launch, off the thread that paints the window.
+ *
+ *  `start_session` is deliberately synchronous — a `write` that overtook its
+ *  `start` is lost keyboard input — which used to mean it did up to ten seconds
+ *  of `gh` and login-shell work with the window frozen. Awaiting this first
+ *  moves that work off the main thread and leaves the launch itself reading a
+ *  cache. Safe to call repeatedly; a resolved binding is remembered until the
+ *  workspace is saved again. */
+export const prepareWorkspace = (workspaceId: string) =>
+  invoke<SessionAuth>("prepare_workspace", { workspaceId });
 /** Разовый запуск пользовательской команды в тайле-терминале (установка gh,
  *  `gh auth login`). Не сессия агента: хуков состояния нет. */
 export const startCommandSession = (
@@ -373,9 +390,49 @@ export const onOutput = (cb: (session: string, bytes: Uint8Array) => void): Prom
 export const onState = (cb: (session: string, state: SessionState) => void): Promise<UnlistenFn> =>
   listen<{ session: string; state: SessionState }>("session://state", (e) =>
     cb(e.payload.session, e.payload.state));
-export const onExit = (cb: (session: string, ok: boolean) => void): Promise<UnlistenFn> =>
-  listen<{ session: string; ok: boolean }>("session://exit", (e) =>
-    cb(e.payload.session, e.payload.ok));
+/** What became of a session's process.
+ *
+ *  This used to be one boolean, which made three different things look the
+ *  same: a command that failed, a process the app hung up at shutdown, and a
+ *  `wait()` the backend could not read. `code` is the process's own exit code;
+ *  it is null when a signal ended it — `signal` then names the signal — or when
+ *  `unknown` says the outcome could not be read at all. */
+export interface SessionExit {
+  ok: boolean;
+  code: number | null;
+  signal: string | null;
+  unknown: boolean;
+}
+
+/** A one-line, honest account of an exit, for the tile to print.
+ *
+ *  Null for an ordinary success: a session that ended cleanly needs no epitaph,
+ *  and the state chip already says "ended". */
+export function describeExit(exit: SessionExit): string | null {
+  if (exit.unknown) return "process gone — the app could not read what happened to it";
+  if (exit.signal) return `terminated by ${exit.signal}`;
+  if (exit.code !== null && exit.code !== 0) return `exited with code ${exit.code}`;
+  return null;
+}
+
+export const onExit = (cb: (session: string, exit: SessionExit) => void): Promise<UnlistenFn> =>
+  listen<{ session: string } & SessionExit>("session://exit", (e) =>
+    cb(e.payload.session, {
+      ok: e.payload.ok, code: e.payload.code, signal: e.payload.signal, unknown: e.payload.unknown,
+    }));
+
+/** Sessions with something still running inside them, named by the backend when
+ *  it refuses to quit. `processes` counts what is running below the session's
+ *  own shell or agent — the build, the test run, the tool call. */
+export interface LiveWork { session: string; processes: number }
+
+/** The app is on its way out and something is running. The deck's job is to ask,
+ *  and to answer with `quitConfirmed` or `quitCancelled` — until one of them
+ *  arrives the app stays up. */
+export const onQuitBlocked = (cb: (work: LiveWork[]) => void): Promise<UnlistenFn> =>
+  listen<LiveWork[]>("app://quit-blocked", (e) => cb(e.payload));
+export const quitConfirmed = () => invoke<void>("quit_confirmed");
+export const quitCancelled = () => invoke<void>("quit_cancelled");
 
 /** Released once, after the fire listener below is attached, so the backend
  *  scheduler's first (catch-up) tick has somewhere to land. */

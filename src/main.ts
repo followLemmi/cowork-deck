@@ -9,7 +9,8 @@ import {
 import type { ViewName } from "./view";
 import {
   claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
-  onScheduledFire, onSchedulerBroken, revealPath, saveUiState, scheduleAck, schedulerReady,
+  onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
+  revealPath, saveUiState, scheduleAck, schedulerReady,
 } from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
 import type { Skill, Workspace } from "./ipc";
@@ -484,6 +485,27 @@ const boot = () => runBoot({
       });
     }).then(() => {}),
     () => onSchedulerBroken((message) => { void alertModal(message); }).then(() => {}),
+    // The app is on its way out and something is still running inside a session
+    // — a build, a test run, a tool call. The backend has already refused the
+    // quit and is waiting for one of these two answers; until it gets one the
+    // app stays up, which is why every path out of here sends exactly one.
+    //
+    // Refuse-by-default, like the worktree guards: the app does not destroy work
+    // it cannot prove is finished. A second quit gesture goes through regardless
+    // — see `ready_to_quit` — so a wedged window can never make the app
+    // unquittable.
+    () => onQuitBlocked((work) => {
+      const named = work
+        .map((w) => `${deck.nameOf(w.session)} (${w.processes} running)`)
+        .join(", ");
+      void confirmModal(`Still running: ${named}. Quit anyway and stop it?`)
+        .then((go) => (go ? quitConfirmed() : quitCancelled()))
+        .catch((e) => {
+          // An answer that never arrives leaves the app up with no explanation.
+          console.error("quit question failed:", e);
+          void quitCancelled();
+        });
+    }).then(() => {}),
     // A record opened or closed. The sidebar's dot is repainted whatever screen
     // is showing — it is the one always-visible reader of the journal, and a
     // handful of events per run is not polling. The list re-reads only while it

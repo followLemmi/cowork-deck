@@ -1,12 +1,128 @@
+//! Every child process this app starts, and the pty it talks to.
+//!
+//! # What this layer may assume about its children, written down
+//!
+//! It was written for `claude`, and `claude` is a well-behaved child: it is one
+//! process rather than a tree, it never leaves the directory it was started in,
+//! the app decides when it starts and when it stops, and it reports its own
+//! state through hooks. Four assumptions, none of them ever stated, and each of
+//! them load-bearing somewhere in this file.
+//!
+//! A process a **person** drives satisfies none of them. `npm run build` started
+//! from a shell runs in its own process group and outlives the shell. The person
+//! types `exit`, or walks away with a two-minute build running. So the rules
+//! below are the ones this file actually keeps, and they hold for `claude` too:
+//!
+//! - **A session is a process *session*, not a process.** `portable_pty` calls
+//!   `setsid()` before exec, so the child's pid is also the session id of
+//!   everything it goes on to start. That id — not the pid alone — is what
+//!   `kill` works with, because a job in its own process group is reachable no
+//!   other way.
+//! - **Killing is asked first and enforced afterwards.** SIGTERM to the
+//!   foreground group, SIGHUP and SIGTERM to the leader, a grace period, then
+//!   SIGKILL to whatever is still standing in that session. Nothing is given an
+//!   unbounded wait and nothing is left behind.
+//! - **One id, one live process.** `spawn` refuses an id that is already running
+//!   unless the caller explicitly asks to replace it, and every callback carries
+//!   the generation it was born in — so a process the app has already forgotten
+//!   can neither paint into its successor's terminal nor mark it ended.
+//! - **Exit is reported as what happened**, not as a boolean. "Exited with code
+//!   1" and "we hung it up at shutdown" are different facts and the frontend
+//!   gets both.
+//!
+//! Windows keeps the old shape: `ChildKiller::kill` is `TerminateProcess` on the
+//! direct child, and reaching the tree there needs a Job Object per session,
+//! which is not built yet.
+
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// How long a killed session is given to go quietly before its survivors are
+/// SIGKILLed. Long enough for a build to run its cleanup and for a shell to hup
+/// its own jobs; short enough that quitting the app does not feel hung. The
+/// wait ends as soon as the session is empty, so the full two seconds are only
+/// ever spent on something that is genuinely refusing to leave.
+const GRACE: Duration = Duration::from_secs(2);
+
+/// What became of a session's process.
+///
+/// Three outcomes that were one boolean before, and the app needs all three
+/// apart: a command that failed, a process somebody stopped, and a `wait()` that
+/// itself failed — which is the app not knowing, and must never be dressed up as
+/// either of the other two.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Exit {
+    /// The process's own exit code. `None` when it was signalled — there is no
+    /// code in that case — or when the wait failed.
+    pub code: Option<i32>,
+    /// The signal's name as the platform spells it ("Hangup", "Terminated"),
+    /// when the process was signalled.
+    pub signal: Option<String>,
+    /// The wait itself failed: what happened is not known. Never `true`
+    /// alongside a code or a signal.
+    pub unknown: bool,
+}
+
+impl Exit {
+    /// The one question the old boolean answered, kept for the callers that only
+    /// ever wanted that much. An unknown outcome is not success.
+    pub fn ok(&self) -> bool {
+        self.code == Some(0)
+    }
+    /// Whether a signal ended this process, rather than the process ending
+    /// itself.
+    pub fn signalled(&self) -> bool {
+        self.signal.is_some()
+    }
+}
+
+/// Read a `portable_pty::ExitStatus` as an `Exit`.
+///
+/// `ExitStatus` keeps its signal name private and offers no accessor for it:
+/// `success()` and `exit_code()` are the whole public surface, and both answer
+/// the same for `exit 1` and for SIGHUP. `Display` is the only place the
+/// distinction survives, so it is read here — and `an_exit_status_still_spells_its_signal_out`
+/// below fails loudly if a future portable-pty rewords it, rather than letting
+/// every signalled session quietly become "exited with code 1" again.
+fn classify(status: &portable_pty::ExitStatus) -> Exit {
+    let text = status.to_string();
+    match text.strip_prefix("Terminated by ") {
+        Some(signal) => {
+            Exit { code: None, signal: Some(signal.to_string()), unknown: false }
+        }
+        None => Exit { code: Some(status.exit_code() as i32), signal: None, unknown: false },
+    }
+}
+
+/// A session with processes still running inside it, and how many besides the
+/// session's own leader. What "there is something to lose here" is measured
+/// with — see the app-level exit handler in `main.rs`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveWork {
+    pub session: String,
+    pub processes: usize,
+}
 
 struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+    /// The direct child's pid, which `setsid()` also makes the session id of
+    /// every process it starts. Held because `ChildKiller` reaches exactly one
+    /// process and a person's shell is a tree.
+    pid: Option<u32>,
+    /// This spawn's generation, in the smallest form that is still correct: the
+    /// reader and waiter threads hold a clone, and clearing it is what tells
+    /// them the session they belong to is gone. A counter compared against the
+    /// map would need a lookup on every read; a flag handed to the threads at
+    /// birth cannot be looked up wrong, and cannot be confused by an id that is
+    /// spawned, killed and spawned again.
+    live: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -19,6 +135,15 @@ impl PtyManager {
         PtyManager { sessions: Arc::new(Mutex::new(HashMap::new())) }
     }
 
+    /// Start a process on a new pty under `session`.
+    ///
+    /// `replace` is the difference between the restart button and a bug. An id
+    /// that is already running is **refused** by default, because the two ways
+    /// this app spawns — the restart button and any spawn-on-demand — are
+    /// unguarded async, so two spawns can be in flight before the first
+    /// resolves. Refusing makes the second harmless; the old unconditional kill
+    /// made it destructive. The restart button, which means it, passes `true`.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn<F>(
         &self,
         session: &str,
@@ -28,14 +153,36 @@ impl PtyManager {
         cols: u16,
         rows: u16,
         env: &[(String, String)],
+        replace: bool,
         on_output: F,
-        on_exit: impl Fn(bool) + Send + 'static,
+        on_exit: impl Fn(Exit) + Send + 'static,
     ) -> std::io::Result<()>
     where
         F: Fn(Vec<u8>) + Send + 'static,
     {
-        // Avoid orphaning a previously spawned process under the same session id.
-        self.kill(session);
+        // The check and the removal happen under one lock, so two concurrent
+        // spawns of the same id cannot both find it free.
+        let displaced = {
+            let mut map = self.sessions.lock().unwrap();
+            match map.remove(session) {
+                Some(prev) if replace => Some(prev),
+                Some(prev) => {
+                    map.insert(session.to_string(), prev);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!("session {session} is already running"),
+                    ));
+                }
+                None => None,
+            }
+        };
+        // Outside the lock: tearing a session down signals a process group and
+        // may hand a sweep to a helper thread, and none of that may hold the map
+        // against every other session's writes.
+        if let Some(prev) = displaced {
+            let sid = terminate(prev);
+            sweep_later(sid);
+        }
 
         let pty = native_pty_system();
         let pair = pty
@@ -68,40 +215,71 @@ impl PtyManager {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
 
-        // Переменные задаются ТОЛЬКО дочернему процессу. Окружение самого
-        // приложения и других сессий не затрагивается — именно на этом стоит
-        // изоляция GitHub-аккаунтов между воркспейсами.
+        // These variables are given to the CHILD only. Neither the app's own
+        // environment nor any other session's is touched — that is what the
+        // isolation of GitHub accounts between workspaces stands on.
         for (k, v) in env {
             cmd.env(k, v);
         }
 
         let mut child = pair.slave.spawn_command(cmd).map_err(to_io)?;
+        let pid = child.process_id();
         let killer = child.clone_killer();
         let mut reader = pair.master.try_clone_reader().map_err(to_io)?;
         let writer: Arc<Mutex<Box<dyn Write + Send>>> =
             Arc::new(Mutex::new(pair.master.take_writer().map_err(to_io)?));
 
-        // Reader thread: stream output until EOF.
+        let live = Arc::new(AtomicBool::new(true));
+
+        // Reader thread: stream output until EOF, or until this generation is
+        // over.
+        //
+        // The handle it reads is a `try_clone_reader()` **dup**, so dropping the
+        // master does not close the pty and a `read()` blocked on a surviving
+        // orphan never returns 0. What actually ends this thread is `kill`
+        // emptying the process session, which closes the last slave and turns
+        // the next read into an error. The flag is what stops it painting in the
+        // meantime: bytes that arrive after the session was killed or replaced
+        // belong to a process the app has already forgotten, and there is
+        // exactly one terminal per session id for them to land in.
+        let live_read = Arc::clone(&live);
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
-                    Ok(n) => on_output(buf[..n].to_vec()),
+                    Ok(n) => {
+                        if !live_read.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        on_output(buf[..n].to_vec());
+                    }
                 }
             }
         });
 
-        // Waiter thread: report exit status.
+        // Waiter thread: report what became of the process.
+        //
+        // Silent for a generation the app has ended itself. A `kill` is not news
+        // — the caller that asked for it has already moved the tile on — and an
+        // exit arriving after a replacement would otherwise mark the *new*
+        // session ended while it is running, which is what the restart button
+        // used to do.
+        let live_wait = Arc::clone(&live);
         std::thread::spawn(move || {
-            let status = child.wait();
-            let ok = status.map(|s| s.success()).unwrap_or(false);
-            on_exit(ok);
+            let exit = match child.wait() {
+                Ok(status) => classify(&status),
+                Err(_) => Exit { code: None, signal: None, unknown: true },
+            };
+            if !live_wait.load(Ordering::SeqCst) {
+                return;
+            }
+            on_exit(exit);
         });
 
         self.sessions.lock().unwrap().insert(
             session.to_string(),
-            Session { master: pair.master, writer, killer },
+            Session { master: pair.master, writer, killer, pid, live },
         );
         Ok(())
     }
@@ -135,6 +313,46 @@ impl PtyManager {
         Ok(())
     }
 
+    /// Sessions running a **job**, and how many processes that job is.
+    ///
+    /// A job is a process in the session that put itself in a process group of
+    /// its own, which is exactly what a shell does with every command it is
+    /// given — `npm run build`, in the foreground or behind an `&`. It is the
+    /// distinction between something the person asked for and something the
+    /// session started for itself: an agent's MCP servers, a language server, a
+    /// helper the shell forked — all of those stay in the leader's group and are
+    /// not counted. They are always there, and a quit that asked about them
+    /// every time would teach the person to click through the question, which
+    /// costs more than it saves.
+    ///
+    /// The blind spot is worth stating: an agent running a long tool call
+    /// spawns it in its own group too, so this does not see it. The tile's own
+    /// state chip does, and this is the measure for "the person will be angry if
+    /// this dies silently", not for "something is happening".
+    ///
+    /// An entry whose process has already exited reports nothing and is simply
+    /// absent from the answer.
+    pub fn live_work(&self) -> Vec<LiveWork> {
+        let map = self.sessions.lock().unwrap();
+        let mut out: Vec<LiveWork> = map
+            .iter()
+            .filter_map(|(id, s)| {
+                let leader = s.pid.map(|p| p as i32)?;
+                match jobs_in_session(leader) {
+                    0 => None,
+                    n => Some(LiveWork { session: id.clone(), processes: n }),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.session.cmp(&b.session));
+        out
+    }
+
+    /// End a session and everything it started.
+    ///
+    /// Returns as soon as the polite signals are out; the grace period and the
+    /// SIGKILL sweep run on a helper thread, because this is called from
+    /// `close_session`, which runs on the thread that paints the window.
     pub fn kill(&self, session: &str) {
         // Remove the entry and drop the map guard before killing, so a stuck
         // writer holding only its own per-session lock can never block this.
@@ -142,11 +360,16 @@ impl PtyManager {
             let mut map = self.sessions.lock().unwrap();
             map.remove(session)
         };
-        if let Some(mut s) = removed {
-            let _ = s.killer.kill();
+        if let Some(s) = removed {
+            sweep_later(terminate(s));
         }
     }
 
+    /// End every session. Unlike `kill`, this waits for the sweep: the only
+    /// caller is the app on its way out, and a helper thread would die with the
+    /// process and leave the survivors behind — which is the orphaned build the
+    /// whole exercise is about. Bounded by `GRACE`, and it returns the moment
+    /// the last session is empty.
     pub fn kill_all(&self) {
         // Drain into a local Vec and drop the map guard before killing any
         // child, so kill_all can never be blocked by a stuck per-session write.
@@ -154,10 +377,191 @@ impl PtyManager {
             let mut map = self.sessions.lock().unwrap();
             map.drain().map(|(_, s)| s).collect()
         };
-        for mut s in removed {
+        let sids: Vec<i32> = removed.into_iter().filter_map(terminate).collect();
+        sweep(&sids, GRACE);
+    }
+}
+
+/// Ask a session's processes to stop, and answer with the process session id
+/// that has to be swept afterwards.
+///
+/// Clearing the generation flag is the first thing done and is what makes the
+/// rest safe: from here on, nothing this session's threads read or wait for can
+/// reach the frontend.
+fn terminate(s: Session) -> Option<i32> {
+    s.live.store(false, Ordering::SeqCst);
+    signal(s)
+}
+
+#[cfg(unix)]
+fn signal(mut s: Session) -> Option<i32> {
+    let pid = match s.pid {
+        Some(p) if p > 0 => p as i32,
+        // No pid means no group and no session to sweep; a SIGHUP to the direct
+        // child is all that is left, and is what this file did before.
+        _ => {
             let _ = s.killer.kill();
+            return None;
+        }
+    };
+    // Our own session. Everything below kills by session id, and a bug that let
+    // one of those match ours would take the app and every process it ever
+    // started with it. Nothing proceeds without this comparison.
+    let own_sid = unsafe { libc::getsid(0) };
+    if pid == own_sid {
+        let _ = s.killer.kill();
+        return None;
+    }
+
+    // The foreground job first. `tcgetpgrp` is the pty's answer to "whose
+    // keyboard is this right now", and for a shell running `npm run build` that
+    // is npm's group, not the shell's — the one group a single signal can reach
+    // that the leader's pid cannot.
+    if let Some(fg) = s.master.process_group_leader() {
+        if fg > 0 && fg != unsafe { libc::getpgrp() } {
+            unsafe { libc::killpg(fg, libc::SIGTERM) };
         }
     }
+    // Then the leader. SIGHUP is what a terminal being closed means, and a shell
+    // with `huponexit` set passes it on to its own jobs; SIGTERM follows for
+    // everything that reads SIGHUP as "reload your configuration".
+    unsafe {
+        libc::kill(pid, libc::SIGHUP);
+        libc::kill(pid, libc::SIGTERM);
+    }
+    // Dropping `s` here closes the master, which hangs the pty up — the kernel's
+    // own SIGHUP to whatever is in the foreground group.
+    drop(s);
+    Some(pid)
+}
+
+#[cfg(not(unix))]
+fn signal(mut s: Session) -> Option<i32> {
+    // `TerminateProcess` on the direct child. A shell's children survive it;
+    // reaching them needs a Job Object created around each spawn, which is not
+    // built yet.
+    let _ = s.killer.kill();
+    None
+}
+
+/// Give a session its grace period and then SIGKILL whatever is left of it,
+/// without making the caller wait. Does nothing when there is nothing to sweep.
+fn sweep_later(sid: Option<i32>) {
+    if let Some(sid) = sid {
+        std::thread::spawn(move || sweep(&[sid], GRACE));
+    }
+}
+
+/// Wait for these process sessions to empty, then SIGKILL whoever is still in
+/// them. Returns early — usually within a tick — as soon as they are all empty.
+fn sweep(sids: &[i32], grace: Duration) {
+    if sids.is_empty() {
+        return;
+    }
+    let deadline = Instant::now() + grace;
+    loop {
+        if sids.iter().all(|&sid| session_members(sid).is_empty()) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for &sid in sids {
+        for pid in session_members(sid) {
+            kill_hard(pid);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn kill_hard(pid: i32) {
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+}
+
+#[cfg(not(unix))]
+fn kill_hard(_pid: i32) {}
+
+/// Every process in the given process session.
+///
+/// The only way to find a job that put itself in its own process group: there is
+/// no syscall that names them, and a background or stopped job is in no group a
+/// signal can reach from the outside. So the process table is read and each
+/// entry asked which session it belongs to.
+///
+/// Answers empty for our own session and for anything nonsensical — the guard
+/// that keeps a sweep from reaching the app itself, repeated here so that it
+/// holds no matter who calls.
+#[cfg(unix)]
+fn session_members(sid: i32) -> Vec<i32> {
+    if sid <= 0 || sid == unsafe { libc::getsid(0) } {
+        return Vec::new();
+    }
+    all_pids()
+        .into_iter()
+        .filter(|&pid| pid > 0 && unsafe { libc::getsid(pid) } == sid)
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn session_members(_sid: i32) -> Vec<i32> {
+    Vec::new()
+}
+
+/// How many processes of this session belong to a process group other than the
+/// leader's own — see `live_work` for why that is the line between a job and a
+/// helper. The leader is a group leader itself (`setsid` makes it one), so its
+/// own group is its pid.
+#[cfg(unix)]
+fn jobs_in_session(leader: i32) -> usize {
+    session_members(leader)
+        .into_iter()
+        .filter(|&pid| pid != leader && unsafe { libc::getpgid(pid) } != leader)
+        .count()
+}
+
+#[cfg(not(unix))]
+fn jobs_in_session(_leader: i32) -> usize {
+    0
+}
+
+#[cfg(target_os = "linux")]
+fn all_pids() -> Vec<i32> {
+    let dir = match std::fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    dir.flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().parse::<i32>().ok())
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn all_pids() -> Vec<i32> {
+    // Two calls rather than a guessed size: the first with a null buffer asks
+    // how many bytes the table needs, and the slack allows for processes
+    // starting between the two.
+    let needed = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![0i32; needed as usize + 64];
+    let size = (buf.len() * std::mem::size_of::<i32>()) as libc::c_int;
+    let written =
+        unsafe { libc::proc_listallpids(buf.as_mut_ptr() as *mut libc::c_void, size) };
+    if written <= 0 {
+        return Vec::new();
+    }
+    buf.truncate(written as usize);
+    buf.into_iter().filter(|&p| p > 0).collect()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn all_pids() -> Vec<i32> {
+    // No portable process-table read. The polite signals still go out; only the
+    // sweep for jobs in their own process group is missing.
+    Vec::new()
 }
 
 fn to_io<E: std::fmt::Display>(e: E) -> std::io::Error {
@@ -168,42 +572,62 @@ fn to_io<E: std::fmt::Display>(e: E) -> std::io::Error {
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::Duration;
+
+    /// Spawning is 10 arguments, of which the tests below vary three. The
+    /// helper carries the rest so a test reads as what it is testing.
+    fn spawn_sh(
+        mgr: &PtyManager,
+        session: &str,
+        script: &str,
+        replace: bool,
+        on_output: impl Fn(Vec<u8>) + Send + 'static,
+        on_exit: impl Fn(Exit) + Send + 'static,
+    ) -> std::io::Result<()> {
+        #[cfg(windows)]
+        let (prog, args) = ("cmd", vec!["/C".to_string(), script.to_string()]);
+        #[cfg(not(windows))]
+        let (prog, args) = ("/bin/sh", vec!["-c".to_string(), script.to_string()]);
+        mgr.spawn(session, prog, &args, ".", 80, 24, &[], replace, on_output, on_exit)
+    }
+
+    /// Read from `rx` until `needle` shows up or the deadline passes.
+    fn wait_for(rx: &mpsc::Receiver<Vec<u8>>, needle: &str) -> String {
+        let mut got = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(b) = rx.recv_timeout(Duration::from_millis(200)) {
+                got.extend_from_slice(&b);
+                if String::from_utf8_lossy(&got).contains(needle) {
+                    break;
+                }
+            }
+        }
+        String::from_utf8_lossy(&got).to_string()
+    }
 
     #[test]
     fn spawns_streams_output_and_exits() {
         let mgr = PtyManager::new();
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let (etx, erx) = mpsc::channel::<bool>();
+        let (etx, erx) = mpsc::channel::<Exit>();
 
-        #[cfg(windows)]
-        let (prog, args) = ("cmd", vec!["/C".to_string(), "echo COWORK_OK".to_string()]);
-        #[cfg(not(windows))]
-        let (prog, args) = ("/bin/sh", vec!["-c".to_string(), "printf COWORK_OK".to_string()]);
-
-        mgr.spawn(
-            "s1", prog, &args, ".", 80, 24, &[],
+        spawn_sh(
+            &mgr, "s1", "printf COWORK_OK", false,
             move |bytes| { let _ = tx.send(bytes); },
-            move |ok| { let _ = etx.send(ok); },
+            move |e| { let _ = etx.send(e); },
         ).unwrap();
 
-        let mut got = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            if let Ok(b) = rx.recv_timeout(Duration::from_millis(200)) {
-                got.extend_from_slice(&b);
-                if String::from_utf8_lossy(&got).contains("COWORK_OK") { break; }
-            }
-        }
-        assert!(String::from_utf8_lossy(&got).contains("COWORK_OK"), "got: {:?}", String::from_utf8_lossy(&got));
-        assert!(erx.recv_timeout(Duration::from_secs(5)).is_ok(), "exit not reported");
+        let got = wait_for(&rx, "COWORK_OK");
+        assert!(got.contains("COWORK_OK"), "got: {got:?}");
+        let exit = erx.recv_timeout(Duration::from_secs(5)).expect("exit not reported");
+        assert_eq!(exit.code, Some(0), "a clean exit is code 0: {exit:?}");
     }
 
     #[test]
     fn injected_env_reaches_the_child_process() {
         let mgr = PtyManager::new();
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let (etx, erx) = mpsc::channel::<bool>();
+        let (etx, erx) = mpsc::channel::<Exit>();
 
         #[cfg(windows)]
         let (prog, args) = ("cmd", vec!["/C".to_string(), "echo %COWORK_TEST_VAR%".to_string()]);
@@ -219,23 +643,16 @@ mod tests {
             80,
             24,
             &[("COWORK_TEST_VAR".to_string(), "injected-value".to_string())],
+            false,
             move |bytes| { let _ = tx.send(bytes); },
-            move |ok| { let _ = etx.send(ok); },
+            move |e| { let _ = etx.send(e); },
         )
         .unwrap();
 
-        let mut got = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            if let Ok(b) = rx.recv_timeout(Duration::from_millis(200)) {
-                got.extend_from_slice(&b);
-                if String::from_utf8_lossy(&got).contains("injected-value") { break; }
-            }
-        }
+        let got = wait_for(&rx, "injected-value");
         assert!(
-            String::from_utf8_lossy(&got).contains("injected-value"),
-            "дочерний процесс не увидел инжектированную переменную: {:?}",
-            String::from_utf8_lossy(&got)
+            got.contains("injected-value"),
+            "the child process did not see the injected variable: {got:?}"
         );
         assert!(erx.recv_timeout(Duration::from_secs(5)).is_ok(), "exit not reported");
     }
@@ -253,12 +670,12 @@ mod tests {
             vec!["-c".to_string(), r#"printf '%s %s' "$TERM" "$COLORTERM""#.to_string()],
         );
 
-        mgr.spawn(session, prog, &args, ".", 80, 24, env, move |b| { let _ = tx.send(b); }, |_| {})
+        mgr.spawn(session, prog, &args, ".", 80, 24, env, false, move |b| { let _ = tx.send(b); }, |_| {})
             .unwrap();
 
         let mut got = Vec::new();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
             if let Ok(b) = rx.recv_timeout(Duration::from_millis(200)) {
                 got.extend_from_slice(&b);
                 // Both values are on one line, so the newline that ends it ends the read.
@@ -314,5 +731,257 @@ mod tests {
         });
         assert!(out.contains("xterm-mono"), "caller's TERM did not win: {out:?}");
         assert!(!out.contains("xterm-256color"), "default TERM survived the override: {out:?}");
+    }
+
+    // ---- exit outcomes -----------------------------------------------------
+
+    /// The guard on `classify`. `portable_pty::ExitStatus` exposes no signal
+    /// accessor, so the wording of its `Display` is load-bearing: if this test
+    /// fails after a dependency bump, every signalled session has silently
+    /// started reporting itself as "exited with code 1" and `classify` needs a
+    /// new way to read it.
+    #[test]
+    fn an_exit_status_still_spells_its_signal_out() {
+        let signalled = classify(&portable_pty::ExitStatus::with_signal("Hangup"));
+        assert_eq!(signalled.signal.as_deref(), Some("Hangup"));
+        assert_eq!(signalled.code, None, "a signalled process has no exit code of its own");
+        assert!(signalled.signalled());
+        assert!(!signalled.ok());
+
+        let failed = classify(&portable_pty::ExitStatus::with_exit_code(1));
+        assert_eq!(failed.code, Some(1));
+        assert_eq!(failed.signal, None, "exit 1 is not a signal");
+        assert!(!failed.ok());
+
+        let fine = classify(&portable_pty::ExitStatus::with_exit_code(0));
+        assert_eq!(fine.code, Some(0));
+        assert!(fine.ok());
+    }
+
+    /// The distinction the old boolean could not carry: a command that failed
+    /// reports the code it failed with.
+    #[test]
+    fn a_failing_command_reports_its_own_exit_code() {
+        let mgr = PtyManager::new();
+        let (etx, erx) = mpsc::channel::<Exit>();
+        spawn_sh(&mgr, "code3", "exit 3", false, |_| {}, move |e| { let _ = etx.send(e); }).unwrap();
+        let exit = erx.recv_timeout(Duration::from_secs(5)).expect("exit not reported");
+        assert_eq!(exit.code, Some(3), "{exit:?}");
+        assert!(!exit.signalled(), "nothing signalled it: {exit:?}");
+        assert!(!exit.unknown);
+    }
+
+    /// The other half of the same distinction: a process somebody stopped says
+    /// so, instead of being indistinguishable from `exit 1`.
+    #[cfg(unix)]
+    #[test]
+    fn a_signalled_process_is_not_reported_as_a_failed_one() {
+        let mgr = PtyManager::new();
+        let (etx, erx) = mpsc::channel::<Exit>();
+        spawn_sh(&mgr, "sig", "kill -TERM $$", false, |_| {}, move |e| { let _ = etx.send(e); })
+            .unwrap();
+        let exit = erx.recv_timeout(Duration::from_secs(5)).expect("exit not reported");
+        assert!(exit.signalled(), "a SIGTERMed shell must report a signal: {exit:?}");
+        assert_eq!(exit.code, None, "{exit:?}");
+    }
+
+    // ---- generations -------------------------------------------------------
+
+    // The scripts below need a POSIX shell's `sleep` and `while`.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_session_id_is_refused_rather_than_replaced() {
+        let mgr = PtyManager::new();
+        spawn_sh(&mgr, "dup", "sleep 30", false, |_| {}, |_| {}).unwrap();
+        let second = spawn_sh(&mgr, "dup", "printf SECOND", false, |_| {}, |_| {});
+        assert!(second.is_err(), "a second spawn under a live id must be refused");
+        assert_eq!(second.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        // And the refusal left the first one alone.
+        spawn_sh(&mgr, "dup", "printf THIRD", true, |_| {}, |_| {})
+            .expect("an explicit replacement is still allowed");
+        mgr.kill("dup");
+    }
+
+    /// The respawn race, from the reader's side: a process the app has replaced
+    /// keeps writing, and there is exactly one terminal per session id for its
+    /// bytes to land in. Nothing from the old generation may be delivered after
+    /// the new one exists.
+    // The scripts below need a POSIX shell's `sleep` and `while`.
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_generation_stops_being_delivered() {
+        let mgr = PtyManager::new();
+        let (old_tx, old_rx) = mpsc::channel::<Vec<u8>>();
+        spawn_sh(
+            &mgr, "gen", "while true; do printf OLD; sleep 0.05; done", false,
+            move |b| { let _ = old_tx.send(b); }, |_| {},
+        ).unwrap();
+        // Make sure the first generation really is running and painting.
+        let seen = wait_for(&old_rx, "OLD");
+        assert!(seen.contains("OLD"), "the first generation never produced output: {seen:?}");
+
+        spawn_sh(&mgr, "gen", "sleep 30", true, |_| {}, |_| {}).unwrap();
+
+        // Drain whatever was already in flight when the replacement happened,
+        // then require silence: the old process may still be alive for a moment,
+        // but nothing it writes may reach the callback any more.
+        while old_rx.recv_timeout(Duration::from_millis(200)).is_ok() {}
+        assert!(
+            old_rx.recv_timeout(Duration::from_millis(600)).is_err(),
+            "output from a replaced generation is still being delivered",
+        );
+        mgr.kill("gen");
+    }
+
+    /// The same race from the waiter's side: the replaced process exits, and its
+    /// `on_exit` must not mark the running session that took its id as ended.
+    // The scripts below need a POSIX shell's `sleep` and `while`.
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_generation_does_not_report_its_exit() {
+        let mgr = PtyManager::new();
+        let (etx, erx) = mpsc::channel::<Exit>();
+        spawn_sh(&mgr, "genexit", "sleep 30", false, |_| {}, move |e| { let _ = etx.send(e); })
+            .unwrap();
+        spawn_sh(&mgr, "genexit", "sleep 30", true, |_| {}, |_| {}).unwrap();
+        assert!(
+            erx.recv_timeout(Duration::from_secs(3)).is_err(),
+            "the replaced session reported an exit for the id its successor now holds",
+        );
+        mgr.kill("genexit");
+    }
+
+    // ---- killing what the session started ----------------------------------
+
+    /// A job in its **own process group** is what an interactive shell makes of
+    /// every command, and it is exactly what one signal to one pid cannot reach.
+    /// `set -m` turns job control on in a non-interactive shell, which is the
+    /// smallest faithful stand-in for a person typing `npm run build &`.
+    ///
+    /// The second assertion is the leak: the reader holds a dup of the master,
+    /// so as long as anything still holds the pty slave open the thread never
+    /// sees EOF and never ends. It is observed by the callback being dropped —
+    /// which happens only when the thread returns, taking the sender with it.
+    #[cfg(unix)]
+    #[test]
+    fn killing_a_session_takes_its_own_process_group_jobs_with_it() {
+        if !std::path::Path::new("/bin/bash").exists() {
+            eprintln!("skipped: needs bash for `set -m`");
+            return;
+        }
+        let mgr = PtyManager::new();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let args = vec![
+            "-c".to_string(),
+            "set -m; sleep 300 & printf 'JOB=%s\\n' $!; wait".to_string(),
+        ];
+        mgr.spawn(
+            "grp", "/bin/bash", &args, ".", 80, 24, &[], false,
+            move |b| { let _ = tx.send(b); }, |_| {},
+        )
+        .unwrap();
+
+        let out = wait_for(&rx, "JOB=");
+        let job: i32 = out
+            .split("JOB=")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no background job pid in: {out:?}"));
+        assert_eq!(unsafe { libc::kill(job, 0) }, 0, "the background job never started");
+
+        mgr.kill("grp");
+
+        // `kill` hands the sweep to a helper thread, so the wait here is for the
+        // grace period plus the sweep, not for the signals.
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < deadline && unsafe { libc::kill(job, 0) } == 0 {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_ne!(
+            unsafe { libc::kill(job, 0) },
+            0,
+            "the shell's background job survived the session that started it",
+        );
+
+        // The reader thread's own end: with every holder of the pty slave gone,
+        // the read finally fails and the closure — and its sender with it — is
+        // dropped.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                _ if Instant::now() > deadline => {
+                    panic!("the reader thread outlived its session")
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// What the app-level exit handler asks before tearing anything down: a job
+    /// — a command the person gave the shell, which job control puts in a group
+    /// of its own — is live work.
+    #[cfg(unix)]
+    #[test]
+    fn live_work_sees_a_job_the_session_was_told_to_run() {
+        if !std::path::Path::new("/bin/bash").exists() {
+            eprintln!("skipped: needs bash for `set -m`");
+            return;
+        }
+        let mgr = PtyManager::new();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let args = vec!["-c".to_string(), "set -m; sleep 300 & printf READY\\n; wait".to_string()];
+        mgr.spawn("busy", "/bin/bash", &args, ".", 80, 24, &[], false,
+            move |b| { let _ = tx.send(b); }, |_| {})
+            .unwrap();
+        assert!(wait_for(&rx, "READY").contains("READY"), "the session never started");
+
+        let work = mgr.live_work();
+        let found = work.iter().find(|w| w.session == "busy");
+        assert!(found.is_some(), "a session running a job reports no live work: {work:?}");
+        assert_eq!(found.unwrap().processes, 1, "{work:?}");
+
+        mgr.kill("busy");
+    }
+
+    /// And the other half, which is what keeps the quit question worth reading:
+    /// a process the session started **for itself** — an agent's MCP server, a
+    /// helper the shell forked — stays in the leader's own process group and is
+    /// not a job. Without this distinction every quit would ask about every
+    /// session that has ever forked anything, which is a question people learn
+    /// to click through.
+    #[cfg(unix)]
+    #[test]
+    fn live_work_ignores_a_helper_in_the_leaders_own_group() {
+        let mgr = PtyManager::new();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        // No `set -m`: `sh` runs the background command in its own process
+        // group only when job control is on, and it is off here — so this child
+        // is in the shell's group, exactly like a helper process.
+        spawn_sh(
+            &mgr, "helper", "sleep 300 & printf READY\\n; wait", false,
+            move |b| { let _ = tx.send(b); }, |_| {},
+        ).unwrap();
+        assert!(wait_for(&rx, "READY").contains("READY"), "the session never started");
+
+        let work = mgr.live_work();
+        assert!(
+            !work.iter().any(|w| w.session == "helper"),
+            "a process in the leader's own group was reported as a job: {work:?}",
+        );
+        mgr.kill("helper");
+    }
+
+    /// The safety rail on the sweep, asserted rather than assumed: the app runs
+    /// in a process session of its own, and a sweep that ever matched it would
+    /// kill the app and everything it has ever started.
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_never_matches_the_apps_own_session() {
+        let own = unsafe { libc::getsid(0) };
+        assert!(session_members(own).is_empty(), "the sweep can see our own session");
+        assert!(session_members(0).is_empty());
+        assert!(session_members(-1).is_empty());
     }
 }

@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
-import { startSession, startCommandSession, writeSession, resizeSession, type ScenarioLaunch, type SessionAuth } from "./ipc";
+import { startSession, startCommandSession, writeSession, resizeSession, prepareWorkspace, type ScenarioLaunch, type SessionAuth } from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
 import { terminalKeyBytes } from "./terminal-keys";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
@@ -15,6 +15,16 @@ export class TerminalPanel {
   private lastSearch = "";
   private ro: ResizeObserver | null = null;
   private rafId: number | null = null;
+  /** Keystrokes typed before the process exists, in the order they were typed.
+   *
+   *  `onData` is wired in the constructor and the terminal takes focus straight
+   *  away, but the spawn is a round trip — and `write_session` for a session
+   *  that does not exist yet succeeds and discards the bytes. So the first
+   *  keystrokes into a fresh tile used to vanish. Held here instead and flushed
+   *  the moment the process is there, which is also what lets the launch resolve
+   *  the account binding off the main thread without costing input. */
+  private pending: string[] = [];
+  private started = false;
   /** Bound once so `dispose` can remove the same reference it added. */
   private onScaleEvent = (e: Event) => {
     this.setFontSize((e as CustomEvent<number>).detail);
@@ -145,9 +155,21 @@ export class TerminalPanel {
       this.rafId = requestAnimationFrame(() => { this.rafId = null; this.fit(); });
     });
     this.ro.observe(mount);
-    this.term.onData((d) => { void writeSession(this.session, d); });
+    this.term.onData((d) => { this.send(d); });
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
     window.addEventListener(UI_SCALE_EVENT, this.onScaleEvent);
+  }
+  /** Everything typed before the process existed, in order, and then nothing
+   *  more — from here on `send` writes straight through. */
+  private markStarted() {
+    this.started = true;
+    const held = this.pending;
+    this.pending = [];
+    for (const d of held) void writeSession(this.session, d);
+  }
+  private send(data: string) {
+    if (!this.started) { this.pending.push(data); return; }
+    void writeSession(this.session, data);
   }
   /** Returns the outcome of the GitHub account binding: the caller decides
    *  whether to hang a badge on the tile. The environment is fixed here, at the
@@ -159,17 +181,46 @@ export class TerminalPanel {
      *  journal record for it. Absent for a card, an issue, a pull request or a
      *  bare "+ session". */
     scenario: ScenarioLaunch | null = null,
+    /** Replacing a process still live under this id: the restart button. */
+    replace = false,
   ): Promise<SessionAuth> {
+    // A restart reuses this panel, and until its new process exists the tile is
+    // in exactly the state the buffer is for.
+    this.started = false;
+    // First, and awaited: resolving the account binding shells out to `gh` and
+    // may run the login shell, and `start_session` runs on the thread that
+    // paints the window. Doing it here leaves that command reading a cache
+    // instead of freezing the app for up to ten seconds on every launch. A
+    // failure is not fatal — the launch below resolves it the slow way.
+    if (workspaceId) {
+      try {
+        await prepareWorkspace(workspaceId);
+      } catch (e) {
+        console.debug("prepareWorkspace failed", e);
+      }
+    }
     const { cols, rows } = this.term;
-    return await startSession(
-      this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario,
-    );
+    try {
+      return await startSession(
+        this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario,
+        replace,
+      );
+    } finally {
+      // In `finally` because a launch that failed still has to release what was
+      // typed at it: those keystrokes belong to whatever the person does next,
+      // and holding them forever would make the tile silently swallow input.
+      this.markStarted();
+    }
   }
   /** A one-off run of a user command. Not an agent session: no state hooks and
    *  no account binding — the environment is inherited as it is. */
   async startCommand(cwd: string, command: string): Promise<void> {
     const { cols, rows } = this.term;
-    await startCommandSession(this.session, cwd, command, cols, rows);
+    try {
+      await startCommandSession(this.session, cwd, command, cols, rows);
+    } finally {
+      this.markStarted();
+    }
   }
   /** Agent output arrives as bytes and is written as bytes, so xterm's own UTF-8
    *  decoder can carry a sequence split across two pty reads (see

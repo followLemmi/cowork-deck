@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
+import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
 import { gitStatus, sessionSnapshots, type NameKind, type SessionTokens } from "./ipc";
 import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -337,7 +337,15 @@ export class Deck {
     if (!this.notifyOk) this.notifyOk = (await requestPermission()) === "granted";
     await onOutput((s, bytes) => this.tiles.get(s)?.panel.write(bytes));
     await onState((s, state) => this.setState(s, state));
-    await onExit((s) => { /* state already emitted; keep tile for scrollback */ void s; });
+    // The tile is kept for its scrollback and its state chip is already set —
+    // what is added here is the one thing the chip cannot say. "Ended" covers a
+    // clean exit, a build that failed, and a process the app hung up on its way
+    // out, and a person looking at a dead tile deserves to know which. Nothing
+    // is written for an ordinary success: that needs no epitaph.
+    await onExit((s, exit) => {
+      const said = describeExit(exit);
+      if (said) this.tiles.get(s)?.panel.write(`\r\n[${said}]\r\n`);
+    });
   }
 
   /** A scenario, or a bare session when `skill` is null.
@@ -538,9 +546,25 @@ export class Deck {
     return [...this.tiles.values()].some((t) => t.workspacePath === path);
   }
 
+  /** What a session is called on its tile, for anything outside the deck that
+   *  has to name one to a person — the quit question, in particular. Falls back
+   *  to the id, which is at least something to go on for a session the deck no
+   *  longer holds. */
+  nameOf(session: string): string {
+    const t = this.tiles.get(session);
+    return t ? resolveTileName(t.names) : session;
+  }
+
   setActiveWorkspace(id: string | null) {
     this.zoomedSession = null;
     this.activeWorkspaceId = id;
+    // Resolve this workspace's account binding now, while nobody is waiting for
+    // it. Entering a workspace is the last moment before a launch that is not
+    // itself a launch, so the `gh` call and the `claude` discovery happen here
+    // — off the main thread, and cached — instead of freezing the window at the
+    // moment a session is asked for. Fire-and-forget: a launch that arrives
+    // before this lands still resolves it the slow way.
+    if (id) void prepareWorkspace(id).catch((e) => console.debug("prepareWorkspace failed", e));
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
     let firstVisible: string | null = null;
     for (const t of this.tiles.values()) {
@@ -664,9 +688,16 @@ export class Deck {
         // result came from. The chain comes from `scenarioLaunch` reading the
         // tile's outgoing `runId`: by the time this button is on screen the
         // session has ended, and the backend has already closed that record.
+        //
+        // The one launch that means to replace a live process: the backend
+        // refuses a spawn into an id it is already running, and this button is
+        // the only place that refusal is not what the caller wants. A tile whose
+        // process merely ended still holds its pty entry — the orphans of a
+        // build it started are reachable no other way — so the replacement is
+        // explicit even here.
         tile.auth = await tile.panel.start(
           tile.workspacePath, tile.workspaceId ?? null, null, tile.taskId ?? null, true,
-          scenarioLaunch(tile, "resume", null),
+          scenarioLaunch(tile, "resume", null), true,
         );
         tile.authStale = false;
         this.renderAuthBadge(tile);

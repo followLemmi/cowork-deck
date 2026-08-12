@@ -45,6 +45,8 @@ vi.mock("../src/ipc", async (orig) => ({
   onOutput: vi.fn().mockResolvedValue(() => {}),
   onState: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),
+  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
+  describeExit: vi.fn().mockReturnValue(null),
   onScheduledFire: vi.fn().mockResolvedValue(() => {}),
   onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
   onTasksChanged: vi.fn().mockResolvedValue(() => {}),
