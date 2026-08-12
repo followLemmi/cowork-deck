@@ -57,10 +57,15 @@ describe("markup in a description never becomes markup", () => {
     expect(host.textContent).toContain("the guide");
   });
 
-  it("gives every link it does make target and rel", () => {
+  // `target="_blank"` is what these used to carry, and it opened nothing: this
+  // window has no second tab to navigate to (#252). A link that does work leaves
+  // through `external.ts` — hence a click handler and no target. What the handler
+  // then does with the URL is covered in tests/external.test.ts.
+  it("routes every link it does make through the external opener", () => {
     const a = md("[x](https://example.test/p)").querySelector("a")!;
-    expect(a.getAttribute("target")).toBe("_blank");
+    expect(a.getAttribute("target")).toBeNull();
     expect(a.getAttribute("rel")).toBe("noreferrer");
+    expect((a as HTMLAnchorElement).onclick).toBeInstanceOf(Function);
   });
 });
 

@@ -83,6 +83,13 @@ fn main() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // What carries an `https://` out of the webview and into the person's own
+        // browser. Without it a link is inert: this window has no `_blank` target
+        // to navigate to, so an anchor's click is dropped and nothing at all
+        // happens (#252). The capability grants `open-url` only, scoped to
+        // `http`/`https` — `open-path` would let a URL out of a pull request
+        // description name a file to run.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
 

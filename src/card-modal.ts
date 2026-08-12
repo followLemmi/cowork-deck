@@ -4,6 +4,7 @@
 // machine's version — a patch carrying every field would silently undo that.
 
 import { openDialog } from "./dialog-shell";
+import { wireExternal } from "./external";
 import { isKnownKind, isKnownStep } from "./board-config";
 import { renderMarkdown } from "./markdown";
 import { ago } from "./pr";
@@ -212,11 +213,13 @@ function factsList(facts: CardFact[]): HTMLElement {
       dd.append(wrap);
     } else if (f.href) {
       const a = document.createElement("a");
-      a.href = f.href;
-      a.target = "_blank";
-      a.rel = "noreferrer";
       a.textContent = f.value;
-      dd.append(a);
+      // Opened through the plugin rather than navigated to — see `external.ts`.
+      // A refusal leaves the value on the row as text: an issue URL that is not
+      // `http(s)` is still the fact this row states, and a link that goes
+      // nowhere would be the worse of the two.
+      if (wireExternal(a, f.href)) dd.append(a);
+      else dd.textContent = f.value;
     } else {
       dd.textContent = f.value;
     }

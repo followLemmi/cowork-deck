@@ -14,7 +14,24 @@ the list and record the result in the pull request description.
 - [ ] Remove the worktree with a dirty file in it — refused, with the path named. Clean it, remove again — gone.
 - [ ] A workspace with no bound account, and one that is not a repository — each shows its own screen with its own next step.
 - [ ] **A pull request from a fork** (`isCrossRepository: true`) — verify the worktree resolves. This is the known gap from the spec.
-- [ ] **"Open in browser"** — confirm it reaches the system browser rather than navigating the app's own webview. The same `<a target="_blank">` is already used on the GitHub screen and has never been verified either; if it turns out not to work, that is one shared fix, not a PR-view fix.
+- [ ] **"Open in browser"** — the pull request opens in the system browser and the app's own window stays where it was. See "Links out of the app" below: this was broken until #252 and the fix is shared, so the whole of that section is one check.
+
+## Links out of the app
+
+Every one of these used to be an `<a target="_blank">`, and every one of them did
+nothing at all: a Tauri window has no second tab to navigate to, and no
+URL-opening plugin was installed (#252). They all go through `openExternal` in
+`src/external.ts` now, so the mechanism is shared — but *whether the OS puts a
+browser on screen* is not something any test can see, which is why this list
+exists. Six call sites, one mechanism; check them all once.
+
+- [ ] **"Open in browser"** on a pull request row — the system browser comes up on that pull request, and the app's own window shows the same list it did before. A window that navigated to GitHub is the failure this is here to catch.
+- [ ] Tab to the same link and press **Enter** — identical result. Then **middle-click** it: also identical, and no empty window appears.
+- [ ] **"Open on GitHub"** on a file in the diff drawer, on a file the drawer refused to draw.
+- [ ] A **link inside a rendered description**, and an **image** in one — the image is a link labelled `[alt]`, and it opens the image's own URL.
+- [ ] A description containing `[x](javascript:alert(1))` — no link at all, just the text `x`, and nothing is handed to the OS.
+- [ ] **"on GitHub"** on an issue card in the tracker (open a card from a GitHub-backed board).
+- [ ] The **`gh` installation link** on the GitHub screen of a workspace with no `gh` installed.
 
 ## The expanded row
 
