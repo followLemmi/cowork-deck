@@ -72,6 +72,7 @@ the tokens and the measurements are in [docs/design/slate-ember](docs/design/sla
 - **Broadcast input** — type once and send the same input to several sessions at once.
 - **Observability** — token usage per session and per project, plus a git indicator on each tile.
 - **Keyboard-first** — a command palette that lists every binding, `F6` to move between the sidebar and the terminal, and in-terminal search and clear. On Windows and Linux the bindings use `Ctrl+Shift`, leaving bare `Ctrl+W`/`Ctrl+B`/`Ctrl+K` to readline inside `claude`; macOS uses plain `Cmd`.
+- **`Shift+Enter` writes a second line** — the legacy terminal encoding has no way to say "Enter, with Shift held", so a modified `Enter` would otherwise reach `claude` as a bare `CR` and submit the half-written message. The app sends `ESC`+`CR` instead — the same thing `claude`'s own `/terminal-setup` binds in iTerm2 and VS Code — for `Shift+Enter`, `Alt/Option+Enter` and `Ctrl+Enter` alike. Plain `Enter` still submits, and zoom keeps its binding (`Cmd+Enter` on macOS, `Ctrl+Shift+Enter` on Windows and Linux).
 
 ## Install
 
