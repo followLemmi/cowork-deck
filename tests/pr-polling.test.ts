@@ -110,7 +110,7 @@ describe("pull request polling", () => {
       // switch into it and asserts it exists, so a harness missing it throws
       // before any of the polling under test here can run.
       '<div id="app"><nav id="viewbar"></nav><div id="stage">'
-      + '<div id="sidebar"></div><main id="deck"></main>'
+      + '<div id="sidebar"></div><main id="deck"></main><div id="terminals"></div>'
       + '<div id="board" class="hidden"></div></div></div>';
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
 

@@ -20,7 +20,12 @@
       </header>
       <div id="stage">
         <aside id="sidebar"></aside>
-        <main id="deck"></main>
+        <!-- Mirrors `index.html`: the deck and the terminal drawer are one
+             column inside the stage row. -->
+        <div id="workarea">
+          <main id="deck"></main>
+          <div id="terminals"></div>
+        </div>
         <div id="board" class="hidden"></div>
       </div>
     </div>

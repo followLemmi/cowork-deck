@@ -89,6 +89,11 @@ pub struct AppState {
     /// never persisted" rule as `gh_tokens`, whose token these entries carry;
     /// cleared whenever a workspace is saved, since the binding may have changed.
     pub session_envs: Mutex<std::collections::HashMap<String, AuthOutcome>>,
+    /// Live shell ids, for the cap in `start_shell_session`. Pruned against the
+    /// PTY manager on every open rather than maintained by every close: a set
+    /// that had to be kept in step from three call sites is a set that goes
+    /// stale, and the manager already knows the truth.
+    pub shells: Mutex<std::collections::HashSet<String>>,
     /// Whether the person has already been asked about live work on the way out.
     /// Set when the app refuses to quit and clears it again only when the answer
     /// comes back — so a second quit gesture goes through even if the window
@@ -1764,6 +1769,187 @@ pub fn start_command_session(
         .map_err(|e| e.to_string())
 }
 
+/// How many shells may be open at once.
+///
+/// Not a guess about how many a person wants — eight tabs is already more than a
+/// tab strip reads well at — but a backstop. Every other spawn in this app is
+/// one gesture, one process; the drawer is the first surface where "open a
+/// terminal" is cheap enough to hold down by accident, and a shell is the most
+/// expensive child the app has.
+const MAX_SHELLS: usize = 8;
+
+/// What the drawer needs to write its banner line.
+///
+/// The branch is deliberately absent: reading it means running `git`, and this
+/// command is on the thread that paints the window. The drawer already has
+/// `git_status`, which carries `(async)`, so it asks for the branch itself and
+/// composes the line. Everything here is already in memory.
+#[derive(Serialize)]
+pub struct ShellStart {
+    /// The account this shell's `gh` will act as, and why not when it cannot.
+    pub auth: SessionAuth,
+    /// The git identity the shell carries in its environment, as
+    /// `Name <email>` — or `None` when the workspace injects none and the
+    /// shell inherits whatever `~/.gitconfig` says.
+    ///
+    /// This exists because a person cannot otherwise *check* it: `GIT_AUTHOR_*`
+    /// in the environment outranks the config, and `git config user.email`
+    /// reports the config — so the honest answer is only available from the side
+    /// that set it.
+    pub identity: Option<String>,
+    /// The program the shell actually is, for the tab's name.
+    pub program: String,
+}
+
+/// The person's own shell, as an interactive terminal would start it.
+///
+/// `$SHELL` rather than a fixed program: this is the shell they configured, and
+/// an app that silently gave them bash when they use fish would be lying about
+/// what it opened. A login shell on macOS, plain elsewhere, which is what
+/// Terminal.app and gnome-terminal respectively do — and on macOS it is load-
+/// bearing rather than cosmetic, because an .app launched from the Dock
+/// inherits launchd's minimal `PATH` and a non-login shell would keep it.
+fn user_shell() -> (String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        let ps = "powershell.exe".to_string();
+        (std::env::var("COMSPEC").unwrap_or(ps), Vec::new())
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                if std::path::Path::new("/bin/bash").exists() { "/bin/bash" } else { "/bin/sh" }
+                    .to_string()
+            });
+        let args = if cfg!(target_os = "macos") { vec!["-l".to_string()] } else { Vec::new() };
+        (shell, args)
+    }
+}
+
+/// The last segment of a shell's path — `zsh`, not `/bin/zsh` — for a tab label.
+fn shell_name(program: &str) -> String {
+    program
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(program)
+        .trim_end_matches(".exe")
+        .to_string()
+}
+
+/// Open an interactive shell on a pty.
+///
+/// Synchronous and ordered like the other session commands, and it can afford to
+/// be: the account binding is already resolved (`prepare_workspace`), and
+/// nothing here shells out. The three guards are the ones an ordinary shell
+/// needs and `claude` never did — a person opens these, closes them, and opens
+/// them again, which is exactly the traffic that finds a race.
+#[tauri::command]
+pub fn start_shell_session(
+    app: AppHandle,
+    state: State<AppState>,
+    session: String,
+    cwd: String,
+    workspace_id: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<ShellStart, String> {
+    // Ids the manager no longer holds are closed tabs; they must not count
+    // toward the cap, and pruning here means no bookkeeping anywhere else.
+    {
+        let mut shells = state.shells.lock().map_err(|_| "shell registry".to_string())?;
+        shells.retain(|id| state.pty.is_live(id));
+        if !shells.contains(&session) && shells.len() >= MAX_SHELLS {
+            return Err(format!("terminal-limit:{MAX_SHELLS}"));
+        }
+    }
+
+    let ws = match workspace_id.as_deref() {
+        Some(id) => {
+            let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+            store.workspaces().into_iter().find(|w| w.id == id)
+        }
+        None => None,
+    };
+    let github = ws.and_then(|w| w.github);
+    let outcome = session_auth(&state, workspace_id.as_deref(), github.as_ref());
+    let identity = git_identity(&outcome.env);
+
+    let (program, args) = user_shell();
+
+    let app_out = app.clone();
+    let sess_out = session.clone();
+    let on_output = move |bytes: Vec<u8>| {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let _ = app_out.emit("session://output", OutputPayload { session: sess_out.clone(), data_b64: b64 });
+    };
+
+    let app_exit = app.clone();
+    let sess_exit = session.clone();
+    let on_exit = move |exit: crate::pty::Exit| {
+        let _ = app_exit.emit(
+            "session://state",
+            StatePayload { session: sess_exit.clone(), state: state_of(&exit) },
+        );
+        let _ = app_exit.emit("session://exit", ExitPayload::new(sess_exit.clone(), &exit));
+    };
+
+    // Never a replacement. A person who presses the same key twice, or a restore
+    // that raced a manual open, must not silently kill a shell that is running
+    // something — refusing is the whole point of the guard.
+    state
+        .pty
+        .spawn(&session, &program, &args, &cwd, cols, rows, &outcome.env, false, on_output, on_exit)
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(mut shells) = state.shells.lock() {
+        shells.insert(session);
+    }
+    Ok(ShellStart { auth: outcome.auth, identity, program: shell_name(&program) })
+}
+
+/// `Name <email>` out of a resolved session environment, when it carries both.
+///
+/// Reads the environment rather than the workspace configuration on purpose: the
+/// environment is what the shell will actually be given, and if the two ever
+/// disagree the banner must say what is true rather than what was intended.
+fn git_identity(env: &[(String, String)]) -> Option<String> {
+    let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    match (get("GIT_AUTHOR_NAME"), get("GIT_AUTHOR_EMAIL")) {
+        (Some(n), Some(e)) => Some(format!("{n} <{e}>")),
+        (Some(n), None) => Some(n.to_string()),
+        (None, Some(e)) => Some(e.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// How many jobs a session is running right now.
+///
+/// What the close confirmation asks. A shell has no hooks and therefore no state
+/// of its own to read — the tile chip says `idle` whether the shell is at a
+/// prompt or halfway through a release build — so the only honest answer comes
+/// from the process table.
+#[tauri::command(async)]
+pub fn session_jobs(state: State<AppState>, session: String) -> usize {
+    state.pty.jobs(&session)
+}
+
+#[tauri::command]
+pub fn load_terminals(state: State<AppState>) -> crate::model::TerminalLayout {
+    state.store.lock().unwrap().terminals()
+}
+
+#[tauri::command]
+pub fn save_terminals(
+    state: State<AppState>,
+    layout: crate::model::TerminalLayout,
+) -> Result<(), String> {
+    state.store.lock().unwrap().save_terminals(&layout).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn write_session(state: State<AppState>, session: String, data: String) -> Result<(), String> {
     state.pty.write(&session, data.as_bytes()).map_err(|e| e.to_string())
@@ -3109,6 +3295,50 @@ branch refs/heads/feature/y\n";
         assert!(!keys.contains(&"GH_TOKEN"), "без токена GH_TOKEN выставлять нельзя");
     }
 
+    /// A tab is labelled with the shell, not with the path to it.
+    #[test]
+    fn a_shell_is_named_by_what_it_is_called() {
+        assert_eq!(shell_name("/bin/zsh"), "zsh");
+        assert_eq!(shell_name("/opt/homebrew/bin/fish"), "fish");
+        assert_eq!(shell_name("bash"), "bash");
+        assert_eq!(shell_name(r"C:\Windows\System32\cmd.exe"), "cmd");
+        // Nothing useful to shorten: better the whole string than an empty tab.
+        assert_eq!(shell_name("/"), "/");
+    }
+
+    /// The banner's whole reason for existing: `GIT_AUTHOR_*` in the environment
+    /// outranks `.git/config`, so `git config user.email` reports the value that
+    /// does **not** win. The only side that can answer honestly is the one that
+    /// set the variable, which is why this reads the environment rather than the
+    /// workspace's configuration.
+    #[test]
+    fn the_banner_names_the_identity_the_shell_will_actually_commit_as() {
+        let env = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        assert_eq!(
+            git_identity(&env(&[
+                ("GIT_AUTHOR_NAME", "Evgeny"),
+                ("GIT_AUTHOR_EMAIL", "e@example.com"),
+            ])),
+            Some("Evgeny <e@example.com>".to_string()),
+        );
+        // Half a binding is still worth naming.
+        assert_eq!(git_identity(&env(&[("GIT_AUTHOR_NAME", "Evgeny")])), Some("Evgeny".into()));
+        assert_eq!(git_identity(&env(&[("GIT_AUTHOR_EMAIL", "e@x")])), Some("e@x".into()));
+        // Nothing injected: the shell inherits `~/.gitconfig`, and claiming an
+        // identity the app did not set would be the same lie in reverse.
+        assert_eq!(git_identity(&env(&[("GH_TOKEN", "gho_x")])), None);
+    }
+
+    /// A shell the person did not configure is still a shell, and a dead tab
+    /// would be worse than the wrong prompt.
+    #[test]
+    fn there_is_always_a_shell_to_open() {
+        let (program, _args) = user_shell();
+        assert!(!program.trim().is_empty());
+    }
+
     /// The reason the exit payload had to grow: with one boolean, a session the
     /// app hung up at shutdown reported itself as an error, indistinguishable
     /// from a command that failed. It was stopped, not broken — and a tile that
@@ -3253,7 +3483,7 @@ branch refs/heads/feature/y\n";
     /// beside it — fifty of them on a delegation-heavy session — for every open
     /// session at once, so it carries `(async)` like everything else that does
     /// real I/O.
-    const MAIN_THREAD_COMMANDS: [&str; 13] = [
+    const MAIN_THREAD_COMMANDS: [&str; 15] = [
         "list_workspaces",
         "save_workspace",
         "remove_workspace",
@@ -3265,13 +3495,15 @@ branch refs/heads/feature/y\n";
         "scheduler_ready",
         "load_layout",
         "save_layout",
+        "load_terminals",
+        "save_terminals",
         "load_ui_state",
         "save_ui_state",
     ];
     /// The same, for the four that must not be reordered — kept apart from the list
     /// above because these are the ones where moving a command off the main thread
     /// would be a *correctness* bug rather than merely unnecessary.
-    const ORDERED_COMMANDS: [&str; 8] = [
+    const ORDERED_COMMANDS: [&str; 9] = [
         "start_session",
         "start_command_session",
         "write_session",
@@ -3279,6 +3511,7 @@ branch refs/heads/feature/y\n";
         "close_session",
         // Two flag writes and an `exit`. On the main thread because the answer
         // to "may I quit" must not overtake the question.
+        "start_shell_session",
         "quit_confirmed",
         "quit_cancelled",
         "host_platform",

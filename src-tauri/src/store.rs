@@ -1,4 +1,6 @@
-use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, UiStatePatch, Workspace};
+use crate::model::{
+    ScheduleRun, SessionEntry, Skill, TerminalLayout, UiState, UiStatePatch, Workspace,
+};
 use crate::runs::{fold_events, retain_recent, RunEvent, RunRecord, RUNS_PER_SKILL};
 use std::path::PathBuf;
 
@@ -83,6 +85,22 @@ impl Store {
         Self::write_vec(&self.layout_path(), items)
     }
 
+    fn terminals_path(&self) -> PathBuf { self.dir.join("terminals.json") }
+    /// The drawer's tabs. A missing or damaged file is an empty drawer, the same
+    /// forgiveness the deck layout gets: a person who loses their terminal tabs
+    /// to a bad write should get an empty drawer, not a launch that fails.
+    pub fn terminals(&self) -> TerminalLayout {
+        match std::fs::read_to_string(self.terminals_path()) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => TerminalLayout::default(),
+        }
+    }
+    pub fn save_terminals(&self, layout: &TerminalLayout) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(layout)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(self.terminals_path(), json)
+    }
+
     fn ui_path(&self) -> PathBuf { self.dir.join("ui_state.json") }
     pub fn ui_state(&self) -> UiState {
         match std::fs::read_to_string(self.ui_path()) {
@@ -110,6 +128,12 @@ impl Store {
         }
         if let Some(on) = patch.record_scenario_runs {
             st.record_scenario_runs = on;
+        }
+        if let Some(open) = patch.terminals_open {
+            st.terminals_open = open;
+        }
+        if let Some(rows) = patch.terminal_rows {
+            st.terminal_rows = rows;
         }
         let json = serde_json::to_string_pretty(&st)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -351,7 +375,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::model::{
-        NameKind, SessionEntry, TrackerProvider, UiState, UiStatePatch, Workspace,
+        NameKind, SessionEntry, TerminalEntry, TrackerProvider, UiState, UiStatePatch, Workspace,
         SCHEDULE_STATE_VERSION,
     };
 
@@ -491,11 +515,18 @@ mod tests {
         // On. A journal nobody switched on records nothing, and the first
         // question a history screen would raise is why it is empty.
         assert!(UiState::default().record_scenario_runs);
+        // Shut, so a person who has never opened a terminal is not given a strip
+        // taking a fifth of the deck. Must match `DEFAULT_TERMINAL_ROWS` in
+        // `src/drawer.ts`, which is the height the drawer opens at.
+        assert!(!UiState::default().terminals_open);
+        assert_eq!(UiState::default().terminal_rows, 14);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
             pr_diff_cols: Some(80),
             record_scenario_runs: Some(false),
+            terminals_open: Some(true),
+            terminal_rows: Some(20),
         };
         s.save_ui_state(&patch).unwrap();
         let reloaded = Store::new(s.dir.clone()).ui_state();
@@ -503,6 +534,49 @@ mod tests {
         assert_eq!(reloaded.ui_scale, 1.3);
         assert_eq!(reloaded.pr_diff_cols, 80);
         assert!(!reloaded.record_scenario_runs);
+        assert!(reloaded.terminals_open);
+        assert_eq!(reloaded.terminal_rows, 20);
+    }
+
+    /// The drawer's own file, and the reason it is a struct rather than the bare
+    /// `Vec` the deck layout is: the active tab has nowhere else to live, and
+    /// closing the last tab has to be able to say so.
+    #[test]
+    fn terminals_round_trip_and_default_to_an_empty_drawer() {
+        let s = Store::new(tmp());
+        assert_eq!(s.terminals(), TerminalLayout::default());
+        assert!(s.terminals().items.is_empty());
+        assert_eq!(s.terminals().active, None);
+
+        let layout = TerminalLayout {
+            items: vec![
+                TerminalEntry {
+                    session_id: "t1".into(),
+                    cwd: "/tmp/a".into(),
+                    name: "zsh · api".into(),
+                    workspace_id: Some("w1".into()),
+                },
+                TerminalEntry {
+                    session_id: "t2".into(),
+                    cwd: "/tmp/b".into(),
+                    name: "build".into(),
+                    workspace_id: None,
+                },
+            ],
+            active: Some("t2".into()),
+        };
+        s.save_terminals(&layout).unwrap();
+        assert_eq!(Store::new(s.dir.clone()).terminals(), layout);
+    }
+
+    /// A drawer whose file is damaged opens empty rather than failing the launch
+    /// — the same forgiveness `ui_state` gets, and for the same reason: nobody
+    /// should lose the app to a half-written list of terminal tabs.
+    #[test]
+    fn a_damaged_terminals_file_is_an_empty_drawer() {
+        let s = Store::new(tmp());
+        std::fs::write(s.dir.join("terminals.json"), "{ not json").unwrap();
+        assert_eq!(s.terminals(), TerminalLayout::default());
     }
 
     /// The migration case, and the reason `ui_scale` carries `#[serde(default)]`.

@@ -72,6 +72,15 @@ export interface UiState {
    *  and deletes nothing already written, and reads keep working. Required for
    *  the same reason as the two above: Rust fills it from a `serde` default. */
   recordScenarioRuns: boolean;
+  /** Whether the terminal drawer is up. Its *contents* live in their own file
+   *  (`loadTerminals`); this is only whether the strip is drawn. Required for
+   *  the same reason as the fields above: Rust fills it from a `serde` default. */
+  terminalsOpen: boolean;
+  /** How tall the drawer is, **in rows of the terminal's own type** — not
+   *  pixels, and for a sharper version of `prDiffCols`' reason: the thing being
+   *  sized is a grid of characters, so "show me twenty rows" has to keep meaning
+   *  twenty rows after the next text-size change. */
+  terminalRows: number;
 }
 
 /** A change to the stored state, which is what `save_ui_state` takes.
@@ -85,6 +94,8 @@ export interface UiStatePatch {
   uiScale?: number;
   prDiffCols?: number;
   recordScenarioRuns?: boolean;
+  terminalsOpen?: boolean;
+  terminalRows?: number;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
@@ -345,6 +356,47 @@ export const startSession = (
  *  workspace is saved again. */
 export const prepareWorkspace = (workspaceId: string) =>
   invoke<SessionAuth>("prepare_workspace", { workspaceId });
+/** What the drawer learns when a shell starts.
+ *
+ *  `identity` is the git identity the shell actually carries in its
+ *  environment, and it is here because a person cannot check it any other way:
+ *  `GIT_AUTHOR_*` outranks `.git/config`, so `git config user.email` reports the
+ *  value that loses. `program` is the shell's own name, for the tab. */
+export interface ShellStart {
+  auth: SessionAuth;
+  identity: string | null;
+  program: string;
+}
+
+/** An interactive shell on a pty — the person's own `$SHELL`, in `cwd`, carrying
+ *  the workspace's account binding. Refuses an id that is already running, and
+ *  refuses past the backend's cap with `terminal-limit:<n>`. */
+export const startShellSession = (
+  session: string, cwd: string, workspaceId: string | null, cols: number, rows: number,
+) => invoke<ShellStart>("start_shell_session", { session, cwd, workspaceId, cols, rows });
+
+/** How many jobs a session is running right now.
+ *
+ *  A shell has no hooks, so its tile chip says `idle` whether it is at a prompt
+ *  or halfway through a release build. This is the only honest answer, and what
+ *  the close confirmation asks before it destroys anything. */
+export const sessionJobs = (session: string) => invoke<number>("session_jobs", { session });
+
+/** A persisted drawer tab. Smaller than `SessionEntry` on purpose: a shell
+ *  cannot be resumed, so what comes back is a new shell in the same directory
+ *  under the same name, and there is nothing else to store. */
+export interface TerminalEntry {
+  sessionId: string;
+  cwd: string;
+  name: string;
+  workspaceId?: string;
+}
+export interface TerminalLayout { items: TerminalEntry[]; active?: string | null }
+
+export const loadTerminals = () => invoke<TerminalLayout>("load_terminals");
+export const saveTerminals = (layout: TerminalLayout) =>
+  invoke<void>("save_terminals", { layout });
+
 /** Разовый запуск пользовательской команды в тайле-терминале (установка gh,
  *  `gh auth login`). Не сессия агента: хуков состояния нет. */
 export const startCommandSession = (

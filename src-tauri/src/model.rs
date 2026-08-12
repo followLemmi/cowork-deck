@@ -296,6 +296,44 @@ pub struct Schedule {
     pub enabled: bool,
 }
 
+/// A persisted tab in the terminal drawer.
+///
+/// Deliberately smaller than `SessionEntry`, and the difference is the point: a
+/// claude session is *resumed* on the next launch, carrying its conversation
+/// with it, and a shell cannot be. What comes back is a new shell in the same
+/// directory under the same name — everything else, including the history of
+/// what was typed, belongs to the shell itself and to whatever it writes to
+/// `~/.zsh_history`. So there is nothing here to resume with, and no field
+/// pretending otherwise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TerminalEntry {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub cwd: String,
+    /// What the tab is labelled. Auto ("zsh · api") unless a person renamed it,
+    /// and the two are not distinguished: a drawer tab has one name, unlike a
+    /// deck tile, whose transcript can propose one.
+    pub name: String,
+    /// The workspace whose directory and account binding this shell was opened
+    /// against. `None` for a shell opened with no workspace active.
+    #[serde(rename = "workspaceId", default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
+/// The drawer's contents: the tabs, left to right, and which one was in front.
+///
+/// A struct rather than the bare `Vec` the deck layout uses, because the active
+/// tab has nowhere else to live. It could have gone in `UiState` beside the
+/// drawer's height, but `UiStatePatch` cannot express "set this back to
+/// nothing", and closing the last tab is exactly that.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TerminalLayout {
+    #[serde(default)]
+    pub items: Vec<TerminalEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+}
+
 /// A persisted tile in the deck layout — enough to reopen it and resume its
 /// claude conversation on next launch. The PTY itself is not persisted.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -407,6 +445,21 @@ pub struct UiState {
     /// active workspace silently forgotten rather than an error.
     #[serde(rename = "recordScenarioRuns", default = "default_record_runs")]
     pub record_scenario_runs: bool,
+    /// Whether the terminal drawer is up. Its *contents* are in
+    /// `terminals.json`; this is only whether the drawer is drawn, which is a
+    /// view preference like the two fields above and belongs with them.
+    ///
+    /// Off by default: a person who has never opened a terminal should not find
+    /// the deck shortened by a strip they did not ask for.
+    #[serde(rename = "terminalsOpen", default)]
+    pub terminals_open: bool,
+    /// How tall the drawer is, **in rows of the terminal's own type** rather
+    /// than in pixels — the same decision as `pr_diff_cols`, and here it is
+    /// even harder to argue with: the thing being sized is a grid of characters,
+    /// and a person who sets it to show twenty rows means twenty rows at every
+    /// text size, not however many fit in 260 pixels after the next change.
+    #[serde(rename = "terminalRows", default = "default_terminal_rows")]
+    pub terminal_rows: u32,
 }
 
 /// On. A journal nobody switched on records nothing, and the first thing anyone
@@ -435,6 +488,14 @@ fn default_ui_scale() -> f32 {
     1.15
 }
 
+/// Fourteen rows: enough for a build's last output and a prompt under it without
+/// the drawer taking the deck's place. Must agree with `DEFAULT_TERMINAL_ROWS`
+/// in `src/drawer.ts`, which is what the drawer opens at before a stored value
+/// has been read.
+fn default_terminal_rows() -> u32 {
+    14
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self {
@@ -442,6 +503,8 @@ impl Default for UiState {
             ui_scale: default_ui_scale(),
             pr_diff_cols: default_pr_diff_cols(),
             record_scenario_runs: default_record_runs(),
+            terminals_open: false,
+            terminal_rows: default_terminal_rows(),
         }
     }
 }
@@ -466,6 +529,10 @@ pub struct UiStatePatch {
     pub pr_diff_cols: Option<u32>,
     #[serde(rename = "recordScenarioRuns")]
     pub record_scenario_runs: Option<bool>,
+    #[serde(rename = "terminalsOpen")]
+    pub terminals_open: Option<bool>,
+    #[serde(rename = "terminalRows")]
+    pub terminal_rows: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

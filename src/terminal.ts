@@ -3,7 +3,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
-import { startSession, startCommandSession, writeSession, resizeSession, prepareWorkspace, type ScenarioLaunch, type SessionAuth } from "./ipc";
+import {
+  startSession, startCommandSession, startShellSession, writeSession, resizeSession,
+  prepareWorkspace, type ScenarioLaunch, type SessionAuth, type ShellStart,
+} from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
 import { terminalKeyBytes } from "./terminal-keys";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
@@ -209,6 +212,29 @@ export class TerminalPanel {
       // In `finally` because a launch that failed still has to release what was
       // typed at it: those keystrokes belong to whatever the person does next,
       // and holding them forever would make the tile silently swallow input.
+      this.markStarted();
+    }
+  }
+  /** An interactive shell: the person's own `$SHELL`, carrying the workspace's
+   *  account binding.
+   *
+   *  Between `start` and `startCommand`, and closer to the first: it takes the
+   *  same pre-resolved environment, for the same reason. Unlike either, nothing
+   *  about it is the app's — no prompt, no command, no hooks. What comes back is
+   *  what the drawer's banner line is written from. */
+  async startShell(cwd: string, workspaceId: string | null): Promise<ShellStart> {
+    this.started = false;
+    if (workspaceId) {
+      try {
+        await prepareWorkspace(workspaceId);
+      } catch (e) {
+        console.debug("prepareWorkspace failed", e);
+      }
+    }
+    const { cols, rows } = this.term;
+    try {
+      return await startShellSession(this.session, cwd, workspaceId, cols, rows);
+    } finally {
       this.markStarted();
     }
   }

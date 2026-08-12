@@ -348,6 +348,28 @@ impl PtyManager {
         out
     }
 
+    /// Whether this id is one the manager still holds.
+    ///
+    /// "Still holds" rather than "still running": an entry outlives its process
+    /// on purpose, because the orphans of a build it started are reachable
+    /// through it and nothing else. So this answers "has this session been
+    /// closed", which is the question the shell cap and the spawn guard both
+    /// actually ask.
+    pub fn is_live(&self, session: &str) -> bool {
+        self.sessions.lock().unwrap().contains_key(session)
+    }
+
+    /// How many jobs one session is running — `live_work`, for a caller that
+    /// already knows which session it is asking about. Zero for an id the
+    /// manager does not hold.
+    pub fn jobs(&self, session: &str) -> usize {
+        let map = self.sessions.lock().unwrap();
+        match map.get(session).and_then(|s| s.pid) {
+            Some(pid) => jobs_in_session(pid as i32),
+            None => 0,
+        }
+    }
+
     /// End a session and everything it started.
     ///
     /// Returns as soon as the polite signals are out; the grace period and the

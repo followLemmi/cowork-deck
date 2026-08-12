@@ -108,7 +108,7 @@ describe("a GitHub board's first read", () => {
     document.body.innerHTML =
       // Mirrors index.html — `main.ts` mounts the view switch into `#viewbar`.
       '<div id="app"><nav id="viewbar"></nav><div id="stage">'
-      + '<div id="sidebar"></div><main id="deck"></main>'
+      + '<div id="sidebar"></div><main id="deck"></main><div id="terminals"></div>'
       + '<div id="board" class="hidden"></div></div></div>';
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
 

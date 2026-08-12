@@ -156,6 +156,7 @@ fn main() {
                 gh_tokens: Mutex::new(std::collections::HashMap::new()),
                 gh_repos: Mutex::new(std::collections::HashMap::new()),
                 session_envs: Mutex::new(std::collections::HashMap::new()),
+                shells: Mutex::new(std::collections::HashSet::new()),
                 quit_asked: AtomicBool::new(false),
                 issue_open_counts: Mutex::new(std::collections::HashMap::new()),
             });
@@ -245,6 +246,10 @@ fn main() {
             commands::quit_confirmed,
             commands::quit_cancelled,
             commands::start_session,
+            commands::start_shell_session,
+            commands::session_jobs,
+            commands::load_terminals,
+            commands::save_terminals,
             commands::write_session,
             commands::resize_session,
             commands::close_session,

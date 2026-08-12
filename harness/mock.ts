@@ -55,6 +55,17 @@ function feed(session: string): void {
   }, 30);
 }
 
+/** A shell's output, after the drawer has written its banner. Deliberately
+ *  slower than `feed`: the banner goes in when `start_shell_session` resolves,
+ *  and output that beat it would be held rather than dropped — which is correct,
+ *  and would also hide whether the ordering works at all. */
+function feedShell(session: string): void {
+  setTimeout(() => {
+    const text = F.shellScrollback[session];
+    if (text) emit("session://output", { session, dataB64: b64(text) });
+  }, 60);
+}
+
 function handle(cmd: string, args: Record<string, unknown>): unknown {
   switch (cmd) {
     /* Events and plugins. */
@@ -133,6 +144,16 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
       return { account: "acme-dev", degraded: null };
     }
     case "start_command_session": return null;
+    /* The drawer. `feed` gives the shell something on screen, the same way the
+       session mocks do — an empty terminal shows nothing about the surface
+       around it. */
+    case "start_shell_session": {
+      feedShell(args.session as string);
+      return { auth: { account: "acme-dev", degraded: null }, identity: "Ada <ada@acme.dev>", program: "zsh" };
+    }
+    case "session_jobs": return 0;
+    case "load_terminals": return F.terminals;
+    case "save_terminals": return null;
     case "write_session":
     case "resize_session":
     case "close_session": return null;

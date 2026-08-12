@@ -13,6 +13,7 @@ import {
   revealPath, saveUiState, scheduleAck, schedulerReady,
 } from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
+import { TerminalDrawer, DEFAULT_TERMINAL_ROWS } from "./drawer";
 import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
 import {
@@ -417,7 +418,11 @@ function setView(view: ViewName) {
   boardVisible = view === "board";
   applyView({ deck: deckEl, board: boardEl, pr: prEl, history: historyEl,
               termBtn, boardBtn, prBtn, historyBtn,
-              terminalsOnly: [skMount, newBtn, listMount] },
+              // The terminal drawer joins the sidebar blocks here rather than
+              // getting a rule of its own: it belongs to the terminals screen,
+              // so it hides with it. The shells keep running — hiding a surface
+              // is not closing what is on it.
+              terminalsOnly: [skMount, newBtn, listMount, terminalsEl] },
              view);
   if (view === "board") {
     // The read is unconditional — opening the screen is a deliberate act — and
@@ -464,9 +469,25 @@ function openHistoryFor(skill: Skill) {
 
 const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
+/** The terminal drawer reads the active workspace at the moment a terminal is
+ *  opened rather than being told about it: the active one changes under it, and
+ *  a shell already running in another workspace must not follow along. */
+/** How the drawer was left last time, read once with the rest of the stored ui
+ *  state (see `bootWithStoredScale`) and applied when the drawer restores. */
+let storedDrawer = { open: false, rows: DEFAULT_TERMINAL_ROWS };
+const terminalsEl = document.getElementById("terminals")!;
+const terminals = new TerminalDrawer(
+  terminalsEl,
+  () => ({
+    id: workspaces.active?.id ?? null,
+    name: workspaces.active?.name ?? null,
+    path: workspaces.active?.path ?? ".",
+  }),
+);
 const boot = () => runBoot({
   steps: [
     () => deck.wireEvents(),
+    () => terminals.wireEvents(),
     () => onScheduledFire((skillId, occurrenceMs, catchUp) => {
       const missedAt = catchUp
         ? new Date(occurrenceMs).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
@@ -496,7 +517,7 @@ const boot = () => runBoot({
     // unquittable.
     () => onQuitBlocked((work) => {
       const named = work
-        .map((w) => `${deck.nameOf(w.session)} (${w.processes} running)`)
+        .map((w) => `${terminals.nameOf(w.session) ?? deck.nameOf(w.session)} (${w.processes} running)`)
         .join(", ");
       void confirmModal(`Still running: ${named}. Quit anyway and stop it?`)
         .then((go) => (go ? quitConfirmed() : quitCancelled()))
@@ -526,6 +547,10 @@ const boot = () => runBoot({
       const entries = await loadLayout();
       if (entries.length) await deck.restore(entries);
     },
+    // After the deck, so the drawer's height is applied against a laid-out
+    // window. A shell cannot be resumed the way a session can: each of these is
+    // a new shell in the directory the old one was in.
+    () => terminals.restore(storedDrawer),
     () => { deck.setActiveWorkspace(workspaces.active?.id ?? null); },
   ],
   // Sent last so a catch-up fire arriving immediately can be resolved to a
@@ -1363,6 +1388,8 @@ function paletteCommands(): Command[] {
     { id: "zoom", title: "Zoom active session", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
     { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
     { id: "clear", title: "Clear terminal", run: () => deck.clearActive() },
+    { id: "toggle-terminals", title: "Terminals: show or hide the drawer", hotkey: hotkeyLabel("J"), run: () => { void terminals.toggle(); } },
+    { id: "new-terminal", title: "New terminal", run: () => { void terminals.newTerminal(); } },
     { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
     { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
     { id: "scenarios", title: "Scenarios: focus the sidebar list", run: () => focusRegion("sidebar") },
@@ -1387,7 +1414,7 @@ function paletteCommands(): Command[] {
  *  (they go to the PTY), so once focus landed in a tile — which happens
  *  automatically on launch — the sidebar, the scenario buttons and the
  *  run-now button were unreachable by keyboard entirely. */
-type Region = "sidebar" | "screen" | "drawer";
+type Region = "sidebar" | "screen" | "drawer" | "terminals";
 /** The cycle, which is not fixed: the diff drawer is a region only while it is
  *  open, because a region you cannot see is a stop that does nothing.
  *
@@ -1395,7 +1422,12 @@ type Region = "sidebar" | "screen" | "drawer";
  *  so without this focus inside the drawer reads as `"screen"` and F6 from a diff
  *  sends you to the sidebar, with no key at all going the other way. */
 function regions(): Region[] {
-  return diffDrawer.isOpen() ? ["sidebar", "screen", "drawer"] : ["sidebar", "screen"];
+  const cycle: Region[] = ["sidebar", "screen"];
+  // Only while it is up, for the same reason as the diff drawer: a region you
+  // cannot see is a stop that appears to do nothing.
+  if (terminals.isOpen()) cycle.push("terminals");
+  if (diffDrawer.isOpen()) cycle.push("drawer");
+  return cycle;
 }
 
 /** Focus on a `#viewbar` tab reads as "screen" here, so F6 from a tab goes to the
@@ -1407,10 +1439,16 @@ function currentRegion(): Region {
   // The drawer first, because it is inside the screen: asked in the other order
   // every answer would be "screen".
   if (diffDrawer.contains(document.activeElement)) return "drawer";
+  if (terminals.hasFocus()) return "terminals";
   return sidebar.contains(document.activeElement) ? "sidebar" : "screen";
 }
 
 function focusRegion(r: Region): void {
+  if (r === "terminals") {
+    if (terminals.focusActive()) return;
+    focusRegion("sidebar");
+    return;
+  }
   if (r === "drawer") {
     if (diffDrawer.focusFirst()) return;
     focusRegion("sidebar");
@@ -1449,11 +1487,15 @@ function cycleRegion(step: number): void {
 const COMMANDS: Record<string, () => void> = {
   "palette": () => openPalette(paletteCommands()),
   "new-session": () => { void newSession(); },
-  "close-active": () => deck.closeActive(),
+  // Whichever surface has the keyboard. Closing a deck tile because the caret
+  // happened to be in a terminal would be the same defect the text-entry guard
+  // below exists to prevent, one level up.
+  "close-active": () => { if (!terminals.hasFocus()) deck.closeActive(); else void terminals.closeActive(); },
   "rename-active": () => deck.renameActive(),
   "search": () => deck.searchActive(),
   "next-waiting": () => deck.focusNextWaiting(),
   "broadcast": () => deck.toggleBroadcast(),
+  "toggle-terminals": () => { void terminals.toggle(); },
   "zoom": () => deck.toggleZoomActive(),
   "next-region": () => cycleRegion(1),
   "prev-region": () => cycleRegion(-1),
@@ -1526,6 +1568,10 @@ async function bootWithStoredScale(): Promise<void> {
     // while the backend writes nothing — the one thing its empty state exists
     // to prevent.
     recordingRuns = ui.recordScenarioRuns;
+    // Read here rather than again inside `boot()`: one read of one file, and
+    // the drawer's own restore step below runs after the deck's layout so its
+    // height lands on a window that is already laid out.
+    storedDrawer = { open: ui.terminalsOpen, rows: ui.terminalRows };
   } catch (e) {
     console.debug("ui state read failed, using the defaults", e);
   }

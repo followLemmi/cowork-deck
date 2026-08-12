@@ -91,6 +91,10 @@ export const S_ERR = "s-err-04";
  *  name, so without this one the automatic-title path is invisible in the
  *  harness and no manual check could ever exercise it. */
 export const S_AUTO = "s-auto-05";
+/** The drawer's two shells. Their own ids, not the deck's: a drawer terminal is
+ *  a PTY session like any other and shares the id space with the tiles. */
+export const SH_ONE = "sh-one-01";
+export const SH_TWO = "sh-two-02";
 
 export const layout: SessionEntry[] = [
   {
@@ -194,6 +198,23 @@ function promptBox(...rows: string[]): string {
     `${D}╰${"─".repeat(COLS - 2)}╯${X}`,
   ].join("\r\n") + "\r\n";
 }
+
+/** What the drawer's shells have on screen. A prompt in one and a build in the
+ *  other: the second is the case the whole close-confirmation exists for, and a
+ *  drawer showing two idle prompts would not say that it is a place work
+ *  happens. */
+export const shellScrollback: Record<string, string> = {
+  [SH_ONE]: [
+    `${D}dev@relay${X}:${C}~/relay${X}$ git status --short`,
+    ` M src/webhooks/retry_policy.rs`,
+    `${D}dev@relay${X}:${C}~/relay${X}$ `,
+  ].join("\r\n"),
+  [SH_TWO]: [
+    `${D}dev@relay${X}:${C}~/relay${X}$ cargo build --release`,
+    `   ${G}Compiling${X} relay v0.4.1`,
+    `    ${D}Building${X} [====================>      ] 43/61`,
+  ].join("\r\n"),
+};
 
 export const scrollback: Record<string, string> = {
   [S_WORK]: lines(
@@ -632,6 +653,21 @@ export const mergeOptions: MergeOptions = {
 
 export const uiState: UiState = {
   activeWorkspaceId: WS_RELAY, uiScale: 1, prDiffCols: 96, recordScenarioRuns: true,
+  // Up, and with a terminal in it: the drawer is a surface the shots have to be
+  // able to show, and one that has to be opened by hand before every shot is one
+  // that will be forgotten in half of them.
+  terminalsOpen: true, terminalRows: 12,
+};
+
+/** What the terminal drawer reopens with. Two tabs, because one tab cannot show
+ *  what a tab strip looks like, and the second carries a hand-typed name — the
+ *  only thing a person can put on this surface. */
+export const terminals = {
+  items: [
+    { sessionId: SH_ONE, cwd: "/home/dev/code/relay", name: "zsh · relay", workspaceId: WS_RELAY },
+    { sessionId: SH_TWO, cwd: "/home/dev/code/relay", name: "release build", workspaceId: WS_RELAY },
+  ],
+  active: SH_ONE,
 };
 
 /* --- the scenario run journal -------------------------------------------- */

@@ -357,7 +357,11 @@ html, body, #app { height: 100%; margin: 0; }
   font-size: var(--fs-xs); font-weight: var(--fw-bold);
   text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--fg-dim);
 }
-#deck { flex: 1; display: grid; gap: var(--sp-3); padding: var(--sp-3); background: var(--bg-void); position: relative; }
+/* The deck and the terminal drawer stack; `#stage` is still the row beside the
+   sidebar. `min-height: 0` on both is what lets the drawer's fixed height win
+   against the deck's `flex: 1` instead of the column overflowing the window. */
+#workarea { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+#deck { flex: 1; min-height: 0; display: grid; gap: var(--sp-3); padding: var(--sp-3); background: var(--bg-void); position: relative; }
 
 /* --- The deck with nothing on it -----------------------------------------------
    `#deck` is an empty element until a session exists, so the most likely first screen
@@ -2694,3 +2698,77 @@ h6.md-head { font-size: var(--fs-sm); }
   .sk-dot::before { border: 1px solid CanvasText; box-sizing: border-box; }
   .sk-dot.run-failed-to-launch::before { border-width: 2px; border-style: dashed; }
 }
+
+/* --- The terminal drawer ---------------------------------------------------
+   A strip under the deck holding interactive shells. Not `.bcast-panel`'s
+   shape, and the difference is deliberate: the broadcast bar floats over the
+   deck because it is momentary, and this one takes space from it because it is
+   not. A shell a person left a build running in must never be something the
+   deck is drawn on top of.
+
+   `height` is written by `drawer.ts` in pixels, computed from a row count — see
+   `UiState.terminalRows`. `flex: 0 0 auto` keeps that height against the deck's
+   `flex: 1` rather than being negotiated away. */
+.term-drawer {
+  flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-island); border-top: 1px solid var(--line-strong);
+}
+.term-drawer[hidden] { display: none; }
+
+/* The grab handle, and the whole of the drawer's resize affordance. Four pixels
+   of surface with an eight-pixel hit area above it, which is the smallest that
+   does not need aiming; focusable, because a drag is otherwise mouse-only and
+   this is the only control here with no keyboard equivalent of its own. */
+.term-grip {
+  flex: 0 0 auto; height: 4px; cursor: ns-resize; background: transparent;
+  margin-top: -4px; padding-top: 4px; box-sizing: content-box;
+}
+.term-grip:hover, .term-grip:focus-visible { background: var(--accent); outline: none; }
+
+.term-bar {
+  flex: 0 0 auto; display: flex; align-items: stretch; gap: 2px;
+  padding: 0 var(--sp-2); border-bottom: 1px solid var(--line);
+  min-height: 30px;
+}
+.term-tabs { display: flex; align-items: stretch; gap: 2px; overflow-x: auto; overflow-y: hidden; }
+.term-spacer { flex: 1; }
+
+/* A tab is two buttons in one shell: the name selects, the × closes. Nested
+   buttons would be invalid, which is why the row is a plain element and both
+   halves are real buttons — each with its own accessible name. */
+.term-tab {
+  display: flex; align-items: center; border-radius: var(--r-ctl) var(--r-ctl) 0 0;
+  border: 1px solid transparent; border-bottom: none; max-width: 22ch;
+}
+.term-tab.is-active { background: var(--bg-terminal); border-color: var(--line-strong); }
+/* A shell whose process is gone. Not hidden and not removed: its scrollback is
+   the only record of what it was doing, and a tab that vanished on `exit` would
+   take the last error with it. */
+.term-tab.is-dead .term-tab-name { color: var(--fg-dim); font-style: italic; }
+.term-tab-name {
+  padding: 4px var(--sp-2); background: none; border: none; color: var(--fg-dim);
+  font: inherit; font-size: var(--fs-sm); cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.term-tab.is-active .term-tab-name { color: var(--fg); }
+.term-tab-name:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.term-tab-x {
+  padding: 0 6px 0 0; background: none; border: none; color: var(--fg-dim);
+  font: inherit; line-height: 1; cursor: pointer; opacity: 0;
+}
+.term-tab:hover .term-tab-x, .term-tab.is-active .term-tab-x, .term-tab-x:focus-visible { opacity: 1; }
+.term-tab-x:hover { color: var(--fg); }
+.term-tab-x:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.term-add, .term-hide {
+  padding: 0 var(--sp-2); background: none; border: none; color: var(--fg-dim);
+  font: inherit; font-size: var(--fs-sm); cursor: pointer;
+}
+.term-add:hover, .term-hide:hover { color: var(--fg); }
+.term-add:focus-visible, .term-hide:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* One mount per tab, all of them kept: a terminal moved between parents loses
+   its scrollback, so the inactive ones are hidden where they stand. */
+.term-bodies { flex: 1; min-height: 0; position: relative; background: var(--bg-terminal); }
+.term-body { position: absolute; inset: 0; padding: 4px var(--sp-2); }
+.term-body.hidden { display: none; }
