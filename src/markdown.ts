@@ -20,8 +20,9 @@
 // nothing to keep up to date.
 //
 // The one place a hostile input can still reach an API is a URL, and there is exactly
-// one gate for it: `safeHref`. Read that before changing anything here.
+// one gate for it: `external.ts`. Read that before changing anything here.
 
+import { wireExternal } from "./external";
 import { lexer, type Token, type Tokens } from "marked";
 
 /** Where a heading in a description starts.
@@ -32,22 +33,6 @@ import { lexer, type Token, type Tokens } from "marked";
  *  Flattening them all to one level instead would cost a screen-reader user the
  *  heading structure, which in a long description is the only way to skim. */
 const HEADING_BASE = 3;
-
-/** The only protocols an anchor may carry.
- *
- *  A relative link is deliberately *not* resolved: in a description it is relative to
- *  the repository, which this module has no way to know, and guessing a base would
- *  turn `[see](../CONTRIBUTING.md)` into a link to somewhere real and wrong. Those
- *  render as plain text — visible, honest, and not clickable. */
-function safeHref(href: string): string | null {
-  let u: URL;
-  try {
-    u = new URL(href);
-  } catch {
-    return null;
-  }
-  return u.protocol === "http:" || u.protocol === "https:" ? u.href : null;
-}
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K, cls?: string, text?: string,
@@ -96,17 +81,13 @@ function inline(parent: Node, tokens: Token[] | undefined, raw: string): void {
         break;
       case "link": {
         const lt = t as Tokens.Link;
-        const href = safeHref(lt.href);
-        if (href === null) {
+        const a = el("a", "md-link");
+        if (!wireExternal(a, lt.href)) {
           // Not silently dropped: the link text is still what the author wrote, and
           // deleting it would leave a sentence with a hole in it.
           inline(parent, lt.tokens, lt.raw);
           break;
         }
-        const a = el("a", "md-link");
-        a.href = href;
-        a.target = "_blank";
-        a.rel = "noreferrer";
         inline(a, lt.tokens, lt.raw);
         parent.appendChild(a);
         break;
@@ -118,16 +99,12 @@ function inline(parent: Node, tokens: Token[] | undefined, raw: string): void {
         // The alt text and a link to the source say the same thing without the
         // network call.
         const it = t as Tokens.Image;
-        const href = safeHref(it.href);
         const label = it.text || "image";
-        if (href === null) {
+        const a = el("a", "md-link", `[${label}]`);
+        if (!wireExternal(a, it.href)) {
           parent.appendChild(document.createTextNode(`[${label}]`));
           break;
         }
-        const a = el("a", "md-link", `[${label}]`);
-        a.href = href;
-        a.target = "_blank";
-        a.rel = "noreferrer";
         a.title = "Image — opens in a browser";
         parent.appendChild(a);
         break;

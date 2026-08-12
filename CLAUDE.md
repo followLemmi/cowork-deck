@@ -9,10 +9,8 @@ that list is English, and the list does not grow by argument.
 
 In full, that covers:
 
-- **Documentation** — `README.md`, this file, and every document under `docs/`
-  written or edited from 2026-07-27 onward, specs and plans included. The one
-  carve-out is the pre-existing record described under "History stays as
-  written" below.
+- **Documentation** — `README.md`, this file, and every document under `docs/`,
+  architecture decision records included.
 - **Tasks** — GitHub issue titles and bodies, checklists, epics, and comments
   posted on them.
 - **Pull requests** — titles, bodies, review comments, and replies.
@@ -43,13 +41,6 @@ and must survive any future translation sweep:
 Deleting either would regress a real feature. The comments explain why; keep
 them intact.
 
-### History stays as written
-
-`docs/superpowers/plans/` and `docs/superpowers/specs/` dated before 2026-07-27
-are in Russian. They record work already finished, and a translated record can
-drift from what actually happened with no original left to check against. **Do
-not translate them.** Anything added from 2026-07-27 onward is English.
-
 ## Branches and releases
 
 `dev` is the trunk and the default branch: **every pull request targets `dev`.**
@@ -72,6 +63,20 @@ Two things follow, and both are easy to get wrong:
 
 A hotfix branches from `main` and its pull request goes to `main`; `main` is then
 merged back into `dev`, or the fix is lost at the next release.
+
+## Where work is written down
+
+Two places, and no third:
+
+- **GitHub issues** carry the work — what is wrong, what should happen, and what
+  counts as done. See `docs/agents/issue-tracker.md`.
+- **`docs/adr/`** carries the decisions worth outliving the issue that prompted
+  them, one record per decision. See `docs/agents/domain.md`.
+
+Standalone specification and plan documents are not part of this project. A
+design argument belongs in an ADR if it is a decision and in the issue if it is
+the work; a rationale that only explains one module belongs in that module's
+doc comment, next to the code it justifies.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
@@ -169,3 +174,20 @@ To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.
 - Generate docs: `npx gitnexus wiki`
 
 <!-- gitnexus:end -->
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `followLemmi/cowork-deck`, driven by the `gh`
+CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each label string equal to its name. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
+`docs/agents/domain.md`.

@@ -5,6 +5,7 @@
 // Все данные попадают в DOM через textContent: имена аккаунтов и текст ошибок
 // приходят извне, и innerHTML тут был бы XSS-дырой.
 
+import { wireExternal } from "./external";
 import { ghStatus, hostPlatform, type GhStatus } from "./ipc";
 import { installCommand, scopeWarning } from "./github";
 
@@ -44,10 +45,10 @@ function notFoundBlock(
 
   const docs = document.createElement("a");
   docs.className = "gh-link";
-  docs.href = "https://github.com/cli/cli#installation";
-  docs.target = "_blank";
-  docs.rel = "noreferrer";
   docs.textContent = "Поставлю сам — открыть инструкцию";
+  // Through the opener plugin, like every other link out of the app: this window
+  // has nowhere to navigate a `_blank` to (see `external.ts`).
+  wireExternal(docs, "https://github.com/cli/cli#installation");
 
   wrap.append(
     para(

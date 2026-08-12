@@ -65,6 +65,50 @@ describe("WorkspacesPanel restore", () => {
   });
 });
 
+// The scenario row's state dot reports a run from whichever workspace it
+// happened in, and the history screen shows one workspace at a time. Opening
+// the one from the other is the only way the click can land on the run it just
+// described.
+describe("WorkspacesPanel.activate", () => {
+  const items = [
+    { id: "a", name: "A", path: "/a", color: "#111" },
+    { id: "b", name: "B", path: "/b", color: "#222" },
+  ];
+  const panel = async () => {
+    listWorkspacesMock.mockResolvedValue(items);
+    loadUiStateMock.mockResolvedValue({ activeWorkspaceId: "a" });
+    const selected: string[] = [];
+    const p = new WorkspacesPanel(document.createElement("div"), (ws) => selected.push(ws.id));
+    await p.load();
+    return { p, selected };
+  };
+
+  it("switches to a workspace named by someone else, and says it did", async () => {
+    const { p, selected } = await panel();
+    expect(p.activate("b")).toBe(true);
+    expect(p.active?.id).toBe("b");
+    // The deck listens on this: switching workspace behind its back would
+    // leave it showing the sessions of the one that is no longer active.
+    expect(selected).toContain("b");
+  });
+
+  // A record outlives the workspace it names — the journal keeps runs whose
+  // workspace has since been deleted. Switching to nothing and reporting
+  // success would show the current workspace's list as if it were that one's.
+  it("refuses a workspace that no longer exists, and stays where it is", async () => {
+    const { p } = await panel();
+    expect(p.activate("deleted-since")).toBe(false);
+    expect(p.active?.id).toBe("a");
+  });
+
+  it("is a no-op on the workspace already active", async () => {
+    const { p, selected } = await panel();
+    const before = selected.length;
+    expect(p.activate("a")).toBe(true);
+    expect(selected).toHaveLength(before);
+  });
+});
+
 it("creates a workspace from the form result", async () => {
   workspaceForm.mockResolvedValueOnce({ name: "P", path: "/p", color: "#61afef" });
   saveWorkspace.mockResolvedValueOnce([{ id: "x", name: "P", path: "/p", color: "#61afef" }]);

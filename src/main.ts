@@ -7,7 +7,10 @@ import {
   applyScale, broadcastScale, clampScale, currentScale, nextScale, prevScale, scaleLabel,
 } from "./ui-scale";
 import type { ViewName } from "./view";
-import { claudeAvailable, loadLayout, loadUiState, onScheduledFire, onSchedulerBroken, saveUiState, scheduleAck, schedulerReady } from "./ipc";
+import {
+  claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
+  onScheduledFire, onSchedulerBroken, revealPath, saveUiState, scheduleAck, schedulerReady,
+} from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
 import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
@@ -19,7 +22,7 @@ import {
   prWorktreePath, prWorktreeRemove,
   issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove,
 } from "./ipc";
-import type { MigrationOffer, PullRequest, StepId, Task } from "./ipc";
+import type { MigrationOffer, PullRequest, RunRecord, StepId, Task } from "./ipc";
 import { firstTerminal, isTerminal } from "./board-config";
 import { issuePrompt } from "./tasks";
 import { pollIntervalMs } from "./pr";
@@ -27,6 +30,8 @@ import {
   boardPollMs, CLOSED_PAGE_LIMIT, needsCloseConfirmation, needsTotals, nextPageLimit,
   repoFromIssueUrl, sourceOf, unavailableFrom,
 } from "./issues";
+import { HistoryView } from "./history";
+import { reconcileParams, type RunFilters } from "./runs";
 import { PrView } from "./pr-view";
 import { DiffDrawer } from "./diff-drawer";
 import type { GhUnavailable } from "./gh-unavailable";
@@ -38,7 +43,7 @@ import { openPalette } from "./palette";
 import { runBoot } from "./boot";
 import { appMark, iconButton, installSprite } from "./icons";
 import { openGithubScreen } from "./github-screen";
-import { resolvePrompt, fillPlaceholders } from "./placeholders";
+import { fillPlaceholders, resolvePrompt } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
@@ -86,7 +91,9 @@ const boardBtn = document.createElement("button");
 boardBtn.textContent = "Board";
 const prBtn = document.createElement("button");
 prBtn.textContent = "Pull requests";
-views.append(termBtn, boardBtn, prBtn);
+const historyBtn = document.createElement("button");
+historyBtn.textContent = "History";
+views.append(termBtn, boardBtn, prBtn, historyBtn);
 viewbar.append(views);
 
 // The rest of the top bar: the wordmark on the left, the global actions on the
@@ -221,6 +228,146 @@ prEl.append(prView.mount, diffDrawer.live);
 boardEl.after(prEl);
 diffDrawer.attach(prEl, prView.mount);
 
+/* --- the scenario run history -------------------------------------------- */
+
+/** Which scenario and which trigger the screen is narrowed to. Held here rather
+ *  than inside the view because the sidebar's state dot sets it on the way in:
+ *  clicking a dot opens the screen already filtered to that scenario. */
+let runFilters: RunFilters = { skillId: null, trigger: null };
+/** Whether new runs are being journalled. Read once at boot and written by the
+ *  screen's own checkbox — the switch lives beside the sentence that explains
+ *  what being off looks like, rather than inside a text-size dialog whose own
+ *  doc comment argues against growing it casually. */
+let recordingRuns = true;
+
+const historyView = new HistoryView({
+  onFilter: (f) => { runFilters = f; void refreshHistory(); },
+  onRecording: (on) => {
+    recordingRuns = on;
+    // A patch, so it cannot take the active workspace or the text size with it.
+    saveUiState({ recordScenarioRuns: on })
+      .catch((e) => console.debug("run recording save failed", e));
+    void refreshHistory();
+  },
+  onJump: (rec) => {
+    // The deck is revealed *before* the tile is focused, and the order is the
+    // whole of it: `#deck.tk-hidden` is `display: none`, and `focus()` on an
+    // unrendered element does nothing at all — as does `scrollIntoView` inside a
+    // hidden container. Focusing first left the reader on the deck with the tile
+    // merely marked active, keyboard focus back on `document.body`, and the
+    // first thing they typed going nowhere.
+    if (rec.sessionId === null || !deck.liveSessions().includes(rec.sessionId)) {
+      void alertModal("That session is no longer open.");
+      return;
+    }
+    setView("deck");
+    // The tile may live in another workspace — an unpinned scenario runs
+    // wherever it was launched — so this goes through the same path the pill
+    // and a notification click take, which switches workspace first.
+    deck.focusSession(rec.sessionId);
+  },
+  onRerun: (rec, skill) => { void rerunScenario(rec, skill); },
+  onReveal: (rec) => {
+    if (rec.transcriptPath === null) return;
+    revealPath(rec.transcriptPath).catch((e) => void alertModal(String(e)));
+  },
+  onDeleteHistory: (skillId, name) => { void eraseHistory(skillId, name); },
+  onRefused: (reason) => { void alertModal(reason); },
+});
+const historyEl = document.createElement("div");
+historyEl.id = "history";
+historyEl.classList.add("hidden");
+historyEl.append(historyView.mount);
+prEl.after(historyEl);
+
+/** Re-read the journal for the active workspace and repaint.
+ *
+ *  Scoped by the record's **own** `workspaceId`, in Rust — so a run of a
+ *  scenario pinned to nothing appears in the workspace it actually ran in, not
+ *  in all of them. A record with no workspace at all (a scheduled fire that
+ *  never resolved one) passes every filter, the way an orphaned tile stays
+ *  visible everywhere. */
+async function refreshHistory() {
+  const ws = workspaces.active;
+  let runs: RunRecord[] = [];
+  let all: RunRecord[] = [];
+  try {
+    runs = await listRuns(ws?.id ?? null, null);
+    // Asked separately so the empty state can tell "nothing has ever run" from
+    // "nothing ran here" — two different sentences with two different next
+    // steps, and only this call can distinguish them. Only asked when the
+    // question arises: `anyRuns` is read solely to choose between those two
+    // sentences, so a workspace with records of its own has already answered
+    // it, and a second full read of the journal per repaint buys nothing.
+    all = ws && runs.length === 0 ? await listRuns(null, null) : runs;
+  } catch (e) {
+    console.debug("listRuns failed", e);
+  }
+  historyView.render({
+    runs, anyRuns: all.length > 0, workspaceName: ws?.name ?? null,
+    recording: recordingRuns, filters: runFilters, skills: skills.all,
+    liveSessions: deck.liveSessions(),
+    workspaceIds: workspaces.all.map((w) => w.id),
+  }, Date.now());
+}
+
+/** Run a recorded scenario again.
+ *
+ *  An ordinary `manual` launch that opens its own record, deliberately **not**
+ *  chained through `continuesRunId`: that field means "this PTY resumed that
+ *  conversation", and a re-run is a fresh one.
+ *
+ *  The form opens with the recorded values in the fields and launches nothing
+ *  until it is confirmed. A scenario's parameters may name a branch, a target or
+ *  a person, and re-running one from history without showing what is in the
+ *  fields is how somebody re-runs yesterday's parameters against today's branch.
+ *  The values are matched against the *current* template first — the record is
+ *  not authoritative over a prompt that has been edited since.
+ *
+ *  Down `launchScenario`'s own path — `requireWorkspace` then `resolvePrompt` —
+ *  rather than re-deriving either. Resolving a target from the record instead
+ *  broke the invariant every other manual launch keeps: that a manual launch
+ *  lands in the *active* workspace. A record with no workspace of its own shows
+ *  in every workspace's history, so pressing this in workspace A could put a
+ *  tile in B — running in B's folder, sitting in A's deck under A's header,
+ *  gone at the next workspace switch, since `applyWorkspaceVisibility` is only
+ *  applied on the unattended path. */
+async function rerunScenario(rec: RunRecord, skill: Skill) {
+  const ws = await requireWorkspace();
+  if (!ws) return;
+  const resolved = await resolvePrompt(
+    skill.prompt,
+    // The only difference from an ordinary launch: the fields start at what
+    // this run used, reconciled against today's template.
+    (names) => placeholderForm(names, reconcileParams(names, rec.params)),
+  );
+  if (resolved === null) return;
+  setView("deck");
+  await deck.launch(ws, { ...skill, prompt: resolved.prompt }, resolved.params);
+}
+
+/** Erase one scenario's history — the only erasure there is, and it asks first
+ *  exactly as `Delete scenario?` does. There is no deleting of a single record:
+ *  a row is a snapshot of what ran, and a journal whose rows can be revised
+ *  answers nothing. */
+async function eraseHistory(skillId: string, name: string) {
+  // Scoped to the workspace the screen is showing, and said so in the question.
+  // The rows on screen are one workspace's; erasing every workspace's records of
+  // that scenario from a screen that shows two of them, with no undo and no
+  // second copy, is not what the button appears to offer.
+  const ws = workspaces.active;
+  const where = ws ? ` in ${ws.name}` : "";
+  if (!(await confirmModal(`Delete every recorded run of “${name}”${where}?`))) return;
+  try {
+    await deleteSkillHistory(skillId, ws?.id ?? null);
+  } catch (e) {
+    await alertModal(`Could not delete the history: ${String(e)}`);
+    return;
+  }
+  await skills.refreshRuns();
+  await refreshHistory();
+}
+
 let boardVisible = false;
 let boardTimer: ReturnType<typeof setTimeout> | null = null;
 let currentView: ViewName = "deck";
@@ -267,7 +414,8 @@ async function boardTick() {
 function setView(view: ViewName) {
   currentView = view;
   boardVisible = view === "board";
-  applyView({ deck: deckEl, board: boardEl, pr: prEl, termBtn, boardBtn, prBtn,
+  applyView({ deck: deckEl, board: boardEl, pr: prEl, history: historyEl,
+              termBtn, boardBtn, prBtn, historyBtn,
               terminalsOnly: [skMount, newBtn, listMount] },
              view);
   if (view === "board") {
@@ -284,10 +432,34 @@ function setView(view: ViewName) {
   // is looking at.
   if (view === "pr") void refreshPrs();
   else stopPrPolling();
+  // Always on entering, and only then: the screen re-reads on `runs://changed`
+  // while it is visible and does not poll at all. Opening it is a deliberate
+  // act, so the read is unconditional.
+  if (view === "history") void refreshHistory();
 }
 termBtn.onclick = () => setView("deck");
 boardBtn.onclick = () => setView("board");
 prBtn.onclick = () => setView("pr");
+historyBtn.onclick = () => setView("history");
+
+/** Open the history filtered to one scenario — what the sidebar's state dot
+ *  does, and the only thing it does.
+ *
+ *  The dot reports the last run in **any** workspace, because a scenario with a
+ *  schedule is on screen in all of them and fires wherever it was pinned. The
+ *  screen is scoped to one workspace, and its own empty state says why:
+ *  switching workspace switches what is listed. So the click does that
+ *  switching rather than landing on a list that cannot contain the run the dot
+ *  just described. A record naming a workspace since deleted switches nothing —
+ *  the screen then honestly shows the current one. */
+function openHistoryFor(skill: Skill) {
+  const last = skills.lastRunOf(skill.id);
+  if (last?.workspaceId != null && last.workspaceId !== workspaces.active?.id) {
+    workspaces.activate(last.workspaceId);
+  }
+  runFilters = { skillId: skill.id, trigger: null };
+  setView("history");
+}
 
 const deck = new Deck(deckEl, listMount, () => workspaces.all);
 deck.wireNotificationFocus();
@@ -298,11 +470,13 @@ const boot = () => runBoot({
       const missedAt = catchUp
         ? new Date(occurrenceMs).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
         : undefined;
-      void handleScheduledFire(skillId, missedAt).then(async (outcome) => {
+      void handleScheduledFire(skillId, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
         if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
         // Tell the backend what came of it: an occurrence it emitted counts as
-        // a run only once a session has actually started.
-        await scheduleAck(skillId, occurrenceMs, outcome).catch((e) =>
+        // a run only once a session has actually started. Anything else also
+        // becomes a `failed-to-launch` record in the run journal — "the
+        // schedule silently did nothing" is what people open a history to find.
+        await scheduleAck(skillId, occurrenceMs, outcome, workspaceId).catch((e) =>
           console.warn("schedule ack failed:", skillId, e));
         // Show the outcome in the scenario row now, rather than at the next
         // minute tick — a skip or a refusal is what the user needs to see.
@@ -310,6 +484,14 @@ const boot = () => runBoot({
       });
     }).then(() => {}),
     () => onSchedulerBroken((message) => { void alertModal(message); }).then(() => {}),
+    // A record opened or closed. The sidebar's dot is repainted whatever screen
+    // is showing — it is the one always-visible reader of the journal, and a
+    // handful of events per run is not polling. The list re-reads only while it
+    // is on screen; nothing here runs on a timer.
+    () => onRunsChanged(() => {
+      void skills.refreshRuns();
+      if (currentView === "history") void refreshHistory();
+    }).then(() => {}),
     () => workspaces.load(),
     () => skills.load(),
     () => onTasksChanged((workspaceId) => {
@@ -988,17 +1170,35 @@ async function reopenPr(pr: PullRequest) {
  *  only logs it; a user-initiated run surfaces it in a modal. */
 type FireOutcome = "launched" | "skipped-overlap" | "no-workspace" | "not-scheduled";
 
+/** What a fire produced, and where. The workspace travels with the outcome
+ *  because `schedule_ack` turns anything but `launched` into a
+ *  `failed-to-launch` journal record, and that record has to know which
+ *  workspace it belongs to. `no-workspace` has none, by definition. */
+interface FireResult { outcome: FireOutcome; workspaceId: string | null }
+
 /** A scheduled scenario came due (from the backend scheduler or from the ⏰
  *  button): resolve it to a scenario + workspace, fill placeholder defaults (a
  *  scheduled run cannot ask) and launch it as a fresh tile. */
-async function handleScheduledFire(skillId: string, catchUpFor?: string): Promise<FireOutcome> {
+async function handleScheduledFire(
+  skillId: string,
+  /** Which path the fire came down. Both are journalled — the question a
+   *  history answers is "when did this scenario last run", not "who pressed
+   *  it" — and both are told apart, so the screen can filter one out. */
+  trigger: "schedule" | "runNow",
+  catchUpFor?: string,
+): Promise<FireResult> {
   const skill = skills.find(skillId);
-  if (!skill?.schedule?.enabled) return "not-scheduled";
+  if (!skill?.schedule?.enabled) return { outcome: "not-scheduled", workspaceId: null };
   const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
-  if (!res.ok) return res.reason;
+  if (!res.ok) return { outcome: res.reason, workspaceId: null };
   const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
-  const launched = await deck.launchScheduled(res.workspace, skill, filled, catchUpFor);
-  return launched ? "launched" : "skipped-overlap";
+  const launched = await deck.launchScheduled(res.workspace, skill, filled, trigger, catchUpFor);
+  return {
+    outcome: launched ? "launched" : "skipped-overlap",
+    // Carried even when nothing launched: a skipped fire still happened
+    // somewhere, and the history screen it lands on is scoped to one workspace.
+    workspaceId: res.workspace.id,
+  };
 }
 
 /** ⏰ button: run a scheduled scenario now, exactly as the schedule would. The
@@ -1006,7 +1206,7 @@ async function handleScheduledFire(skillId: string, catchUpFor?: string): Promis
  *  loop, so the regular occurrence still fires. Unlike a backend-driven fire,
  *  a click must say why nothing happened. */
 async function runScheduledNow(skill: Skill) {
-  const outcome = await handleScheduledFire(skill.id);
+  const { outcome } = await handleScheduledFire(skill.id, "runNow");
   if (outcome === "skipped-overlap") {
     await alertModal("Run skipped: the previous one is still active.");
   } else if (outcome === "no-workspace") {
@@ -1046,6 +1246,11 @@ const workspaces = new WorkspacesPanel(wsMount, (ws) => {
   // stale mark would land on whichever row happens to share the number.
   prView.setOpenDiff(null, null);
   if (currentView === "pr") void refreshPrs();
+  // The records on screen belong to the workspace that was active a moment ago.
+  // A run belongs to the workspace it actually happened in, so switching
+  // workspace switches what is listed — the same rule the other three screens
+  // already follow.
+  if (currentView === "history") void refreshHistory();
 }, () => {
   // A workspace was added, edited or deleted: its tracker root may have moved,
   // so re-point the watcher and re-read the sidebar counts.
@@ -1069,14 +1274,18 @@ async function requireWorkspace(): Promise<Workspace | null> {
 const launchScenario = async (skill: Skill) => {
   const ws = await requireWorkspace();
   if (!ws) return;
-  const prompt = await resolvePrompt(skill.prompt, placeholderForm);
-  if (prompt === null) return;
-  deck.launch(ws, { ...skill, prompt });
+  const resolved = await resolvePrompt(skill.prompt, placeholderForm);
+  if (resolved === null) return;
+  // The values go through as well as the text. The journal records what a run
+  // was launched with, so it can later be offered again with those values
+  // visible in the form rather than silently reapplied to today's branch.
+  void deck.launch(ws, { ...skill, prompt: resolved.prompt }, resolved.params);
 };
 const skills = new SkillsPanel(skMount, () => workspaces.active?.id ?? null,
   (skill) => { void launchScenario(skill); },
   (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
-   () => workspaces.active?.name ?? null);
+   () => workspaces.active?.name ?? null,
+   (skill) => openHistoryFor(skill));
 // Deleting a workspace strands the scenarios pinned to it — the confirmation
 // says how many before it happens.
 workspaces.setSkillsSource(() => skills.all);
@@ -1137,6 +1346,7 @@ function paletteCommands(): Command[] {
     { id: "scenarios", title: "Scenarios: focus the sidebar list", run: () => focusRegion("sidebar") },
     { id: "board", title: "Open the task board", run: () => setView("board") },
     { id: "prs", title: "Open pull requests", run: () => setView("pr") },
+    { id: "history", title: "Open the scenario run history", run: () => setView("history") },
     { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
     { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
     // The two steps are direct commands because stepping is what a person wants
@@ -1227,6 +1437,7 @@ const COMMANDS: Record<string, () => void> = {
   "prev-region": () => cycleRegion(-1),
   "board": () => setView("board"),
   "prs": () => setView("pr"),
+  "history": () => setView("history"),
   "new-task": () => { void captureTask(); },
   "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
 };
@@ -1288,6 +1499,11 @@ async function bootWithStoredScale(): Promise<void> {
     // moment it first appears — set later, the first open would flash the
     // stylesheet's fallback.
     diffDrawer.setCols(ui.prDiffCols);
+    // Read before the screen can be opened. A default of `true` that turned out
+    // to be false would have the history screen say runs are being recorded
+    // while the backend writes nothing — the one thing its empty state exists
+    // to prevent.
+    recordingRuns = ui.recordScenarioRuns;
   } catch (e) {
     console.debug("ui state read failed, using the defaults", e);
   }

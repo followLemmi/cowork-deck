@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
+import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
 import { gitStatus, sessionSnapshots, type NameKind, type SessionTokens } from "./ipc";
 import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -38,6 +38,16 @@ interface Tile {
   kind?: TileKind;
   /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
   taskId?: string;
+  /** Scenario this tile was launched from, by any route. Wider than
+   *  `scheduledSkillId`, which stays what it was: the overlap guard's key. */
+  skillId?: string;
+  /** The run journal record this tile is currently in. Written by the backend,
+   *  minted here, and persisted so a restart can chain to it. */
+  runId?: string;
+  /** The placeholder values this tile was launched with, carried so a restart
+   *  can hand them back to the journal rather than opening a record that
+   *  forgets what it ran with. */
+  params?: Record<string, string>;
 }
 
 /** The four things that can name a tile, in one place so no reader can hold a
@@ -330,7 +340,13 @@ export class Deck {
     await onExit((s) => { /* state already emitted; keep tile for scrollback */ void s; });
   }
 
-  async launch(workspace: Workspace, skill: Skill | null) {
+  /** A scenario, or a bare session when `skill` is null.
+   *
+   *  `params` is the values the prompt's placeholders were filled with, and it
+   *  is passed on rather than discarded: the run journal records what a run was
+   *  launched with, so it can later be offered again with those values in front
+   *  of the person instead of silently reused. */
+  async launch(workspace: Workspace, skill: Skill | null, params: Record<string, string> = {}) {
     const titleText = skill ? `${skill.icon} ${skill.name}` : `session · ${workspace.name}`;
     await this.spawnTile({
       session: crypto.randomUUID(),
@@ -342,6 +358,7 @@ export class Deck {
       nameKind: skill ? "context" : "placeholder",
       prompt: skill ? skill.prompt : null,
       resume: false,
+      ...(skill ? { skillId: skill.id, trigger: "manual" as const, params } : {}),
     });
   }
 
@@ -400,6 +417,11 @@ export class Deck {
     workspace: Workspace,
     skill: Skill,
     filledPrompt: string,
+    /** Which of the two paths this fire came down: the backend scheduler, or
+     *  the ⏰ button. Both are recorded — the question a history answers is
+     *  "when did this scenario last run", not "who pressed it" — and both are
+     *  told apart, so the screen can filter one out. */
+    trigger: Extract<RunTrigger, "schedule" | "runNow">,
     /** Occurrence this run is making up for, when it is not running on time.
      *  Without it a tile appearing at 14:20 for a 09:00 schedule reads as a
      *  fault rather than as catch-up. */
@@ -425,6 +447,9 @@ export class Deck {
       prompt: filledPrompt,
       resume: false,
       scheduledSkillId: skill.id,
+      skillId: skill.id,
+      trigger,
+      params: skill.schedule?.defaults ?? {},
       grabAttention: false,
     });
     return true;
@@ -548,6 +573,16 @@ export class Deck {
     scheduledSkillId?: string;
     /** Tracker card this tile is working on. */
     taskId?: string;
+    /** Scenario this launch came from, and how it started. Present together or
+     *  not at all: a trigger without a scenario names nothing, and a scenario
+     *  without a trigger cannot be recorded. */
+    skillId?: string;
+    trigger?: RunTrigger;
+    params?: Record<string, string>;
+    /** The record a `resume` continues. Read out of the restored layout entry;
+     *  a ⟳ inside a live app does not need it, since the backend still has the
+     *  predecessor open under the same session id. */
+    continuesRunId?: string | null;
     /** Marks the tile as started by a schedule. Shown as its own icon rather
      *  than glued to the title, which gets clipped by text-overflow. */
     scheduled?: boolean;
@@ -624,8 +659,14 @@ export class Deck {
       restart.style.display = "none";
       tile.panel.write("\r\n[restarting session...]\r\n");
       try {
+        // A new record rather than a reopened one: a run is one launched PTY,
+        // and a record spanning a restart could never say which side of it a
+        // result came from. The chain comes from `scenarioLaunch` reading the
+        // tile's outgoing `runId`: by the time this button is on screen the
+        // session has ended, and the backend has already closed that record.
         tile.auth = await tile.panel.start(
           tile.workspacePath, tile.workspaceId ?? null, null, tile.taskId ?? null, true,
+          scenarioLaunch(tile, "resume", null),
         );
         tile.authStale = false;
         this.renderAuthBadge(tile);
@@ -685,6 +726,7 @@ export class Deck {
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
       gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
+      skillId: opts.skillId, params: opts.params,
     };
     this.applyName(tile);
     this.tiles.set(session, tile);
@@ -700,7 +742,10 @@ export class Deck {
         await panel.startCommand(cwd, opts.command ?? "");
         // Командный тайл в layout не попадает — persistLayout не зовём.
       } else {
-        tile.auth = await panel.start(cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume);
+        tile.auth = await panel.start(
+          cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume,
+          scenarioLaunch(tile, opts.trigger, opts.continuesRunId ?? null),
+        );
         this.renderAuthBadge(tile);
         void this.persistLayout();
       }
@@ -831,6 +876,12 @@ export class Deck {
           titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
           prompt: null, resume: true,
           scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
+          // Only a tile that was itself launched from a scenario gets a record.
+          // A restored card session or bare "+ session" stays out of the
+          // journal, which answers "what did my scenarios do" and nothing wider.
+          ...(e.skillId
+            ? { skillId: e.skillId, trigger: "resume" as const, continuesRunId: e.runId ?? null }
+            : {}),
         });
       }
     } finally {
@@ -969,6 +1020,25 @@ export class Deck {
   private hideBroadcastPanel() {
     this.bcastPanel?.classList.add("hidden");
     for (const t of this.tiles.values()) t.bcastCheck.checked = false;
+  }
+
+  /** Go to a session wherever it is, switching workspace when it lives in
+   *  another one — a tile the deck is not currently showing cannot take focus,
+   *  and focusing it silently would look like the control did nothing.
+   *
+   *  Public because the history screen's "go to the session" needs exactly the
+   *  path the pill and the notification already take. Returns false when there
+   *  is no such tile: the caller decides whether that is worth saying. */
+  focusSession(session: string): boolean {
+    if (!this.tiles.has(session)) return false;
+    this.focusSessionAnywhere(session);
+    return true;
+  }
+
+  /** Sessions with a live tile, for callers deciding whether to offer a way to
+   *  one. Command tiles included: they are tiles. */
+  liveSessions(): string[] {
+    return [...this.tiles.keys()];
   }
 
   private focusSessionAnywhere(session: string) {
@@ -1170,6 +1240,8 @@ export class Deck {
       taskId: t.taskId,
       userName: t.names.user,
       nameKind: t.names.context === null ? "placeholder" : "context",
+      skillId: t.skillId,
+      runId: t.runId,
     })));
     // Skip a write that would change nothing. Not something the naming needs —
     // it is here because it lives in the function this change touches, and it
@@ -1194,6 +1266,12 @@ export class Deck {
       : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
+    // Sent on every render, unchanged count included. The pill window registers
+    // its listener asynchronously, and an event that arrives before it is ready
+    // is dropped rather than queued — re-sending is the only way back from that,
+    // and from a send that failed. Repeating is free now that the pill asks the
+    // window before showing itself (src/pill.ts); it was the unconditional
+    // `show()` at the other end, not this line, that stole the keyboard.
     void emit("pill://count", { n: waiting });
     const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
@@ -1294,6 +1372,37 @@ export class Deck {
   }
 }
 
+/** The scenario half of a launch, minted at the moment the PTY is asked for.
+ *
+ *  The run id is created here, beside the session id, and written straight onto
+ *  the tile — `persistLayout` runs immediately afterwards, so the link survives
+ *  a restart, which is the only way a resumed tile can chain its new record to
+ *  the one it continues. Minting an identifier is not writing a record: every
+ *  line of the journal is written in Rust.
+ *
+ *  Returns null for a tile that is not a scenario run at all, which is what
+ *  keeps cards, issues, pull requests and bare sessions out of the journal. */
+function scenarioLaunch(
+  tile: Tile, trigger: RunTrigger | undefined, continuesRunId: string | null,
+): ScenarioLaunch | null {
+  if (!tile.skillId || !trigger) return null;
+  // The record this tile is leaving, captured before the new id overwrites it.
+  // A ⟳ is only offered once the session has ended or errored, and both of
+  // those have already closed the predecessor in Rust and dropped it from
+  // `open_runs` — so the backend has nothing left to chain to and the link has
+  // to come from here. A tile being built for the first time has no `runId`,
+  // which is why this stays a fallback rather than an override.
+  const previous = tile.runId ?? null;
+  tile.runId = crypto.randomUUID();
+  return {
+    runId: tile.runId,
+    skillId: tile.skillId,
+    trigger,
+    params: tile.params ?? {},
+    continuesRunId: continuesRunId ?? previous,
+  };
+}
+
 export function waitingCount(states: SessionState[]): number {
   return states.filter((s) => s === "waitingInput").length;
 }
@@ -1328,6 +1437,8 @@ export function serializeTiles(
     kind?: TileKind;
     userName?: string | null;
     nameKind?: NameKind;
+    skillId?: string;
+    runId?: string;
   }[],
 ): SessionEntry[] {
   return tiles
@@ -1341,6 +1452,8 @@ export function serializeTiles(
       ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
       ...(t.taskId ? { taskId: t.taskId } : {}),
       ...(t.userName ? { userName: t.userName } : {}),
+      ...(t.skillId ? { skillId: t.skillId } : {}),
+      ...(t.runId ? { runId: t.runId } : {}),
       nameKind: t.nameKind ?? "context",
     }));
 }

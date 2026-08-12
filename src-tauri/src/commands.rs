@@ -254,15 +254,144 @@ pub fn schedule_ack(
     skill_id: String,
     occurrence_ms: i64,
     outcome: String,
+    // The workspace the fire resolved to, when it resolved to one. A
+    // `skipped-overlap` happened somewhere, and the history screen is
+    // workspace-scoped; `no-workspace` has none by definition and says so.
+    workspace_id: Option<String>,
+) -> Result<(), String> {
+    // The gate here is `schedule_state.json`, which stays what it always was — a
+    // gate, not a log: it is read and written every tick and must remember
+    // attempts that launched nothing, and deriving "did we already fire" by
+    // scanning the journal would be both slower and semantically wrong.
+    {
+        let store = state.store.lock().unwrap();
+        let mut st = store.schedule_state();
+        let Some(updated) = crate::scheduler::apply_ack(st.get(&skill_id), occurrence_ms, &outcome)
+        else {
+            return Ok(());
+        };
+        st.insert(skill_id.clone(), updated);
+        store.save_schedule_state(&st).map_err(|e| e.to_string())?;
+    }
+    // A fire that launched nothing gets a record of its own — but only once the
+    // ack has been accepted. An ack `apply_ack` drops as stale or replayed is not
+    // an event that happened twice, and a journal that disagreed with the gate
+    // would report the same failed occurrence again on every retry.
+    if outcome != "launched" {
+        crate::run_journal::failed_to_launch(&skill_id, workspace_id.as_deref(), &outcome);
+    }
+    Ok(())
+}
+
+/// The run journal, newest first, optionally narrowed.
+///
+/// Both filters are applied here rather than in the frontend so that the screen
+/// and the sidebar's state dot ask the same question of the same code. Records
+/// with **no** `workspaceId` pass every workspace filter: an unpinned scenario
+/// whose scheduled fire never resolved a folder belongs to no workspace, and
+/// hiding it everywhere would hide precisely the failure worth seeing — the same
+/// rule the deck already applies to orphaned tiles.
+#[tauri::command(async)]
+pub fn list_runs(
+    state: State<AppState>,
+    workspace_id: Option<String>,
+    skill_id: Option<String>,
+) -> Vec<crate::runs::RunRecord> {
+    let runs = { state.store.lock().unwrap().runs() };
+    crate::runs::scoped(runs, workspace_id.as_deref(), skill_id.as_deref())
+}
+
+/// Erase one scenario's history, within the workspace scope the screen was
+/// showing. The only erasure there is — see `Store::delete_skill_history`, which
+/// also refuses while one of those runs is still open.
+#[tauri::command(async)]
+pub fn delete_skill_history(
+    state: State<AppState>,
+    skill_id: String,
+    workspace_id: Option<String>,
 ) -> Result<(), String> {
     let store = state.store.lock().unwrap();
-    let mut st = store.schedule_state();
-    let Some(updated) = crate::scheduler::apply_ack(st.get(&skill_id), occurrence_ms, &outcome)
-    else {
-        return Ok(());
-    };
-    st.insert(skill_id, updated);
-    store.save_schedule_state(&st).map_err(|e| e.to_string())
+    store
+        .delete_skill_history(&skill_id, workspace_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// The argv that shows `path` in the platform's file manager, selected.
+///
+/// **Reveal only.** Not `open <path>`, which would hand a `.jsonl` to whatever
+/// is registered for it — the point is to show somebody where the file is, not
+/// to launch something with it. Linux has no standard "select this file", so it
+/// gets the containing folder, which is the honest approximation rather than a
+/// silently different action.
+///
+/// Argv, never a shell string: the path comes off a record and may hold spaces,
+/// quotes or a newline, and there is no interpreter here for any of them to
+/// mean anything to.
+///
+/// Windows is the exception that proves it. Explorer parses its own command
+/// line rather than taking the argv the OS handed it, and it does not recognise
+/// `/select` once Rust's quoting rules have wrapped the switch and the path
+/// together — which is what happens the moment the path holds a space, as
+/// `C:\Users\John Smith\…` does. The form it accepts is `/select,"<path>"`, so
+/// the quotes are placed here and the argument goes through `raw_arg` in
+/// `reveal_path`, unquoted again by nobody. A Windows path cannot itself contain
+/// a `"`, so there is nothing inside for the quoting to get wrong.
+pub fn reveal_argv(path: &std::path::Path) -> (String, Vec<String>) {
+    let p = path.to_string_lossy().to_string();
+    if cfg!(target_os = "macos") {
+        ("open".into(), vec!["-R".into(), p])
+    } else if cfg!(windows) {
+        ("explorer".into(), vec![format!("/select,\"{p}\"")])
+    } else {
+        let dir = path.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or(p);
+        ("xdg-open".into(), vec![dir])
+    }
+}
+
+/// Show a run's transcript in the file manager.
+///
+/// Claude Code owns those files' lifetime and they legitimately disappear, so a
+/// missing one is an ordinary answer rather than a fault — and it is refused
+/// here as well as being disabled in the UI, because the file can go between
+/// the render and the click.
+///
+/// The helper is waited on, on a thread of its own. `Child`'s `Drop` does not
+/// reap, and this screen invites one press per row: fifty reveals would
+/// otherwise mean fifty `<defunct>` children holding PID slots for as long as
+/// the app runs. Waiting on a thread rather than inline because `open`,
+/// `explorer` and `xdg-open` all return immediately in the ordinary case and
+/// this must not become the one that does not. Their stdio is discarded too —
+/// `xdg-open`'s diagnostics belong nowhere near the app's own output.
+#[tauri::command(async)]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_file() {
+        return Err("The transcript is no longer there.".into());
+    }
+    let (program, args) = reveal_argv(&p);
+    let mut cmd = std::process::Command::new(&program);
+    // See `reveal_argv`: Explorer re-parses its own command line, so its one
+    // argument is already quoted and must reach it untouched.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        for a in &args {
+            cmd.raw_arg(a);
+        }
+    }
+    #[cfg(not(windows))]
+    cmd.args(&args);
+    let child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Could not open the file manager ({program}): {e}"))?;
+    std::thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// The frontend calls this once, after its `schedule://fire` listener is
@@ -1304,6 +1433,10 @@ pub fn start_session(
     cols: u16,
     rows: u16,
     resume: bool,
+    // Set when this launch comes from a scenario, by any route. Absent for a
+    // card, an issue, a pull request or a bare "+ session" — the journal
+    // answers "what did my scenarios do", not "what did I run yesterday".
+    scenario: Option<crate::run_journal::ScenarioLaunch>,
 ) -> Result<SessionAuth, String> {
     let resolved = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let program = resolved.program;
@@ -1381,13 +1514,36 @@ pub fn start_session(
     let sess_exit = session.clone();
     let on_exit = move |ok: bool| {
         let state = if ok { crate::model::SessionState::Ended } else { crate::model::SessionState::Error };
+        // The record closes here rather than on the frontend's say-so: a
+        // scheduled run's tile may have no window to report from, and the
+        // process dying is the fact the journal is about.
+        crate::run_journal::close(
+            &sess_exit,
+            if ok { crate::runs::RunStatus::Ended } else { crate::runs::RunStatus::Error },
+        );
         let _ = app_exit.emit("session://state", StatePayload { session: sess_exit.clone(), state });
         let _ = app_exit.emit("session://exit", ExitPayload { session: sess_exit.clone(), ok });
     };
 
-    state.pty
+    // Before the spawn, because `pty.spawn` starts the waiter thread that calls
+    // `on_exit` before it returns: a process that dies on the spot — a rejected
+    // `--resume`, a shim that refuses — would otherwise fire `on_exit` while the
+    // record did not yet exist, and nothing would ever close it. A launch that
+    // never happened is closed below instead of going unrecorded, which is the
+    // more useful of the two silences: "the schedule fired and died instantly" is
+    // exactly what somebody opens a history to find out.
+    if let Some(launch) = &scenario {
+        crate::run_journal::open(
+            &session, launch, &cwd, workspace_id.as_deref(), initial_prompt.as_deref(),
+        );
+    }
+    if let Err(e) = state.pty
         .spawn(&session, &program, &args, &cwd, cols, rows, &env, on_output, on_exit)
-        .map_err(|e| e.to_string())?;
+    {
+        let e = e.to_string();
+        crate::run_journal::failed_to_start(&session, &e);
+        return Err(e);
+    }
     Ok(outcome.auth)
 }
 
@@ -1444,6 +1600,11 @@ pub fn resize_session(state: State<AppState>, session: String, cols: u16, rows: 
 }
 #[tauri::command]
 pub fn close_session(state: State<AppState>, session: String) {
+    // Before the kill, so the result is read off the transcript this session was
+    // still reporting. `run_journal::close` takes the record out of its own map,
+    // so the PTY's `on_exit` arriving a moment later finds nothing to close and
+    // cannot overwrite `ended` with an exit code nobody asked for.
+    crate::run_journal::close(&session, crate::runs::RunStatus::Ended);
     state.pty.kill(&session);
     crate::transcripts::forget(&session);
 }
@@ -1469,7 +1630,15 @@ pub fn save_ui_state(state: State<AppState>, ui: UiStatePatch) -> Result<(), Str
 }
 
 /// Called by main during setup to emit state changes coming from the listener.
+///
+/// `Ended` closes the session's journal record; `Done` deliberately does not.
+/// The agent finishing a turn and parking at the prompt leaves a tile the person
+/// can keep typing into, and the last thing it said is read at close time off
+/// the same transcript either way — see `run_journal::close`.
 pub fn emit_state(app: &AppHandle, session: String, state: crate::model::SessionState) {
+    if state == crate::model::SessionState::Ended {
+        crate::run_journal::close(&session, crate::runs::RunStatus::Ended);
+    }
     let _ = app.emit("session://state", StatePayload { session, state });
 }
 
@@ -1745,7 +1914,7 @@ fn find_transcript(session_id: &str) -> Option<std::path::PathBuf> {
 /// Do not go looking for `isSidechain` instead: it is present on every line of a
 /// current transcript and false on all of them. Subagents were moved out to
 /// their own files and that marker now finds nothing.
-fn subagent_transcripts(transcript: &std::path::Path) -> Vec<std::path::PathBuf> {
+pub(crate) fn subagent_transcripts(transcript: &std::path::Path) -> Vec<std::path::PathBuf> {
     let dir = match (transcript.parent(), transcript.file_stem()) {
         (Some(parent), Some(stem)) => parent.join(stem).join("subagents"),
         _ => return Vec::new(),
@@ -1762,6 +1931,25 @@ fn subagent_transcripts(transcript: &std::path::Path) -> Vec<std::path::PathBuf>
         .collect();
     out.sort();
     out
+}
+
+/// What one transcript and its subagents cost, off a buffer already in hand.
+///
+/// Subagents included, because leaving them out understated a session's spend by
+/// up to two thirds — in one measured case a single subagent outspent the entire
+/// main chain (#189). One unreadable subagent understates the bill rather than
+/// discarding the main chain's figure with it, exactly as `snapshot_from_main`
+/// treats the same case.
+pub(crate) fn transcript_spend(main: &str, path: &std::path::Path) -> TokenUsage {
+    let mut seen = std::collections::HashSet::new();
+    let mut spend = TokenUsage::default();
+    fold_usage_lines(main, &mut seen, &mut spend);
+    for sub in subagent_transcripts(path) {
+        if let Ok(content) = std::fs::read_to_string(&sub) {
+            fold_usage_lines(&content, &mut seen, &mut spend);
+        }
+    }
+    spend
 }
 
 /// Everything one poll tick wants to know about one session.
@@ -1882,6 +2070,47 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reveal, never "open with". `open <path>` would hand a `.jsonl` to
+    /// whatever is registered for it; the point is to show somebody where the
+    /// file is. Argv rather than a shell string, so a path holding a space, a
+    /// quote or a newline is one argument and means nothing to any interpreter.
+    #[test]
+    fn revealing_selects_the_file_rather_than_opening_it() {
+        let path = std::path::Path::new("/home/u/.claude/projects/-p/a b'c.jsonl");
+        let (program, args) = reveal_argv(path);
+        if cfg!(target_os = "macos") {
+            assert_eq!(program, "open");
+            assert_eq!(args[0], "-R");
+            assert_eq!(args[1], "/home/u/.claude/projects/-p/a b'c.jsonl");
+        } else if cfg!(windows) {
+            assert_eq!(program, "explorer");
+            // The path is quoted and the switch is not: Explorer re-parses its
+            // own command line and stops recognising `/select` once Rust's
+            // quoting has wrapped the two together, which is what happens the
+            // moment the path holds a space. `reveal_path` passes this through
+            // `raw_arg` so nothing quotes it a second time.
+            assert_eq!(args.len(), 1, "{args:?}");
+            assert!(args[0].starts_with("/select,\""), "{args:?}");
+            assert!(args[0].ends_with('"'), "{args:?}");
+        } else {
+            // No standard "select this file" on Linux, so the containing folder
+            // is the honest approximation rather than a silently different
+            // action on some other file.
+            assert_eq!(program, "xdg-open");
+            assert_eq!(args[0], "/home/u/.claude/projects/-p");
+        }
+    }
+
+    /// Claude Code owns those files and they legitimately disappear. The UI
+    /// disables the control where it can tell in advance; this covers the file
+    /// going between the render and the click.
+    #[test]
+    fn revealing_a_file_that_is_gone_refuses_rather_than_spawning_anything() {
+        let err = reveal_path("/nowhere/at/all/missing.jsonl".into())
+            .expect_err("a missing transcript must not reach the file manager");
+        assert!(err.contains("no longer there"), "{err}");
+    }
 
     #[test]
     fn session_env_carries_tracker_paths_when_configured() {

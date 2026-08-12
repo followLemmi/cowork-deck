@@ -1,7 +1,7 @@
 /** The pull request diff drawer: the DOM half of `src/diff.ts`.
  *
- *  Design: `docs/superpowers/specs/2026-08-04-pr-diff-drawer-design.md`. Every
- *  decision below that looks arbitrary has a measurement behind it there.
+ *  Every decision below that looks arbitrary has a measurement behind it, and
+ *  the comment that states the decision states the measurement with it.
  *
  *  **This does not live inside `PrView`, and that is the load-bearing fact about
  *  the whole module.** `PrView.render` calls `replaceChildren()` on its mount
@@ -21,6 +21,7 @@ import {
   canRefetch, classifyHunk, diffCacheNext, fileNote, hunkHeading, lineMarker,
   type DiffCacheReason, type DiffLine, type DiffLineKind, type DiffSlot,
 } from "./diff";
+import { wireExternal } from "./external";
 import type { DiffFile, PrDiff, PullRequest } from "./ipc";
 import { firstFocusable } from "./view";
 
@@ -670,23 +671,26 @@ export class DiffDrawer {
     const note = fileNote(file);
     if (note !== null) {
       box.append(el("p", "dv-note", note));
-      box.append(this.escapes(file));
+      // Null when neither way out is available — the note still stands on its
+      // own, and an empty row would be a band of padding under it.
+      const outs = this.escapes(file);
+      if (outs !== null) box.append(outs);
     }
     if (file.hunks.length > 0) box.append(this.fileEl(file));
     return box;
   }
 
-  /** The ways out of a file the drawer cannot draw. Facts are `fileNote`'s job
-   *  and buttons are this one's — baking "Open on GitHub" into the sentence
-   *  would put a control's name in a paragraph a reader hears before reaching
-   *  the control.
+  /** The ways out of a file the drawer cannot draw, or null when there is no way
+   *  out to offer. Facts are `fileNote`'s job and buttons are this one's —
+   *  baking "Open on GitHub" into the sentence would put a control's name in a
+   *  paragraph a reader hears before reaching the control.
    *
    *  **Both buttons are the same fetch.** A page of one resolves `unreported` —
    *  GitHub zeroed the counts because the whole response was too full, and a
    *  smaller response cannot be — and it supplies the text for a file our own cap
    *  dropped. `tooLargeUpstream` never gets one: the bytes never arrived at any
    *  page size, measured, and a button that can only fail is worse than none. */
-  private escapes(file: DiffFile): HTMLElement {
+  private escapes(file: DiffFile): HTMLElement | null {
     const row = el("div", "dv-note");
     if (canRefetch(file.omitted)) {
       const label = file.omitted?.kind === "tooLargeLocal" ? "Show anyway" : "Check again";
@@ -695,14 +699,17 @@ export class DiffDrawer {
       again.onclick = () => this.refetchFile(again);
       row.append(again);
     }
-    // An anchor and not a button with a handler: the project has no URL-opening
-    // plugin, and `pr-view.ts` already links out exactly this way.
+    // An anchor and not a button, and it leaves through the one gate every link
+    // out of the app leaves through — see `external.ts`. Appended only if that
+    // gate took the URL: `blob_url` reaches us through an `unwrap_or("")` in
+    // `gh_pr.rs`, and an anchor the gate refused has neither `href` nor handler.
+    // It would still look like a button, would not take focus (`view.ts` finds
+    // controls by `a[href]`), and would do nothing when clicked — #252's exact
+    // symptom, in the one control that exists to be the way out when the drawer
+    // gave up. A missing button says that better than a dead one.
     const link = el("a", "pr-detail-retry", "Open on GitHub");
-    link.href = file.blobUrl;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    row.append(link);
-    return row;
+    if (wireExternal(link, file.blobUrl)) row.append(link);
+    return row.childElementCount > 0 ? row : null;
   }
 
   /** One file's rows.

@@ -31,6 +31,11 @@ export function emit(event: string, payload: unknown): void {
   for (const id of listeners.get(event) ?? []) internals.runCallback(id, { event, id, payload });
 }
 
+/** The journal, mutable — `delete_skill_history` actually erases from it, so the
+ *  screen after an erase is the screen the app would show rather than one that
+ *  quietly repaints unchanged. The fixture itself stays as written. */
+let runs = [...F.runs];
+
 const STATE: Record<string, string> = {
   [F.S_WORK]: "working",
   [F.S_WAIT]: "waitingInput",
@@ -77,6 +82,43 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     case "save_skill":
     case "remove_skill": return F.skills;
     case "load_schedule_state": return F.scheduleState;
+    // Both filters applied here exactly as Rust applies them, including the rule
+    // that a record with no workspace of its own passes every workspace filter.
+    // A mock that skipped either would show the screen data the app can never
+    // actually be handed — the caution the `pr_detail` case above already makes.
+    case "list_runs": {
+      const ws = args.workspaceId as string | null;
+      const sk = args.skillId as string | null;
+      return runs.filter((r) =>
+        (ws === null || r.workspaceId === null || r.workspaceId === ws)
+        && (sk === null || r.skillId === sk));
+    }
+    // Scoped and refused exactly as Rust does it, for the same reason
+    // `list_runs` above is: a mock that erased everything, or erased an open
+    // record without complaint, would let the harness rehearse a data loss the
+    // app refuses.
+    case "delete_skill_history": {
+      const ws = args.workspaceId as string | null;
+      const sk = args.skillId as string;
+      const doomed = (r: typeof runs[number]) =>
+        r.skillId === sk && (ws === null || r.workspaceId === null || r.workspaceId === ws);
+      if (runs.some((r) => doomed(r) && r.status === "running")) {
+        throw new Error("one of this scenario's runs is still going — its record would be "
+          + "erased out from under it, and the run would never be journalled at all");
+      }
+      runs = runs.filter((r) => !doomed(r));
+      return null;
+    }
+    // Reveal is a real shell call in the app; the harness has no file manager
+    // and no transcripts, so it answers the way a missing file would.
+    case "reveal_path": throw new Error("The transcript is no longer there.");
+    // Named rather than left to the `plugin:` default below, which answers null
+    // and says nothing — indistinguishable from #252, where a link did nothing
+    // at all. Shooting the README must not launch a browser; a line in the
+    // console is how a manual check sees that the click arrived.
+    case "plugin:opener|open_url":
+      console.debug("[harness] would open in the system browser:", args.url);
+      return null;
     case "schedule_ack": return null;
     case "scheduler_ready": return null;
     case "claude_available": return true;

@@ -953,13 +953,13 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 
 /* Pressing and being disabled had no feedback at all: one :active rule for the
    whole app and not a single :disabled. */
-button:active:not(:disabled) { transform: translateY(1px); }
+button:active:not(:disabled):not([aria-disabled="true"]) { transform: translateY(1px); }
 /* .62 rather than .5. A disabled control is exempt from 1.4.3, so this is not a
    conformance fix — but "exempt" means nobody can be made to fix it, not that
    2.89:1 is readable, and a person who cannot read *why* a button is refused is
    left guessing. The grayscale stays: with the opacity raised it is what still
    says "inactive" rather than "quiet". */
-button:disabled, .sk-run:disabled {
+button:disabled, .sk-run:disabled, button[aria-disabled="true"] {
   opacity: 0.62; cursor: not-allowed; filter: grayscale(0.4);
 }
 
@@ -1135,6 +1135,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 /* The pull request screen hides the same way the board does. Its own rule for
    the same reason as above. */
 #pr.hidden { display: none; }
+/* Same rule, same reason: `.hidden` has to win over whatever the screen's own
+   selector declares, and grouping it with `#deck.tk-hidden` would give it an id
+   selector's weight in tests that never see the deck. */
+#history.hidden { display: none; }
 .tk-hidden { display: none; }
 /* `#deck` sets `display: grid` with an id selector, which outweighs a class.
    Without this rule `tk-hidden` never hid the deck, and the board opened beside
@@ -2110,9 +2114,9 @@ h6.md-head { font-size: var(--fs-sm); }
 .pr-detail-minus { color: var(--st-error); flex: 0 0 auto; }
 
 /* --- The diff drawer ------------------------------------------------------ */
-/* Design: docs/superpowers/specs/2026-08-04-pr-diff-drawer-design.md. Every colour
-   below was measured through `scripts/contrast.mjs` before it was written here; the
-   ratios in the comments are that script's numbers, not estimates. */
+/* Every colour below was measured through `scripts/contrast.mjs` before it was
+   written here; the ratios in the comments are that script's numbers, not
+   estimates. */
 
 /* It mirrors `#sidebar` — `--bg-panel` and a one-pixel border on the edge it meets —
    and deliberately not `.bcast-panel`. `.bcast-panel` is an overlay: absolute, a
@@ -2494,4 +2498,199 @@ h6.md-head { font-size: var(--fs-sm); }
      explicit rather than incidental. */
   .pr-drawer-grip::before { background: CanvasText; }
   .pr-drawer-grip:hover::before, .pr-drawer-grip:focus-visible::before { background: Highlight; }
+}
+
+
+/* --- the scenario run history -------------------------------------------- */
+/* The fourth screen. Its own ground and its own scroll, exactly as `#board` and
+   `.pr-view` have: `flex: 1` because without it a flex item is content-sized and
+   hugs the left edge, `min-width: 0` because without it its floor is its widest
+   child and a long result would push the sidebar off screen. */
+#history {
+  flex: 1; min-width: 0; overflow: auto;
+  padding: var(--sp-4); background: var(--bg-void);
+}
+
+.hist { display: flex; flex-direction: column; gap: var(--sp-3); max-width: 96ch; }
+.hist-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); }
+.hist-title { font-size: var(--fs-lg); font-weight: var(--fw-medium); color: var(--fg); margin: 0; }
+/* Which workspace this is the history of. The selector above says it too, but a
+   screen scoped to one workspace has to say so on its own face — this is the
+   fourth place that rule applies and the first where the records outlive the
+   thing they are scoped by. */
+.hist-where { font-size: var(--fs-sm); color: var(--fg-dim); }
+.hist-filters { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+.hist-filter {
+  font-family: var(--font-ui); font-size: var(--fs-sm); color: var(--fg);
+  background: var(--bg-void); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 3px var(--sp-2);
+}
+.hist-filter:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.hist-record {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); color: var(--fg-mid); white-space: nowrap; cursor: pointer;
+}
+
+.hist-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+/* A chain is one piece of work that outlived a restart. Bracketed rather than
+   merged into a single row: each run is still its own record with its own
+   result, and folding them into one line would have to pick which result to
+   show. */
+.hist-chain { display: flex; flex-direction: column; }
+.hist-chain--multi {
+  border-left: 2px solid var(--line-strong); border-radius: var(--r-sm);
+  padding-left: var(--sp-2);
+}
+.hist-chain-note { font-size: var(--fs-xs); color: var(--fg-dim); padding: 2px 0 var(--sp-2) 2px; }
+
+.hist-row {
+  background: var(--bg-island); border: 1px solid var(--line); border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2);
+  display: flex; flex-direction: column; gap: 6px;
+  /* The state rail, the same channel the session row and the tile use, driven by
+     `data-status` for the reason those two document: `.state-*` already means
+     "a chip with this fill", and one of those names on the row would paint a
+     chip's background across the whole line. */
+  border-left: 3px solid var(--rail, transparent);
+}
+.hist-row[data-status="running"] { --rail: var(--st-working); }
+.hist-row[data-status="ended"] { --rail: var(--st-ended); }
+.hist-row[data-status="error"] { --rail: var(--st-error); }
+.hist-row[data-status="interrupted"] { --rail: var(--st-waiting); }
+.hist-row[data-status="failed-to-launch"] { --rail: var(--st-error); }
+/* An earlier link of a chain: the same row, one step quieter, so the newest run
+   is the one the eye lands on. */
+.hist-row--continued { background: var(--bg-inset); }
+
+.hist-row-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.hist-name {
+  font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--fg);
+  display: inline-flex; align-items: center; gap: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1;
+}
+.hist-trigger, .hist-when, .hist-took, .hist-branch {
+  font-size: var(--fs-xs); color: var(--fg-mid); white-space: nowrap;
+}
+.hist-branch { display: inline-flex; align-items: center; gap: 3px; }
+
+/* The five run states. Four hues, because the palette spends hue on state and
+   nothing else and a fifth would take a step out of the three that have to stay
+   separable everywhere else in the app. `failed-to-launch` shares the error hue
+   and is told apart by a dashed border and its own words — states differ by
+   shape, not by colour alone, which is the rule `.state-ended` above already
+   states. The alphas are the chips' own, per hue: a translucent fill pulls the
+   ground towards the text's own colour, so the number that clears 4.5:1 differs
+   by hue and one uniform value would fail for some of them. All five are in
+   `npm run contrast`. */
+.run-state {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--font-ui); font-size: var(--fs-xs); font-weight: var(--fw-medium);
+  padding: 2px 8px 2px 6px; border-radius: var(--r-pill);
+  border: 1px solid transparent; line-height: 1.4; white-space: nowrap;
+}
+.run-state::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: currentColor; flex: none;
+}
+.run-running     { color: var(--st-working); background: rgba(123, 215, 127, 0.14); }
+.run-ended       { color: var(--st-ended);   background: rgba(186, 183, 178, 0.10); border-color: rgba(186, 183, 178, 0.32); }
+.run-error       { color: var(--st-error);   background: rgba(251, 129, 122, 0.06); border-color: rgba(251, 129, 122, 0.42); }
+.run-interrupted { color: var(--st-waiting); background: rgba(239, 200, 69, 0.16); border-color: rgba(239, 200, 69, 0.42); }
+.run-failed-to-launch {
+  color: var(--st-error); background: rgba(251, 129, 122, 0.06);
+  border-color: rgba(251, 129, 122, 0.42); border-style: dashed;
+}
+/* Something is actually happening, so the dot breathes — the same shape channel
+   `.state-working` uses, and the reason a finished run's chip does not. */
+.run-running::before { animation: breathe 1.8s ease-in-out infinite; }
+
+.hist-result-box { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.hist-result {
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--fg-mid);
+  background: var(--bg-void); border-radius: var(--r-sm); padding: var(--sp-2);
+  margin: 0; width: 100%; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+/* Three lines, then a button. Not `max-height` in px: the whole interface scales
+   between an 11px and an 18.85px root, and a pixel clamp would show four lines
+   at one end and one at the other. */
+.hist-result--clamped {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.hist-expand {
+  font-size: var(--fs-xs); color: var(--fg-mid); background: none; border: none;
+  padding: 2px 0; cursor: pointer; text-decoration: underline;
+}
+.hist-expand:hover { color: var(--fg); }
+.hist-expand:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* `result: null` reads as a sentence, never as an empty box: the run happening
+   and the run producing nothing are different facts. */
+.hist-noresult { font-size: var(--fs-xs); color: var(--fg-dim); margin: 0; font-style: italic; }
+.hist-cleared { font-size: var(--fs-xs); color: var(--st-waiting); margin: 0; line-height: var(--lh-body); }
+
+/* Three actions, and none of them destructive. Quiet by default — a history is
+   read far more often than acted on — and they stay in the DOM rather than
+   appearing on hover, so they are in the tab order and reachable by touch. */
+.hist-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: 2px; }
+.hist-action {
+  font-size: var(--fs-xs); color: var(--fg-mid); background: var(--bg-void);
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px var(--sp-2);
+  cursor: pointer;
+}
+.hist-action:hover:not([aria-disabled="true"]) { color: var(--fg); background: var(--bg-hover); }
+.hist-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* A refused control is `aria-disabled`, not `disabled`, so that it keeps its
+   place in the tab order and its reason has a keyboard route — activating it
+   says the reason rather than doing anything. `cursor: help` says there is one
+   to read; the app-wide `[aria-disabled]` rule does the dimming. */
+.hist-action[aria-disabled="true"], .hist-erase[aria-disabled="true"] { cursor: help; }
+.hist-erase[aria-disabled="true"]:hover { color: var(--fg-mid); border-color: var(--line); }
+/* The one erasing control in the whole feature, and it only appears while the
+   screen is narrowed to the scenario it would erase. */
+.hist-erase {
+  font-size: var(--fs-xs); color: var(--fg-mid); background: none;
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px var(--sp-2);
+  cursor: pointer; margin-left: auto;
+}
+.hist-erase:hover { color: var(--st-error); border-color: var(--st-error); }
+.hist-erase:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.hist-empty { max-width: 64ch; padding: var(--sp-4) 0; }
+.hist-empty-title { font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--fg); margin: 0 0 var(--sp-2); }
+.hist-empty-body { font-size: var(--fs-sm); color: var(--fg-mid); line-height: var(--lh-body); margin: 0; }
+
+/* The scenario row's state dot: an indicator, and visibly not the ▶ beside it.
+   It reuses the run chips' hues at chip size so the sidebar and the history
+   screen cannot come to disagree about what a colour means. */
+.sk-dot {
+  flex: none; width: 24px; height: 24px; padding: 0; justify-content: center;
+  background: none; border: none; border-radius: 50%; cursor: pointer;
+}
+/* The button is 24px and the dot inside it is 10px. A 10px target sitting at a
+   6px gap from two controls that do launch something is the wrong ergonomics
+   for the row that learned that lesson from ⏰, and 2.5.8's spacing exception
+   does not reach across a 6px gap. The extra area is transparent padding, so
+   nothing in the row looks any bigger. */
+.sk-dot::before { width: 10px; height: 10px; }
+/* `error` and `failed-to-launch` share a hue. On the chip the dashed border and
+   the label are what separate them; the dot has neither, so the fill goes and a
+   ring stands in for the dash. Colour is not the only channel here either. */
+.sk-dot.run-failed-to-launch::before {
+  background: none; border: 2px solid currentColor; box-sizing: border-box;
+}
+/* Something is actually happening — the breathing the chip has, for its reason. */
+.sk-dot.run-running::before { animation: breathe 1.8s ease-in-out infinite; }
+.sk-dot:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.sk-dot:hover { transform: scale(1.25); }
+
+@media (forced-colors: active) {
+  /* Every fill is replaced by a system colour, so the five chips collapse into
+     one. The border is what survives, and the label is already a real text node
+     — which is why the hue was never the only channel here. */
+  .run-state { border-color: CanvasText; }
+  .run-failed-to-launch { border-style: dashed; }
+  /* A 10px dot with no text has nothing left once its fill is forced. */
+  .sk-dot::before { border: 1px solid CanvasText; box-sizing: border-box; }
+  .sk-dot.run-failed-to-launch::before { border-width: 2px; border-style: dashed; }
 }

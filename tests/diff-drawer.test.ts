@@ -7,6 +7,8 @@ import {
 import type { DiffFile, Hunk, PrDiff, PullRequest } from "../src/ipc";
 import { PrView, type PrHandlers } from "../src/pr-view";
 
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn().mockResolvedValue(undefined) }));
+
 // Geometry is deliberately absent from all of this. jsdom computes no layout —
 // `getBoundingClientRect` returns zeros and there is no `ResizeObserver` — so the
 // collapse threshold, the sticky gutter and the drag are on the manual checklist
@@ -346,6 +348,33 @@ describe("DiffDrawer, files with nothing to draw", () => {
     expect(view.textContent).not.toContain("Show anyway");
     expect(view.textContent).not.toContain("Check again");
     expect(view.querySelector<HTMLAnchorElement>("a")!.textContent).toBe("Open on GitHub");
+  });
+
+  // `blob_url` reaches the front end through an `unwrap_or("")` in `gh_pr.rs`, so
+  // "no URL" is a real answer and not a hypothetical. A link that cannot be wired
+  // would keep the button's look and lose both its `href` and its handler: no
+  // focus, no click, nothing — which is #252 again, in the control that exists to
+  // be the way out. It is left out instead.
+  it("leaves out the link rather than showing a dead one", async () => {
+    const { view } = await opened(diff({
+      files: [file({ additions: 0, deletions: 0, blobUrl: "", omitted: { kind: "unreported" } })],
+    }));
+    expect(view.querySelector("a")).toBeNull();
+    // The other way out is unaffected, and the note still says what happened.
+    expect(view.textContent).toContain("Check again");
+  });
+
+  // Nothing to refetch and nowhere to go: the note stands alone rather than over
+  // an empty row of padding.
+  it("drops the whole row when it has no way out to offer", async () => {
+    const { view } = await opened(diff({
+      files: [file({
+        additions: 5290, deletions: 0, blobUrl: "", omitted: { kind: "tooLargeUpstream" },
+      })],
+    }));
+    expect(view.querySelector("a")).toBeNull();
+    expect(view.querySelectorAll(".dv-note")).toHaveLength(1);
+    expect(view.querySelector(".dv-note")!.textContent).toContain("more than it will return");
   });
 
   it("offers Show anyway only where a second fetch could work", async () => {

@@ -3,8 +3,9 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
-import { startSession, startCommandSession, writeSession, resizeSession, type SessionAuth } from "./ipc";
+import { startSession, startCommandSession, writeSession, resizeSession, type ScenarioLaunch, type SessionAuth } from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
+import { terminalKeyBytes } from "./terminal-keys";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
 
 export class TerminalPanel {
@@ -90,13 +91,49 @@ export class TerminalPanel {
     // the mocked terminal in unit tests, which lacks it, doesn't throw.
     if (this.term.unicode) this.term.unicode.activeVersion = "11";
     this.term.open(mount);
-    // Intercept ONLY recognised app hotkeys; everything else (Ctrl+C/D/L and
+    // Intercept ONLY recognised app hotkeys and the handful of combinations the
+    // legacy terminal encoding cannot express; everything else (Ctrl+C/D/L and
     // ordinary typing included) goes to the terminal.
+    //
+    // The order is the contract: an app hotkey wins, and `terminalKeyBytes` only
+    // ever sees what no command claimed. See its doc comment.
     this.term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       const id = matchHotkey(e, isMacPlatform());
-      if (!id) return true;
-      if (id === "rename-active" && this.keepsRenameKey) return true;
+      if (id) {
+        if (id === "rename-active" && this.keepsRenameKey) return true;
+        return false;
+      }
+      // The table below is not ours while an IME is composing, because it claims
+      // `Enter` and `Enter` is what a candidate window commits on. Returning
+      // false would skip xterm's composition helper — this handler runs before
+      // it — so the commit would be eaten and `ESC`+`CR` written in its place.
+      // `keyCode === 229` is the older spelling of the same fact.
+      //
+      // This sits *below* `matchHotkey` on purpose, and moving it above is a
+      // regression, not a tidy-up. `F2` and `F6` are bare keys that xterm knows
+      // how to encode (`\x1bOQ` and `\x1b[17~`), so passing one through mid-
+      // composition makes xterm send that sequence to claude and then call
+      // `cancel(ev, true)` — `preventDefault` plus `stopPropagation`, which stops
+      // the event ever reaching the window listener that dispatches the command.
+      // The rename or the region move is lost and a stray escape lands in the
+      // prompt. Modifier hotkeys survive it only because xterm leaves
+      // `result.key` undefined for them and bails before `cancel`.
+      if (e.isComposing || e.keyCode === 229) return true;
+      const bytes = terminalKeyBytes(e);
+      if (bytes === null) return true;
+      // `input`, not `write`: these are input for the process, not output to
+      // paint. Not `writeSession` directly either — `input` is what xterm calls
+      // for an ordinary keystroke, so the byte reaches the pty through the
+      // `onData` wiring below *and* carries the two side effects every other
+      // key gets: the viewport snaps back from the scrollback to the prompt,
+      // and a stale selection is cleared.
+      //
+      // Returning false stops xterm sending its own `\r` on top;
+      // `preventDefault` stops the browser leaving a stray newline in xterm's
+      // hidden textarea, which returning false alone does not do.
+      e.preventDefault();
+      this.term.input(bytes);
       return false;
     });
     this.fitAddon.fit();
@@ -112,19 +149,24 @@ export class TerminalPanel {
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
     window.addEventListener(UI_SCALE_EVENT, this.onScaleEvent);
   }
-  /** Возвращает исход привязки GitHub-аккаунта: вызывающий решает, вешать ли
-   *  бейдж на тайл. Окружение фиксируется здесь, при рождении процесса. */
+  /** Returns the outcome of the GitHub account binding: the caller decides
+   *  whether to hang a badge on the tile. The environment is fixed here, at the
+   *  birth of the process. */
   async start(
     cwd: string, workspaceId: string | null, initialPrompt: string | null,
     taskId: string | null = null, resume = false,
+    /** Set when this launch came from a scenario — the backend opens a run
+     *  journal record for it. Absent for a card, an issue, a pull request or a
+     *  bare "+ session". */
+    scenario: ScenarioLaunch | null = null,
   ): Promise<SessionAuth> {
     const { cols, rows } = this.term;
     return await startSession(
-      this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
+      this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario,
     );
   }
-  /** Разовый запуск пользовательской команды. Не сессия агента: ни хуков
-   *  состояния, ни привязки к аккаунту — окружение наследуется как есть. */
+  /** A one-off run of a user command. Not an agent session: no state hooks and
+   *  no account binding — the environment is inherited as it is. */
   async startCommand(cwd: string, command: string): Promise<void> {
     const { cols, rows } = this.term;
     await startCommandSession(this.session, cwd, command, cols, rows);
