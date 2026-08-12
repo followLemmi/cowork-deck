@@ -99,6 +99,13 @@ export class TerminalPanel {
     // ever sees what no command claimed. See its doc comment.
     this.term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
+      // Nothing is the app's while an IME is composing. Returning false here
+      // would skip xterm's own composition helper — this handler runs before
+      // it — and `Enter` is exactly the key a candidate window commits on, so
+      // claiming it would eat the commit and write `ESC`+`CR` in its place.
+      // `keyCode === 229` is the older spelling of the same fact, still what
+      // some browsers send for a composing keydown.
+      if (e.isComposing || e.keyCode === 229) return true;
       const id = matchHotkey(e, isMacPlatform());
       if (id) {
         if (id === "rename-active" && this.keepsRenameKey) return true;
@@ -106,13 +113,18 @@ export class TerminalPanel {
       }
       const bytes = terminalKeyBytes(e);
       if (bytes === null) return true;
-      // Written straight to the session rather than through `term.write`: these
-      // are input for the process, not output to paint. Returning false stops
-      // xterm sending its own `\r` on top; `preventDefault` stops the browser
-      // leaving a stray newline in xterm's hidden textarea, which returning
-      // false alone does not do.
+      // `input`, not `write`: these are input for the process, not output to
+      // paint. Not `writeSession` directly either — `input` is what xterm calls
+      // for an ordinary keystroke, so the byte reaches the pty through the
+      // `onData` wiring below *and* carries the two side effects every other
+      // key gets: the viewport snaps back from the scrollback to the prompt,
+      // and a stale selection is cleared.
+      //
+      // Returning false stops xterm sending its own `\r` on top;
+      // `preventDefault` stops the browser leaving a stray newline in xterm's
+      // hidden textarea, which returning false alone does not do.
       e.preventDefault();
-      void writeSession(this.session, bytes);
+      this.term.input(bytes);
       return false;
     });
     this.fitAddon.fit();
@@ -128,8 +140,9 @@ export class TerminalPanel {
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
     window.addEventListener(UI_SCALE_EVENT, this.onScaleEvent);
   }
-  /** Возвращает исход привязки GitHub-аккаунта: вызывающий решает, вешать ли
-   *  бейдж на тайл. Окружение фиксируется здесь, при рождении процесса. */
+  /** Returns the outcome of the GitHub account binding: the caller decides
+   *  whether to hang a badge on the tile. The environment is fixed here, at the
+   *  birth of the process. */
   async start(
     cwd: string, workspaceId: string | null, initialPrompt: string | null,
     taskId: string | null = null, resume = false,
@@ -143,8 +156,8 @@ export class TerminalPanel {
       this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario,
     );
   }
-  /** Разовый запуск пользовательской команды. Не сессия агента: ни хуков
-   *  состояния, ни привязки к аккаунту — окружение наследуется как есть. */
+  /** A one-off run of a user command. Not an agent session: no state hooks and
+   *  no account binding — the environment is inherited as it is. */
   async startCommand(cwd: string, command: string): Promise<void> {
     const { cols, rows } = this.term;
     await startCommandSession(this.session, cwd, command, cols, rows);

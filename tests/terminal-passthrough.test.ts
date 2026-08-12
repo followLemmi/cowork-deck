@@ -9,8 +9,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 let captured: ((e: any) => boolean) | null = null;
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
-    loadAddon() {} open() {} onData() {} onResize() {} focus() {} write() {} clear() {} dispose() {}
+    loadAddon() {} open() {} onResize() {} focus() {} write() {} clear() {} dispose() {}
     attachCustomKeyEventHandler(fn: (e: any) => boolean) { captured = fn; }
+    // Faithful on the point the panel depends on: real xterm's `input` feeds
+    // the byte to `onData`, which is where the write to the session lives. A
+    // mock that swallowed it would let a broken wiring pass.
+    private data: ((d: string) => void) | null = null;
+    onData(fn: (d: string) => void) { this.data = fn; }
+    input(d: string) { this.data?.(d); }
     cols = 80; rows = 24;
     // `setFontSize` reads and writes this, and the constructor now sets `fontSize`
     // from the current scale rather than a literal.
@@ -83,9 +89,44 @@ describe("modifier+Enter reaches the session as ESC+CR", () => {
     expect(e.preventDefault).toHaveBeenCalled();
   });
 
+  it("treats the keypad Enter as the Enter it is", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    expect(captured!({ ...enter({ shiftKey: true }), code: "NumpadEnter" })).toBe(false);
+    expect(writeSession).toHaveBeenCalledWith("s", "\x1b\r");
+  });
+
+  // The combination adjacent to zoom: `matchHotkey` does not claim it on macOS,
+  // because the app modifier there is bare Cmd. Without the narrow `metaKey`
+  // guard it would fall through to xterm as a bare CR and submit.
+  it("writes ESC+CR on Cmd+Shift+Enter rather than submitting", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    expect(captured!(enter({ metaKey: true, shiftKey: true }))).toBe(false);
+    expect(writeSession).toHaveBeenCalledWith("s", "\x1b\r");
+  });
+
   it("leaves a bare Enter to xterm, which submits", () => {
     new TerminalPanel("s", document.createElement("div"));
-    expect(captured!(enter({}))).toBe(true);
+    const e = enter({});
+    expect(captured!(e)).toBe(true);
+    expect(writeSession).not.toHaveBeenCalled();
+    // Passing the key through means passing the default action through too:
+    // the submit is xterm's to encode.
+    expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("never touches the default action of a key it passes through", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    const ctrlC = { ...enter({ ctrlKey: true }), code: "KeyC", key: "c" };
+    expect(captured!(ctrlC)).toBe(true);
+    expect(ctrlC.preventDefault).not.toHaveBeenCalled();
+  });
+
+  // Claiming Enter mid-composition would skip xterm's composition helper — this
+  // handler runs before it — and eat the IME's commit.
+  it("leaves Enter to the IME while a composition is open", () => {
+    new TerminalPanel("s", document.createElement("div"));
+    expect(captured!({ ...enter({ shiftKey: true }), isComposing: true })).toBe(true);
+    expect(captured!({ ...enter({ shiftKey: true }), keyCode: 229 })).toBe(true);
     expect(writeSession).not.toHaveBeenCalled();
   });
 

@@ -42,10 +42,18 @@
  *  The app modifier keeps `Enter` for `zoom` — `Cmd+Enter` on macOS,
  *  `Ctrl+Shift+Enter` on Windows and Linux (see `matchHotkey`). That is a
  *  decision, not an oversight: zoom is reached far more often than a newline
- *  needs a fourth spelling, and `Shift+Enter` now covers the newline. The
- *  `metaKey` guard below is what keeps this function from claiming a
- *  combination the app modifier owns on a platform where `matchHotkey` did not
- *  claim it first (Super+Enter on Linux, which belongs to the window manager).
+ *  needs a fourth spelling, and `Shift+Enter` now covers the newline.
+ *
+ *  The `metaKey` guard below is narrower than it looks, and the narrowness is
+ *  the point. `Meta` *alone* with `Enter` is not ours: on macOS `matchHotkey`
+ *  has already taken it for `zoom`, and on Linux `Super+Enter` belongs to the
+ *  window manager. `Meta` held *together with another modifier* is nobody's —
+ *  `matchHotkey` rejects `Cmd+Shift+Enter` on macOS, because the app modifier
+ *  there is bare `Cmd` and `letterOk` is `!e.shiftKey`. Were this guard written
+ *  as a flat `if (e.metaKey) return null`, that combination would fall through
+ *  to xterm as a bare `CR` and submit the message — the very bug this file
+ *  exists to fix, reappearing on the combination adjacent to zoom, under a
+ *  thumb that caught `Cmd` while reaching for `Shift+Enter`.
  *
  *  Matched on `e.code`, the physical key, for the same reason `matchHotkey` is:
  *  an English interface does not imply a Latin keyboard layout. */
@@ -56,7 +64,7 @@ export function terminalKeyBytes(
   },
 ): string | null {
   if (e.code !== "Enter" && e.code !== "NumpadEnter") return null;
-  if (e.metaKey) return null;
+  if (e.metaKey && !e.shiftKey && !e.ctrlKey && !e.altKey) return null;
   if (e.shiftKey || e.ctrlKey || e.altKey) return "\x1b\r";
   return null;
 }

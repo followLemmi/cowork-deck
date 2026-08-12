@@ -28,9 +28,18 @@ describe("terminalKeyBytes", () => {
   // On macOS `matchHotkey` claims Cmd+Enter for `zoom` and this function never
   // sees it. On Linux the app modifier is Ctrl, so Super+Enter does arrive
   // here — and it belongs to the window manager, not to us.
-  it("never claims the meta key", () => {
+  it("leaves the meta key alone when it is held on its own", () => {
     expect(terminalKeyBytes({ ...base, metaKey: true })).toBeNull();
-    expect(terminalKeyBytes({ ...base, metaKey: true, shiftKey: true })).toBeNull();
+  });
+
+  // But meta *with* another modifier is nobody's: `matchHotkey` rejects
+  // Cmd+Shift+Enter on macOS (the app modifier there is bare Cmd), so a flat
+  // `if (e.metaKey) return null` would send it to xterm as a bare CR and submit
+  // the message — issue #234 all over again, one thumb away from Shift+Enter.
+  it("still sends ESC+CR when meta is held alongside another modifier", () => {
+    expect(terminalKeyBytes({ ...base, metaKey: true, shiftKey: true })).toBe(NEWLINE);
+    expect(terminalKeyBytes({ ...base, metaKey: true, ctrlKey: true })).toBe(NEWLINE);
+    expect(terminalKeyBytes({ ...base, metaKey: true, altKey: true })).toBe(NEWLINE);
   });
 
   it("treats the keypad Enter as the Enter it is", () => {
