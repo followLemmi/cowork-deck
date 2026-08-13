@@ -103,6 +103,7 @@ the only place these can be checked at all.
 - [ ] Shrink the window until the list collapses. It must go away entirely, not sit behind the drawer — a covered list that can still be tabbed into fails SC 2.4.11.
 - [ ] Drag the resize grip, then reopen the app. The width is remembered. Drag it to its floor: the marker and both number columns stay legible.
 - [ ] Tab to the grip and use the arrow keys. The width changes, and the focus ring is visible along the whole grip rather than clipped to a sliver at its edge.
+- [ ] **Drag the grip on the largest file of a large pull request, fast, with the list still on screen.** The pane has to follow the pointer rather than trail behind it, and the width the pointer was released on has to be the width that stays. Keep dragging until the list collapses and back out again: the collapse still has to happen mid-drag, in the same place it happens when the window is resized. A drag reads layout once, at the press, and works from that snapshot afterwards (`src/drag.ts`) — this is the check that the snapshot is never stale in a way a person can see.
 
 ### Only checkable by hand
 

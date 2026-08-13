@@ -21,6 +21,7 @@ import {
   canRefetch, classifyHunk, diffCacheNext, fileNote, hunkHeading, lineMarker,
   type DiffCacheReason, type DiffLine, type DiffLineKind, type DiffSlot,
 } from "./diff";
+import { startDrag } from "./drag";
 import { wireExternal } from "./external";
 import type { DiffFile, PrDiff, PullRequest } from "./ipc";
 import { firstFocusable } from "./view";
@@ -107,6 +108,15 @@ export function diffAnnouncement(diff: PrDiff, index: number): string {
   return where + counts + body;
 }
 
+/** The layout the width code reads: one `ch` in pixels, the root font size, and how
+ *  much room the pull request row has. Three numbers in one type because they are
+ *  read together, in one place, and — during a drag — not read again. */
+interface Metrics {
+  ch: number;
+  root: number;
+  available: number;
+}
+
 export interface DiffDrawerHandlers {
   /** Read one pull request's whole diff. One call, one response — see `prDiff`.
    *  Rejection is expected and is drawn inside the drawer. */
@@ -176,6 +186,9 @@ export class DiffDrawer {
    *  when the text size moves, because reading it costs a layout and the narrow
    *  check runs on every resize tick. */
   private chCache: { root: number; ch: number } | null = null;
+  /** The layout `metrics` answers from while a drag is in flight, and null the
+   *  rest of the time. See `src/drag.ts` for why a gesture reads layout once. */
+  private frozen: Metrics | null = null;
 
   constructor(private h: DiffDrawerHandlers) {
     this.live.setAttribute("aria-live", "polite");
@@ -493,36 +506,64 @@ export class DiffDrawer {
     this.applyCols();
   }
 
+  /** The gesture, held to the one rule `src/drag.ts` exists for: the layout is read
+   *  once, here, and the width is written at most once a frame.
+   *
+   *  What that rule buys is specific. `applyCols` writes a width and `applyNarrow`
+   *  used to read one straight back, so every `pointermove` delivered forced a
+   *  synchronous layout of the drawer — and the drawer contains up to 2500 diff rows
+   *  as 10,000 cells of one grid, which is 15–28 ms of layout, measured. Against a
+   *  6.25 ms frame that is three to four frames spent per event, and the events
+   *  arrive faster than the frames do. */
   private dragStart(e: PointerEvent): void {
-    const ch = this.chPx();
-    // No layout, no drag. jsdom reports zero for everything, and a drag divided
-    // by zero would set the width to NaN.
-    if (ch <= 0) return;
-    e.preventDefault();
-    const startX = e.clientX;
-    const startCols = this.cols;
-    this.grip.setPointerCapture(e.pointerId);
-    const move = (m: PointerEvent) => {
-      this.cols = clampCols(startCols + (startX - m.clientX) / ch);
-      this.applyCols();
-    };
-    const done = () => {
-      this.grip.removeEventListener("pointermove", move);
-      this.grip.removeEventListener("pointerup", done);
-      this.grip.removeEventListener("pointercancel", done);
-      // Here and not in `move`: the drag fires at frame rate and this reaches
-      // the disk.
-      this.h.onWidth(this.cols);
-    };
-    this.grip.addEventListener("pointermove", move);
-    this.grip.addEventListener("pointerup", done);
-    this.grip.addEventListener("pointercancel", done);
+    startDrag(this.grip, e, {
+      // No layout, no drag. jsdom reports zero for everything, and a drag divided
+      // by zero would set the width to NaN.
+      measure: () => {
+        const m = this.metrics();
+        if (m.ch <= 0) return null;
+        // Held for the gesture, and released in `commit`. Symmetric because
+        // `commit` runs if and only if this measurement was taken.
+        this.frozen = m;
+        return { ch: m.ch, startX: e.clientX, startCols: this.cols };
+      },
+      apply: (ctx, at) => {
+        this.cols = clampCols(ctx.startCols + (ctx.startX - at.x) / ctx.ch);
+        this.applyCols();
+      },
+      commit: () => {
+        this.frozen = null;
+        // Here and not in `apply`: the drag fires at frame rate and this reaches
+        // the disk.
+        this.h.onWidth(this.cols);
+        // Once more with live numbers. `apply` has been keeping the collapse in
+        // step all along, but from a snapshot — and a window resized mid-drag
+        // moves what the snapshot said about the room the list has.
+        this.applyNarrow();
+      },
+    });
+  }
+
+  /** The layout the width code reads, in one place: one `ch` of the drawer's own
+   *  font, the root font size, and the room the row has.
+   *
+   *  While a drag is in flight this answers from the snapshot the drag took, and
+   *  reads nothing. None of the three can move under a pointer that is already
+   *  down unless the window itself is resized, and the `ResizeObserver` on
+   *  `.pr-view` is what answers for that. */
+  private metrics(): Metrics {
+    if (this.frozen !== null) return this.frozen;
+    const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 0;
+    return { root, ch: this.chPx(root), available: this.view?.clientWidth ?? 0 };
   }
 
   /** One `ch` of the drawer's own font, in pixels. Measured rather than derived:
-   *  `ch` is the mono face's real advance and nothing in JS knows it. */
-  private chPx(): number {
-    const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 0;
+   *  `ch` is the mono face's real advance and nothing in JS knows it.
+   *
+   *  Takes the root size rather than reading it, because its one caller has just
+   *  read it and a second `getComputedStyle` on the same element in the same breath
+   *  is a second style resolution for a number already in hand. */
+  private chPx(root: number): number {
     if (this.chCache !== null && this.chCache.root === root) return this.chCache.ch;
     const probe = el("span");
     probe.style.cssText = "position:absolute;visibility:hidden;width:1ch";
@@ -550,13 +591,9 @@ export class DiffDrawer {
   }
 
   private crowded(): boolean {
-    if (this.view === null) return false;
-    const available = this.view.clientWidth;
+    const { ch, root, available } = this.metrics();
     // Zero while the screen is hidden, and always in jsdom. Neither is crowded.
-    if (available <= 0) return false;
-    const ch = this.chPx();
-    if (ch <= 0) return false;
-    const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 0;
+    if (available <= 0 || ch <= 0) return false;
     return available - (this.cols * ch + GRIP_PX) < LIST_FLOOR_REM * root;
   }
 
