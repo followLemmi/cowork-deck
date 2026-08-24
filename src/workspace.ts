@@ -1,28 +1,18 @@
 /** Entry point for a window pinned to one workspace.
  *
- *  A placeholder, and it says so on screen. The real bootstrap is `startApp(role)`
- *  (#242), which will run the same app here as in the main window with its
- *  singletons suppressed; this file exists so that #239 — creating the window from
- *  Rust, the capability glob, and the readiness handshake — has something to load
- *  and can be verified end to end rather than reasoned about.
+ *  The same app as the main window, started with a different role: `startApp`
+ *  suppresses the singletons that must not run twice, and the label says which
+ *  workspace this window is for.
  *
- *  The one line here that will outlive the placeholder is `windowReady()`. An
- *  emit to a webview that has not registered a listener is a silent no-op at both
- *  ends, so the backend refuses to speak to a window until it has said this. It
- *  must therefore stay **last** in whatever this file grows into: it means "my
- *  listeners are attached", and saying it early is the same as not saying it. */
-import { windowReady } from "./ipc";
+ *  `windowReady()` last, and it has to stay last. An emit to a webview holding no
+ *  listener for that event is a silent no-op at both ends, so the backend routes
+ *  nothing here until this arrives — saying it before the listeners are up is the
+ *  same as not saying it at all.
+ */
+import { startApp } from "./app";
+import { roleOf } from "./window-role";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { workspaceIdOf } from "./window-role";
+import { windowReady } from "./ipc";
 
-const mount = document.querySelector<HTMLElement>("#workspace-placeholder");
-const workspaceId = workspaceIdOf(getCurrentWindow().label);
-
-if (mount) {
-  mount.textContent = workspaceId
-    ? `Workspace window for ${workspaceId}. The app itself arrives with #242.`
-    : "This window names no workspace.";
-}
-
-// Last, once there is something on screen and — in #242 — every listener is up.
+startApp(roleOf(getCurrentWindow().label));
 void windowReady();

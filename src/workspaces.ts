@@ -40,6 +40,20 @@ export class WorkspacesPanel {
     /** Привязка воркспейса к GitHub-аккаунту изменилась: живые сессии этого
      *  воркспейса работают на устаревшем окружении до перезапуска. */
     private onGithubChanged: (workspaceId: string) => void = () => {},
+    /** Whether selecting a workspace here is remembered as the app's startup
+     *  workspace.
+     *
+     *  True for the main window, false for a window pinned to one workspace. A
+     *  pinned window selects its own workspace as it boots, and persisting that
+     *  would rewrite what the *main* window opens with — so pulling a workspace
+     *  out would silently change which project the app starts on next time.
+     *  `ui_state.json` holds one answer for the app, and it is the main
+     *  window's.
+     *
+     *  Set at construction rather than flipped afterwards, because it never
+     *  changes for the life of a window — and because a window's kind is known
+     *  before the panel exists. */
+    private persistActive = true,
   ) {}
 
   setCounts(counts: Record<string, number>) {
@@ -65,7 +79,9 @@ export class WorkspacesPanel {
 
   private select(id: string) {
     this.activeId = id;
-    saveUiState({ activeWorkspaceId: id }).catch((e) => console.debug("saveUiState failed", e));
+    if (this.persistActive) {
+      saveUiState({ activeWorkspaceId: id }).catch((e) => console.debug("saveUiState failed", e));
+    }
     const ws = this.active;
     if (ws) this.onSelect(ws);
     this.render();

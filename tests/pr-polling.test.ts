@@ -114,7 +114,7 @@ describe("pull request polling", () => {
       + '<div id="board" class="hidden"></div></div></div>';
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
 
-    await import("../src/main");
+    await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();
 
     const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];

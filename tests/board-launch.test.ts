@@ -118,7 +118,7 @@ describe("▶ on a github issue", () => {
     listTasksMock.mockResolvedValue([issue("42")]);
     issueWorktreeAddMock.mockResolvedValue("/p-wt/42-issue");
 
-    await import("../src/main");
+    await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();
 
     const [, boardBtn] = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];

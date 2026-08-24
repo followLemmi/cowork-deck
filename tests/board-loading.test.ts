@@ -112,7 +112,7 @@ describe("a GitHub board's first read", () => {
       + '<div id="board" class="hidden"></div></div></div>';
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
 
-    await import("../src/main");
+    await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();
 
     const [, boardBtn] = document.querySelectorAll<HTMLButtonElement>(".tk-views button");

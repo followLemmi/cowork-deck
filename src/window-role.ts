@@ -20,3 +20,27 @@ export function workspaceIdOf(label: string): string | null {
   const id = label.slice(WORKSPACE_PREFIX.length);
   return id.length > 0 ? id : null;
 }
+
+/** Which kind of window this is, and which workspace it is pinned to.
+ *
+ *  Parsed from the label rather than asked for over IPC: `getCurrentWindow()` is
+ *  synchronous and the label is known before the first DOM query, so the whole
+ *  app can be started without waiting on the backend for the one fact that
+ *  decides how to start it.
+ */
+export type WindowRole =
+  | { kind: "main" }
+  | { kind: "workspace"; workspaceId: string };
+
+/** The role a window label names.
+ *
+ *  Anything that is not a workspace label is the main window — including a label
+ *  nobody has taught this function about. That direction is deliberate: an
+ *  unknown window that behaves like the main one is a window that works, and one
+ *  that behaves like a workspace window is a window with no workspace, which is
+ *  the fourth state #246 refuses to let exist.
+ */
+export function roleOf(label: string): WindowRole {
+  const workspaceId = workspaceIdOf(label);
+  return workspaceId === null ? { kind: "main" } : { kind: "workspace", workspaceId };
+}
