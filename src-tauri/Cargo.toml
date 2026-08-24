@@ -41,5 +41,11 @@ tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-opener = "2.5.4"
 
+# Signals and process-session lookup for `pty.rs`. Killing what a session
+# started means naming a process group and enumerating a session's members,
+# and neither has a std equivalent — `Child::kill` reaches one pid.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"

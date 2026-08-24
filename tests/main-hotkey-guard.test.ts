@@ -85,7 +85,7 @@ describe("the window hotkey handler and text entry", () => {
     vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
     document.body.innerHTML =
       '<div id="app"><nav id="viewbar"></nav><div id="stage">'
-      + '<div id="sidebar"></div><main id="deck"></main>'
+      + '<div id="sidebar"></div><main id="deck"></main><div id="terminals"></div>'
       + '<div id="board" class="hidden"></div></div></div>';
 
     await import("../src/main");
