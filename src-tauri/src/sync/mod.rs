@@ -9,6 +9,7 @@
 //! warnings nobody reads.
 #![allow(dead_code)]
 
+pub mod activation;
 pub mod git;
 pub mod machine;
 pub mod manifest;

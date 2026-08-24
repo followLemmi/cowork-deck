@@ -38,6 +38,10 @@ pub const ALLOWED: &[&str] = &[
     // The ignore file itself. A clone that arrives without it has no boundary
     // at all, and the first commit from that machine publishes everything.
     ".gitignore",
+    // What says this repository is one of ours. Without it in the repository,
+    // "connect to an existing one" has nothing to check and would adopt
+    // somebody's project (`activation::probe`).
+    ".cowork-sync.json",
     // The workspace record, beside the memory it describes. Not `.md`, so the
     // sidecar's walk skips it while sitting in the same directory.
     "*/workspace.json",
@@ -133,6 +137,7 @@ mod tests {
         // One of everything that travels.
         let expected: BTreeSet<String> = [
             ".gitignore",
+            ".cowork-sync.json",
             "ws-1/workspace.json",
             "ws-1/Facts.md",
             "ws-1/Sessions/2026-08/24-topic.md",
@@ -149,6 +154,8 @@ mod tests {
                 write(&root, p);
             }
         }
+        // Dotfiles are the case a deny-by-default rule gets wrong most easily:
+        // `*` matches them, and `!.gitignore` re-includes exactly one name.
 
         // And one of everything that must not. Every entry here is a real file
         // the app writes into this directory today, plus the secret fallback
@@ -167,6 +174,7 @@ mod tests {
             // travel; inside a shard it is that shard's label and must. Two
             // files, one name, opposite answers — worth asserting both.
             "machine.json",
+            ".cowork-other.json",
             "gh-noauth/hosts.yml",
             ".index/meta.json",
             ".index/emb.bin",
