@@ -1998,14 +1998,26 @@ pub fn quit_cancelled(state: State<AppState>) {
     state.quit_asked.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// The tiles this window should restore, and nobody else's.
+///
+/// `window` is supplied by the runtime rather than passed by the caller, so a
+/// webview cannot ask for another window's tiles by naming a label — the same
+/// reason it stamps the owner on the way out. `invoke("load_layout")` in
+/// `src/ipc.ts` is unchanged and stays that way.
 #[tauri::command]
-pub fn load_layout(state: State<AppState>) -> Vec<SessionEntry> {
-    state.store.lock().unwrap().layout()
+pub fn load_layout(window: tauri::WebviewWindow, state: State<AppState>) -> Vec<SessionEntry> {
+    state.store.lock().unwrap().layout_for(window.label())
 }
 
+/// Write this window's tiles into `sessions.json` without disturbing another
+/// window's. See `Store::save_layout` for what the merge holds and why a
+/// failed read refuses rather than truncating.
 #[tauri::command]
-pub fn save_layout(state: State<AppState>, sessions: Vec<SessionEntry>) -> Result<(), String> {
-    state.store.lock().unwrap().save_layout(&sessions).map_err(|e| e.to_string())
+pub fn save_layout(
+    window: tauri::WebviewWindow, state: State<AppState>, sessions: Vec<SessionEntry>,
+) -> Result<(), String> {
+    let store = state.store.lock().unwrap();
+    store.save_layout(window.label(), &sessions).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

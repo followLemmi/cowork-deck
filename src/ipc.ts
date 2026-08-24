@@ -424,6 +424,14 @@ export const writeSession = (session: string, data: string) => invoke<void>("wri
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
 export const closeSession = (session: string) => invoke<void>("close_session", { session });
+/** The tiles **this window** should restore — not every tile on disk.
+ *
+ *  The filtering happens in Rust, against the window label the runtime attaches
+ *  to the invoke, so there is nothing to pass and no way for a window to ask for
+ *  another one's tiles. Saving stamps the same label. That is why `SessionEntry`
+ *  above has no `owner` field although `sessions.json` records one: the frontend
+ *  neither sets it nor needs to read it, and a field it cannot write is a field
+ *  it cannot forge. */
 export const loadLayout = () => invoke<SessionEntry[]>("load_layout");
 export const saveLayout = (sessions: SessionEntry[]) => invoke<void>("save_layout", { sessions });
 
