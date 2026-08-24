@@ -296,6 +296,88 @@ pub struct Schedule {
     pub enabled: bool,
 }
 
+/// A persisted tab in the terminal drawer.
+///
+/// Deliberately smaller than `SessionEntry`, and the difference is the point: a
+/// claude session is *resumed* on the next launch, carrying its conversation
+/// with it, and a shell cannot be. What comes back is a new shell in the same
+/// directory under the same name — everything else, including the history of
+/// what was typed, belongs to the shell itself and to whatever it writes to
+/// `~/.zsh_history`. So there is nothing here to resume with, and no field
+/// pretending otherwise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TerminalEntry {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub cwd: String,
+    /// What the tab is labelled. Auto ("zsh · api") unless a person renamed it,
+    /// and the two are not distinguished: a drawer tab has one name, unlike a
+    /// deck tile, whose transcript can propose one.
+    pub name: String,
+    /// The workspace whose directory and account binding this shell was opened
+    /// against. `None` for a shell opened with no workspace active.
+    #[serde(rename = "workspaceId", default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
+/// The drawer's contents, and it is a drawer **per workspace**.
+///
+/// Switching workspace changes which terminals exist as far as a person is
+/// concerned — the same rule the deck already follows for its tiles, and for the
+/// same reason: a workspace is the unit of "what I am working on", and a shell
+/// standing in another project's directory under another project's account is
+/// not part of it. So the tab in front and whether the drawer is up are both
+/// per workspace, not one answer for the app.
+///
+/// A struct rather than the bare `Vec` the deck layout uses, because neither of
+/// those two has anywhere else to live. They could have gone in `UiState` beside
+/// the drawer's height, but `UiStatePatch` cannot express "set this back to
+/// nothing", and closing a workspace's last tab is exactly that.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TerminalLayout {
+    #[serde(default)]
+    pub items: Vec<TerminalEntry>,
+    /// The tab in front, per workspace id. A terminal opened with no workspace
+    /// active is keyed by the empty string — one key rather than an
+    /// `Option<String>` key, because JSON object keys are strings and a
+    /// `null` one is not expressible.
+    #[serde(default, deserialize_with = "active_tabs")]
+    pub active: std::collections::BTreeMap<String, String>,
+    /// The workspaces whose drawer is up. Absent means shut, which is what a
+    /// person who has never opened a terminal gets — the deck should not be
+    /// shortened by a strip nobody asked for.
+    #[serde(default)]
+    pub open: Vec<String>,
+}
+
+/// Reads the map, and reads anything else as no map at all.
+///
+/// This field was one session id — the app's single active tab — before the
+/// drawer was scoped per workspace. `#[serde(default)]` does not cover that: a
+/// default fills an *absent* key, and a key of the wrong shape fails the whole
+/// struct, which `Store::terminals` would swallow into an empty drawer. The
+/// consequence would be an upgrade quietly eating every terminal tab a person
+/// had, to save one line here.
+fn active_tabs<'de, D>(d: D) -> Result<std::collections::BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Shape {
+        Current(std::collections::BTreeMap<String, String>),
+        /// Anything else, including the old lone session id. `IgnoredAny`
+        /// rather than a `Value` nobody reads: it accepts any shape and keeps
+        /// none of it, which is exactly the intent and leaves no field for the
+        /// compiler to point out as dead.
+        Older(serde::de::IgnoredAny),
+    }
+    Ok(match Shape::deserialize(d)? {
+        Shape::Current(map) => map,
+        Shape::Older(_) => std::collections::BTreeMap::new(),
+    })
+}
+
 /// A persisted tile in the deck layout — enough to reopen it and resume its
 /// claude conversation on next launch. The PTY itself is not persisted.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -407,6 +489,15 @@ pub struct UiState {
     /// active workspace silently forgotten rather than an error.
     #[serde(rename = "recordScenarioRuns", default = "default_record_runs")]
     pub record_scenario_runs: bool,
+    /// How tall the drawer is, **in rows of the terminal's own type** rather
+    /// than in pixels. One value for the app, unlike whether the drawer is up
+    /// (`TerminalLayout::open`): the height is how much of this window a person
+    /// wants given to a terminal, and that does not change with the project — the same decision as `pr_diff_cols`, and here it is
+    /// even harder to argue with: the thing being sized is a grid of characters,
+    /// and a person who sets it to show twenty rows means twenty rows at every
+    /// text size, not however many fit in 260 pixels after the next change.
+    #[serde(rename = "terminalRows", default = "default_terminal_rows")]
+    pub terminal_rows: u32,
 }
 
 /// On. A journal nobody switched on records nothing, and the first thing anyone
@@ -435,6 +526,14 @@ fn default_ui_scale() -> f32 {
     1.15
 }
 
+/// Fourteen rows: enough for a build's last output and a prompt under it without
+/// the drawer taking the deck's place. Must agree with `DEFAULT_TERMINAL_ROWS`
+/// in `src/drawer.ts`, which is what the drawer opens at before a stored value
+/// has been read.
+fn default_terminal_rows() -> u32 {
+    14
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self {
@@ -442,6 +541,7 @@ impl Default for UiState {
             ui_scale: default_ui_scale(),
             pr_diff_cols: default_pr_diff_cols(),
             record_scenario_runs: default_record_runs(),
+            terminal_rows: default_terminal_rows(),
         }
     }
 }
@@ -466,6 +566,8 @@ pub struct UiStatePatch {
     pub pr_diff_cols: Option<u32>,
     #[serde(rename = "recordScenarioRuns")]
     pub record_scenario_runs: Option<bool>,
+    #[serde(rename = "terminalRows")]
+    pub terminal_rows: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

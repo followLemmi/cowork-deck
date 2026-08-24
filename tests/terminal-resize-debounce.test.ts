@@ -6,6 +6,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
   observe() {} unobserve() {} disconnect() {}
 };
 
+// Every spawn opens a `Channel` for its output, and `Channel`'s constructor
+// registers its handler with Tauri's injected internals — absent in jsdom, so
+// without this a launch throws before it reaches the size bookkeeping under test.
+(globalThis as any).window.__TAURI_INTERNALS__ ??= {
+  transformCallback: () => 1,
+  unregisterCallback: () => {},
+};
+
 /** The `onResize` xterm would call, captured so a test can fire it the way a refit
  *  does. Real xterm hands `{ cols, rows }`; so does this. */
 let emitResize: ((size: { cols: number; rows: number }) => void) | null = null;
@@ -29,7 +37,9 @@ const resizeSession = vi.fn().mockResolvedValue(undefined);
 vi.mock("../src/ipc", () => ({
   startSession: vi.fn().mockResolvedValue({ kind: "none" }),
   startCommandSession: vi.fn().mockResolvedValue(undefined),
+  startShellSession: vi.fn().mockResolvedValue({ shell: "/bin/sh" }),
   writeSession: vi.fn(),
+  prepareWorkspace: vi.fn().mockResolvedValue(undefined),
   resizeSession: (s: string, c: number, r: number) => resizeSession(s, c, r),
 }));
 

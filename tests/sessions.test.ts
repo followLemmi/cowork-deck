@@ -26,9 +26,10 @@ vi.mock("../src/terminal", () => ({
 }));
 
 vi.mock("../src/ipc", () => ({
-  onOutput: vi.fn().mockResolvedValue(() => {}),
   onState: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),
+  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
+  describeExit: vi.fn().mockReturnValue(null),
   closeSession: vi.fn(),
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
@@ -47,6 +48,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { Deck, serializeTiles } from "../src/sessions";
+import { onExit, describeExit } from "../src/ipc";
 import type { Task, BoardConfig } from "../src/ipc";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
@@ -68,6 +70,55 @@ describe("Deck.launch error handling", () => {
     const label = deckEl.querySelector(".tile-state")!;
     expect(label.className).toContain("state-error");
     expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("claude not found"));
+  });
+});
+
+// The tile is kept after its process dies, for the scrollback — and the state
+// chip says "ended" for a clean exit, a build that failed and a process the app
+// hung up on its way out alike. The one thing it cannot say is which of those
+// happened, so the deck writes it where a person is already looking.
+describe("Deck reports what an exit actually was", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.innerHTML = "";
+    startMock.mockResolvedValue(undefined);
+  });
+
+  /** Launch one tile and hand back the `onExit` callback the deck registered. */
+  async function deckWithOneTile() {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => []);
+    await deck.wireEvents();
+    await deck.launch(WS as any, null);
+    const session = (deck as any).tiles.keys().next().value as string;
+    const onExitCb = vi.mocked(onExit).mock.calls[0][0];
+    writeSpy.mockClear();
+    return { session, onExitCb };
+  }
+
+  it("prints the reason a dead tile is dead", async () => {
+    const { session, onExitCb } = await deckWithOneTile();
+    vi.mocked(describeExit).mockReturnValue("exited with code 1");
+    onExitCb(session, { ok: false, code: 1, signal: null, unknown: false });
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("exited with code 1"));
+  });
+
+  // A session that ended cleanly needs no epitaph: the chip already says it,
+  // and a line under every finished agent turn would be noise.
+  it("says nothing about an ordinary success", async () => {
+    const { session, onExitCb } = await deckWithOneTile();
+    vi.mocked(describeExit).mockReturnValue(null);
+    onExitCb(session, { ok: true, code: 0, signal: null, unknown: false });
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it("has nothing to write into for a session the deck no longer holds", async () => {
+    const { onExitCb } = await deckWithOneTile();
+    vi.mocked(describeExit).mockReturnValue("terminated by Hangup");
+    onExitCb("a-session-that-was-closed", { ok: false, code: null, signal: "Hangup", unknown: false });
+    expect(writeSpy).not.toHaveBeenCalled();
   });
 });
 

@@ -13,6 +13,7 @@ const starts: {
   session: string;
   resume: boolean;
   scenario: ScenarioLaunch | null;
+  replace: boolean;
 }[] = [];
 
 vi.mock("../src/terminal", () => ({
@@ -25,9 +26,9 @@ vi.mock("../src/terminal", () => ({
     start = vi.fn(
       async (
         _cwd: string, _wsId: string | null, _prompt: string | null, _taskId: string | null,
-        resume = false, scenario: ScenarioLaunch | null = null,
+        resume = false, scenario: ScenarioLaunch | null = null, replace = false,
       ) => {
-        starts.push({ session: this.session, resume, scenario });
+        starts.push({ session: this.session, resume, scenario, replace });
         return { account: null, degraded: null };
       },
     );
@@ -44,6 +45,8 @@ vi.mock("../src/ipc", () => ({
   onOutput: vi.fn().mockResolvedValue(() => {}),
   onState: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),
+  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
+  describeExit: vi.fn().mockReturnValue(null),
   closeSession: vi.fn(),
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
@@ -211,6 +214,22 @@ describe("resuming a scenario run", () => {
     expect(starts[1].scenario!.continuesRunId).toBe(first);
     // And the layout now points at the new record, not the finished one.
     expect(lastSavedLayout()[0].runId).toBe(starts[1].scenario!.runId);
+  });
+
+  // The backend refuses a spawn into an id it is already running, so that two
+  // launches racing each other cannot silently kill one another's process. The
+  // ⟳ button is the one launch that means to replace what is there, and it is
+  // the only one that may say so — a tile that merely *ended* still holds its
+  // pty entry, because the orphans of a build it started are reachable no other
+  // way.
+  it("only the ⟳ asks to replace a live process", async () => {
+    const { deck, deckEl } = await makeDeck();
+    await deck.launch(WS as never, SKILL as never);
+    expect(starts[0].replace).toBe(false);
+
+    deckEl.querySelector<HTMLButtonElement>('.tile-close[title="Restart session"]')!.click();
+    await vi.waitFor(() => expect(starts).toHaveLength(2));
+    expect(starts[1].replace).toBe(true);
   });
 });
 

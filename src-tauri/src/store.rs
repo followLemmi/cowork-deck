@@ -1,4 +1,6 @@
-use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, UiStatePatch, Workspace};
+use crate::model::{
+    ScheduleRun, SessionEntry, Skill, TerminalLayout, UiState, UiStatePatch, Workspace,
+};
 use crate::runs::{fold_events, retain_recent, RunEvent, RunRecord, RUNS_PER_SKILL};
 use std::path::PathBuf;
 
@@ -83,6 +85,22 @@ impl Store {
         Self::write_vec(&self.layout_path(), items)
     }
 
+    fn terminals_path(&self) -> PathBuf { self.dir.join("terminals.json") }
+    /// The drawer's tabs. A missing or damaged file is an empty drawer, the same
+    /// forgiveness the deck layout gets: a person who loses their terminal tabs
+    /// to a bad write should get an empty drawer, not a launch that fails.
+    pub fn terminals(&self) -> TerminalLayout {
+        match std::fs::read_to_string(self.terminals_path()) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => TerminalLayout::default(),
+        }
+    }
+    pub fn save_terminals(&self, layout: &TerminalLayout) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(layout)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(self.terminals_path(), json)
+    }
+
     fn ui_path(&self) -> PathBuf { self.dir.join("ui_state.json") }
     pub fn ui_state(&self) -> UiState {
         match std::fs::read_to_string(self.ui_path()) {
@@ -110,6 +128,9 @@ impl Store {
         }
         if let Some(on) = patch.record_scenario_runs {
             st.record_scenario_runs = on;
+        }
+        if let Some(rows) = patch.terminal_rows {
+            st.terminal_rows = rows;
         }
         let json = serde_json::to_string_pretty(&st)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -351,7 +372,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::model::{
-        NameKind, SessionEntry, TrackerProvider, UiState, UiStatePatch, Workspace,
+        NameKind, SessionEntry, TerminalEntry, TrackerProvider, UiState, UiStatePatch, Workspace,
         SCHEDULE_STATE_VERSION,
     };
 
@@ -491,11 +512,15 @@ mod tests {
         // On. A journal nobody switched on records nothing, and the first
         // question a history screen would raise is why it is empty.
         assert!(UiState::default().record_scenario_runs);
+        // Must match `DEFAULT_TERMINAL_ROWS` in `src/drawer.ts`, which is the
+        // height the drawer opens at before a stored value has been read.
+        assert_eq!(UiState::default().terminal_rows, 14);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
             pr_diff_cols: Some(80),
             record_scenario_runs: Some(false),
+            terminal_rows: Some(20),
         };
         s.save_ui_state(&patch).unwrap();
         let reloaded = Store::new(s.dir.clone()).ui_state();
@@ -503,6 +528,85 @@ mod tests {
         assert_eq!(reloaded.ui_scale, 1.3);
         assert_eq!(reloaded.pr_diff_cols, 80);
         assert!(!reloaded.record_scenario_runs);
+        assert_eq!(reloaded.terminal_rows, 20);
+    }
+
+    /// The drawer's own file, and the reason it is a struct rather than the bare
+    /// `Vec` the deck layout is: neither the tab in front nor whether the drawer
+    /// is up has anywhere else to live — and both are **per workspace**, because
+    /// the drawer is.
+    #[test]
+    fn terminals_round_trip_and_default_to_an_empty_drawer() {
+        let s = Store::new(tmp());
+        assert_eq!(s.terminals(), TerminalLayout::default());
+        assert!(s.terminals().items.is_empty());
+        assert!(s.terminals().active.is_empty());
+        assert!(s.terminals().open.is_empty(), "a drawer nobody opened is shut");
+
+        let layout = TerminalLayout {
+            items: vec![
+                TerminalEntry {
+                    session_id: "t1".into(),
+                    cwd: "/tmp/a".into(),
+                    name: "zsh · api".into(),
+                    workspace_id: Some("w1".into()),
+                },
+                TerminalEntry {
+                    session_id: "t2".into(),
+                    cwd: "/tmp/b".into(),
+                    name: "build".into(),
+                    workspace_id: Some("w2".into()),
+                },
+                // Opened with no workspace active. Keyed by "" below, because a
+                // JSON object has no null key.
+                TerminalEntry {
+                    session_id: "t3".into(),
+                    cwd: "/tmp/c".into(),
+                    name: "zsh".into(),
+                    workspace_id: None,
+                },
+            ],
+            active: [("w1".to_string(), "t1".to_string()), (String::new(), "t3".to_string())]
+                .into_iter()
+                .collect(),
+            // Up in one workspace and shut in the other, which is the whole
+            // point of the field.
+            open: vec!["w1".into()],
+        };
+        s.save_terminals(&layout).unwrap();
+        assert_eq!(Store::new(s.dir.clone()).terminals(), layout);
+    }
+
+    /// The shape written before the drawer was scoped per workspace: one active
+    /// tab for the app, no `open` list at all. It has to keep loading — the tabs
+    /// are the part worth saving, and losing them to a field that moved would be
+    /// the upgrade eating a person's terminals.
+    #[test]
+    fn a_terminals_file_from_before_the_drawer_was_scoped_still_loads() {
+        let s = Store::new(tmp());
+        std::fs::write(
+            s.dir.join("terminals.json"),
+            r#"{"items":[{"sessionId":"t1","cwd":"/tmp/a","name":"zsh","workspaceId":"w1"}],"active":"t1"}"#,
+        )
+        .unwrap();
+        let loaded = s.terminals();
+        assert_eq!(loaded.items.len(), 1, "the tabs survive the shape change");
+        assert_eq!(loaded.items[0].session_id, "t1");
+        // The old `active` was a string where a map now is; unreadable rather
+        // than wrong, so it falls back to nothing and the drawer picks the first
+        // tab. Shut, because the old file could not say otherwise per workspace.
+        assert!(loaded.active.is_empty());
+        assert!(loaded.open.is_empty());
+    }
+
+    /// A drawer whose file is damaged opens empty rather than failing the launch
+    /// — the same forgiveness `ui_state` gets, and for the same reason: nobody
+    /// should lose the app to a half-written list of terminal tabs.
+    #[test]
+    fn a_damaged_terminals_file_is_an_empty_drawer() {
+        let s = Store::new(tmp());
+        std::fs::write(s.dir.join("terminals.json"), "{ not json").unwrap();
+        assert_eq!(s.terminals(), TerminalLayout::default());
     }
 
     /// The migration case, and the reason `ui_scale` carries `#[serde(default)]`.

@@ -26,7 +26,14 @@
       </header>
       <div id="stage">
         <aside id="sidebar"></aside>
-        <main id="deck"></main>
+        <!-- The deck and the terminal drawer are one column: the drawer is a
+             strip under the deck, not a fourth screen and not a floating panel.
+             `#workarea` exists only to stack them, so `#deck` keeps its id, its
+             `main` landmark and every selector already written against it. -->
+        <div id="workarea">
+          <main id="deck"></main>
+          <div id="terminals"></div>
+        </div>
         <div id="board" class="hidden"></div>
       </div>
     </div>

@@ -68,6 +68,8 @@ the tokens and the measurements are in [docs/design/slate-ember](docs/design/sla
 - **Task tracker** — a per-workspace backlog of markdown cards (`.cowork/tasks/` in the project, or any folder you point at — a dedicated repo, an Obsidian vault — where the cards go into a `cowork-deck-tasks/<workspace>/` folder the app creates, one container however many workspaces you point there). A Board screen next to Terminals, `Cmd/Ctrl+Shift+T` to file one without leaving the deck, and ▶ on a card launches a session with the card as its prompt. Sessions file their own tickets via a bundled `cowork_task` CLI, so a side finding becomes a card instead of scope creep. "In progress" is derived from live sessions, never stored, so nothing gets stuck.
 - **Or the repository's issues** — a workspace's board can read the open and closed GitHub issues of the repository its folder is, instead of local card files, under the workspace's own account. ▶ on an issue opens a session on a new branch in a worktree of its own; ✓ closes the issue, after asking. One source per workspace, chosen in its settings, never both at once. See [The board's second source](#the-boards-second-source-github-issues).
 - **A board each project configures** — the steps (columns) and card kinds live in a `board.json` beside the cards, so one project can run `backlog / todo / doing / shipped` and the next just `open / done`. Edit them from the board's ⚙ editor, which also moves the cards a rename or a removal would otherwise strand. Cards open as documents to read and edit, and move between steps by drag or by the ‹ › on the card. See [The board](#the-board).
+- **An embedded terminal, per workspace** — a drawer under the deck holding ordinary interactive shells, so working on a repository does not mean alt-tabbing to a separate terminal. `Cmd+J` (`Ctrl+Shift+J` on Windows and Linux) opens it, and opening it empty opens a shell; tabs, `+`, double-click to rename, drag its top edge to resize. It is your own `$SHELL`, started in the active workspace's folder and carrying that workspace's GitHub account — and it says so in one line before the first prompt, naming the folder, the branch, the account and the git identity it will commit as. That line is the only way to check the identity: the binding is injected as `GIT_AUTHOR_*`, which outranks `.git/config`, so `git config user.email` inside the shell reports the value that loses. A terminal belongs to its workspace the way a tile does: switch projects and you get that project's terminals, on the tab you left it on — and a project you have never opened one in has no drawer at all, rather than an empty strip. Nothing is closed by switching: the shells keep running and their scrollback is where you left it. Tabs come back on the next launch, in the same folders, as new shells — a shell has no conversation to resume.
+- **Nothing is torn down without asking** — closing a terminal that is running a job asks first, and so does quitting the app: it names the sessions with something running in them and waits. What it kills is the whole process *session*, not one process, so a `npm run build` left running in a shell dies with it rather than outliving the app.
 - **Context-preserving restart** — restart an ended/errored tile and resume its Claude Code context (`claude --resume`).
 - **Auto-restore** — reopen yesterday's tiles on launch; window size, position, and active workspace are persisted.
 - **Broadcast input** — type once and send the same input to several sessions at once.
@@ -126,11 +128,22 @@ cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
 ## Sessions and the app window
 
 Sessions are not daemonized: every running `claude` process is a child of the app and is killed when the
-app window closes. There is no background/detached mode — closing the window ends all sessions. If you
+app quits. There is no background/detached mode. If you
 need a session to survive a restart, use the restart (⟳) affordance on a tile once it reaches `exited` or
 `error` state — it starts a fresh session in the same workspace with the same initial prompt (resuming
 Claude Code's context where possible), but it does not resume the app's own tracked state from before the
 restart.
+
+"Killed" means the whole process session, not the one process the app started: a shell puts each command
+it is given into a process group of its own, so a `npm run build` is not reachable by signalling the
+shell. Everything in the session is asked to stop, given a couple of seconds, and then killed outright.
+The same teardown runs however the app ends — closing the window, `Cmd+Q`, or an update restarting it.
+
+And it asks first. If anything is running inside a session when you quit — a build, a test run, a
+command in the terminal drawer — the app refuses the first attempt and names what it is about to
+destroy. Quitting again goes through regardless, so it can never become unquittable. A session sitting
+at a prompt, and an agent's own long-lived helpers, are not counted: a question that is always there is
+one people learn to click through.
 
 The same applies to schedules: the scheduler lives inside the app, so a scheduled scenario only fires
 while the window is open. Runs missed while the app was closed are not lost — each scheduled scenario

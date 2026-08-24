@@ -51,6 +51,10 @@ export function matchHotkey(
   const letters: Record<string, string> = {
     KeyK: "palette", KeyN: "new-session", KeyW: "close-active",
     KeyF: "search", KeyB: "broadcast",
+    // The terminal drawer, on the key every editor with a bottom panel uses for
+    // one. It reads as Cmd+J on macOS and Ctrl+Shift+J elsewhere, by the same
+    // readline rule as every other letter here.
+    KeyJ: "toggle-terminals",
   };
   const cmd = letters[e.code];
   if (cmd && letterOk) return cmd;

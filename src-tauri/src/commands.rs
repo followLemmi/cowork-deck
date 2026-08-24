@@ -27,8 +27,16 @@
 //! - the session commands (`start_session`, `write_session`, `resize_session`,
 //!   `close_session`) — **ordering is the feature**: a `write` that overtook its
 //!   `start`, or two writes that swapped, is lost or misdirected keyboard input.
-//!   None of them resolves a token (`workspace_token` is reached only from
-//!   `gh_invocation`), so none of them is a candidate anyway;
+//!   They stay here because the blocking work was *moved off* them rather than
+//!   because they never had any: `start_session` used to resolve `claude`'s
+//!   location and the workspace's `gh` token inline, which is up to ten seconds
+//!   of frozen window on a launch. Both are now resolved by
+//!   `prepare_workspace`, which carries `(async)`, and `start_session` reads
+//!   what it left behind (`session_auth`). A cache miss still resolves inline,
+//!   so the freeze is a rare fallback rather than the normal path — and adding
+//!   any *new* blocking call to these four puts it straight back;
+//!   `quit_confirmed` and `quit_cancelled` sit here for the same ordering
+//!   reason, and do no IO at all;
 //! - `host_platform` — one `/etc/os-release` read. (`claude_available` used to
 //!   sit here as "one `which`", but discovery now probes install dirs and may
 //!   run the user's login shell, so it carries `(async)` like everything else
@@ -46,9 +54,9 @@ use crate::model::{
 use crate::pty::PtyManager;
 use crate::store::Store;
 use crate::which;
-use base64::Engine;
 use serde::Serialize;
 use std::sync::Mutex;
+use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, State};
 
 pub struct AppState {
@@ -74,6 +82,24 @@ pub struct AppState {
     /// never persisted" rule as `gh_tokens` beside it — and cleared whenever a
     /// workspace is saved, since its folder may now be a different repository.
     pub gh_repos: Mutex<std::collections::HashMap<String, cowork_deck::tasks::gh_issues::RepoFacts>>,
+    /// Identity environments resolved ahead of a launch, keyed by workspace id.
+    /// Filled by `prepare_workspace` off the main thread and read by
+    /// `start_session`, which must stay synchronous — see `session_auth` and the
+    /// note at the top of this file. Same lifetime and the same "in memory only,
+    /// never persisted" rule as `gh_tokens`, whose token these entries carry;
+    /// cleared whenever a workspace is saved, since the binding may have changed.
+    pub session_envs: Mutex<std::collections::HashMap<String, AuthOutcome>>,
+    /// Live shell ids, for the cap in `start_shell_session`. Pruned against the
+    /// PTY manager on every open rather than maintained by every close: a set
+    /// that had to be kept in step from three call sites is a set that goes
+    /// stale, and the manager already knows the truth.
+    pub shells: Mutex<std::collections::HashSet<String>>,
+    /// Whether the person has already been asked about live work on the way out.
+    /// Set when the app refuses to quit and clears it again only when the answer
+    /// comes back — so a second quit gesture goes through even if the window
+    /// never answers, and the app can never become unquittable. See the exit
+    /// handler in `main.rs`.
+    pub quit_asked: std::sync::atomic::AtomicBool,
     /// The open-issue count each GitHub workspace's board last saw, for the
     /// sidebar badge. Written by `tasks_list`, read by `tasks_open_counts`, never
     /// a network call. A workspace whose board has not been opened this run is
@@ -150,11 +176,57 @@ pub fn session_env(
 }
 
 #[derive(Clone, Serialize)]
-struct OutputPayload { session: String, #[serde(rename = "dataB64")] data_b64: String }
-#[derive(Clone, Serialize)]
 struct StatePayload { session: String, state: crate::model::SessionState }
+
+/// What `session://exit` carries.
+///
+/// `ok` alone was the whole payload, and it made three different things look
+/// identical: a command that failed, a process the app hung up at shutdown, and
+/// a `wait()` the app could not read. The frontend now gets the fact rather than
+/// a verdict — see `pty::Exit`.
 #[derive(Clone, Serialize)]
-struct ExitPayload { session: String, ok: bool }
+struct ExitPayload {
+    session: String,
+    ok: bool,
+    code: Option<i32>,
+    signal: Option<String>,
+    unknown: bool,
+}
+
+impl ExitPayload {
+    fn new(session: String, exit: &crate::pty::Exit) -> ExitPayload {
+        ExitPayload {
+            session,
+            ok: exit.ok(),
+            code: exit.code,
+            signal: exit.signal.clone(),
+            unknown: exit.unknown,
+        }
+    }
+}
+
+/// The tile's two-state summary of an outcome that now has more than two.
+///
+/// A signalled process is `Ended`, not `Error`: it did not fail, it was stopped —
+/// by this app at shutdown, by the person, or by the system. Reading "error" on
+/// a tile the app itself hung up is the exact confusion this payload exists to
+/// end. A failed `wait()` is `Error`, because not knowing is not success.
+fn state_of(exit: &crate::pty::Exit) -> crate::model::SessionState {
+    if exit.ok() || exit.signalled() {
+        crate::model::SessionState::Ended
+    } else {
+        crate::model::SessionState::Error
+    }
+}
+
+/// The same judgement for the run journal, which records one of two outcomes.
+fn run_status_of(exit: &crate::pty::Exit) -> crate::runs::RunStatus {
+    if exit.ok() || exit.signalled() {
+        crate::runs::RunStatus::Ended
+    } else {
+        crate::runs::RunStatus::Error
+    }
+}
 
 #[tauri::command]
 pub fn list_workspaces(state: State<AppState>) -> Vec<Workspace> {
@@ -166,6 +238,13 @@ pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Works
     // workspace talking as the old account. The map holds a handful of entries,
     // so clearing all of it costs nothing and precision buys nothing.
     if let Ok(mut cache) = state.gh_tokens.lock() {
+        cache.clear();
+    }
+    // The resolved environment is the same binding one step further on: a
+    // workspace that now points at another account would otherwise keep handing
+    // new sessions the old account's token. This is the invalidation point the
+    // fork-time resolution never had.
+    if let Ok(mut cache) = state.session_envs.lock() {
         cache.clear();
     }
     // A re-pointed folder is a different repository, and a re-sourced tracker is
@@ -493,6 +572,7 @@ pub struct SessionAuth {
     pub degraded: Option<String>,
 }
 
+#[derive(Debug, Clone)]
 pub struct AuthOutcome {
     pub env: Vec<(String, String)>,
     pub auth: SessionAuth,
@@ -530,12 +610,104 @@ pub fn resolve_session_auth(
     }
 }
 
-/// Каталог-пустышка для деградированных сессий: `gh` с таким `GH_CONFIG_DIR`
-/// честно сообщает «не залогинен» вместо работы под чужим активным аккаунтом.
+/// The empty directory a degraded session's `gh` is pointed at, so that it says
+/// "you are not logged in" instead of quietly working as whichever account
+/// happens to be globally active.
+///
+/// **Read-only, and that is the feature.** "You are not logged in" is precisely
+/// the message that makes a person run `gh auth login`, and with `GH_CONFIG_DIR`
+/// pointing here that login would write a real `hosts.yml` into a directory
+/// every degraded session of every workspace shares — from then on, all of them
+/// silently authenticate as that account. That inverts the invariant the whole
+/// per-workspace binding rests on (see the head of `gh.rs`: the app never
+/// changes global `gh` state). Unwritable, the login fails loudly and nothing
+/// becomes app-wide by accident.
+///
+/// The permission is re-applied on every call rather than only at creation: an
+/// installation that already has the directory from an older build gets it
+/// fixed, and a failed login cannot leave it writable behind itself.
 fn noauth_dir(state: &State<AppState>) -> std::path::PathBuf {
     let dir = state.store.lock().unwrap().dir.join("gh-noauth");
     let _ = std::fs::create_dir_all(&dir);
+    harden_noauth_dir(&dir);
     dir
+}
+
+/// `r-x` for the owner and nothing for anyone else: `gh` must be able to look
+/// and find nothing, and must not be able to write.
+#[cfg(unix)]
+fn harden_noauth_dir(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500));
+}
+
+/// Windows has no equivalent one-liner — denying writes means an ACL edit
+/// through the API. The degraded session there keeps the older, weaker promise:
+/// `GIT_TERMINAL_PROMPT=0` still stops git soliciting a credential, and a
+/// `gh auth login` still has to be typed deliberately.
+#[cfg(not(unix))]
+fn harden_noauth_dir(_dir: &std::path::Path) {}
+
+/// The workspace's identity environment, taken from the cache that
+/// `prepare_workspace` fills off the main thread.
+///
+/// A miss still resolves here, synchronously, because a session that starts
+/// with the wrong identity is worse than a session that starts slowly — the
+/// cache is a de-risking, not a contract. What it costs when it misses is what
+/// this used to cost every time: up to five seconds on the thread that paints
+/// the window.
+///
+/// Successful resolutions only. A degraded outcome — a locked keyring, a `gh`
+/// that timed out — stays out of the cache, so unlocking the keyring does not
+/// require restarting the app. Same rule as `which_gh`'s discovery cache, for
+/// the same reason.
+fn session_auth(
+    state: &State<AppState>,
+    workspace_id: Option<&str>,
+    github: Option<&WorkspaceGithub>,
+) -> AuthOutcome {
+    if let Some(id) = workspace_id {
+        let hit = state.session_envs.lock().ok().and_then(|c| c.get(id).cloned());
+        if let Some(outcome) = hit {
+            return outcome;
+        }
+    }
+    let dir = noauth_dir(state);
+    let outcome =
+        resolve_session_auth(github, &dir.to_string_lossy(), std::time::Duration::from_secs(5));
+    if let (Some(id), None) = (workspace_id, outcome.auth.degraded.as_ref()) {
+        if let Ok(mut cache) = state.session_envs.lock() {
+            cache.insert(id.to_string(), outcome.clone());
+        }
+    }
+    outcome
+}
+
+/// Resolve everything a session launch would otherwise block on, off the thread
+/// that paints the window, and remember it.
+///
+/// Called when a workspace becomes the active one and before each launch, so
+/// that `start_session` — which stays synchronous because ordering with
+/// `write_session` is the feature — finds its environment already resolved
+/// instead of shelling out to `gh` and to the login shell while the window is
+/// frozen. Both halves are warmed: the account binding, and `claude`'s own
+/// discovery, which probes install directories and may run the login shell.
+///
+/// Returns what the binding resolved to, so a caller that wants to show the
+/// account badge before the session exists can.
+#[tauri::command(async)]
+pub fn prepare_workspace(state: State<AppState>, workspace_id: String) -> SessionAuth {
+    // Warms `CLAUDE_CACHE`; the result is read again, from the cache, by the
+    // launch itself.
+    let _ = which_claude();
+    let github = {
+        let store = match state.store.lock() {
+            Ok(s) => s,
+            Err(_) => return SessionAuth { account: None, degraded: None },
+        };
+        store.workspaces().into_iter().find(|w| w.id == workspace_id).and_then(|w| w.github)
+    };
+    session_auth(&state, Some(&workspace_id), github.as_ref()).auth
 }
 
 /// Cap on one page of pull requests. Named rather than inlined because the
@@ -1433,10 +1605,32 @@ pub fn start_session(
     cols: u16,
     rows: u16,
     resume: bool,
+    // Where this session's pty output goes.
+    //
+    // A per-session `Channel` rather than a broadcast `app.emit`, and the
+    // difference is not tidiness. `emit` builds a JS source string with the
+    // payload embedded as a JSON literal and runs it through
+    // `WKWebView.evaluateJavaScript` — which meant every chunk of terminal
+    // output was base64'd (+33%), pasted into JavaScript source, parsed by the
+    // JS parser, `atob`'d, and walked a byte at a time by a `Uint8Array.from`
+    // callback, all on the one thread that also has to deliver keystrokes.
+    //
+    // A channel carrying `Response::new(bytes)` sends `InvokeResponseBody::Raw`,
+    // which Tauri hands over the custom protocol as binary once a message
+    // clears 1KB (`tauri::ipc::channel::MAX_RAW_DIRECT_EXECUTE_THRESHOLD`) —
+    // no base64, no JS parse of the payload, no per-byte callback. Ordering is
+    // preserved by the index the JS `Channel` reorders on, so the byte stream
+    // stays intact across a glyph split by a batch boundary.
+    sink: Channel<Response>,
     // Set when this launch comes from a scenario, by any route. Absent for a
     // card, an issue, a pull request or a bare "+ session" — the journal
     // answers "what did my scenarios do", not "what did I run yesterday".
     scenario: Option<crate::run_journal::ScenarioLaunch>,
+    // Deliberately replacing a process that is still live under this id — the
+    // restart button, and nothing else. Left false, a launch into an id that is
+    // already running is refused rather than silently killing what is there;
+    // see `PtyManager::spawn`.
+    replace: bool,
 ) -> Result<SessionAuth, String> {
     let resolved = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let program = resolved.program;
@@ -1486,15 +1680,11 @@ pub fn start_session(
         issue_repo.as_ref().and(task_id.as_deref()),
     );
 
-    // Окружение GitHub-аккаунта кладётся поверх трекерного: наборы ключей не
-    // пересекаются, сессия получает оба.
-    let dir = noauth_dir(&state);
-    let outcome = resolve_session_auth(
-        ws.and_then(|w| w.github).as_ref(),
-        &dir.to_string_lossy(),
-        std::time::Duration::from_secs(5),
-    );
-    env.extend(outcome.env);
+    // The GitHub account's environment goes on top of the tracker's: the two
+    // key sets do not overlap, and the session gets both.
+    let outcome =
+        session_auth(&state, workspace_id.as_deref(), ws.and_then(|w| w.github).as_ref());
+    env.extend(outcome.env.clone());
 
     // If discovery went through the login shell, hand the session that shell's
     // PATH: a claude that is really an `env node` script dies instantly under
@@ -1503,26 +1693,22 @@ pub fn start_session(
         env.push(("PATH".to_string(), path_env));
     }
 
-    let app_out = app.clone();
-    let sess_out = session.clone();
     let on_output = move |bytes: Vec<u8>| {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let _ = app_out.emit("session://output", OutputPayload { session: sess_out.clone(), data_b64: b64 });
+        let _ = sink.send(Response::new(bytes));
     };
 
     let app_exit = app.clone();
     let sess_exit = session.clone();
-    let on_exit = move |ok: bool| {
-        let state = if ok { crate::model::SessionState::Ended } else { crate::model::SessionState::Error };
+    let on_exit = move |exit: crate::pty::Exit| {
         // The record closes here rather than on the frontend's say-so: a
         // scheduled run's tile may have no window to report from, and the
         // process dying is the fact the journal is about.
-        crate::run_journal::close(
-            &sess_exit,
-            if ok { crate::runs::RunStatus::Ended } else { crate::runs::RunStatus::Error },
+        crate::run_journal::close(&sess_exit, run_status_of(&exit));
+        let _ = app_exit.emit(
+            "session://state",
+            StatePayload { session: sess_exit.clone(), state: state_of(&exit) },
         );
-        let _ = app_exit.emit("session://state", StatePayload { session: sess_exit.clone(), state });
-        let _ = app_exit.emit("session://exit", ExitPayload { session: sess_exit.clone(), ok });
+        let _ = app_exit.emit("session://exit", ExitPayload::new(sess_exit.clone(), &exit));
     };
 
     // Before the spawn, because `pty.spawn` starts the waiter thread that calls
@@ -1538,7 +1724,7 @@ pub fn start_session(
         );
     }
     if let Err(e) = state.pty
-        .spawn(&session, &program, &args, &cwd, cols, rows, &env, on_output, on_exit)
+        .spawn(&session, &program, &args, &cwd, cols, rows, &env, replace, on_output, on_exit)
     {
         let e = e.to_string();
         crate::run_journal::failed_to_start(&session, &e);
@@ -1562,6 +1748,8 @@ pub fn start_command_session(
     command: String,
     cols: u16,
     rows: u16,
+    // Same binary path as `start_session`'s — see the note there.
+    sink: Channel<Response>,
 ) -> Result<(), String> {
     let (program, args) = if cfg!(windows) {
         ("cmd".to_string(), vec!["/C".to_string(), command])
@@ -1569,25 +1757,207 @@ pub fn start_command_session(
         ("sh".to_string(), vec!["-lc".to_string(), command])
     };
 
-    let app_out = app.clone();
-    let sess_out = session.clone();
     let on_output = move |bytes: Vec<u8>| {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let _ = app_out.emit("session://output", OutputPayload { session: sess_out.clone(), data_b64: b64 });
+        let _ = sink.send(Response::new(bytes));
     };
 
     let app_exit = app.clone();
     let sess_exit = session.clone();
-    let on_exit = move |ok: bool| {
-        let st = if ok { crate::model::SessionState::Ended } else { crate::model::SessionState::Error };
-        let _ = app_exit.emit("session://state", StatePayload { session: sess_exit.clone(), state: st });
-        let _ = app_exit.emit("session://exit", ExitPayload { session: sess_exit.clone(), ok });
+    let on_exit = move |exit: crate::pty::Exit| {
+        let _ = app_exit.emit(
+            "session://state",
+            StatePayload { session: sess_exit.clone(), state: state_of(&exit) },
+        );
+        let _ = app_exit.emit("session://exit", ExitPayload::new(sess_exit.clone(), &exit));
     };
 
+    // Never a replacement: a command tile's id is minted for it and used once,
+    // and this command offers no restart. An id that is somehow already live is
+    // a double-launch, which is exactly what the refusal is for.
     state
         .pty
-        .spawn(&session, &program, &args, &cwd, cols, rows, &[], on_output, on_exit)
+        .spawn(&session, &program, &args, &cwd, cols, rows, &[], false, on_output, on_exit)
         .map_err(|e| e.to_string())
+}
+
+/// How many shells may be open at once.
+///
+/// Not a guess about how many a person wants — eight tabs is already more than a
+/// tab strip reads well at — but a backstop. Every other spawn in this app is
+/// one gesture, one process; the drawer is the first surface where "open a
+/// terminal" is cheap enough to hold down by accident, and a shell is the most
+/// expensive child the app has.
+const MAX_SHELLS: usize = 8;
+
+/// What the drawer needs to write its banner line.
+///
+/// The branch is deliberately absent: reading it means running `git`, and this
+/// command is on the thread that paints the window. The drawer already has
+/// `git_status`, which carries `(async)`, so it asks for the branch itself and
+/// composes the line. Everything here is already in memory.
+#[derive(Serialize)]
+pub struct ShellStart {
+    /// The account this shell's `gh` will act as, and why not when it cannot.
+    pub auth: SessionAuth,
+    /// The git identity the shell carries in its environment, as
+    /// `Name <email>` — or `None` when the workspace injects none and the
+    /// shell inherits whatever `~/.gitconfig` says.
+    ///
+    /// This exists because a person cannot otherwise *check* it: `GIT_AUTHOR_*`
+    /// in the environment outranks the config, and `git config user.email`
+    /// reports the config — so the honest answer is only available from the side
+    /// that set it.
+    pub identity: Option<String>,
+    /// The program the shell actually is, for the tab's name.
+    pub program: String,
+}
+
+/// The person's own shell, as an interactive terminal would start it.
+///
+/// `$SHELL` rather than a fixed program: this is the shell they configured, and
+/// an app that silently gave them bash when they use fish would be lying about
+/// what it opened. A login shell on macOS, plain elsewhere, which is what
+/// Terminal.app and gnome-terminal respectively do — and on macOS it is load-
+/// bearing rather than cosmetic, because an .app launched from the Dock
+/// inherits launchd's minimal `PATH` and a non-login shell would keep it.
+fn user_shell() -> (String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        let ps = "powershell.exe".to_string();
+        (std::env::var("COMSPEC").unwrap_or(ps), Vec::new())
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                if std::path::Path::new("/bin/bash").exists() { "/bin/bash" } else { "/bin/sh" }
+                    .to_string()
+            });
+        let args = if cfg!(target_os = "macos") { vec!["-l".to_string()] } else { Vec::new() };
+        (shell, args)
+    }
+}
+
+/// The last segment of a shell's path — `zsh`, not `/bin/zsh` — for a tab label.
+fn shell_name(program: &str) -> String {
+    program
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(program)
+        .trim_end_matches(".exe")
+        .to_string()
+}
+
+/// Open an interactive shell on a pty.
+///
+/// Synchronous and ordered like the other session commands, and it can afford to
+/// be: the account binding is already resolved (`prepare_workspace`), and
+/// nothing here shells out. The three guards are the ones an ordinary shell
+/// needs and `claude` never did — a person opens these, closes them, and opens
+/// them again, which is exactly the traffic that finds a race.
+#[tauri::command]
+pub fn start_shell_session(
+    app: AppHandle,
+    state: State<AppState>,
+    session: String,
+    cwd: String,
+    workspace_id: Option<String>,
+    cols: u16,
+    rows: u16,
+    // Same binary path as `start_session`'s — see the note there.
+    sink: Channel<Response>,
+) -> Result<ShellStart, String> {
+    // Ids the manager no longer holds are closed tabs; they must not count
+    // toward the cap, and pruning here means no bookkeeping anywhere else.
+    {
+        let mut shells = state.shells.lock().map_err(|_| "shell registry".to_string())?;
+        shells.retain(|id| state.pty.is_live(id));
+        if !shells.contains(&session) && shells.len() >= MAX_SHELLS {
+            return Err(format!("terminal-limit:{MAX_SHELLS}"));
+        }
+    }
+
+    let ws = match workspace_id.as_deref() {
+        Some(id) => {
+            let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+            store.workspaces().into_iter().find(|w| w.id == id)
+        }
+        None => None,
+    };
+    let github = ws.and_then(|w| w.github);
+    let outcome = session_auth(&state, workspace_id.as_deref(), github.as_ref());
+    let identity = git_identity(&outcome.env);
+
+    let (program, args) = user_shell();
+
+    let on_output = move |bytes: Vec<u8>| {
+        let _ = sink.send(Response::new(bytes));
+    };
+
+    let app_exit = app.clone();
+    let sess_exit = session.clone();
+    let on_exit = move |exit: crate::pty::Exit| {
+        let _ = app_exit.emit(
+            "session://state",
+            StatePayload { session: sess_exit.clone(), state: state_of(&exit) },
+        );
+        let _ = app_exit.emit("session://exit", ExitPayload::new(sess_exit.clone(), &exit));
+    };
+
+    // Never a replacement. A person who presses the same key twice, or a restore
+    // that raced a manual open, must not silently kill a shell that is running
+    // something — refusing is the whole point of the guard.
+    state
+        .pty
+        .spawn(&session, &program, &args, &cwd, cols, rows, &outcome.env, false, on_output, on_exit)
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(mut shells) = state.shells.lock() {
+        shells.insert(session);
+    }
+    Ok(ShellStart { auth: outcome.auth, identity, program: shell_name(&program) })
+}
+
+/// `Name <email>` out of a resolved session environment, when it carries both.
+///
+/// Reads the environment rather than the workspace configuration on purpose: the
+/// environment is what the shell will actually be given, and if the two ever
+/// disagree the banner must say what is true rather than what was intended.
+fn git_identity(env: &[(String, String)]) -> Option<String> {
+    let get = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+    match (get("GIT_AUTHOR_NAME"), get("GIT_AUTHOR_EMAIL")) {
+        (Some(n), Some(e)) => Some(format!("{n} <{e}>")),
+        (Some(n), None) => Some(n.to_string()),
+        (None, Some(e)) => Some(e.to_string()),
+        (None, None) => None,
+    }
+}
+
+/// How many jobs a session is running right now.
+///
+/// What the close confirmation asks. A shell has no hooks and therefore no state
+/// of its own to read — the tile chip says `idle` whether the shell is at a
+/// prompt or halfway through a release build — so the only honest answer comes
+/// from the process table.
+#[tauri::command(async)]
+pub fn session_jobs(state: State<AppState>, session: String) -> usize {
+    state.pty.jobs(&session)
+}
+
+#[tauri::command]
+pub fn load_terminals(state: State<AppState>) -> crate::model::TerminalLayout {
+    state.store.lock().unwrap().terminals()
+}
+
+#[tauri::command]
+pub fn save_terminals(
+    state: State<AppState>,
+    layout: crate::model::TerminalLayout,
+) -> Result<(), String> {
+    state.store.lock().unwrap().save_terminals(&layout).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1607,6 +1977,25 @@ pub fn close_session(state: State<AppState>, session: String) {
     crate::run_journal::close(&session, crate::runs::RunStatus::Ended);
     state.pty.kill(&session);
     crate::transcripts::forget(&session);
+}
+
+/// Quit, having been told to go ahead.
+///
+/// The counterpart to the refusal in `main.rs`: the app asked about the live
+/// work it was about to destroy, the person said yes, and this is the yes. It
+/// goes through `AppHandle::exit`, so the teardown still happens in the one
+/// place that does it — `RunEvent::Exit` — rather than being duplicated here.
+#[tauri::command]
+pub fn quit_confirmed(app: AppHandle, state: State<AppState>) {
+    state.quit_asked.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.exit(0);
+}
+
+/// The person said no. Disarming the flag is what makes the *next* quit ask
+/// again instead of going straight through.
+#[tauri::command]
+pub fn quit_cancelled(state: State<AppState>) {
+    state.quit_asked.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -2916,6 +3305,112 @@ branch refs/heads/feature/y\n";
         assert!(!keys.contains(&"GH_TOKEN"), "без токена GH_TOKEN выставлять нельзя");
     }
 
+    /// A tab is labelled with the shell, not with the path to it.
+    #[test]
+    fn a_shell_is_named_by_what_it_is_called() {
+        assert_eq!(shell_name("/bin/zsh"), "zsh");
+        assert_eq!(shell_name("/opt/homebrew/bin/fish"), "fish");
+        assert_eq!(shell_name("bash"), "bash");
+        assert_eq!(shell_name(r"C:\Windows\System32\cmd.exe"), "cmd");
+        // Nothing useful to shorten: better the whole string than an empty tab.
+        assert_eq!(shell_name("/"), "/");
+    }
+
+    /// The banner's whole reason for existing: `GIT_AUTHOR_*` in the environment
+    /// outranks `.git/config`, so `git config user.email` reports the value that
+    /// does **not** win. The only side that can answer honestly is the one that
+    /// set the variable, which is why this reads the environment rather than the
+    /// workspace's configuration.
+    #[test]
+    fn the_banner_names_the_identity_the_shell_will_actually_commit_as() {
+        let env = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        assert_eq!(
+            git_identity(&env(&[
+                ("GIT_AUTHOR_NAME", "Evgeny"),
+                ("GIT_AUTHOR_EMAIL", "e@example.com"),
+            ])),
+            Some("Evgeny <e@example.com>".to_string()),
+        );
+        // Half a binding is still worth naming.
+        assert_eq!(git_identity(&env(&[("GIT_AUTHOR_NAME", "Evgeny")])), Some("Evgeny".into()));
+        assert_eq!(git_identity(&env(&[("GIT_AUTHOR_EMAIL", "e@x")])), Some("e@x".into()));
+        // Nothing injected: the shell inherits `~/.gitconfig`, and claiming an
+        // identity the app did not set would be the same lie in reverse.
+        assert_eq!(git_identity(&env(&[("GH_TOKEN", "gho_x")])), None);
+    }
+
+    /// A shell the person did not configure is still a shell, and a dead tab
+    /// would be worse than the wrong prompt.
+    #[test]
+    fn there_is_always_a_shell_to_open() {
+        let (program, _args) = user_shell();
+        assert!(!program.trim().is_empty());
+    }
+
+    /// The reason the exit payload had to grow: with one boolean, a session the
+    /// app hung up at shutdown reported itself as an error, indistinguishable
+    /// from a command that failed. It was stopped, not broken — and a tile that
+    /// says "error" about the app's own teardown is a bug report waiting to be
+    /// filed against nothing.
+    #[test]
+    fn a_stopped_session_is_ended_and_a_failed_one_is_an_error() {
+        let signalled = crate::pty::Exit {
+            code: None,
+            signal: Some("Hangup".into()),
+            unknown: false,
+        };
+        assert_eq!(state_of(&signalled), crate::model::SessionState::Ended);
+        assert_eq!(run_status_of(&signalled), crate::runs::RunStatus::Ended);
+
+        let failed = crate::pty::Exit { code: Some(1), signal: None, unknown: false };
+        assert_eq!(state_of(&failed), crate::model::SessionState::Error);
+        assert_eq!(run_status_of(&failed), crate::runs::RunStatus::Error);
+
+        let clean = crate::pty::Exit { code: Some(0), signal: None, unknown: false };
+        assert_eq!(state_of(&clean), crate::model::SessionState::Ended);
+
+        // Not knowing is not success. It was `false` before, which happened to
+        // be right for the wrong reason — the same `false` as `exit 1`.
+        let unknown = crate::pty::Exit { code: None, signal: None, unknown: true };
+        assert_eq!(state_of(&unknown), crate::model::SessionState::Error);
+    }
+
+    /// "You are not logged in" is exactly the message that makes a person run
+    /// `gh auth login`, and this is the directory that login would write into —
+    /// one directory shared by every degraded session of every workspace. A
+    /// writable one turns the app's own honest degradation into app-wide global
+    /// state, which is the inverse of the invariant the whole per-workspace
+    /// binding rests on.
+    #[cfg(unix)]
+    #[test]
+    fn a_login_cannot_write_into_the_shared_no_auth_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        // Permission bits do not apply to root, so there is nothing to assert
+        // in a container that runs as it.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipped: running as root, where the mode bits do not bind");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("gh-noauth");
+        std::fs::create_dir_all(&dir).unwrap();
+        harden_noauth_dir(&dir);
+
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o500,
+            "the no-auth directory must be readable and not writable",
+        );
+        assert!(
+            std::fs::write(dir.join("hosts.yml"), "github.com:\n").is_err(),
+            "a `gh auth login` could write credentials into the shared directory",
+        );
+        // Handed back so the temporary directory can be cleaned up.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     #[test]
     fn a_dirty_worktree_is_never_removed() {
         let dir = std::env::temp_dir().join(format!("cowork-wt-{}", std::process::id()));
@@ -2998,7 +3493,7 @@ branch refs/heads/feature/y\n";
     /// beside it — fifty of them on a delegation-heavy session — for every open
     /// session at once, so it carries `(async)` like everything else that does
     /// real I/O.
-    const MAIN_THREAD_COMMANDS: [&str; 13] = [
+    const MAIN_THREAD_COMMANDS: [&str; 15] = [
         "list_workspaces",
         "save_workspace",
         "remove_workspace",
@@ -3010,18 +3505,25 @@ branch refs/heads/feature/y\n";
         "scheduler_ready",
         "load_layout",
         "save_layout",
+        "load_terminals",
+        "save_terminals",
         "load_ui_state",
         "save_ui_state",
     ];
     /// The same, for the four that must not be reordered — kept apart from the list
     /// above because these are the ones where moving a command off the main thread
     /// would be a *correctness* bug rather than merely unnecessary.
-    const ORDERED_COMMANDS: [&str; 6] = [
+    const ORDERED_COMMANDS: [&str; 9] = [
         "start_session",
         "start_command_session",
         "write_session",
         "resize_session",
         "close_session",
+        // Two flag writes and an `exit`. On the main thread because the answer
+        // to "may I quit" must not overtake the question.
+        "start_shell_session",
+        "quit_confirmed",
+        "quit_cancelled",
         "host_platform",
     ];
 
