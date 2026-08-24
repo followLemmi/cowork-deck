@@ -30,6 +30,19 @@ vi.mock("../src/terminal", () => {
       panels.push(this);
     }
     write(d: string | Uint8Array) { this.written.push(d); }
+    /** Output the panel is holding back until its banner is in, or `null` when
+     *  bytes go straight to the screen. The real panel holds them because the
+     *  spawn's channel paints into its terminal directly — there is nothing
+     *  between the two for the drawer to intercept. */
+    held: Uint8Array[] | null = null;
+    holdOutput() { this.held = []; }
+    releaseOutput() {
+      const h = this.held;
+      this.held = null;
+      if (h) for (const b of h) this.written.push(b);
+    }
+    /** What the pty channel does to this panel: paint, or wait. */
+    paint(b: Uint8Array) { if (this.held) this.held.push(b); else this.written.push(b); }
     focus() { this.focused++; }
     fit() {}
     dispose() { this.disposed = true; }
@@ -40,7 +53,6 @@ vi.mock("../src/terminal", () => {
 });
 
 vi.mock("../src/ipc", () => ({
-  onOutput: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),
   describeExit: vi.fn().mockReturnValue(null),
   closeSession: vi.fn().mockResolvedValue(undefined),
@@ -58,7 +70,7 @@ vi.mock("../src/modal", () => ({
 
 import { TerminalDrawer, bannerLine, drawerHeightPx, rowsForHeight, DEFAULT_TERMINAL_ROWS } from "../src/drawer";
 import {
-  loadTerminals, saveTerminals, saveUiState, sessionJobs, closeSession, gitStatus, onOutput, onExit,
+  loadTerminals, saveTerminals, saveUiState, sessionJobs, closeSession, gitStatus, onExit,
 } from "../src/ipc";
 import { confirmModal, promptModal } from "../src/modal";
 
@@ -185,14 +197,13 @@ describe("opening a terminal", () => {
     let holdStart: (v: unknown) => void = () => {};
     const { drawer } = makeDrawer();
     await drawer.wireEvents();
-    const onOutputCb = vi.mocked(onOutput).mock.calls[0][0];
 
     // A shell whose spawn has not answered yet, already writing.
     const gate = new Promise((res) => { holdStart = res as (v: unknown) => void });
     shell.impl = () => gate;
     const opening = drawer.newTerminal();
     await vi.waitFor(() => expect(panels).toHaveLength(1));
-    onOutputCb(panels[0].session, new TextEncoder().encode("$ "));
+    panels[0].paint(new TextEncoder().encode("$ "));
     holdStart({ auth: { account: null, degraded: null }, identity: null, program: "zsh" });
     await opening;
 

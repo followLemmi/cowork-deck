@@ -1,7 +1,7 @@
 import { TerminalPanel } from "./terminal";
 import {
   closeSession, gitStatus, loadTerminals, saveTerminals, saveUiState, sessionJobs,
-  startShellSession, onOutput, onExit, describeExit,
+  startShellSession, onExit, describeExit,
   type TerminalEntry,
 } from "./ipc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -108,8 +108,6 @@ export class TerminalDrawer {
   private tabsEl!: HTMLElement;
   private bodiesEl!: HTMLElement;
   private unlisten: UnlistenFn[] = [];
-  /** Output that arrived before its banner was written. See `wireEvents`. */
-  private holding = new Map<string, Uint8Array[]>();
   private onScale = () => this.applyHeight();
 
   constructor(
@@ -251,16 +249,6 @@ export class TerminalDrawer {
   /** Listeners of its own: the deck routes output by tile, and a drawer terminal
    *  is not a tile. Called once, from boot. */
   async wireEvents(): Promise<void> {
-    this.unlisten.push(await onOutput((s, bytes) => {
-      const tab = this.tabs.find((t) => t.session === s);
-      if (!tab) return;
-      // Held rather than written: this terminal's banner has not gone in yet,
-      // and a shell that printed its prompt first would push the one line
-      // explaining what it carries below the prompt it explains.
-      const held = this.holding.get(s);
-      if (held) held.push(bytes);
-      else tab.panel.write(bytes);
-    }));
     this.unlisten.push(await onExit((s, exit) => {
       const tab = this.tabs.find((t) => t.session === s);
       if (!tab) return;
@@ -372,8 +360,10 @@ export class TerminalDrawer {
     };
     this.tabs.push(tab);
     this.renderTab(tab);
-    // From here until the banner is written, this session's output waits.
-    this.holding.set(tab.session, []);
+    // From here until the banner is written, this session's output waits: a
+    // shell that printed its prompt first would push the one line explaining
+    // what it carries below the prompt it explains.
+    panel.holdOutput();
 
     // Asked before the spawn, and off the main thread: the branch belongs on the
     // banner and `git_status` is the only part of the line that costs a process.
@@ -401,9 +391,7 @@ export class TerminalDrawer {
         : `\r\n[the shell did not start: ${raw}]\r\n`);
       tab.el.classList.add("is-dead");
     } finally {
-      const held = this.holding.get(tab.session) ?? [];
-      this.holding.delete(tab.session);
-      for (const bytes of held) panel.write(bytes);
+      panel.releaseOutput();
     }
   }
 
@@ -498,7 +486,6 @@ export class TerminalDrawer {
     tab.el.remove();
     tab.body.remove();
     this.tabs = this.tabs.filter((t) => t.session !== session);
-    this.holding.delete(session);
     // Whichever workspaces had this tab in front need another one, and only the
     // one on screen needs the keyboard moved.
     for (const [ws, front] of [...this.activeByWorkspace]) {

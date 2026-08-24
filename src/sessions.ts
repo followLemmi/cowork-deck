@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
+import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
 import { gitStatus, sessionSnapshots, type NameKind, type SessionTokens } from "./ipc";
 import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -335,7 +335,9 @@ export class Deck {
   async wireEvents() {
     this.notifyOk = await isPermissionGranted();
     if (!this.notifyOk) this.notifyOk = (await requestPermission()) === "granted";
-    await onOutput((s, bytes) => this.tiles.get(s)?.panel.write(bytes));
+    // No output listener here any more. Each `TerminalPanel` owns a `Channel` that
+    // the backend writes its own session's bytes into, so there is nothing to
+    // demultiplex — and nothing that walks the tile map once per chunk of output.
     await onState((s, state) => this.setState(s, state));
     // The tile is kept for its scrollback and its state chip is already set —
     // what is added here is the one thing the chip cannot say. "Ended" covers a

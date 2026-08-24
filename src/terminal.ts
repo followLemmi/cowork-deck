@@ -2,16 +2,40 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
+import { Channel } from "@tauri-apps/api/core";
 import {
   startSession, startCommandSession, startShellSession, writeSession, resizeSession,
-  prepareWorkspace, type ScenarioLaunch, type SessionAuth, type ShellStart,
+  prepareWorkspace, type OutputSink, type ScenarioLaunch, type SessionAuth, type ShellStart,
 } from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
 import { terminalKeyBytes } from "./terminal-keys";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
 
+/** How many terminals may hold a WebGL context at the same time.
+ *
+ *  **A cap is not optional, and going over it is worse than staying on the DOM
+ *  renderer.** WebKit keeps a process-wide ceiling on live WebGL contexts — around
+ *  sixteen — and does not refuse the seventeenth: it force-loses the oldest one
+ *  instead. A deck can hold far more tiles than that, so an uncapped
+ *  one-context-per-panel policy would silently knock out the terminal the person
+ *  is looking at in order to give a context to one scrolled out of sight.
+ *
+ *  Eight leaves room for the rest of the page and for the transient contexts a
+ *  renderer swap creates while the old one is still being torn down. Panels past
+ *  the cap simply run on the DOM renderer, which is correct — only slower. */
+export const MAX_GPU_CONTEXTS = 8;
+
 export class TerminalPanel {
+  /** Panels currently holding a context, and panels on screen that want one and
+   *  are waiting for a slot. Insertion-ordered, so a freed slot goes to whoever
+   *  has been waiting longest. Static rather than module-level so the two
+   *  functions that own the cap can reach `attachGpu`/`detachGpu` without a cast:
+   *  a static method may touch private instance members of its own class. */
+  private static gpuHolders = new Set<TerminalPanel>();
+  private static gpuWaiting = new Set<TerminalPanel>();
+
   private term: Terminal;
   private fitAddon: FitAddon;
   private searchAddon: SearchAddon;
@@ -28,6 +52,16 @@ export class TerminalPanel {
    *  the account binding off the main thread without costing input. */
   private pending: string[] = [];
   private started = false;
+  /** The WebGL renderer, while this panel holds a context. `null` means the panel
+   *  is on xterm's DOM renderer — either because it is off screen, because the cap
+   *  is full, or because WebGL is unavailable or was lost. */
+  private gpu: WebglAddon | null = null;
+  /** Watches whether the mount is actually on screen. A minimized tile is
+   *  `display: none` (see `.deck-strip .tile.minimized .tile-body` in
+   *  `styles.css`), which reads as not intersecting — so this covers both
+   *  minimizing and scrolling out of view with one mechanism. */
+  private io: IntersectionObserver | null = null;
+  private onScreen = false;
   /** Bound once so `dispose` can remove the same reference it added. */
   private onScaleEvent = (e: Event) => {
     this.setFontSize((e as CustomEvent<number>).detail);
@@ -52,7 +86,10 @@ export class TerminalPanel {
       // up at the default and stay there until the next change.
       fontSize: terminalFontPx(currentScale()),
       lineHeight: 1.2,
-      cursorBlink: true,
+      // Off at birth, and turned on only while this panel holds a WebGL context.
+      // See `attachGpu` — under the DOM renderer a blinking cursor is a strobing
+      // cursor, and the blink is not worth that.
+      cursorBlink: false,
       cursorStyle: "block",
       scrollback: 5000,
       allowProposedApi: true,
@@ -158,10 +195,12 @@ export class TerminalPanel {
       this.rafId = requestAnimationFrame(() => { this.rafId = null; this.fit(); });
     });
     this.ro.observe(mount);
+    this.watchVisibility();
     this.term.onData((d) => { this.send(d); });
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
     window.addEventListener(UI_SCALE_EVENT, this.onScaleEvent);
   }
+
   /** Everything typed before the process existed, in order, and then nothing
    *  more — from here on `send` writes straight through. */
   private markStarted() {
@@ -174,6 +213,132 @@ export class TerminalPanel {
     if (!this.started) { this.pending.push(data); return; }
     void writeSession(this.session, data);
   }
+
+  /** A fresh output channel for one spawn.
+   *
+   *  **A channel cannot be reused across two processes, and reusing it fails
+   *  silently.** Tauri's `Channel` sends `{ end: true }` when its Rust half is
+   *  dropped — which happens the moment a session's reader threads finish — and the
+   *  JS half answers that by calling `unregisterCallback` on its own id. The object
+   *  survives and still serialises to the same `__CHANNEL__:id`, so handing it to a
+   *  second spawn looks fine and invokes fine; the backend's writes then land in
+   *  `runCallback` with an id no longer in the registry, which logs a console
+   *  warning and drops the bytes. The restart button would open a terminal that
+   *  never printed anything.
+   *
+   *  So one channel per spawn. The old one is left to the tail of the process that
+   *  owned it — bytes still in flight when it was killed reach the same terminal,
+   *  which is what the previous broadcast event did too.
+   *
+   *  **Bytes stay bytes all the way to `Terminal.write`.** Only xterm's own decoder
+   *  holds a partial UTF-8 sequence across a chunk boundary; decode any earlier and
+   *  a glyph split by one becomes `U+FFFD` on both sides — one 3-byte glyph turns
+   *  into two or three cells and every column after it on that line is off by that
+   *  much. With the agent's whole TUI drawn out of `─ │ ⏺ ✻ ⎿`, that is a frame
+   *  that visibly stops lining up. */
+  private openSink(): OutputSink {
+    const sink = new Channel<ArrayBuffer>();
+    sink.onmessage = (buf) => this.paint(new Uint8Array(buf));
+    return sink;
+  }
+
+  /** Output that arrived while the panel was holding it, in arrival order.
+   *  `null` means nothing is being held and bytes go straight to the screen. */
+  private heldOutput: Uint8Array[] | null = null;
+
+  /** Hold this panel's pty output until `releaseOutput`.
+   *
+   *  The drawer writes one banner line naming what a shell carries, and it can
+   *  only write it once the spawn has come back with the account and the
+   *  identity — by which time a fast shell has already printed its prompt. Held
+   *  here rather than in the caller because the channel opened at spawn paints
+   *  straight into this terminal: there is no longer anything between the two to
+   *  intercept. */
+  holdOutput() { this.heldOutput = []; }
+
+  /** Let go of what was held, in order, and write straight through from now on. */
+  releaseOutput() {
+    const held = this.heldOutput;
+    this.heldOutput = null;
+    if (held) for (const bytes of held) this.term.write(bytes);
+  }
+
+  private paint(bytes: Uint8Array) {
+    if (this.heldOutput) this.heldOutput.push(bytes);
+    else this.term.write(bytes);
+  }
+
+  /** Ask for a WebGL context when the panel comes on screen and give it back when
+   *  it leaves, so the contexts the cap allows go to the terminals someone is
+   *  actually looking at.
+   *
+   *  `IntersectionObserver` is absent in jsdom, so this degrades to "never on
+   *  screen" under test — which is the safe direction: the panel stays on the DOM
+   *  renderer and nothing tries to make a WebGL context in a unit test. */
+  private watchVisibility() {
+    if (typeof IntersectionObserver === "undefined") return;
+    this.io = new IntersectionObserver((entries) => {
+      const onScreen = entries.some((e) => e.isIntersecting);
+      if (onScreen === this.onScreen) return;
+      this.onScreen = onScreen;
+      if (onScreen) TerminalPanel.grantGpu(this); else TerminalPanel.releaseGpu(this);
+    });
+    this.io.observe(this.mount);
+  }
+
+  /** Swap this panel onto the WebGL renderer. Called only through `requestGpu`,
+   *  which owns the cap.
+   *
+   *  **This is also the cursor-blink fix, and that is not a coincidence.** The DOM
+   *  renderer implements blinking as a CSS animation on the cursor's `<span>`
+   *  (`DomRenderer.ts`, `animation: blink_block_… 1s step-end infinite`), while
+   *  `DomRenderer.renderRows` rebuilds every span of a dirty row with
+   *  `replaceChildren`. A fresh element restarts its animation at 0%, so under a
+   *  TUI that repaints its input line continuously — a spinner, a token count, an
+   *  "esc to interrupt" timer — the animation is restarted before it ever completes
+   *  a cycle and the cursor strobes at the repaint rate instead of blinking once a
+   *  second. The WebGL renderer drives the same blink from a 600ms timer in
+   *  `CursorBlinkStateManager`, which no repaint touches. So blinking is turned on
+   *  here and off in `detachGpu`: a cursor that does not blink is a small loss, a
+   *  cursor that strobes is the complaint.
+   *
+   *  Returns whether a context was actually taken, so the cap is only spent on a
+   *  panel that got one. */
+  private attachGpu(): boolean {
+    if (this.gpu) return true;
+    try {
+      const gpu = new WebglAddon();
+      // A context can be lost for reasons that have nothing to do with this panel:
+      // a GPU reset, waking from sleep, another page exhausting the pool. Hand the
+      // slot back and fall to the DOM renderer rather than drawing nothing. The
+      // panel becomes eligible again the next time it goes off screen and returns,
+      // which is deliberate — retrying on the spot would spin against whatever
+      // pressure caused the loss.
+      gpu.onContextLoss(() => { TerminalPanel.releaseGpu(this); });
+      this.term.loadAddon(gpu);
+      this.gpu = gpu;
+      this.term.options.cursorBlink = true;
+      return true;
+    } catch {
+      // No WebGL2 in this webview, or the context could not be created. The DOM
+      // renderer is still there and still correct.
+      return false;
+    }
+  }
+
+  /** Give the context back and return to the DOM renderer. Disposing the addon is
+   *  what reverts xterm to it — there is no explicit "use the DOM renderer" call. */
+  private detachGpu() {
+    if (!this.gpu) return;
+    this.term.options.cursorBlink = false;
+    try {
+      this.gpu.dispose();
+    } catch (e) {
+      console.debug("terminal gpu dispose failed", e);
+    }
+    this.gpu = null;
+  }
+
   /** Returns the outcome of the GitHub account binding: the caller decides
    *  whether to hang a badge on the tile. The environment is fixed here, at the
    *  birth of the process. */
@@ -205,8 +370,8 @@ export class TerminalPanel {
     const { cols, rows } = this.term;
     try {
       return await startSession(
-        this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario,
-        replace,
+        this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
+        this.openSink(), scenario, replace,
       );
     } finally {
       // In `finally` because a launch that failed still has to release what was
@@ -233,7 +398,7 @@ export class TerminalPanel {
     }
     const { cols, rows } = this.term;
     try {
-      return await startShellSession(this.session, cwd, workspaceId, cols, rows);
+      return await startShellSession(this.session, cwd, workspaceId, cols, rows, this.openSink());
     } finally {
       this.markStarted();
     }
@@ -243,16 +408,17 @@ export class TerminalPanel {
   async startCommand(cwd: string, command: string): Promise<void> {
     const { cols, rows } = this.term;
     try {
-      await startCommandSession(this.session, cwd, command, cols, rows);
+      await startCommandSession(this.session, cwd, command, cols, rows, this.openSink());
     } finally {
       this.markStarted();
     }
   }
-  /** Agent output arrives as bytes and is written as bytes, so xterm's own UTF-8
-   *  decoder can carry a sequence split across two pty reads (see
-   *  `decodeB64Bytes`). Strings are still accepted for the app's own status
-   *  lines — `[restarting session...]` and the launch failures — which are
-   *  written by `sessions.ts` and never cross a chunk boundary. */
+  /** Agent output arrives as bytes on the session's channel and is written as
+   *  bytes, so xterm's own UTF-8 decoder can carry a sequence split across two
+   *  batches (see `openSink`). Strings are still accepted for the app's own status
+   *  lines —
+   *  `[restarting session...]` and the launch failures — which are written by
+   *  `sessions.ts` and never cross a chunk boundary. */
   write(data: string | Uint8Array) { this.term.write(data); }
   focus() { this.term.focus(); }
   search(term: string) { if (term) { this.lastSearch = term; this.searchAddon.findNext(term); } }
@@ -286,10 +452,45 @@ export class TerminalPanel {
     this.rafId = null;
     this.ro?.disconnect();
     this.ro = null;
+    this.io?.disconnect();
+    this.io = null;
+    // Hand the context back before the terminal goes, or the slot is leaked and
+    // every closed tile permanently shrinks the budget for the ones still open.
+    TerminalPanel.releaseGpu(this);
     // A listener on `window` outlives the panel unless it is taken off: a closed
     // session would keep a disposed terminal alive and touch it on the next scale
     // change.
     window.removeEventListener(UI_SCALE_EVENT, this.onScaleEvent);
     this.term.dispose();
+  }
+
+  /** Give `panel` a WebGL context if the cap allows, otherwise put it in the
+   *  queue. A panel that cannot make one — no WebGL2 in this webview — does not
+   *  consume a slot. */
+  private static grantGpu(panel: TerminalPanel) {
+    if (TerminalPanel.gpuHolders.has(panel)) return;
+    TerminalPanel.gpuWaiting.delete(panel);
+    if (TerminalPanel.gpuHolders.size >= MAX_GPU_CONTEXTS) {
+      TerminalPanel.gpuWaiting.add(panel);
+      return;
+    }
+    // Claim the slot before attaching, so nothing re-entrant can hand the same one
+    // out twice, and release it again if the attach fails.
+    TerminalPanel.gpuHolders.add(panel);
+    if (!panel.attachGpu()) TerminalPanel.gpuHolders.delete(panel);
+  }
+
+  /** Take `panel`'s context back and pass the freed slot on. */
+  private static releaseGpu(panel: TerminalPanel) {
+    TerminalPanel.gpuWaiting.delete(panel);
+    if (!TerminalPanel.gpuHolders.delete(panel)) return;
+    panel.detachGpu();
+    // Iterate over a snapshot: a successful grant mutates the queue. A waiter whose
+    // attach fails leaves the slot free, so keep offering it until someone takes it
+    // or the queue runs out.
+    for (const next of [...TerminalPanel.gpuWaiting]) {
+      TerminalPanel.grantGpu(next);
+      if (TerminalPanel.gpuHolders.size >= MAX_GPU_CONTEXTS) break;
+    }
   }
 }

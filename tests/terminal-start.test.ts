@@ -14,6 +14,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
   observe() {} unobserve() {} disconnect() {}
 };
 
+// Every spawn opens a real `Channel` for its output, and `Channel`'s constructor
+// registers its handler with Tauri's injected internals — absent in jsdom, so
+// without this the launch throws before it ever reaches the code under test.
+// The output path is `terminal-write.test.ts`'s subject; here only the
+// registration has to exist.
+(globalThis as any).window.__TAURI_INTERNALS__ ??= {
+  transformCallback: () => 1,
+  unregisterCallback: () => {},
+};
+
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     loadAddon() {} open() {} onResize() {} focus() {} write() {} clear() {} dispose() {}
@@ -30,9 +40,10 @@ vi.mock("@xterm/xterm", () => ({
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 vi.mock("@xterm/addon-search", () => ({ SearchAddon: class { findNext() {} findPrevious() {} } }));
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
+vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }));
 vi.mock("../src/ipc", () => ({
-  startSession: vi.fn(), startCommandSession: vi.fn(), writeSession: vi.fn(),
-  resizeSession: vi.fn(), prepareWorkspace: vi.fn(),
+  startSession: vi.fn(), startCommandSession: vi.fn(), startShellSession: vi.fn(),
+  writeSession: vi.fn(), resizeSession: vi.fn(), prepareWorkspace: vi.fn(),
 }));
 
 import { TerminalPanel } from "../src/terminal";
@@ -91,7 +102,7 @@ describe("a launch resolves the account binding before it spawns", () => {
     const panel = new TerminalPanel("s", document.createElement("div"));
     await panel.start("/proj", "w1", null, null, true, null, true);
     expect(startSession).toHaveBeenCalledWith(
-      "s", "/proj", "w1", null, null, 80, 24, true, null, true,
+      "s", "/proj", "w1", null, null, 80, 24, true, expect.anything(), null, true,
     );
   });
 });
