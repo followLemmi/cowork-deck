@@ -90,7 +90,12 @@ impl OnnxEmbedder {
         };
         let probe = e.forward(&["проверка".to_string()])?;
         verify_probe(&probe[0])?;
-        Ok(OnnxEmbedder { dim: EXPECTED_DIM, ..e })
+        // The width comes from the vector the model actually produced, not from
+        // the constant it was checked against: the constant is the assertion,
+        // and reusing it here would make a probe that never ran indistinguishable
+        // from one that passed.
+        let dim = probe[0].len();
+        Ok(OnnxEmbedder { dim, ..e })
     }
 
     fn forward(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
