@@ -131,6 +131,38 @@ fn status_tells_an_absent_index_from_a_built_one() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+/// The app reads this JSON to decide what its settings panel offers, and the
+/// index says nothing about the model: the cache outlives a deleted model, so a
+/// `ready` index alongside a missing model is an ordinary state, not a
+/// contradiction. Both have to be reported, or the panel guesses.
+#[test]
+fn status_json_reports_the_model_separately_from_the_index() {
+    let root = fixture_root("modelstate");
+
+    let (stdout, stderr, ok) = run(&root, &["status", "--json"]);
+    assert!(ok, "status failed: {stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["state"], "absent", "no index yet: {stdout}");
+    assert_eq!(v["model"]["state"], "absent", "no model either: {stdout}");
+    assert_eq!(v["model"]["have"], 0);
+    assert!(
+        v["model"]["total"].as_u64().unwrap() > 0,
+        "the download size must be known before the download: {stdout}"
+    );
+    assert!(v["model"]["dir"].is_string(), "the panel needs the path: {stdout}");
+
+    // An index built with the fake embedder leaves the model exactly as absent
+    // as it was — which is the pairing the panel has to be able to show.
+    let (_, stderr, ok) = run(&root, &["update"]);
+    assert!(ok, "update failed: {stderr}");
+    let (stdout, _, _) = run(&root, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["state"], "ready", "got: {stdout}");
+    assert_eq!(v["model"]["state"], "absent", "got: {stdout}");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn search_updates_the_index_before_querying() {
     let root = fixture_root("autoupdate");

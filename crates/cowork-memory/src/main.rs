@@ -87,6 +87,8 @@ fn main() -> Result<()> {
         }
         Cmd::Status { json } => {
             let ix = cowork_memory::index::load(&cache);
+            let md = model_dir(&cli.root);
+            let model = cowork_memory::model::status(&md);
             // Counts alone cannot tell "never indexed" from "indexed an empty
             // corpus" — both are zero — and the app's memory panel has to
             // show those as different states.
@@ -107,6 +109,15 @@ fn main() -> Result<()> {
                         "files": ix.meta.files.len(),
                         "chunks": ix.meta.chunks.len(),
                         "dim": ix.meta.dim,
+                        // The index can be ready while the model is gone — the
+                        // cache outlives it — so the app cannot infer one from
+                        // the other and needs both reported.
+                        "model": {
+                            "dir": md.display().to_string(),
+                            "state": model.state,
+                            "have": model.have,
+                            "total": model.total,
+                        },
                     })
                 );
             } else {
@@ -115,6 +126,13 @@ fn main() -> Result<()> {
                 println!("state:  {state}");
                 println!("files:  {}", ix.meta.files.len());
                 println!("chunks: {} (dim {})", ix.meta.chunks.len(), ix.meta.dim);
+                println!(
+                    "model:  {} ({} of {} bytes) at {}",
+                    model.state,
+                    model.have,
+                    model.total,
+                    md.display()
+                );
             }
         }
         Cmd::Search { query, scope, top, min_score, json } => {

@@ -85,6 +85,54 @@ impl Fetcher for HttpFetcher {
     }
 }
 
+/// What the model directory holds, and how far along it is.
+pub struct ModelStatus {
+    /// `absent`, `partial` or `present`.
+    pub state: &'static str,
+    /// Bytes on disk that count towards a finished download.
+    pub have: u64,
+    /// Bytes when complete.
+    pub total: u64,
+}
+
+/// The model's state, for a UI that has to decide what to offer.
+///
+/// Three states rather than a boolean, and `partial` is the reason. An
+/// interrupted download leaves a `.part` that `download_one` will resume from,
+/// so reporting it as "absent" would invite the person to start 470 MB over
+/// from nothing — while the bytes it would re-fetch are already sitting there.
+///
+/// A file present at the wrong size counts for nothing: `download_one` only
+/// renames out of `.part` once the length matches exactly, so a final file of
+/// the wrong length was not written by us and is not resumable.
+pub fn status(dir: &Path) -> ModelStatus {
+    let mut have = 0u64;
+    let mut total = 0u64;
+    let mut complete = 0usize;
+    let all = files();
+    for f in &all {
+        total += f.expected;
+        let final_len = std::fs::metadata(dir.join(f.name)).map(|m| m.len()).unwrap_or(0);
+        if final_len == f.expected {
+            have += f.expected;
+            complete += 1;
+            continue;
+        }
+        have += std::fs::metadata(dir.join(format!("{}.part", f.name)))
+            .map(|m| m.len())
+            .unwrap_or(0)
+            .min(f.expected);
+    }
+    let state = if complete == all.len() {
+        "present"
+    } else if have > 0 {
+        "partial"
+    } else {
+        "absent"
+    };
+    ModelStatus { state, have, total }
+}
+
 /// True when both files are on disk at exactly their expected size.
 pub fn is_present(dir: &Path) -> bool {
     files().iter().all(|f| {
@@ -178,6 +226,50 @@ mod tests {
     use std::fs;
     use std::io::Cursor;
     use std::net::TcpListener;
+
+    #[test]
+    fn model_state_tells_absent_from_partial_from_present() {
+        let dir = std::env::temp_dir().join(format!("cwm-model-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let all = files();
+
+        let st = status(&dir);
+        assert_eq!(st.state, "absent", "nothing on disk");
+        assert_eq!(st.have, 0);
+        assert_eq!(st.total, all.iter().map(|f| f.expected).sum::<u64>());
+
+        // A resumable `.part` is progress, not absence.
+        fs::write(dir.join(format!("{}.part", all[0].name)), vec![0u8; 64]).unwrap();
+        let st = status(&dir);
+        assert_eq!(st.state, "partial", "a .part must not read as absent");
+        assert_eq!(st.have, 64);
+
+        // A final file at the wrong size was not written by us: `download_one`
+        // renames only on an exact match, so it counts for nothing.
+        fs::write(dir.join(all[1].name), vec![0u8; 8]).unwrap();
+        assert_eq!(status(&dir).have, 64, "a short final file is not progress");
+
+        // `set_len`, not `write`: these two files are 479 MB between them, and a
+        // test that actually allocates them is a test nobody runs twice. The
+        // hole costs nothing and `metadata().len()` reports the full length,
+        // which is all `status` looks at.
+        for f in &all {
+            let _ = fs::remove_file(dir.join(format!("{}.part", f.name)));
+            let h = fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(dir.join(f.name))
+                .unwrap();
+            h.set_len(f.expected).unwrap();
+        }
+        let st = status(&dir);
+        assert_eq!(st.state, "present");
+        assert_eq!(st.have, st.total);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// A socket that accepts and then says nothing, which is what a stalled
     /// mirror looks like from here. Without a read timeout this test hangs
