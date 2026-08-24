@@ -154,6 +154,30 @@ const SHOTS = {
   },
 };
 
+/** A workspace pulled into a window of its own.
+ *
+ *  Its own page rather than a state of the deck's, because it is a different
+ *  window: the same app under a different role, with the singletons suppressed
+ *  and the sidebar showing one workspace. The framing and rounding pipeline is
+ *  the deck's, unchanged — only the URL and the readiness check differ.
+ *
+ *  Shot at all because a screen the harness cannot mount is a screen nobody
+ *  reviews: everything else about this window would be checked by reading the
+ *  diff and hoping. */
+async function shootWorkspaceWindow(browser) {
+  const page = await browser.newPage({
+    viewport: { width: 1440, height: 900 }, deviceScaleFactor: SCALE,
+  });
+  await page.goto(`${BASE}/harness/workspace.html`, { waitUntil: "load" });
+  await page.waitForSelector("#sidebar .ws-row");
+  await settle(page, 600);
+  const file = join(OUT, "workspace-window.png");
+  await page.screenshot({ path: file });
+  await page.close();
+  const size = shrink(file);
+  console.log(`workspace-window.png ${(size / 1024).toFixed(0)} kB`);
+}
+
 /** The pill is a window of its own, so it is shot on its own: no page around
  *  it, cropped to the element, on transparency. */
 async function shootPill(browser) {
@@ -171,11 +195,12 @@ async function shootPill(browser) {
 }
 
 const wanted = process.argv.slice(2);
-const names = wanted.length ? wanted : [...Object.keys(SHOTS), "pill"];
+const names = wanted.length ? wanted : [...Object.keys(SHOTS), "pill", "workspace-window"];
 
 const browser = await chromium.launch(CHROME ? { executablePath: CHROME } : {});
 for (const name of names) {
   if (name === "pill") { await shootPill(browser); continue; }
+  if (name === "workspace-window") { await shootWorkspaceWindow(browser); continue; }
   const shot = SHOTS[name];
   if (!shot) { console.error(`no such shot: ${name}`); process.exitCode = 1; continue; }
   const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: SCALE });
