@@ -11,6 +11,7 @@ import {
   claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
   revealPath, saveUiState, scheduleAck, schedulerReady, openWorkspaceWindow, onSessionOwner,
+  hostPlatform,
   type HandOffTile,
 } from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
@@ -57,7 +58,8 @@ import {
   type RemoteSession, type SessionsByWindow, type WindowSessions,
 } from "./cross-window";
 import { MAIN_WINDOW_LABEL, workspaceIdOf, workspaceLabel } from "./window-role";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { hasLeftWindow, startsTearOut } from "./tear-out";
+import { getCurrentWindow, cursorPosition } from "@tauri-apps/api/window";
 import type { WindowRole } from "./window-role";
 
 /** The whole app, for either kind of window.
@@ -1483,6 +1485,7 @@ export function startApp(role: WindowRole): Promise<void> {
           icon: "detach" as const,
           label: (name: string) => `Open ${name} in its own window`,
           run: (ws: Workspace) => { void detachWorkspace(ws); },
+          drag: beginTearOut,
         }
       : {
           icon: "attach" as const,
@@ -1729,6 +1732,69 @@ export function startApp(role: WindowRole): Promise<void> {
     await getCurrentWindow().destroy().catch((e) => {
       console.error("could not close the workspace window", e);
     });
+  }
+
+  /** Whether this platform lets the app say where a window goes. Read once, at
+   *  boot: it cannot change while the app is running. */
+  let placesWindows = false;
+  void hostPlatform()
+    .then((p) => { placesWindows = p.placesWindows; })
+    .catch((e) => console.debug("host platform unknown; tear-out stays off", e));
+
+  /** A press on a workspace row that may turn into dragging it out of the window.
+   *
+   *  Pointer capture rather than HTML5 drag-and-drop, which cannot cross the
+   *  boundary of a webview or an OS window at all — the drag simply never
+   *  arrives anywhere. Capture keeps `pointermove` coming after the pointer
+   *  leaves the window, with coordinates that go negative or past the far edge,
+   *  so nothing has to be polled until there is a window to place.
+   *
+   *  Nothing is torn until the pointer has actually left, and the press is not
+   *  swallowed: a click that does not become a drag still selects the workspace,
+   *  which is what the row is mostly for. */
+  function beginTearOut(ws: Workspace, down: PointerEvent) {
+    if (!placesWindows || !startsTearOut(down)) return;
+    const row = down.currentTarget as HTMLElement | null;
+    if (!row) return;
+    let torn = false;
+    const finish = () => {
+      row.removeEventListener("pointermove", onMove);
+      row.removeEventListener("pointerup", finish);
+      row.removeEventListener("pointercancel", finish);
+      try { row.releasePointerCapture(down.pointerId); } catch { /* already gone */ }
+    };
+    const onMove = (e: PointerEvent) => {
+      if (torn) return;
+      if (!hasLeftWindow(e.clientX, e.clientY, { width: innerWidth, height: innerHeight })) return;
+      torn = true;
+      finish();
+      void tearOut(ws);
+    };
+    try { row.setPointerCapture(down.pointerId); } catch { return; }
+    row.addEventListener("pointermove", onMove);
+    row.addEventListener("pointerup", finish);
+    row.addEventListener("pointercancel", finish);
+  }
+
+  /** Put the workspace in a window under the cursor and let the OS carry on the
+   *  drag.
+   *
+   *  The cursor's position is asked for once, here, because this is the only
+   *  moment it is needed — it is global screen coordinates and keeps working
+   *  outside the window, which the pointer event's own coordinates do not.
+   *
+   *  From `startDragging()` on, the window is being moved by the compositor:
+   *  snapping, edge behaviour and the feel of it are the platform's rather than
+   *  something reimplemented here. */
+  async function tearOut(ws: Workspace) {
+    try {
+      const at = await cursorPosition();
+      const label = await openWorkspaceWindow(ws.id, [at.x, at.y], true);
+      const tiles = deck.handOffPayload(ws.id);
+      if (tiles.length) await emitTo(label, "workspace://take", { tiles });
+    } catch (e) {
+      await alertModal(`Could not pull ${ws.name} out: ${String(e)}`);
+    }
   }
 
   const COMMANDS: Record<string, () => void> = {

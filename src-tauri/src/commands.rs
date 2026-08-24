@@ -498,6 +498,15 @@ pub struct HostPlatform {
     pub os: String,
     /// ID дистрибутива из /etc/os-release; None на macOS/Windows.
     pub distro: Option<String>,
+    /// Whether this platform lets the app say where a window goes.
+    ///
+    /// False on Wayland, where `set_position` returns `Ok` and silently does
+    /// nothing. The tear-out gesture is built on putting the new window under
+    /// the cursor, so it is not offered where that cannot work — the plain
+    /// trigger does the same job and reads as the way to do it, rather than as
+    /// the fallback beside a gesture that looks broken.
+    #[serde(rename = "placesWindows")]
+    pub places_windows: bool,
 }
 
 /// Достаёт `ID=` из /etc/os-release. Кавычки вокруг значения допустимы.
@@ -526,7 +535,22 @@ pub fn host_platform() -> HostPlatform {
     } else {
         None
     };
-    HostPlatform { os: os.to_string(), distro }
+    // Whether this platform lets an app say where a window goes.
+    //
+    // `set_position` compiles and returns `Ok` on Wayland and silently does
+    // nothing: the compositor owns placement. The tear-out gesture is built on
+    // putting the new window under the cursor, so on Wayland it cannot work at
+    // all — and a gesture that half-works is worse than one that is not offered,
+    // because the plain trigger is right there and reads as broken beside it.
+    //
+    // Named for the capability rather than the display server, because that is
+    // what the caller needs to know and it stays true if another platform ever
+    // makes the same choice.
+    let places_windows = !(os == "linux"
+        && std::env::var("XDG_SESSION_TYPE")
+            .map(|t| t.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false));
+    HostPlatform { os: os.to_string(), distro, places_windows }
 }
 
 #[tauri::command(async)]
@@ -2144,7 +2168,16 @@ const WINDOW_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// would hide the cause rather than show it.
 #[tauri::command(async)]
 pub async fn open_workspace_window(
-    app: AppHandle, state: State<'_, AppState>, workspace_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_id: String,
+    // `at` is where to put it, in physical screen coordinates, and `drag` hands
+    // the window straight to the OS's own move so the person keeps dragging what
+    // is now an ordinary window. Both are set by the tear-out gesture and absent
+    // for the plain trigger, which lets the window state plugin restore the
+    // window wherever it was last left. `drag` is only meaningful with `at`.
+    at: Option<(f64, f64)>,
+    drag: Option<bool>,
 ) -> Result<String, String> {
     let label = crate::windows::workspace_label(&workspace_id);
 
@@ -2200,9 +2233,25 @@ pub async fn open_workspace_window(
     .map_err(|e| format!("could not create the window for this workspace: {e}"))?;
 
     fit_to_display(&window);
+    if let Some((x, y)) = at {
+        // Offset so the cursor lands near the top-left of the new window rather
+        // than at its centre: what the person is dragging should appear under
+        // their hand, the way a torn-off tab does.
+        let _ = window.set_position(tauri::PhysicalPosition::new(x - 60.0, y - 12.0));
+        // After the placement, or the clamp would measure against the display the
+        // window was built on rather than the one it was dropped on.
+        fit_to_display(&window);
+    }
     window
         .show()
         .map_err(|e| format!("the window for this workspace could not be shown: {e}"))?;
+    if drag.unwrap_or(false) {
+        // The OS takes over from here: the compositor's own move, so the window
+        // follows the cursor natively and snapping and edge behaviour are the
+        // platform's. Best effort — a window that did not pick up the drag is
+        // still open, in the right place, holding the workspace.
+        let _ = window.start_dragging();
+    }
 
     if !state.windows_ready.wait_for(&label, WINDOW_READY_TIMEOUT).await {
         let _ = window.close();

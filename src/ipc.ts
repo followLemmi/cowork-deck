@@ -117,7 +117,15 @@ export const claudeAvailable = () => invoke<boolean>("claude_available");
 
 export interface GhAccount { host: string; login: string; active: boolean; scopes: string[]; state: string; }
 export interface GhStatus { path: string | null; version: string | null; accounts: GhAccount[]; error: string | null; }
-export interface HostPlatform { os: "macos" | "windows" | "linux"; distro: string | null; }
+export interface HostPlatform {
+  os: "macos" | "windows" | "linux";
+  distro: string | null;
+  /** Whether the app may say where a window goes. False on Wayland, where
+   *  `set_position` returns success and silently does nothing — so the tear-out
+   *  gesture, which is built on placing a window under the cursor, is not
+   *  offered there. The plain trigger does the same job everywhere. */
+  placesWindows: boolean;
+}
 
 export const ghStatus = () => invoke<GhStatus>("gh_status");
 export const hostPlatform = () => invoke<HostPlatform>("host_platform");
@@ -454,8 +462,16 @@ export const onSessionOwner = (cb: (session: string, owner: string) => void) =>
  *  listeners, and rejects if it never does. So a caller that gets a label back
  *  may address the window immediately; one that gets an error has a window that
  *  failed to boot, reported rather than left on screen and inert. */
-export const openWorkspaceWindow = (workspaceId: string) =>
-  invoke<string>("open_workspace_window", { workspaceId });
+export const openWorkspaceWindow = (
+  workspaceId: string,
+  /** Physical screen coordinates to place it at — the tear-out gesture's cursor.
+   *  Absent for the plain trigger, which lets the window state plugin put the
+   *  window back where it was last left. */
+  at?: [number, number],
+  /** Hand the new window to the OS's own move, so a torn-out workspace keeps
+   *  following the cursor as an ordinary window. Only meaningful with `at`. */
+  drag?: boolean,
+) => invoke<string>("open_workspace_window", { workspaceId, at, drag });
 /** "My listeners are attached; you may send me things."
  *
  *  Called last in a window's bootstrap, and only there. An emit to a webview

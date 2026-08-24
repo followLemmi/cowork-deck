@@ -68,6 +68,11 @@ export class WorkspacesPanel {
       icon: IconName;
       label: (name: string) => string;
       run: (ws: Workspace) => void;
+      /** Begin a possible tear-out from a press on the row. Absent where the
+       *  platform cannot place a window, and where there is nowhere to tear to.
+       *  The row's ordinary click is untouched either way: a press that does not
+       *  become a drag has to cost nothing. */
+      drag?: (ws: Workspace, e: PointerEvent) => void;
     } | null = null,
     /** Raise the window a detached workspace lives in. */
     private onRaise: ((ws: Workspace) => void) | null = null,
@@ -246,6 +251,10 @@ export class WorkspacesPanel {
       // No pull-out control on a workspace that is already out. The count badge
       // beside it deliberately keeps working — the workspace is still being
       // worked on, just not here.
+      const beginDrag = this.moveAction?.drag;
+      if (beginDrag && !isDetached) {
+        row.addEventListener("pointerdown", (e) => beginDrag(w, e));
+      }
       const move = this.moveAction && !isDetached
         ? iconButton(this.moveAction.icon, this.moveAction.label(w.name), "ws-detach")
         : null;

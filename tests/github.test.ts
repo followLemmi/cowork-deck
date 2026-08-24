@@ -9,21 +9,21 @@ const acc = (over: Partial<GhAccount> = {}): GhAccount => ({
 
 describe("installCommand", () => {
   it("uses the native package manager per platform", () => {
-    expect(installCommand({ os: "macos", distro: null })).toBe("brew install gh");
-    expect(installCommand({ os: "windows", distro: null })).toBe("winget install --id GitHub.cli");
-    expect(installCommand({ os: "linux", distro: "ubuntu" })).toBe("sudo apt install gh");
-    expect(installCommand({ os: "linux", distro: "debian" })).toBe("sudo apt install gh");
-    expect(installCommand({ os: "linux", distro: "fedora" })).toBe("sudo dnf install gh");
-    expect(installCommand({ os: "linux", distro: "arch" })).toBe("sudo pacman -S github-cli");
-    expect(installCommand({ os: "linux", distro: "opensuse-tumbleweed" }))
+    expect(installCommand({ os: "macos", distro: null, placesWindows: true })).toBe("brew install gh");
+    expect(installCommand({ os: "windows", distro: null, placesWindows: true })).toBe("winget install --id GitHub.cli");
+    expect(installCommand({ os: "linux", distro: "ubuntu", placesWindows: true })).toBe("sudo apt install gh");
+    expect(installCommand({ os: "linux", distro: "debian", placesWindows: true })).toBe("sudo apt install gh");
+    expect(installCommand({ os: "linux", distro: "fedora", placesWindows: true })).toBe("sudo dnf install gh");
+    expect(installCommand({ os: "linux", distro: "arch", placesWindows: true })).toBe("sudo pacman -S github-cli");
+    expect(installCommand({ os: "linux", distro: "opensuse-tumbleweed", placesWindows: true }))
       .toBe("sudo zypper install gh");
   });
 
   it("falls back to the documented installer for unknown distros", () => {
     // Поле в UI редактируемое: угадывать наугад хуже, чем честно предложить доку.
-    expect(installCommand({ os: "linux", distro: "voidlinux" }))
+    expect(installCommand({ os: "linux", distro: "voidlinux", placesWindows: true }))
       .toBe("# см. https://github.com/cli/cli/blob/trunk/docs/install_linux.md");
-    expect(installCommand({ os: "linux", distro: null }))
+    expect(installCommand({ os: "linux", distro: null, placesWindows: true }))
       .toBe("# см. https://github.com/cli/cli/blob/trunk/docs/install_linux.md");
   });
 });
