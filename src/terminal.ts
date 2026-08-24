@@ -5,7 +5,10 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
-import { startSession, startCommandSession, writeSession, resizeSession, type OutputSink, type ScenarioLaunch, type SessionAuth } from "./ipc";
+import {
+  startSession, startCommandSession, startShellSession, writeSession, resizeSession,
+  prepareWorkspace, type OutputSink, type ScenarioLaunch, type SessionAuth, type ShellStart,
+} from "./ipc";
 import { matchHotkey, isMacPlatform } from "./commands";
 import { terminalKeyBytes } from "./terminal-keys";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
@@ -39,6 +42,16 @@ export class TerminalPanel {
   private lastSearch = "";
   private ro: ResizeObserver | null = null;
   private rafId: number | null = null;
+  /** Keystrokes typed before the process exists, in the order they were typed.
+   *
+   *  `onData` is wired in the constructor and the terminal takes focus straight
+   *  away, but the spawn is a round trip — and `write_session` for a session
+   *  that does not exist yet succeeds and discards the bytes. So the first
+   *  keystrokes into a fresh tile used to vanish. Held here instead and flushed
+   *  the moment the process is there, which is also what lets the launch resolve
+   *  the account binding off the main thread without costing input. */
+  private pending: string[] = [];
+  private started = false;
   /** The WebGL renderer, while this panel holds a context. `null` means the panel
    *  is on xterm's DOM renderer — either because it is off screen, because the cap
    *  is full, or because WebGL is unavailable or was lost. */
@@ -183,9 +196,22 @@ export class TerminalPanel {
     });
     this.ro.observe(mount);
     this.watchVisibility();
-    this.term.onData((d) => { void writeSession(this.session, d); });
+    this.term.onData((d) => { this.send(d); });
     this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
     window.addEventListener(UI_SCALE_EVENT, this.onScaleEvent);
+  }
+
+  /** Everything typed before the process existed, in order, and then nothing
+   *  more — from here on `send` writes straight through. */
+  private markStarted() {
+    this.started = true;
+    const held = this.pending;
+    this.pending = [];
+    for (const d of held) void writeSession(this.session, d);
+  }
+  private send(data: string) {
+    if (!this.started) { this.pending.push(data); return; }
+    void writeSession(this.session, data);
   }
 
   /** A fresh output channel for one spawn.
@@ -212,8 +238,34 @@ export class TerminalPanel {
    *  that visibly stops lining up. */
   private openSink(): OutputSink {
     const sink = new Channel<ArrayBuffer>();
-    sink.onmessage = (buf) => this.term.write(new Uint8Array(buf));
+    sink.onmessage = (buf) => this.paint(new Uint8Array(buf));
     return sink;
+  }
+
+  /** Output that arrived while the panel was holding it, in arrival order.
+   *  `null` means nothing is being held and bytes go straight to the screen. */
+  private heldOutput: Uint8Array[] | null = null;
+
+  /** Hold this panel's pty output until `releaseOutput`.
+   *
+   *  The drawer writes one banner line naming what a shell carries, and it can
+   *  only write it once the spawn has come back with the account and the
+   *  identity — by which time a fast shell has already printed its prompt. Held
+   *  here rather than in the caller because the channel opened at spawn paints
+   *  straight into this terminal: there is no longer anything between the two to
+   *  intercept. */
+  holdOutput() { this.heldOutput = []; }
+
+  /** Let go of what was held, in order, and write straight through from now on. */
+  releaseOutput() {
+    const held = this.heldOutput;
+    this.heldOutput = null;
+    if (held) for (const bytes of held) this.term.write(bytes);
+  }
+
+  private paint(bytes: Uint8Array) {
+    if (this.heldOutput) this.heldOutput.push(bytes);
+    else this.term.write(bytes);
   }
 
   /** Ask for a WebGL context when the panel comes on screen and give it back when
@@ -297,18 +349,69 @@ export class TerminalPanel {
      *  journal record for it. Absent for a card, an issue, a pull request or a
      *  bare "+ session". */
     scenario: ScenarioLaunch | null = null,
+    /** Replacing a process still live under this id: the restart button. */
+    replace = false,
   ): Promise<SessionAuth> {
+    // A restart reuses this panel, and until its new process exists the tile is
+    // in exactly the state the buffer is for.
+    this.started = false;
+    // First, and awaited: resolving the account binding shells out to `gh` and
+    // may run the login shell, and `start_session` runs on the thread that
+    // paints the window. Doing it here leaves that command reading a cache
+    // instead of freezing the app for up to ten seconds on every launch. A
+    // failure is not fatal — the launch below resolves it the slow way.
+    if (workspaceId) {
+      try {
+        await prepareWorkspace(workspaceId);
+      } catch (e) {
+        console.debug("prepareWorkspace failed", e);
+      }
+    }
     const { cols, rows } = this.term;
-    return await startSession(
-      this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
-      this.openSink(), scenario,
-    );
+    try {
+      return await startSession(
+        this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
+        this.openSink(), scenario, replace,
+      );
+    } finally {
+      // In `finally` because a launch that failed still has to release what was
+      // typed at it: those keystrokes belong to whatever the person does next,
+      // and holding them forever would make the tile silently swallow input.
+      this.markStarted();
+    }
+  }
+  /** An interactive shell: the person's own `$SHELL`, carrying the workspace's
+   *  account binding.
+   *
+   *  Between `start` and `startCommand`, and closer to the first: it takes the
+   *  same pre-resolved environment, for the same reason. Unlike either, nothing
+   *  about it is the app's — no prompt, no command, no hooks. What comes back is
+   *  what the drawer's banner line is written from. */
+  async startShell(cwd: string, workspaceId: string | null): Promise<ShellStart> {
+    this.started = false;
+    if (workspaceId) {
+      try {
+        await prepareWorkspace(workspaceId);
+      } catch (e) {
+        console.debug("prepareWorkspace failed", e);
+      }
+    }
+    const { cols, rows } = this.term;
+    try {
+      return await startShellSession(this.session, cwd, workspaceId, cols, rows, this.openSink());
+    } finally {
+      this.markStarted();
+    }
   }
   /** A one-off run of a user command. Not an agent session: no state hooks and
    *  no account binding — the environment is inherited as it is. */
   async startCommand(cwd: string, command: string): Promise<void> {
     const { cols, rows } = this.term;
-    await startCommandSession(this.session, cwd, command, cols, rows, this.openSink());
+    try {
+      await startCommandSession(this.session, cwd, command, cols, rows, this.openSink());
+    } finally {
+      this.markStarted();
+    }
   }
   /** Agent output arrives as bytes on the session's channel and is written as
    *  bytes, so xterm's own UTF-8 decoder can carry a sequence split across two

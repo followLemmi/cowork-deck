@@ -72,6 +72,14 @@ export interface UiState {
    *  and deletes nothing already written, and reads keep working. Required for
    *  the same reason as the two above: Rust fills it from a `serde` default. */
   recordScenarioRuns: boolean;
+  /** How tall the drawer is, **in rows of the terminal's own type** — not
+   *  pixels, and for a sharper version of `prDiffCols`' reason: the thing being
+   *  sized is a grid of characters, so "show me twenty rows" has to keep meaning
+   *  twenty rows after the next text-size change. One value for the app, unlike
+   *  *whether* the drawer is up, which is per workspace and lives with the tabs:
+   *  the height is how much of this window to give a terminal, and that does not
+   *  change with the project. */
+  terminalRows: number;
 }
 
 /** A change to the stored state, which is what `save_ui_state` takes.
@@ -85,6 +93,7 @@ export interface UiStatePatch {
   uiScale?: number;
   prDiffCols?: number;
   recordScenarioRuns?: boolean;
+  terminalRows?: number;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
@@ -337,9 +346,75 @@ export const startSession = (
   session: string, cwd: string, workspaceId: string | null, initialPrompt: string | null,
   taskId: string | null, cols: number, rows: number, resume: boolean, sink: OutputSink,
   scenario: ScenarioLaunch | null = null,
+  /** Deliberately replacing a process still live under this id — the restart
+   *  button, and nothing else. Left false, the backend refuses rather than
+   *  killing what is there: both spawn paths are unguarded async, so two
+   *  launches can be in flight before the first resolves. */
+  replace = false,
 ) => invoke<SessionAuth>("start_session", {
-  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, sink, scenario,
+  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, sink, scenario, replace,
 });
+
+/** Resolve a workspace's account binding and `claude`'s location ahead of a
+ *  launch, off the thread that paints the window.
+ *
+ *  `start_session` is deliberately synchronous — a `write` that overtook its
+ *  `start` is lost keyboard input — which used to mean it did up to ten seconds
+ *  of `gh` and login-shell work with the window frozen. Awaiting this first
+ *  moves that work off the main thread and leaves the launch itself reading a
+ *  cache. Safe to call repeatedly; a resolved binding is remembered until the
+ *  workspace is saved again. */
+export const prepareWorkspace = (workspaceId: string) =>
+  invoke<SessionAuth>("prepare_workspace", { workspaceId });
+/** What the drawer learns when a shell starts.
+ *
+ *  `identity` is the git identity the shell actually carries in its
+ *  environment, and it is here because a person cannot check it any other way:
+ *  `GIT_AUTHOR_*` outranks `.git/config`, so `git config user.email` reports the
+ *  value that loses. `program` is the shell's own name, for the tab. */
+export interface ShellStart {
+  auth: SessionAuth;
+  identity: string | null;
+  program: string;
+}
+
+/** An interactive shell on a pty — the person's own `$SHELL`, in `cwd`, carrying
+ *  the workspace's account binding. Refuses an id that is already running, and
+ *  refuses past the backend's cap with `terminal-limit:<n>`. */
+export const startShellSession = (
+  session: string, cwd: string, workspaceId: string | null, cols: number, rows: number,
+  sink: OutputSink,
+) => invoke<ShellStart>("start_shell_session", { session, cwd, workspaceId, cols, rows, sink });
+
+/** How many jobs a session is running right now.
+ *
+ *  A shell has no hooks, so its tile chip says `idle` whether it is at a prompt
+ *  or halfway through a release build. This is the only honest answer, and what
+ *  the close confirmation asks before it destroys anything. */
+export const sessionJobs = (session: string) => invoke<number>("session_jobs", { session });
+
+/** A persisted drawer tab. Smaller than `SessionEntry` on purpose: a shell
+ *  cannot be resumed, so what comes back is a new shell in the same directory
+ *  under the same name, and there is nothing else to store. */
+export interface TerminalEntry {
+  sessionId: string;
+  cwd: string;
+  name: string;
+  workspaceId?: string;
+}
+/** The drawer is per workspace, so both of these are too: `active` is the tab in
+ *  front keyed by workspace id (`""` for a terminal opened with no workspace),
+ *  and `open` is the workspaces whose drawer is up. */
+export interface TerminalLayout {
+  items: TerminalEntry[];
+  active: Record<string, string>;
+  open: string[];
+}
+
+export const loadTerminals = () => invoke<TerminalLayout>("load_terminals");
+export const saveTerminals = (layout: TerminalLayout) =>
+  invoke<void>("save_terminals", { layout });
+
 /** Разовый запуск пользовательской команды в тайле-терминале (установка gh,
  *  `gh auth login`). Не сессия агента: хуков состояния нет. */
 export const startCommandSession = (
@@ -355,9 +430,49 @@ export const saveLayout = (sessions: SessionEntry[]) => invoke<void>("save_layou
 export const onState = (cb: (session: string, state: SessionState) => void): Promise<UnlistenFn> =>
   listen<{ session: string; state: SessionState }>("session://state", (e) =>
     cb(e.payload.session, e.payload.state));
-export const onExit = (cb: (session: string, ok: boolean) => void): Promise<UnlistenFn> =>
-  listen<{ session: string; ok: boolean }>("session://exit", (e) =>
-    cb(e.payload.session, e.payload.ok));
+/** What became of a session's process.
+ *
+ *  This used to be one boolean, which made three different things look the
+ *  same: a command that failed, a process the app hung up at shutdown, and a
+ *  `wait()` the backend could not read. `code` is the process's own exit code;
+ *  it is null when a signal ended it — `signal` then names the signal — or when
+ *  `unknown` says the outcome could not be read at all. */
+export interface SessionExit {
+  ok: boolean;
+  code: number | null;
+  signal: string | null;
+  unknown: boolean;
+}
+
+/** A one-line, honest account of an exit, for the tile to print.
+ *
+ *  Null for an ordinary success: a session that ended cleanly needs no epitaph,
+ *  and the state chip already says "ended". */
+export function describeExit(exit: SessionExit): string | null {
+  if (exit.unknown) return "process gone — the app could not read what happened to it";
+  if (exit.signal) return `terminated by ${exit.signal}`;
+  if (exit.code !== null && exit.code !== 0) return `exited with code ${exit.code}`;
+  return null;
+}
+
+export const onExit = (cb: (session: string, exit: SessionExit) => void): Promise<UnlistenFn> =>
+  listen<{ session: string } & SessionExit>("session://exit", (e) =>
+    cb(e.payload.session, {
+      ok: e.payload.ok, code: e.payload.code, signal: e.payload.signal, unknown: e.payload.unknown,
+    }));
+
+/** Sessions with something still running inside them, named by the backend when
+ *  it refuses to quit. `processes` counts what is running below the session's
+ *  own shell or agent — the build, the test run, the tool call. */
+export interface LiveWork { session: string; processes: number }
+
+/** The app is on its way out and something is running. The deck's job is to ask,
+ *  and to answer with `quitConfirmed` or `quitCancelled` — until one of them
+ *  arrives the app stays up. */
+export const onQuitBlocked = (cb: (work: LiveWork[]) => void): Promise<UnlistenFn> =>
+  listen<LiveWork[]>("app://quit-blocked", (e) => cb(e.payload));
+export const quitConfirmed = () => invoke<void>("quit_confirmed");
+export const quitCancelled = () => invoke<void>("quit_cancelled");
 
 /** Released once, after the fire listener below is attached, so the backend
  *  scheduler's first (catch-up) tick has somewhere to land. */

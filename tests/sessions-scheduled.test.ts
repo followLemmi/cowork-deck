@@ -22,6 +22,8 @@ vi.mock("../src/terminal", () => ({
 vi.mock("../src/ipc", () => ({
   onState: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),
+  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
+  describeExit: vi.fn().mockReturnValue(null),
   closeSession: vi.fn(),
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),

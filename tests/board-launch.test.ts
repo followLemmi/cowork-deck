@@ -44,6 +44,8 @@ vi.mock("../src/ipc", async (orig) => ({
   sessionSnapshots: vi.fn().mockResolvedValue({}),
   onState: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),
+  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
+  describeExit: vi.fn().mockReturnValue(null),
   onScheduledFire: vi.fn().mockResolvedValue(() => {}),
   onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
   onTasksChanged: vi.fn().mockResolvedValue(() => {}),
@@ -110,7 +112,7 @@ describe("▶ on a github issue", () => {
     document.body.innerHTML =
       // Mirrors index.html — `main.ts` mounts the view switch into `#viewbar`.
       '<div id="app"><nav id="viewbar"></nav><div id="stage">'
-      + '<div id="sidebar"></div><main id="deck"></main>'
+      + '<div id="sidebar"></div><main id="deck"></main><div id="terminals"></div>'
       + '<div id="board" class="hidden"></div></div></div>';
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     listTasksMock.mockResolvedValue([issue("42")]);

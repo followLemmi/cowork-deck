@@ -18,8 +18,9 @@ use cowork_deck::tasks;
 
 use commands::AppState;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::StateFlags;
 
 fn reporter_name() -> &'static str {
@@ -63,6 +64,34 @@ fn task_bin_path() -> String {
     resolve_reporter_path(&dir, task_bin_name(), |p| p.exists())
         .to_string_lossy()
         .to_string()
+}
+
+/// Whether the app may go now, and the one place that decides it.
+///
+/// Returns true when there is nothing running inside any session. When there is,
+/// the first attempt is refused and the deck is asked to put the question to the
+/// person — the same discipline as the worktree guards in `commands.rs`, which
+/// refuse rather than destroy when they cannot prove there is nothing to lose.
+///
+/// The flag is the escape hatch, and it is why this asks at most once per
+/// unanswered question: if the window is wedged and never answers, a second
+/// quit gesture goes straight through. An app that cannot be quit would be a
+/// worse defect than the one this prevents. A cancelled quit disarms it
+/// (`quit_cancelled`), so the next attempt asks again.
+fn ready_to_quit(app: &tauri::AppHandle) -> bool {
+    let state = match app.try_state::<AppState>() {
+        Some(s) => s,
+        None => return true,
+    };
+    let work = state.pty.live_work();
+    if work.is_empty() {
+        return true;
+    }
+    if state.quit_asked.swap(true, Ordering::SeqCst) {
+        return true;
+    }
+    let _ = app.emit("app://quit-blocked", work);
+    false
 }
 
 fn main() {
@@ -126,6 +155,9 @@ fn main() {
                 watchers: std::sync::Arc::new(tasks::watch::TaskWatchers::new()),
                 gh_tokens: Mutex::new(std::collections::HashMap::new()),
                 gh_repos: Mutex::new(std::collections::HashMap::new()),
+                session_envs: Mutex::new(std::collections::HashMap::new()),
+                shells: Mutex::new(std::collections::HashSet::new()),
+                quit_asked: AtomicBool::new(false),
                 issue_open_counts: Mutex::new(std::collections::HashMap::new()),
             });
 
@@ -182,7 +214,21 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // The label check is load-bearing and its absence is invisible
+                // from the frontend. `AppState` is app-level, so this handler
+                // resolves the same PTY manager whichever window sent the event
+                // — and the app has a second window, the floating status pill.
+                // One `close()` on the pill, a Linux compositor's delete-event,
+                // or any future decoration on it would otherwise kill every
+                // session in every workspace.
+                if window.label() != "main" {
+                    return;
+                }
+                if !ready_to_quit(window.app_handle()) {
+                    api.prevent_close();
+                    return;
+                }
                 if let Some(state) = window.try_state::<AppState>() {
                     state.pty.kill_all();
                 }
@@ -196,7 +242,14 @@ fn main() {
             commands::save_skill,
             commands::remove_skill,
             commands::claude_available,
+            commands::prepare_workspace,
+            commands::quit_confirmed,
+            commands::quit_cancelled,
             commands::start_session,
+            commands::start_shell_session,
+            commands::session_jobs,
+            commands::load_terminals,
+            commands::save_terminals,
             commands::write_session,
             commands::resize_session,
             commands::close_session,
@@ -246,8 +299,32 @@ fn main() {
             tasks_cmd::board_step_rewrite,
             tasks_cmd::board_step_usage,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running cowork-deck");
+        .build(tauri::generate_context!())
+        .expect("error while building cowork-deck")
+        // The app-level exit events, which a webview `CloseRequested` is not.
+        //
+        // macOS Cmd+Q is `terminate:` and arrives here, not as a window close;
+        // so does `app.exit`, and so does the updater's relaunch — which goes
+        // through `request_restart` and would otherwise orphan the whole process
+        // tree and then restore sessions alongside the survivors. Before this,
+        // the only cleanup path in the app was one window's close request, so
+        // every one of those gestures skipped it silently.
+        .run(|app, event| match event {
+            // `prevent_exit` is ignored for a restart, by design in Tauri: an
+            // update that has already been installed must not be blockable. The
+            // teardown below still runs for it.
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                if !ready_to_quit(app) {
+                    api.prevent_exit();
+                }
+            }
+            tauri::RunEvent::Exit => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.pty.kill_all();
+                }
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]
