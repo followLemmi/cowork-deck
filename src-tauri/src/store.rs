@@ -2,11 +2,8 @@ use crate::model::{
     ScheduleRun, SessionEntry, Skill, TerminalLayout, UiState, UiStatePatch, Workspace,
 };
 use crate::runs::{fold_events, retain_recent, RunEvent, RunRecord, RUNS_PER_SKILL};
+use crate::windows::MAIN as MAIN_WINDOW;
 use std::path::PathBuf;
-
-/// The label the main window carries, and the window an entry that names no
-/// owner belongs to.
-pub const MAIN_WINDOW: &str = "main";
 
 /// Does this entry belong to `owner`?
 ///

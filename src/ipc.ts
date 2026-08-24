@@ -424,6 +424,26 @@ export const writeSession = (session: string, data: string) => invoke<void>("wri
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
 export const closeSession = (session: string) => invoke<void>("close_session", { session });
+/** Open the window pinned to `workspaceId`, or raise it if it is already up.
+ *
+ *  Windows are built in Rust rather than here. `core:webview:default` does not
+ *  grant `allow-create-webview-window`, and granting it to a webview that renders
+ *  untrusted agent output is not worth what it buys — the label scheme and the
+ *  window cap belong on that side anyway.
+ *
+ *  Resolves with the new window's label once that window has attached its
+ *  listeners, and rejects if it never does. So a caller that gets a label back
+ *  may address the window immediately; one that gets an error has a window that
+ *  failed to boot, reported rather than left on screen and inert. */
+export const openWorkspaceWindow = (workspaceId: string) =>
+  invoke<string>("open_workspace_window", { workspaceId });
+/** "My listeners are attached; you may send me things."
+ *
+ *  Called last in a window's bootstrap, and only there. An emit to a webview
+ *  holding no listener for that event is a silent no-op at both ends, so the
+ *  backend routes nothing to a window until this arrives. The label is taken
+ *  from the runtime, not passed, so no window can answer for another. */
+export const windowReady = () => invoke<void>("window_ready");
 /** The tiles **this window** should restore — not every tile on disk.
  *
  *  The filtering happens in Rust, against the window label the runtime attaches

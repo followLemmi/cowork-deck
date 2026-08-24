@@ -14,6 +14,7 @@ mod scheduler;
 mod tasks_cmd;
 mod transcripts;
 mod which;
+mod windows;
 use cowork_deck::tasks;
 
 use commands::AppState;
@@ -159,6 +160,7 @@ fn main() {
                 shells: Mutex::new(std::collections::HashSet::new()),
                 quit_asked: AtomicBool::new(false),
                 issue_open_counts: Mutex::new(std::collections::HashMap::new()),
+                windows_ready: std::sync::Arc::new(windows::WindowReady::default()),
             });
 
             // Scheduled scenarios: the backend decides *when* and emits
@@ -174,7 +176,7 @@ fn main() {
             // macOSPrivateApi + the `macos-private-api` Cargo feature (spike).
             let pill = tauri::WebviewWindowBuilder::new(
                 app,
-                "pill",
+                windows::PILL,
                 tauri::WebviewUrl::App("pill.html".into()),
             )
             .inner_size(200.0, 48.0)
@@ -214,6 +216,17 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // `Destroyed`, not `CloseRequested`: the latter is preventable and
+            // also fires while the runtime tears everything down at quit, so a
+            // window that refused to close would be marked gone while it is
+            // still listening. A label is reusable — the same workspace pulled
+            // out twice — and the second window has its own listeners to attach,
+            // so the first one's readiness must not be inherited.
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(state) = window.try_state::<AppState>() {
+                    state.windows_ready.forget(window.label());
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // The label check is load-bearing and its absence is invisible
                 // from the frontend. `AppState` is app-level, so this handler
@@ -222,7 +235,7 @@ fn main() {
                 // One `close()` on the pill, a Linux compositor's delete-event,
                 // or any future decoration on it would otherwise kill every
                 // session in every workspace.
-                if window.label() != "main" {
+                if window.label() != windows::MAIN {
                     return;
                 }
                 if !ready_to_quit(window.app_handle()) {
@@ -253,6 +266,8 @@ fn main() {
             commands::write_session,
             commands::resize_session,
             commands::close_session,
+            commands::window_ready,
+            commands::open_workspace_window,
             commands::load_layout,
             commands::save_layout,
             commands::load_ui_state,

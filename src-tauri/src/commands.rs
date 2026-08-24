@@ -57,7 +57,7 @@ use crate::which;
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::ipc::{Channel, Response};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AppState {
     pub store: Mutex<Store>,
@@ -105,6 +105,13 @@ pub struct AppState {
     /// a network call. A workspace whose board has not been opened this run is
     /// absent, and `WorkspacesPanel` already draws nothing for that.
     pub issue_open_counts: Mutex<std::collections::HashMap<String, usize>>,
+    /// Which windows have attached their listeners, and how to wait for one.
+    ///
+    /// The same problem `scheduler_ready` above solves for `schedule://fire`,
+    /// with more than one thing to wait for: an emit to a webview that holds no
+    /// listener for that event is a silent no-op at both ends, so a window that
+    /// has not announced itself is not spoken to. See `windows::WindowReady`.
+    pub windows_ready: std::sync::Arc<crate::windows::WindowReady>,
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
@@ -1998,6 +2005,135 @@ pub fn quit_cancelled(state: State<AppState>) {
     state.quit_asked.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// A window saying that it has attached its listeners.
+///
+/// The label comes from the runtime rather than a parameter, for the reason
+/// `load_layout` below takes a `WebviewWindow`: a window that could name another
+/// would be able to unblock a hand-off that has not happened.
+///
+/// Synchronous, and cheap enough to stay that way: one lock, one insert into a
+/// set of at most a handful of labels, and a wake of whoever is waiting. Making
+/// it async would also make it race the window it is announcing.
+#[tauri::command]
+pub fn window_ready(window: tauri::WebviewWindow, state: State<AppState>) {
+    state.windows_ready.mark(window.label());
+}
+
+/// How long a new window has to say it is listening before the attempt is
+/// called a failure.
+///
+/// Generous, because what is being waited for is a webview booting on a machine
+/// that may be busy compiling; short enough that a page which will never boot is
+/// reported rather than left spinning. The cost of being wrong in either
+/// direction is one dialog, not a lost session.
+const WINDOW_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Open the window pinned to `workspace_id`, or raise it if it is already up.
+///
+/// Built here rather than in the webview. `core:webview:default` does not include
+/// `allow-create-webview-window`, and granting window-spawning to a webview that
+/// renders untrusted agent output buys less than it costs — the label scheme and
+/// the window cap belong on this side anyway. `WebviewUrl::App` is same-origin,
+/// exactly as the pill already is, so the CSP is not a factor.
+///
+/// Returns only once the new window has announced itself, so a caller holding the
+/// label may address it at once. A window that never announces itself is closed
+/// and the failure reported: an inert window that renders and answers nothing is
+/// the exact outcome the handshake exists to prevent, and leaving one on screen
+/// would hide the cause rather than show it.
+#[tauri::command(async)]
+pub async fn open_workspace_window(
+    app: AppHandle, state: State<'_, AppState>, workspace_id: String,
+) -> Result<String, String> {
+    let label = crate::windows::workspace_label(&workspace_id);
+
+    // The id arrives from the webview and is about to become a window label —
+    // the thing every capability match, every emit target and every ownership
+    // check is keyed on. One that does not survive the round trip would mint a
+    // label naming a different workspace, or none at all; an empty id mints the
+    // bare prefix, which parses back to nothing.
+    if crate::windows::workspace_id_of(&label) != Some(workspace_id.as_str()) {
+        return Err("that is not a workspace id a window can be opened for".to_string());
+    }
+
+    // Already open: raise it. Tauri refuses a second window with the same label,
+    // and a person who asks twice means "show me that one".
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.unminimize();
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(label);
+    }
+
+    // A label is reusable — the same workspace pulled out, returned, and pulled
+    // out again — and the readiness of the window that has gone is not this
+    // one's. Cleared here as well as on `Destroyed` because only one of the two
+    // is guaranteed to have run by now.
+    state.windows_ready.forget(&label);
+
+    let title = {
+        // Scoped: the guard must not be held across the await below.
+        let store = state.store.lock().unwrap();
+        store
+            .workspaces()
+            .into_iter()
+            .find(|w| w.id == workspace_id)
+            .map(|w| w.name)
+            .unwrap_or_else(|| "cowork-deck".to_string())
+    };
+
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::App("workspace.html".into()),
+    )
+    .title(title)
+    .inner_size(1100.0, 760.0)
+    // Hidden, then shown once the geometry is settled. The window-state plugin
+    // restores size and position after the window exists, so a visible window
+    // appears at the default position and visibly jumps to the remembered one.
+    // The plugin's own `show()` is not in play: `StateFlags::VISIBLE` is cleared
+    // in `main.rs`, which is what keeps it from focus-stealing.
+    .visible(false)
+    .build()
+    .map_err(|e| format!("could not create the window for this workspace: {e}"))?;
+
+    fit_to_display(&window);
+    window
+        .show()
+        .map_err(|e| format!("the window for this workspace could not be shown: {e}"))?;
+
+    if !state.windows_ready.wait_for(&label, WINDOW_READY_TIMEOUT).await {
+        let _ = window.close();
+        return Err("the window for this workspace did not finish loading".to_string());
+    }
+    Ok(label)
+}
+
+/// Cut a restored size down to the display the window actually landed on.
+///
+/// The window-state plugin applies a remembered position only when a monitor
+/// intersects it, but applies a remembered **size** unconditionally — so a window
+/// last sized on a 4K display reopens 3840px wide on a laptop, most of it and its
+/// close button past the edge of the screen.
+///
+/// Best effort throughout: every step here can fail on a machine whose display
+/// configuration is changing underneath it, and none of those failures is worth
+/// refusing to open a window over. A window of the wrong size is recoverable by
+/// dragging it; one that did not open is not.
+fn fit_to_display(window: &tauri::WebviewWindow) {
+    let Ok(Some(monitor)) = window.current_monitor() else { return };
+    let Ok(size) = window.outer_size() else { return };
+    let area = monitor.work_area().size;
+    let (w, h) = crate::windows::clamp_to_work_area(
+        (size.width, size.height),
+        (area.width, area.height),
+    );
+    if (w, h) != (size.width, size.height) {
+        let _ = window.set_size(tauri::PhysicalSize::new(w, h));
+    }
+}
+
 /// The tiles this window should restore, and nobody else's.
 ///
 /// `window` is supplied by the runtime rather than passed by the caller, so a
@@ -3505,7 +3641,10 @@ branch refs/heads/feature/y\n";
     /// beside it — fifty of them on a delegation-heavy session — for every open
     /// session at once, so it carries `(async)` like everything else that does
     /// real I/O.
-    const MAIN_THREAD_COMMANDS: [&str; 15] = [
+    const MAIN_THREAD_COMMANDS: [&str; 16] = [
+        // One lock, one insert, one wake. It also must not be async: a window
+        // announcing itself cannot be allowed to race the window it announces.
+        "window_ready",
         "list_workspaces",
         "save_workspace",
         "remove_workspace",
