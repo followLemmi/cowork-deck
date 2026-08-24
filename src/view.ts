@@ -1,18 +1,23 @@
-/** The three screens: terminals, the task board, and pull requests. Which
- *  sidebar blocks belong to the terminals screen is the caller's business —
- *  this module only hides them. */
-export type ViewName = "deck" | "board" | "pr";
+/** The four screens: terminals, the task board, pull requests, and the history
+ *  of what the scenarios did. Which sidebar blocks belong to the terminals
+ *  screen is the caller's business — this module only hides them. */
+export type ViewName = "deck" | "board" | "pr" | "history";
 
 export interface ViewElements {
   deck: HTMLElement;
   board: HTMLElement;
   pr: HTMLElement;
+  history: HTMLElement;
   termBtn: HTMLElement;
   boardBtn: HTMLElement;
   prBtn: HTMLElement;
+  historyBtn: HTMLElement;
   /** Sidebar blocks that lead nowhere off the terminals screen: the scenario
    *  list, "+ session", and the session list. Workspaces stay — every screen
-   *  shows one workspace at a time and switching between them is the point. */
+   *  shows one workspace at a time and switching between them is the point,
+   *  and the history screen is scoped by the same selector for the same reason:
+   *  a screen that ignored it would be the sole exception to a rule people have
+   *  already learned three times. */
   terminalsOnly: HTMLElement[];
 }
 
@@ -24,9 +29,11 @@ export function applyView(el: ViewElements, view: ViewName): void {
   el.deck.classList.toggle("tk-hidden", view !== "deck");
   el.board.classList.toggle("hidden", view !== "board");
   el.pr.classList.toggle("hidden", view !== "pr");
+  el.history.classList.toggle("hidden", view !== "history");
   mark(el.termBtn, view === "deck");
   mark(el.boardBtn, view === "board");
   mark(el.prBtn, view === "pr");
+  mark(el.historyBtn, view === "history");
   for (const node of el.terminalsOnly) node.classList.toggle("tk-hidden", view !== "deck");
 }
 
@@ -45,8 +52,8 @@ const FOCUSABLE = [
  *  no layout, so `offsetParent` is null for every element and a visibility test
  *  written that way would reject every candidate in the tests covering this. The
  *  two classes are the only two ways this app hides a subtree — `hidden` for the
- *  board and the pull request screen, `tk-hidden` for the deck and the sidebar
- *  blocks that belong to it. */
+ *  board, the pull request screen and the history, `tk-hidden` for the deck and
+ *  the sidebar blocks that belong to it. */
 export function firstFocusable(root: HTMLElement): HTMLElement | null {
   for (const el of root.querySelectorAll<HTMLElement>(FOCUSABLE)) {
     if (!el.closest(".tk-hidden, .hidden")) return el;

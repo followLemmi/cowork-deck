@@ -50,6 +50,11 @@ where
                         // nothing failing. See `transcripts`.
                         if let Some(path) = ev.transcript_path.as_deref() {
                             crate::transcripts::record(&ev.session, path);
+                            // And into the journal, where it is the difference
+                            // between a run whose result can be read afterwards
+                            // and one that can only be counted. A session with
+                            // no open record is a no-op there.
+                            crate::run_journal::note_transcript(&ev.session, path);
                         }
                         if let Some(state) =
                             event_kind_to_state(&ev.kind, ev.notification_type.as_deref())

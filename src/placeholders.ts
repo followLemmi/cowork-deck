@@ -29,16 +29,27 @@ export function fillPlaceholders(prompt: string, values: Record<string, string>)
     Object.prototype.hasOwnProperty.call(values, name) ? values[name] : whole);
 }
 
+/** A prompt with its placeholders filled in, and the values that filled them.
+ *
+ *  Both halves, because they answer different questions and the second one used
+ *  to be thrown away. `prompt` is what the session is sent; `params` is what the
+ *  run journal records, so a run can later be offered again with the values it
+ *  actually used visible in the form. */
+export interface ResolvedPrompt {
+  prompt: string;
+  params: Record<string, string>;
+}
+
 /** Resolve a prompt's placeholders. No placeholders → returns the prompt as-is
- *  without asking. Otherwise calls `ask` with the names; returns the filled
- *  prompt, or null if the user cancelled. */
+ *  without asking, with no values. Otherwise calls `ask` with the names; returns
+ *  null if the user cancelled. */
 export async function resolvePrompt(
   prompt: string,
   ask: (names: string[]) => Promise<Record<string, string> | null>,
-): Promise<string | null> {
+): Promise<ResolvedPrompt | null> {
   const names = parsePlaceholders(prompt);
-  if (names.length === 0) return prompt;
+  if (names.length === 0) return { prompt, params: {} };
   const values = await ask(names);
   if (!values) return null;
-  return fillPlaceholders(prompt, values);
+  return { prompt: fillPlaceholders(prompt, values), params: values };
 }

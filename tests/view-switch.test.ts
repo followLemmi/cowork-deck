@@ -18,15 +18,17 @@ function mount(): ViewElements {
     '<aside id="sidebar"><div id="ws"></div><div id="sk"></div>' +
     '<button id="new"></button><div id="list"></div></aside>' +
     '<main id="deck"></main><div id="board" class="hidden"></div>' +
-    '<div id="pr" class="hidden"></div></div></div>';
+    '<div id="pr" class="hidden"></div><div id="history" class="hidden"></div></div></div>';
   const pick = (sel: string) => document.querySelector<HTMLElement>(sel)!;
   return {
     deck: pick("#deck"),
     board: pick("#board"),
     pr: pick("#pr"),
+    history: pick("#history"),
     termBtn: document.createElement("button"),
     boardBtn: document.createElement("button"),
     prBtn: document.createElement("button"),
+    historyBtn: document.createElement("button"),
     terminalsOnly: [pick("#sk"), pick("#new"), pick("#list")],
   };
 }
@@ -38,9 +40,9 @@ describe("applyView", () => {
   beforeEach(() => { el = mount(); });
 
   it("shows exactly one screen at a time", () => {
-    for (const view of ["deck", "board", "pr"] as const) {
+    for (const view of ["deck", "board", "pr", "history"] as const) {
       applyView(el, view);
-      const visible = [el.deck, el.board, el.pr].filter(shown);
+      const visible = [el.deck, el.board, el.pr, el.history].filter(shown);
       expect(visible).toHaveLength(1);
     }
   });
@@ -61,6 +63,21 @@ describe("applyView", () => {
     // terminals stayed on screen.
     expect(getComputedStyle(el.deck).display).toBe("none");
     expect(shown(el.pr)).toBe(true);
+  });
+
+  // The fourth screen falls into the same trap as the other two, and the trap is
+  // in the stylesheet rather than in this module: `#deck { display: grid }` is an
+  // id selector and outweighs `.tk-hidden`, so asserting the class would pass
+  // while the terminals stayed on screen behind the history.
+  it("hides the deck on the history screen, against the real stylesheet", () => {
+    applyView(el, "history");
+    expect(getComputedStyle(el.deck).display).toBe("none");
+    expect(shown(el.history)).toBe(true);
+  });
+
+  it("hides the terminals-only sidebar blocks on the history screen too", () => {
+    applyView(el, "history");
+    for (const node of el.terminalsOnly) expect(shown(node)).toBe(false);
   });
 
   it("brings the deck back on the terminals screen", () => {
@@ -102,9 +119,11 @@ describe("applyView", () => {
   });
 
   it("names the current screen for a reader, not only for the eye", () => {
-    const btns = () => [el.termBtn, el.boardBtn, el.prBtn];
+    const btns = () => [el.termBtn, el.boardBtn, el.prBtn, el.historyBtn];
     const current = () => btns().filter((b) => b.getAttribute("aria-current") === "page");
-    for (const [view, expected] of [["deck", el.termBtn], ["board", el.boardBtn], ["pr", el.prBtn]] as const) {
+    for (const [view, expected] of [
+      ["deck", el.termBtn], ["board", el.boardBtn], ["pr", el.prBtn], ["history", el.historyBtn],
+    ] as const) {
       applyView(el, view);
       expect(current()).toEqual([expected]);
     }

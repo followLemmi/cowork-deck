@@ -1,5 +1,11 @@
-import type { Schedule, SchedulePreset, ScheduleRun, SessionState, Skill, Workspace } from "./ipc";
+import type {
+  RunRecord, Schedule, SchedulePreset, ScheduleRun, SessionState, Skill, Workspace,
+} from "./ipc";
 import { parsePlaceholders } from "./placeholders";
+// One phrasing for one outcome code, wherever it is shown. Lives with the run
+// vocabulary because the history screen says the same thing about the same
+// record.
+import { OUTCOME_TEXT } from "./runs";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const pad = (n: number): string => String(n).padStart(2, "0");
@@ -61,17 +67,20 @@ export function schedulePreview(
   return `Runs ${rule} · next run ${nextRunLabel(p, now)} · ${where}.`;
 }
 
-/** Why an attempt produced nothing, in words the user can act on. */
-const OUTCOME_TEXT: Record<string, string> = {
-  "no-workspace": "no workspace",
-  "skipped-overlap": "previous run still active",
-  "not-scheduled": "schedule is off",
-};
-
 /** The line under a scenario's name: rule, next run, and what came of the
- *  last attempt. Replaces a native tooltip that no keyboard user could reach
- *  and that went stale as soon as the panel stopped re-rendering. */
-export function scheduleRowText(s: Schedule, run: ScheduleRun | null, now: Date): string {
+ *  last run. Replaces a native tooltip that no keyboard user could reach
+ *  and that went stale as soon as the panel stopped re-rendering.
+ *
+ *  Two sources, and the split is the point. `run` is `schedule_state.json`, the
+ *  scheduler's **gate**: when the next occurrence is, which only the side that
+ *  actually fires can say. `last` is the run journal, which is what actually
+ *  happened — and it is wider than the gate ever was, because `lastOutcome`
+ *  only ever knew about scheduled fires and a scenario run by hand left no
+ *  trace in it at all. Where they disagree, the journal wins: it is a record of
+ *  runs, and the gate is a record of attempts. */
+export function scheduleRowText(
+  s: Schedule, run: ScheduleRun | null, now: Date, last: RunRecord | null = null,
+): string {
   const rule = describeSchedule(s);
   if (!s.enabled) return `schedule is off · ${rule}`;
 
@@ -79,10 +88,20 @@ export function scheduleRowText(s: Schedule, run: ScheduleRun | null, now: Date)
   // the arithmetic here would drift from it with nothing to catch the drift.
   const next = run?.nextRunMs != null ? stamp(run.nextRunMs, now) : nextRunLabel(s.preset, now);
   const parts = [rule, `next run ${next}`];
-  const failed = run?.lastOutcome && run.lastOutcome !== "launched";
-  if (failed) {
-    const why = OUTCOME_TEXT[run!.lastOutcome!] ?? run!.lastOutcome!;
-    parts.push(`${stamp(run!.lastAttempt, now)} did not run: ${why}`);
+  if (last) {
+    if (last.status === "failed-to-launch") {
+      const why = last.reason === null ? "nothing started" : OUTCOME_TEXT[last.reason] ?? last.reason;
+      parts.push(`${stamp(last.startedAt, now)} did not run: ${why}`);
+    } else {
+      parts.push(`last run ${stamp(last.startedAt, now)}`);
+    }
+  } else if (run?.lastOutcome && run.lastOutcome !== "launched") {
+    // Nothing in the journal yet — a schedule that last fired before the
+    // journal existed, or with recording switched off. The gate's own memory is
+    // the only thing left to say anything with, and saying nothing would read
+    // as "it has never failed".
+    const why = OUTCOME_TEXT[run.lastOutcome] ?? run.lastOutcome;
+    parts.push(`${stamp(run.lastAttempt, now)} did not run: ${why}`);
   } else if (run?.lastRun) {
     parts.push(`last run ${stamp(run.lastRun, now)}`);
   } else if (run) {

@@ -225,14 +225,23 @@ const REMOVED_BAND = ["--bg-void", "--diff-del-weak"];
  *  putting `opacity` back cannot happen quietly. */
 const ICON_REST_COLOR = decl(css, ".btn--icon", "color");
 const ICON_ROW_HOVER = decl(css, ".btn--icon:hover", "color");
-const DISABLED = Number(decl(css, "button:disabled, .sk-run:disabled", "opacity"));
-const GRAY = Number(decl(css, "button:disabled, .sk-run:disabled", "filter").match(/grayscale\(([\d.]+)\)/)[1]);
+const DISABLED = Number(decl(css, "button:disabled, .sk-run:disabled, button[aria-disabled=\"true\"]", "opacity"));
+const GRAY = Number(decl(css, "button:disabled, .sk-run:disabled, button[aria-disabled=\"true\"]", "filter").match(/grayscale\(([\d.]+)\)/)[1]);
 const ERROR_FILL = decl(css, ".state-error", "background");
 const ENDED_FILL = decl(css, ".state-ended", "background");
 const IDLE_FILL = decl(css, ".state-idle", "background");
 const WORKING_FILL = decl(css, ".state-working", "background");
 const WAITING_FILL = decl(css, ".state-waitingInput", "background");
 const DONE_FILL = decl(css, ".state-done", "background");
+// The run history's own five chips. Separate rules from the session chips above
+// even where the hue is shared: this screen puts all five on one list at once,
+// and one passing says nothing about the next — which is exactly how
+// `.state-error` went unnoticed at 3.34 on the selected row.
+const RUN_RUNNING_FILL = decl(css, ".run-running", "background");
+const RUN_ENDED_FILL = decl(css, ".run-ended", "background");
+const RUN_ERROR_FILL = decl(css, ".run-error", "background");
+const RUN_INTERRUPTED_FILL = decl(css, ".run-interrupted", "background");
+const RUN_NOLAUNCH_FILL = decl(css, ".run-failed-to-launch", "background");
 
 // Two rules this phase deleted, asserted absent rather than measured. Both dimmed
 // content to restate something the layout already said, and both took real
@@ -397,6 +406,99 @@ const CASES = [
     what: "card facts label",
     where: "the quieter column beside it",
     fg: "--fg-dim", backdrop: ["--bg-island"], group: ["--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+
+  // --- the scenario run history -------------------------------------------
+  // Five states on one row is this screen's whole risk. Four hues carry them,
+  // because the palette spends hue on state and nothing else and a fifth would
+  // take a step out of the three that have to stay separable everywhere else;
+  // `failed-to-launch` shares the error hue and is told apart by a dashed border
+  // and its own words. Every chip is measured on the row's own ground **and** on
+  // the quieter ground a continued run of a chain sits on, because a chain puts
+  // both on screen at once.
+  {
+    what: ".run-running on a history row",
+    where: "a run still in flight, on the row's island ground",
+    fg: "--st-working", backdrop: ["--bg-void"], group: ["--bg-island", RUN_RUNNING_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".run-ended on a history row",
+    where: "the ordinary outcome, and the most common row on the screen",
+    fg: "--st-ended", backdrop: ["--bg-void"], group: ["--bg-island", RUN_ENDED_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".run-error on a history row",
+    where: "a non-zero exit",
+    fg: "--st-error", backdrop: ["--bg-void"], group: ["--bg-island", RUN_ERROR_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".run-interrupted on a history row",
+    where: "a run a crash or a closed lid cut short",
+    fg: "--st-waiting", backdrop: ["--bg-void"], group: ["--bg-island", RUN_INTERRUPTED_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".run-failed-to-launch on a history row",
+    where: "a schedule that started nothing — the error hue, told apart by a dashed border",
+    fg: "--st-error", backdrop: ["--bg-void"], group: ["--bg-island", RUN_NOLAUNCH_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".run-interrupted on a continued row",
+    where: "the lighter ground an earlier link of a chain sits on — the worst of the two",
+    fg: "--st-waiting", backdrop: ["--bg-void"], group: ["--bg-inset", RUN_INTERRUPTED_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".run-ended on a continued row",
+    where: "the neutral chip on the same lighter ground",
+    fg: "--st-ended", backdrop: ["--bg-void"], group: ["--bg-inset", RUN_ENDED_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history result text",
+    where: "the final assistant message, on its own inset ground inside a row",
+    fg: "--fg-mid", backdrop: ["--bg-void"], group: ["--bg-island", "--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history \"no transcript\" line",
+    where: "what a row says instead of a result — quieter, and still prose somebody has to read",
+    fg: "--fg-dim", backdrop: ["--bg-void"], group: ["--bg-island"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history /clear warning",
+    where: "the line saying the result is only the tail of the conversation",
+    fg: "--st-waiting", backdrop: ["--bg-void"], group: ["--bg-island"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history row action",
+    where: "the three row controls, on their own inset ground inside a row",
+    fg: "--fg-mid", backdrop: ["--bg-void"], group: ["--bg-island", "--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history erase control",
+    where: "the one erasing control, on the screen's ground beside the filters",
+    fg: "--fg-mid", backdrop: ["--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history workspace label",
+    where: "which workspace the screen is scoped to, beside its heading",
+    fg: "--fg-dim", backdrop: ["--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "history chain note",
+    where: "the line saying a chain is one piece of work rather than three",
+    fg: "--fg-dim", backdrop: ["--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
 

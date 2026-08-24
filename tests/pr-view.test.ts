@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Mock } from "vitest";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { PrView, type PrHandlers, type PrState } from "../src/pr-view";
 import type { PrDetail, PullRequest } from "../src/ipc";
+
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn().mockResolvedValue(undefined) }));
 
 const NOW = Date.parse("2026-07-29T12:00:00Z");
 
@@ -34,7 +37,7 @@ function mk(): { view: PrView; h: PrHandlers } {
   return { view, h };
 }
 
-beforeEach(() => { document.body.replaceChildren(); });
+beforeEach(() => { document.body.replaceChildren(); vi.mocked(openUrl).mockClear(); });
 
 describe("PrView", () => {
   it("renders number, title, author and the branch pair", () => {
@@ -107,6 +110,33 @@ describe("PrView", () => {
     view.render(state(), NOW);
     document.querySelector<HTMLButtonElement>(".pr-merge")!.click();
     expect(h.onMerge).toHaveBeenCalledWith(expect.objectContaining({ number: 7 }));
+  });
+
+  // #252: this button was an `<a target="_blank">`, and a Tauri window has
+  // nowhere to navigate that to — the click was dropped and nothing happened.
+  // It reaches the system browser through the opener plugin now, and the app's
+  // own window must not navigate, which is what `preventDefault` is here for.
+  it("opens the pull request in the system browser rather than navigating", () => {
+    const { view } = mk();
+    view.render(state(), NOW);
+    const link = document.querySelector<HTMLAnchorElement>(".pr-open")!;
+    expect(link.getAttribute("target")).toBeNull();
+    const click = new MouseEvent("click", { cancelable: true, bubbles: true });
+    link.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(vi.mocked(openUrl).mock.calls).toEqual([["https://example.test/pr/7"]]);
+  });
+
+  // `url` comes through an `unwrap_or("")` in `gh_pr.rs`. An anchor the gate
+  // refused looks like the other three controls, takes no focus and does nothing
+  // when clicked — the same dead button #252 was about. Absent is honest.
+  it("leaves out the browser link when there is no URL to open", () => {
+    const { view } = mk();
+    view.render(state({ prs: [pr({ url: "" })] }), NOW);
+    expect(document.querySelector(".pr-open")).toBeNull();
+    // The row is otherwise intact — this costs one action, not the row.
+    expect(document.querySelector(".pr-launch")).not.toBeNull();
+    expect(document.querySelector(".pr-close")).not.toBeNull();
   });
 
   it("shows how old the data is, always", () => {

@@ -8,6 +8,8 @@ mod hooks;
 mod listener;
 mod pty;
 mod commands;
+mod run_journal;
+mod runs;
 mod scheduler;
 mod tasks_cmd;
 mod transcripts;
@@ -18,6 +20,7 @@ use commands::AppState;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
+use tauri_plugin_window_state::StateFlags;
 
 fn reporter_name() -> &'static str {
     if cfg!(windows) { "cowork_report.exe" } else { "cowork_report" }
@@ -66,15 +69,41 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Geometry survives a restart; visibility does not. The plugin's restore
+        // runs `show()` *and* `set_focus()` on every window it manages, and it
+        // does so for a window with no saved entry too — so the pill, hidden by
+        // default and up only while a session waits, arrived blank and holding
+        // the keyboard at every launch. Whether the pill is up is the deck's
+        // answer to give (`pill://count`, see src/pill.ts); the plugin is here to
+        // remember where the person dragged it to.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // What carries an `https://` out of the webview and into the person's own
+        // browser. Without it a link is inert: this window has no `_blank` target
+        // to navigate to, so an anchor's click is dropped and nothing at all
+        // happens (#252). The capability grants `open-url` only, scoped to
+        // `http`/`https` — `open-path` would let a URL out of a pull request
+        // description name a file to run.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
 
             // Config dir for the store.
             let dir = app.path().app_config_dir().expect("app config dir");
             let store = store::Store::new(dir.clone());
+
+            // Before the listener, and long before the frontend can launch
+            // anything: a hook or a PTY exit arriving with the journal unwired
+            // would be a run nobody recorded. `sweep_and_compact` then closes
+            // whatever a crash left open — nothing has a live PTY behind it at
+            // this point, so every record still `running` is one of those.
+            run_journal::init(dir.clone(), handle.clone());
+            run_journal::sweep_and_compact();
 
             // Start the status listener on the tokio runtime Tauri provides.
             let handle_for_cb = handle.clone();
@@ -111,7 +140,7 @@ fn main() {
             // window shown/hidden via the `pill://count` event (see src/pill.ts).
             // Transparent + always-on-top confirmed working on macOS with
             // macOSPrivateApi + the `macos-private-api` Cargo feature (spike).
-            let _ = tauri::WebviewWindowBuilder::new(
+            let pill = tauri::WebviewWindowBuilder::new(
                 app,
                 "pill",
                 tauri::WebviewUrl::App("pill.html".into()),
@@ -123,7 +152,32 @@ fn main() {
             .skip_taskbar(true)
             .transparent(true)
             .visible(false)
+            // A status indicator must never take the keyboard. `show()` reaches
+            // `makeKeyAndOrderFront:`, and a focusable window duly becomes the
+            // *key* window — so every re-show stole the keyboard from the
+            // session the person was typing into, mid-question. `focusable(false)`
+            // makes `canBecomeKeyWindow` answer false: the pill still orders
+            // front, which is all it ever wanted.
+            //
+            // The pair matters: a window that cannot become key would otherwise
+            // swallow the first click into it, and the pill's only interaction
+            // *is* that first click (focus the next waiting session, plus the
+            // drag region). `accept_first_mouse` delivers it to the webview.
+            //
+            // Both calls are cross-platform in Tauri, but only the first has an
+            // effect off macOS: on Linux `focusable(false)` becomes
+            // `gtk_window_set_accept_focus(false)` and `accept_first_mouse` is a
+            // no-op, so whether the click still reaches the webview there is
+            // down to the compositor and has not been tried on a Linux machine.
+            .focusable(false)
+            .accept_first_mouse(true)
             .build();
+            // Without the pill there is no waiting indicator at all, and every
+            // `pill://count` afterwards goes nowhere — worth a line to diagnose
+            // it by rather than a silently discarded `Result`.
+            if let Err(e) = pill {
+                eprintln!("error: failed to create the status pill window ({e})");
+            }
 
             Ok(())
         })
@@ -155,6 +209,9 @@ fn main() {
             commands::scheduler_ready,
             commands::schedule_ack,
             commands::load_schedule_state,
+            commands::list_runs,
+            commands::delete_skill_history,
+            commands::reveal_path,
             commands::start_command_session,
             commands::gh_status,
             commands::pr_list,

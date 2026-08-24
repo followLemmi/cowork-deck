@@ -118,7 +118,7 @@ describe("pull request polling", () => {
     await flush();
 
     const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
-    expect(buttons.map((b) => b.textContent)).toEqual(["Terminals", "Board", "Pull requests"]);
+    expect(buttons.map((b) => b.textContent)).toEqual(["Terminals", "Board", "Pull requests", "History"]);
     const [termBtn, , prBtn] = buttons;
 
     // Opening the view reads once, then once per interval. Nothing is running,

@@ -11,7 +11,8 @@
 
 import type {
   BoardConfig, GhStatus, MergeOptions, PrDetail, PrDiff, ProviderCapabilities,
-  PullRequest, ScheduleRun, SessionEntry, SessionSnapshot, Skill, Task, UiState, Workspace,
+  PullRequest, RunRecord, ScheduleRun, SessionEntry, SessionSnapshot, Skill, Task, UiState,
+  Workspace,
 } from "../src/ipc";
 
 /** One fixed clock for the whole fixture, so every "2 hours ago" agrees with
@@ -629,7 +630,94 @@ export const mergeOptions: MergeOptions = {
 
 /* --- Odds and ends -------------------------------------------------------- */
 
-export const uiState: UiState = { activeWorkspaceId: WS_RELAY, uiScale: 1, prDiffCols: 96 };
+export const uiState: UiState = {
+  activeWorkspaceId: WS_RELAY, uiScale: 1, prDiffCols: 96, recordScenarioRuns: true,
+};
+
+/* --- the scenario run journal -------------------------------------------- */
+
+/** One record of **each** close status, plus a `continuesRunId` chain, a
+ *  `result: null` and a `cleared: true`.
+ *
+ *  All five at once, deliberately: this screen puts four hues and a shape on one
+ *  list, and whether that holds up is not a question a specimen sheet can answer
+ *  — the row has to be seen beside the other four. The fixture is the only place
+ *  that happens before a user does it.
+ *
+ *  Ages are off the same frozen `NOW` the rest of this file uses, so "2 hours
+ *  ago" on a run agrees with "next run 03:00" on the scenario above it. */
+const run = (r: Partial<RunRecord> & Pick<RunRecord, "runId" | "skillId" | "name" | "icon" | "startedAt">): RunRecord => ({
+  closedAt: null, trigger: "manual", status: "ended", workspaceId: WS_RELAY,
+  cwd: "/home/dev/code/relay", branch: "main", sessionId: null, params: {}, prompt: null,
+  continuesRunId: null, transcriptPath: "/home/dev/.claude/projects/-relay/abc.jsonl",
+  cleared: false, result: null, reason: null, tokens: null, resultSource: "transcript",
+  ...r,
+});
+
+export const runs: RunRecord[] = [
+  // Still going, and the only one whose chip breathes.
+  run({
+    runId: "run-live", skillId: "sk-review", name: "Review the diff", icon: "search",
+    startedAt: NOW - 4 * MIN, status: "running", trigger: "manual", sessionId: S_WAIT,
+    params: { branch: "main" }, resultSource: "none",
+    prompt: "Review the working tree against main and report what would fail in CI.",
+  }),
+  // The ordinary case: it ran, it said something, it stopped.
+  run({
+    runId: "run-sweep-ok", skillId: "sk-sweep", name: "Nightly dependency sweep", icon: "shield",
+    startedAt: NOW - 7 * HOUR, closedAt: NOW - 7 * HOUR + 12 * MIN, status: "ended",
+    trigger: "schedule", sessionId: S_DONE,
+    result: "Updated 14 packages and opened #131. The suite is green apart from "
+      + "`tests/pr-polling.test.ts`, which was already failing on main before this change.",
+    tokens: { input: 41_200, output: 5_310, cacheCreation: 9_800, cacheRead: 180_400 },
+  }),
+  // A `/clear` mid-run: what is shown is the tail, and the row says so.
+  run({
+    runId: "run-notes-cleared", skillId: "sk-notes", name: "Write the release notes", icon: "book",
+    startedAt: NOW - 26 * HOUR, closedAt: NOW - 26 * HOUR + 31 * MIN, status: "ended",
+    cleared: true,
+    result: "Release notes for 3.2 are in `docs/releases/3.2.md`, grouped by area with the "
+      + "two breaking changes at the top.",
+  }),
+  // The chain: a run cut short by a crash, picked up by auto-restore. Two rows,
+  // one piece of work — a flat list would read as two unrelated runs.
+  run({
+    runId: "run-sweep-resumed", skillId: "sk-sweep", name: "Nightly dependency sweep", icon: "shield",
+    startedAt: NOW - 2 * DAY + 20 * MIN, closedAt: NOW - 2 * DAY + 55 * MIN, status: "ended",
+    trigger: "resume", continuesRunId: "run-sweep-crashed",
+    result: "Picked the sweep back up and finished it: the lockfile is committed on "
+      + "`chore/deps-2026-08-07`.",
+  }),
+  run({
+    runId: "run-sweep-crashed", skillId: "sk-sweep", name: "Nightly dependency sweep", icon: "shield",
+    startedAt: NOW - 2 * DAY, closedAt: NOW - 2 * DAY + 18 * MIN, status: "interrupted",
+    trigger: "schedule", result: null, resultSource: "none", transcriptPath: null,
+  }),
+  // A non-zero exit. The result is whatever the agent managed to say first.
+  run({
+    runId: "run-review-error", skillId: "sk-review", name: "Review the diff", icon: "search",
+    startedAt: NOW - 3 * DAY, closedAt: NOW - 3 * DAY + 2 * MIN, status: "error",
+    trigger: "runNow", params: { branch: "release/3.2" },
+    result: "I could not read the working tree: `git` reports the index is locked by "
+      + "another process.",
+  }),
+  // The schedule fired and nothing started at all. No session, no result, and a
+  // reason — "it silently did nothing" is what people open a history to find.
+  run({
+    runId: "run-sweep-nolaunch", skillId: "sk-sweep", name: "Nightly dependency sweep", icon: "shield",
+    startedAt: NOW - 4 * DAY, closedAt: NOW - 4 * DAY, status: "failed-to-launch",
+    trigger: "schedule", cwd: "", branch: null, transcriptPath: null,
+    reason: "skipped-overlap", resultSource: "none",
+  }),
+  // A scenario that has since been deleted. Its rows still read correctly,
+  // which is the whole reason a record carries a snapshot rather than a lookup.
+  run({
+    runId: "run-gone", skillId: "sk-deleted", name: "Tidy the changelog", icon: "book",
+    startedAt: NOW - 5 * DAY, closedAt: NOW - 5 * DAY + 4 * MIN, status: "ended",
+    result: "Folded the loose entries under 3.1 and dropped the duplicate line about the "
+      + "webhook retry.",
+  }),
+];
 
 export const ghStatus: GhStatus = {
   path: "/usr/bin/gh", version: "2.62.0",

@@ -6,14 +6,35 @@ const win = getCurrentWindow();
 const text = document.getElementById("pill-text")!;
 const pill = document.getElementById("pill")!;
 
-void listen<{ n: number }>("pill://count", async (e) => {
+/** One window command at a time. The count arrives on every poll tick, five
+ *  seconds apart, and again whenever a session changes state, so two events can
+ *  land within the same frame; `isVisible()` is a round trip to the main thread,
+ *  and unqueued both handlers would read the window before either had acted. */
+let pending: Promise<void> = Promise.resolve();
+
+void listen<{ n: number }>("pill://count", (e) => {
   const n = e.payload.n;
-  if (n > 0) {
-    text.textContent = pillLabel(n);
-    await win.show();
-  } else {
-    await win.hide();
-  }
+  // The label follows the count whether or not visibility changes: 1 → 2
+  // waiting keeps the pill up and has to redraw it.
+  if (n > 0) text.textContent = pillLabel(n);
+  pending = pending
+    .then(async () => {
+      const wanted = n > 0;
+      // Ask the window rather than remember what we told it. `show()` is not
+      // idempotent on macOS — it is `makeKeyAndOrderFront:`, which raises and
+      // re-activates — so an already-visible pill must not be shown again, and
+      // a flag is the weaker way to know: it has to guess what the window
+      // started as, and a failed call leaves it lying for the rest of the run.
+      if (wanted === (await win.isVisible())) return;
+      await (wanted ? win.show() : win.hide());
+    })
+    .catch((err) => {
+      // A failed window call must not poison the queue — the deck re-sends the
+      // count on the next tick, and that attempt is the recovery.
+      console.error("pill: could not apply the count", err);
+    });
+  // Handed back so a caller can await the window, not just the bookkeeping.
+  return pending;
 });
 
 pill.addEventListener("click", () => {

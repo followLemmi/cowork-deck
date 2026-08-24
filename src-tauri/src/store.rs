@@ -1,4 +1,5 @@
 use crate::model::{ScheduleRun, SessionEntry, Skill, UiState, UiStatePatch, Workspace};
+use crate::runs::{fold_events, retain_recent, RunEvent, RunRecord, RUNS_PER_SKILL};
 use std::path::PathBuf;
 
 pub struct Store {
@@ -107,6 +108,9 @@ impl Store {
         if let Some(cols) = patch.pr_diff_cols {
             st.pr_diff_cols = cols;
         }
+        if let Some(on) = patch.record_scenario_runs {
+            st.record_scenario_runs = on;
+        }
         let json = serde_json::to_string_pretty(&st)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(self.ui_path(), json)
@@ -144,6 +148,162 @@ impl Store {
         let json = serde_json::to_string_pretty(st)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(self.schedule_state_path(), json)
+    }
+
+    /// The scenario run journal, beside `skills.json` and `schedule_state.json`.
+    ///
+    /// Not in the project's `.cowork/`: tracker cards live there because they are
+    /// a shared team artefact, and a run journal is a personal, machine-local
+    /// record that would eventually be committed along with the agent's output.
+    fn runs_path(&self) -> PathBuf { self.dir.join("runs.jsonl") }
+
+    /// Append one event. **`OpenOptions::append`, never `write_vec`.**
+    ///
+    /// `write_vec` truncates before it writes, and `try_read_vec`'s own comment
+    /// already records what that costs when a crash lands in the middle (#117).
+    /// A file written on every launch cannot afford that failure mode; a
+    /// half-written appended line is discarded by the reader and everything
+    /// before it stands.
+    ///
+    /// One `write` of one line, so two writers interleaving produce two whole
+    /// lines rather than one spliced one — this is the guarantee `O_APPEND`
+    /// gives for a single write under the pipe buffer size, and a journal line
+    /// is far below it.
+    pub fn append_run_event(&self, ev: &RunEvent) -> std::io::Result<()> {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let mut line = String::new();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(self.runs_path())?;
+        // Heal a file whose last line was cut off mid-write. Without this the
+        // next append is glued onto the wreckage and **both** lines are lost —
+        // the crash costs the record that was being written *and* the next one,
+        // which is exactly the failure append-only is here to avoid. Reads are
+        // free to seek in append mode; writes always land at the end.
+        let len = f.metadata()?.len();
+        if len > 0 {
+            f.seek(SeekFrom::Start(len - 1))?;
+            let mut last = [0u8; 1];
+            f.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                line.push('\n');
+            }
+        }
+        line.push_str(
+            &ev.to_line()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+        );
+        line.push('\n');
+        f.write_all(line.as_bytes())
+    }
+
+    /// Every run, **newest first**. A missing file is an empty journal, exactly
+    /// as `try_read_vec` treats one.
+    pub fn runs(&self) -> Vec<RunRecord> {
+        let mut all = fold_events(&self.runs_body());
+        all.reverse();
+        all
+    }
+
+    /// One run by id, or `None`. Folds the whole journal, like [`Self::runs`] —
+    /// this is reached on the resume path, once per restored tile, and a
+    /// bespoke index would be a second source of truth about the same file.
+    pub fn run(&self, run_id: &str) -> Option<RunRecord> {
+        fold_events(&self.runs_body())
+            .into_iter()
+            .find(|r| r.run_id == run_id)
+    }
+
+    fn runs_body(&self) -> String {
+        match std::fs::read_to_string(self.runs_path()) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to read {} ({e}); treating the run journal as empty",
+                    self.runs_path().display(),
+                );
+                String::new()
+            }
+        }
+    }
+
+    /// Rewrite the journal from `keep`, atomically.
+    ///
+    /// Temp file plus rename, so a crash mid-compaction leaves the old journal
+    /// intact — the one place this file is *not* append-only is also the one
+    /// place it cannot afford to be truncated in.
+    fn rewrite_runs(&self, keep: &[RunRecord]) -> std::io::Result<()> {
+        let mut body = String::new();
+        for rec in keep {
+            for ev in rec.to_events() {
+                body.push_str(
+                    &ev.to_line()
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+                );
+                body.push('\n');
+            }
+        }
+        let tmp = self.runs_path().with_extension("jsonl.tmp");
+        std::fs::write(&tmp, body)?;
+        std::fs::rename(&tmp, self.runs_path())
+    }
+
+    /// Drop everything past the retention limit. Returns how many records went.
+    ///
+    /// Run once at app start rather than on every append: pruning is about the
+    /// file not growing without bound, and doing it on the launch path would put
+    /// a full read and rewrite in front of every session.
+    pub fn compact_runs(&self) -> std::io::Result<usize> {
+        let all = fold_events(&self.runs_body());
+        let before = all.len();
+        let keep = retain_recent(all, RUNS_PER_SKILL);
+        if keep.len() == before {
+            return Ok(0);
+        }
+        self.rewrite_runs(&keep)?;
+        Ok(before - keep.len())
+    }
+
+    /// Erase one scenario's history, wholesale, within one workspace's scope.
+    ///
+    /// The only erasure there is. A record is a snapshot of what ran, so there
+    /// is no editing or deleting of a single one — a journal whose rows can be
+    /// revised answers nothing.
+    ///
+    /// **Scoped**, through the same `in_scope` the screen's `list_runs` used, so
+    /// that what is erased is what was on screen. Erasing every workspace's
+    /// records of a scenario from a screen showing one workspace's two of them
+    /// would silently take the other forty, and this file is the only copy.
+    ///
+    /// **Refused while one of those runs is still `running`.** The rewrite is
+    /// the one place this journal is not append-only, and taking out an open
+    /// record loses more than the past: the run's `Closed` event arrives later
+    /// with no `Started` left to attach to, `fold_events` drops it, and the run
+    /// is never journalled at all — not even when it finishes. The UI disables
+    /// the control for the same reason; this covers a run that starts between
+    /// the render and the click.
+    pub fn delete_skill_history(
+        &self,
+        skill_id: &str,
+        workspace_id: Option<&str>,
+    ) -> std::io::Result<()> {
+        let all = fold_events(&self.runs_body());
+        let doomed = |r: &RunRecord| crate::runs::in_scope(r, workspace_id, Some(skill_id));
+        if all
+            .iter()
+            .any(|r| doomed(r) && r.status == crate::runs::RunStatus::Running)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "one of this scenario's runs is still going — its record would be erased out \
+                 from under it, and the run would never be journalled at all",
+            ));
+        }
+        let keep: Vec<RunRecord> = all.into_iter().filter(|r| !doomed(r)).collect();
+        self.rewrite_runs(&keep)
     }
 
     // NOTE: upsert_*/delete_* deliberately use `try_read_vec` (not the
@@ -303,14 +463,14 @@ mod tests {
                 session_id: "s1".into(), cwd: "/tmp/a".into(), name: "▶ Fix".into(),
                 workspace_id: Some("w1".into()), task_id: Some("01AAA".into()),
                 scheduled_skill_id: None, user_name: None,
-                name_kind: Some(NameKind::Context),
+                name_kind: Some(NameKind::Context), skill_id: None, run_id: None,
             },
             SessionEntry {
                 session_id: "s2".into(), cwd: "/tmp/b".into(), name: "terminal · P".into(),
                 workspace_id: None, task_id: None, scheduled_skill_id: None,
                 // The whole point of the field: this one survives the round trip.
                 user_name: Some("the one I must not close".into()),
-                name_kind: Some(NameKind::Placeholder),
+                name_kind: Some(NameKind::Placeholder), skill_id: None, run_id: None,
             },
         ];
         s.save_layout(&entries).unwrap();
@@ -328,16 +488,21 @@ mod tests {
         // Must match the `width` on `.pr-drawer` in `styles.css`, which is what the
         // drawer is drawn at until JS writes a width to it.
         assert_eq!(UiState::default().pr_diff_cols, 62);
+        // On. A journal nobody switched on records nothing, and the first
+        // question a history screen would raise is why it is empty.
+        assert!(UiState::default().record_scenario_runs);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
             pr_diff_cols: Some(80),
+            record_scenario_runs: Some(false),
         };
         s.save_ui_state(&patch).unwrap();
         let reloaded = Store::new(s.dir.clone()).ui_state();
         assert_eq!(reloaded.active_workspace_id, Some("w-1".into()));
         assert_eq!(reloaded.ui_scale, 1.3);
         assert_eq!(reloaded.pr_diff_cols, 80);
+        assert!(!reloaded.record_scenario_runs);
     }
 
     /// The migration case, and the reason `ui_scale` carries `#[serde(default)]`.
@@ -357,6 +522,11 @@ mod tests {
         // And the same again for the field added after *that*. Every file on disk
         // today is missing this key, so it is not a hypothetical migration.
         assert_eq!(st.pr_diff_cols, 62);
+        // And once more for the newest field. Every `ui_state.json` on disk
+        // today predates it, and the migration has to land on "on" — a journal
+        // that silently recorded nothing after an upgrade would look exactly
+        // like a feature that does not work.
+        assert!(st.record_scenario_runs);
     }
 
     /// The other half of the same bug. `save_ui_state` used to write the file from a
@@ -365,30 +535,22 @@ mod tests {
     #[test]
     fn saving_one_field_leaves_the_other_alone() {
         let s = Store::new(tmp());
-        s.save_ui_state(&UiStatePatch {
-            active_workspace_id: None,
-            ui_scale: Some(1.45),
-            pr_diff_cols: None,
-        })
-        .unwrap();
+        s.save_ui_state(&UiStatePatch { ui_scale: Some(1.45), ..Default::default() }).unwrap();
         // Exactly what the drawer's `pointerup` sends, and nothing else.
+        s.save_ui_state(&UiStatePatch { pr_diff_cols: Some(96), ..Default::default() }).unwrap();
+        // Exactly what the settings checkbox sends, and nothing else.
         s.save_ui_state(&UiStatePatch {
-            active_workspace_id: None,
-            ui_scale: None,
-            pr_diff_cols: Some(96),
-        })
-        .unwrap();
+            record_scenario_runs: Some(false), ..Default::default()
+        }).unwrap();
         // Exactly what `workspaces.ts` sends, and nothing else.
         s.save_ui_state(&UiStatePatch {
-            active_workspace_id: Some("w-2".into()),
-            ui_scale: None,
-            pr_diff_cols: None,
-        })
-        .unwrap();
+            active_workspace_id: Some("w-2".into()), ..Default::default()
+        }).unwrap();
         let st = Store::new(s.dir.clone()).ui_state();
         assert_eq!(st.active_workspace_id, Some("w-2".into()));
         assert_eq!(st.ui_scale, 1.45, "a workspace switch must not reset the text size");
         assert_eq!(st.pr_diff_cols, 96, "nor the width of the diff drawer");
+        assert!(!st.record_scenario_runs, "nor whether runs are being recorded");
     }
 
     #[test]
@@ -591,5 +753,237 @@ mod tests {
         assert_eq!(run.last_attempt, 1_700_000_000_000);
         assert_eq!(run.last_run, Some(1_700_000_000_000));
         assert_eq!(run.last_outcome, None);
+    }
+
+    /* --- the run journal ------------------------------------------------- */
+
+    fn a_run(run_id: &str, skill: &str, at: i64) -> RunEvent {
+        a_run_in(run_id, skill, at, Some("w1"))
+    }
+
+    fn a_run_in(run_id: &str, skill: &str, at: i64, workspace: Option<&str>) -> RunEvent {
+        RunEvent::Started(crate::runs::RunStarted {
+            version: crate::runs::RUN_JOURNAL_VERSION,
+            run_id: run_id.into(),
+            at,
+            trigger: crate::runs::RunTrigger::Manual,
+            skill_id: skill.into(),
+            name: "Triage".into(),
+            icon: "bolt".into(),
+            workspace_id: workspace.map(str::to_string),
+            cwd: "/p".into(),
+            branch: None,
+            session_id: Some(format!("sess-{run_id}")),
+            params: std::collections::HashMap::new(),
+            prompt: Some("go".into()),
+            continues_run_id: None,
+        })
+    }
+
+    fn a_close(run_id: &str, at: i64) -> RunEvent {
+        RunEvent::Closed(crate::runs::RunClosed {
+            version: crate::runs::RUN_JOURNAL_VERSION,
+            run_id: run_id.into(),
+            at,
+            status: crate::runs::RunStatus::Ended,
+            result: Some("done".into()),
+            reason: None,
+            tokens: None,
+            result_source: crate::runs::ResultSource::Transcript,
+        })
+    }
+
+    /// A missing journal is a first run, exactly as a missing `workspaces.json`
+    /// is — never an error, and never a reason to refuse a write.
+    #[test]
+    fn a_missing_journal_reads_empty_and_the_first_append_creates_it() {
+        let s = Store::new(tmp());
+        assert!(s.runs().is_empty());
+        s.append_run_event(&a_run("r1", "s1", 10)).unwrap();
+        let runs = s.runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, "r1");
+        assert_eq!(runs[0].status, crate::runs::RunStatus::Running);
+    }
+
+    /// **Newest first**, because that is the order a history is read in and the
+    /// one thing every caller would otherwise re-sort for itself.
+    #[test]
+    fn runs_come_back_newest_first() {
+        let s = Store::new(tmp());
+        for (id, at) in [("r1", 10), ("r2", 20), ("r3", 30)] {
+            s.append_run_event(&a_run(id, "s1", at)).unwrap();
+        }
+        let ids: Vec<String> = s.runs().into_iter().map(|r| r.run_id).collect();
+        assert_eq!(ids, vec!["r3", "r2", "r1"]);
+    }
+
+    /// The whole reason this file is appended to rather than rewritten: a
+    /// process that died half-way through a line costs that line, and every
+    /// record before it is still there afterwards.
+    #[test]
+    fn a_half_written_last_line_costs_that_record_and_no_other() {
+        use std::io::Write;
+        let s = Store::new(tmp());
+        s.append_run_event(&a_run("r1", "s1", 10)).unwrap();
+        s.append_run_event(&a_close("r1", 20)).unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(s.runs_path()).unwrap();
+        f.write_all(br#"{"v":1,"t":"started","runId":"r2","at":3"#).unwrap();
+        drop(f);
+
+        let runs = s.runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, "r1");
+        assert_eq!(runs[0].status, crate::runs::RunStatus::Ended);
+        // And the next launch's record survives too. The half-written line has
+        // no newline of its own, so an append that did not heal the file first
+        // would splice the two together and lose **both** — the crash costing
+        // the record after it as well as the one it interrupted.
+        s.append_run_event(&a_run("r3", "s1", 40)).unwrap();
+        let after = s.runs();
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0].run_id, "r3");
+    }
+
+    /// 101 runs of one scenario leave 100 after a restart.
+    #[test]
+    fn compaction_prunes_to_the_retention_limit_and_keeps_the_newest() {
+        let s = Store::new(tmp());
+        for i in 0..(RUNS_PER_SKILL + 1) {
+            s.append_run_event(&a_run(&format!("r{i}"), "s1", i as i64)).unwrap();
+        }
+        assert_eq!(s.compact_runs().unwrap(), 1);
+        let runs = s.runs();
+        assert_eq!(runs.len(), RUNS_PER_SKILL);
+        assert_eq!(runs[0].run_id, format!("r{}", RUNS_PER_SKILL));
+        assert_eq!(runs.last().unwrap().run_id, "r1", "the oldest is the one that went");
+        // Idempotent: a second start must not keep trimming a file already at
+        // the limit.
+        assert_eq!(s.compact_runs().unwrap(), 0);
+    }
+
+    /// Compaction rewrites the file, so it has to preserve what the events
+    /// carried — including a close, which a records-only rewrite could drop.
+    #[test]
+    fn compaction_keeps_every_surviving_record_whole() {
+        let s = Store::new(tmp());
+        s.append_run_event(&a_run("r1", "s1", 10)).unwrap();
+        s.append_run_event(&crate::runs::RunEvent::Transcript(crate::runs::RunTranscript {
+            version: 1, run_id: "r1".into(), at: 11, path: "/t/a.jsonl".into(), cleared: true,
+        })).unwrap();
+        s.append_run_event(&a_close("r1", 20)).unwrap();
+        s.compact_runs().unwrap();
+        let runs = s.runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].transcript_path.as_deref(), Some("/t/a.jsonl"));
+        assert!(runs[0].cleared);
+        assert_eq!(runs[0].result.as_deref(), Some("done"));
+    }
+
+    /// Erasure exists at one granularity only, and it is this one. The other
+    /// scenarios' records are untouched — a history that took its neighbours
+    /// with it would make the action unusable.
+    #[test]
+    fn deleting_one_scenarios_history_leaves_the_rest() {
+        let s = Store::new(tmp());
+        s.append_run_event(&a_run("r1", "gone", 10)).unwrap();
+        // Closed, because an open record refuses the erase — see
+        // `erasing_a_history_is_refused_while_one_of_its_runs_is_still_open`.
+        s.append_run_event(&a_close("r1", 15)).unwrap();
+        s.append_run_event(&a_run("r2", "kept", 20)).unwrap();
+        s.append_run_event(&a_close("r2", 30)).unwrap();
+        s.delete_skill_history("gone", None).unwrap();
+        let runs = s.runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].skill_id, "kept");
+        assert_eq!(runs[0].status, crate::runs::RunStatus::Ended);
+        // Deleting a scenario nobody ran is not an error.
+        s.delete_skill_history("never-ran", None).unwrap();
+        assert_eq!(s.runs().len(), 1);
+    }
+
+    /// The screen is one workspace's, and so is the erase. Somebody clearing the
+    /// two rows in front of them must not also lose the forty this scenario has
+    /// in the workspaces they are not looking at — the journal is the only copy
+    /// and there is no undo.
+    #[test]
+    fn erasing_a_history_reaches_only_the_workspace_that_was_on_screen() {
+        let s = Store::new(tmp());
+        s.append_run_event(&a_run_in("here", "s1", 10, Some("w1"))).unwrap();
+        s.append_run_event(&a_close("here", 11)).unwrap();
+        s.append_run_event(&a_run_in("elsewhere", "s1", 20, Some("w2"))).unwrap();
+        s.append_run_event(&a_close("elsewhere", 21)).unwrap();
+        // No workspace of its own: it shows in every workspace's history, so it
+        // is also erased from any of them — `in_scope` answers both questions.
+        s.append_run_event(&a_run_in("nowhere", "s1", 30, None)).unwrap();
+        s.append_run_event(&a_close("nowhere", 31)).unwrap();
+
+        s.delete_skill_history("s1", Some("w1")).unwrap();
+        let left: Vec<String> = s.runs().into_iter().map(|r| r.run_id).collect();
+        assert_eq!(left, vec!["elsewhere".to_string()]);
+    }
+
+    /// Erasing rewrites the journal, and rewriting an open record out of it
+    /// loses more than the past: the run's `Closed` event would arrive later
+    /// with no `Started` left to attach to, `fold_events` would drop it, and the
+    /// run would never be journalled at all.
+    #[test]
+    fn erasing_a_history_is_refused_while_one_of_its_runs_is_still_open() {
+        let s = Store::new(tmp());
+        s.append_run_event(&a_run("done", "s1", 10)).unwrap();
+        s.append_run_event(&a_close("done", 11)).unwrap();
+        s.append_run_event(&a_run("live", "s1", 20)).unwrap();
+
+        let err = s
+            .delete_skill_history("s1", Some("w1"))
+            .expect_err("an open run must not be erased out from under itself");
+        assert!(err.to_string().contains("still going"), "{err}");
+        assert_eq!(s.runs().len(), 2, "nothing may have been rewritten");
+
+        // The refusal is scoped too: an open run in another workspace is not a
+        // reason to refuse the erase of the one on screen.
+        s.append_run_event(&a_run_in("far", "s2", 30, Some("w2"))).unwrap();
+        s.delete_skill_history("s2", Some("w1")).unwrap();
+
+        // And once it closes, the erase goes through.
+        s.append_run_event(&a_close("live", 40)).unwrap();
+        s.delete_skill_history("s1", Some("w1")).unwrap();
+        let left: Vec<String> = s.runs().into_iter().map(|r| r.run_id).collect();
+        assert_eq!(left, vec!["far".to_string()]);
+    }
+
+    /// The journal outlives the definitions it names. Deleting the scenario
+    /// (and its workspace with it) must leave the records readable under the
+    /// name they were launched with — that snapshot is the whole point of
+    /// storing a name rather than looking one up through `skillId`.
+    #[test]
+    fn deleting_the_scenario_itself_leaves_its_history_alone() {
+        let s = Store::new(tmp());
+        s.upsert_skill(Skill {
+            id: "s1".into(), name: "Triage".into(), icon: "bolt".into(),
+            prompt: "p".into(), workspace_id: Some("w1".into()), schedule: None,
+        }).unwrap();
+        s.append_run_event(&a_run("r1", "s1", 10)).unwrap();
+        s.delete_skill("s1").unwrap();
+        s.delete_workspace("w1").unwrap();
+        let runs = s.runs();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].name, "Triage");
+        assert_eq!(runs[0].icon, "bolt");
+    }
+
+    /// Retention is per scenario, so a nightly job is not evicted by an hourly
+    /// one that happens to share the file.
+    #[test]
+    fn compaction_counts_each_scenario_separately() {
+        let s = Store::new(tmp());
+        for i in 0..(RUNS_PER_SKILL + 5) {
+            s.append_run_event(&a_run(&format!("h{i}"), "hourly", i as i64)).unwrap();
+        }
+        s.append_run_event(&a_run("n1", "nightly", 1)).unwrap();
+        s.compact_runs().unwrap();
+        let runs = s.runs();
+        assert_eq!(runs.iter().filter(|r| r.skill_id == "hourly").count(), RUNS_PER_SKILL);
+        assert_eq!(runs.iter().filter(|r| r.skill_id == "nightly").count(), 1);
     }
 }

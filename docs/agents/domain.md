@@ -34,8 +34,7 @@ say so.
 
 ADRs and `CONTEXT.md` are documentation, so they are written in English, along
 with every glossary term and decision record. See the "Language" section of
-`CLAUDE.md`; note that `docs/superpowers/plans/` and `docs/superpowers/specs/`
-dated before 2026-07-27 are a deliberate, untranslated historical record.
+`CLAUDE.md`.
 
 ## Use the glossary's vocabulary
 
