@@ -1,7 +1,7 @@
 import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiState, type Workspace, type UiState, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
-import { iconButton } from "./icons";
+import { iconButton, type IconName } from "./icons";
 
 /** Confirmation text for deleting a workspace. Deleting one strands every
  *  scenario pinned to it — they stop being runnable, and any schedule on them
@@ -59,7 +59,16 @@ export class WorkspacesPanel {
      *  Absent in a window that is already pinned to one workspace — there is
      *  nowhere further to pull it — and absent in tests that do not care, which
      *  is why it defaults to nothing rather than being required. */
-    private onDetach: ((ws: Workspace) => void) | null = null,
+    /** The one control that moves a workspace between windows, in whichever
+     *  direction this window can move it: out, in the main window, and back, in
+     *  a window pinned to one workspace. One slot rather than two, because the
+     *  two are never both available and a row with a disabled twin of the
+     *  control beside it says less than a row with one control that works. */
+    private moveAction: {
+      icon: IconName;
+      label: (name: string) => string;
+      run: (ws: Workspace) => void;
+    } | null = null,
     /** Raise the window a detached workspace lives in. */
     private onRaise: ((ws: Workspace) => void) | null = null,
   ) {}
@@ -229,10 +238,10 @@ export class WorkspacesPanel {
       // No pull-out control on a workspace that is already out. The count badge
       // beside it deliberately keeps working — the workspace is still being
       // worked on, just not here.
-      const detach = this.onDetach && !isDetached
-        ? iconButton("detach", `Open ${w.name} in its own window`, "ws-detach")
+      const move = this.moveAction && !isDetached
+        ? iconButton(this.moveAction.icon, this.moveAction.label(w.name), "ws-detach")
         : null;
-      if (detach) detach.onclick = () => this.onDetach!(w);
+      if (move) move.onclick = () => this.moveAction!.run(w);
       row.append(dot, label);
       const n = this.counts.get(w.id) ?? 0;
       if (n > 0) {
@@ -242,7 +251,7 @@ export class WorkspacesPanel {
         count.title = openTaskCountLabel(n);
         row.append(count);
       }
-      if (detach) row.append(detach);
+      if (move) row.append(move);
       row.append(edit, x);
       // Appended last because `.ws-account` now wraps onto the row's second
       // line, and the DOM order is what a screen reader follows: `order: 1`

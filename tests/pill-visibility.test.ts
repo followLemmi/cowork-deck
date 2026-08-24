@@ -28,7 +28,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ label: "main", show: showMock, hide: hideMock, isVisible: isVisibleMock }),
+  getCurrentWindow: () => ({ label: "main", onCloseRequested: async () => () => {}, destroy: async () => {}, show: showMock, hide: hideMock, isVisible: isVisibleMock }),
 }));
 
 /** Loads `src/pill.ts` fresh — it registers its listener at import time — and

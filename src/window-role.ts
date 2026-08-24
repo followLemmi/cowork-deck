@@ -13,6 +13,10 @@
  *  here would silently render the placeholder in a window that is pinned to one. */
 const WORKSPACE_PREFIX = "workspace-";
 
+/** The main window's label. The other half of `windows::MAIN` in Rust, and the
+ *  address a workspace window hands its workspace back to. */
+export const MAIN_WINDOW_LABEL = "main";
+
 /** The label for the window pinned to `workspaceId`.
  *
  *  The other half of `workspace_label` in `src-tauri/src/windows.rs`, and pinned

@@ -81,7 +81,9 @@ describe("a workspace that is open in its own window", () => {
   it("drops the pull-out control", async () => {
     const mount = document.createElement("div");
     const panel = new WorkspacesPanel(
-      mount, vi.fn(), undefined, () => {}, true, vi.fn(), vi.fn(),
+      mount, vi.fn(), undefined, () => {}, true,
+      { icon: "detach", label: (n: string) => `Open ${n}`, run: vi.fn() },
+      vi.fn(),
     );
     await panel.load();
     panel.setDetached(new Set(["b"]));

@@ -56,7 +56,7 @@ import {
   allSessions, sumWaiting, windowOf,
   type RemoteSession, type SessionsByWindow, type WindowSessions,
 } from "./cross-window";
-import { workspaceIdOf, workspaceLabel } from "./window-role";
+import { MAIN_WINDOW_LABEL, workspaceIdOf, workspaceLabel } from "./window-role";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowRole } from "./window-role";
 
@@ -1465,7 +1465,17 @@ export function startApp(role: WindowRole): Promise<void> {
     // Absent in a window already pinned to one workspace: there is nowhere
     // further to pull it, and a control that reopens the window you are in is
     // worse than no control.
-    isMain ? (ws) => { void detachWorkspace(ws); } : null,
+    isMain
+      ? {
+          icon: "detach" as const,
+          label: (name: string) => `Open ${name} in its own window`,
+          run: (ws: Workspace) => { void detachWorkspace(ws); },
+        }
+      : {
+          icon: "attach" as const,
+          label: (name: string) => `Return ${name} to the main window`,
+          run: () => { void returnToMainWindow(); },
+        },
     // Clicking a detached workspace's row raises its window rather than
     // switching to it — switching would show an empty deck, since its tiles are
     // somewhere else.
@@ -1681,11 +1691,38 @@ export function startApp(role: WindowRole): Promise<void> {
     }
   }
 
+  /** Give this window's workspace back to the main window, and close.
+   *
+   *  The mirror of `detachWorkspace`, and the same ordering: the main window
+   *  claims before this one gives anything up, so a failure at any point leaves
+   *  the sessions where they are rather than nowhere. This window then goes; its
+   *  tiles are already somewhere else by then.
+   *
+   *  Dragging the window back was considered and rejected. `startDragging()`
+   *  hands the drag to the OS and **Tauri has no drag-end event**, so the one
+   *  signal that would decide "absorb or not" — the moment of release — cannot
+   *  be observed. Hand-rolling the drag instead means reimplementing window
+   *  dragging with `setPosition` per move, which feels less native and does
+   *  nothing at all on Wayland. It buys noticeably less than it costs. */
+  async function returnToMainWindow() {
+    const tiles = deck.handOffPayload(role.kind === "workspace" ? role.workspaceId : "");
+    try {
+      if (tiles.length) await emitTo(MAIN_WINDOW_LABEL, "workspace://take", { tiles });
+    } catch (e) {
+      await alertModal(`Could not hand this workspace back: ${String(e)}`);
+      return;
+    }
+    await getCurrentWindow().destroy().catch((e) => {
+      console.error("could not close the workspace window", e);
+    });
+  }
+
   const COMMANDS: Record<string, () => void> = {
     "detach-workspace": () => {
       const ws = workspaces.active;
       if (ws) void detachWorkspace(ws);
     },
+    "return-workspace": () => { if (!isMain) void returnToMainWindow(); },
     "palette": () => openPalette(paletteCommands()),
     "new-session": () => { void newSession(); },
     // Whichever surface has the keyboard. Closing a deck tile because the caret
@@ -1808,7 +1845,33 @@ export function startApp(role: WindowRole): Promise<void> {
     broadcastScale(e.payload.scale);
   });
 
+  /** Closing a workspace window returns its workspace. It never ends a session.
+   *
+   *  An accidental Cmd+W must cost nothing but a window, and that is the whole
+   *  point of this issue. So the close is intercepted, the workspace is handed
+   *  back, and only then is the window destroyed — `destroy()` rather than
+   *  `close()`, which would come back through here.
+   *
+   *  In a `finally`: a hand-back that failed must not leave a window that cannot
+   *  be closed. The sessions survive either way — nothing here kills anything,
+   *  and PTYs die on app exit only — so the worse of the two outcomes is a tile
+   *  that has to be found again, not work that is gone. */
+  const closeListener = isMain
+    ? Promise.resolve(() => {})
+    : getCurrentWindow().onCloseRequested(async (e) => {
+        e.preventDefault();
+        try {
+          const tiles = deck.handOffPayload(role.kind === "workspace" ? role.workspaceId : "");
+          if (tiles.length) await emitTo(MAIN_WINDOW_LABEL, "workspace://take", { tiles });
+        } catch (err) {
+          console.error("handing the workspace back failed; closing anyway", err);
+        } finally {
+          void getCurrentWindow().destroy();
+        }
+      });
+
   const handOffListeners = Promise.all([
+    closeListener,
     focusListener,
     raiseListener,
     waitingListener,

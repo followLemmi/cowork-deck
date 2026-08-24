@@ -27,6 +27,12 @@ const NS = "http://www.w3.org/2000/svg";
 const PATHS: Record<string, string> = {
   chevron: '<polyline points="6,4 10,8 6,12"/>',
   x: '<path d="M4.5 4.5 L11.5 11.5"/><path d="M11.5 4.5 L4.5 11.5"/>',
+  // The same window, with the arrow coming back in. Deliberately the mirror of
+  // `detach` rather than a different idea: the two are one gesture in two
+  // directions, and a person who has learned one has learned the other.
+  attach: '<path d="M8.2 3.5 H4 a1.5 1.5 0 0 0-1.5 1.5 v7 a1.5 1.5 0 0 0 1.5 1.5 h7 '
+    + 'a1.5 1.5 0 0 0 1.5-1.5 V7.8"/>'
+    + '<path d="M8.4 7.6 H12.1 V3.9"/><path d="M13.5 2.5 L8.4 7.6"/>',
   // A window with one corner open and an arrow leaving through it: the shape
   // every desktop uses for "this opens somewhere else". The box is deliberately
   // the same rounded rectangle as `terminal` — what is being pulled out is a

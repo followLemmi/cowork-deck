@@ -14,6 +14,8 @@ vi.mock("../src/terminal", () => ({
     constructor(session: string) { this.session = session; }
     start = vi.fn().mockResolvedValue(undefined);
     write = vi.fn(); focus = vi.fn(); dispose = vi.fn(); fit = vi.fn();
+    // What a hand-off copies out of a panel that is being given up.
+    serialize = vi.fn().mockReturnValue("");
   },
 }));
 
@@ -38,6 +40,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn().mockResolvedValue(undefined) }));
 
 import { Deck } from "../src/sessions";
+import { closeSession } from "../src/ipc";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#61afef" };
 
@@ -106,5 +109,32 @@ describe("sessions held by another window", () => {
     expect(listEl.querySelectorAll(".sess-row.remote").length).toBe(1);
     deck.setRemoteSessions([]);
     expect(listEl.querySelectorAll(".sess-row.remote").length).toBe(0);
+  });
+});
+
+/** Giving a session up is not ending it. Closing a workspace window returns its
+ *  workspace and never costs a session — PTYs die on app exit only — so an
+ *  accidental Cmd+W has to cost nothing but a window. Part of #245. */
+describe("giving a tile up", () => {
+  it("never ends the session behind it", async () => {
+    const { deck, listEl } = makeDeck();
+    await deck.launch(WS as never, null);
+    const session = listEl.querySelector<HTMLElement>(".sess-row")!
+      .dataset.focusKey!.replace("session:", "");
+
+    deck.releaseTile(session);
+
+    expect(closeSession).not.toHaveBeenCalled();
+    expect(listEl.querySelectorAll(".sess-row").length).toBe(0);
+  });
+
+  /** A hand-off carries one workspace's tiles. Carrying another's would move
+   *  sessions the person never asked to move, into a window pinned to something
+   *  else. */
+  it("hands over only the workspace being moved", async () => {
+    const { deck } = makeDeck();
+    await deck.launch(WS as never, null);
+    expect(deck.handOffPayload(WS.id).length).toBe(1);
+    expect(deck.handOffPayload("some-other-workspace")).toEqual([]);
   });
 });
