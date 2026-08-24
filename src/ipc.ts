@@ -424,6 +424,25 @@ export const writeSession = (session: string, data: string) => invoke<void>("wri
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
 export const closeSession = (session: string) => invoke<void>("close_session", { session });
+/** One tile as it crosses between windows: everything `sessions.json` records
+ *  about it, plus what was on its screen.
+ *
+ *  The scrollback rides with the tile rather than being fetched afterwards
+ *  because the window that has it is the window that is giving it up — a moment
+ *  later there is nobody left to ask. */
+export interface HandOffTile extends SessionEntry {
+  scrollback: string;
+}
+
+/** Take over a running session: point its output here and record this window as
+ *  its owner. Spawns nothing — see `TerminalPanel.attach`. */
+export const claimSession = (session: string, sink: Channel<ArrayBuffer>) =>
+  invoke<void>("claim_session", { session, sink });
+/** A session changed hands. Every window hears it; the one whose label is
+ *  `owner` asked for it, and the rest give the session up. */
+export const onSessionOwner = (cb: (session: string, owner: string) => void) =>
+  listen<{ session: string; owner: string }>("session://owner", (e) =>
+    cb(e.payload.session, e.payload.owner));
 /** Open the window pinned to `workspaceId`, or raise it if it is already up.
  *
  *  Windows are built in Rust rather than here. `core:webview:default` does not

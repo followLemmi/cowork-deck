@@ -1,12 +1,13 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
 import {
-  startSession, startCommandSession, startShellSession, writeSession, resizeSession,
+  startSession, startCommandSession, startShellSession, writeSession, resizeSession, claimSession,
   prepareWorkspace, type OutputSink, type ScenarioLaunch, type SessionAuth, type ShellStart,
 } from "./ipc";
 import { sessionRefusal, SESSION_GONE, SESSION_NOT_OWNER } from "./session-refusal";
@@ -85,6 +86,10 @@ export class TerminalPanel {
    *  `styles.css`), which reads as not intersecting — so this covers both
    *  minimizing and scrolling out of view with one mechanism. */
   private io: IntersectionObserver | null = null;
+  /** What a hand-off copies. Only ever read from the window that is giving a
+   *  session up, and only while it is still alive — which is why there is no ring
+   *  buffer in Rust for this. See `serialize`. */
+  private serializeAddon = new SerializeAddon();
   private onScreen = false;
   /** Bound once so `dispose` can remove the same reference it added. */
   private onScaleEvent = (e: Event) => {
@@ -101,6 +106,23 @@ export class TerminalPanel {
      *  cannot know which tile it is answering for, so the panel carries the one
      *  flag. Such a tile is renamed with the pencil or from the palette. */
     private readonly keepsRenameKey = false,
+    /** Born without resize authority, for a panel that is about to take over a
+     *  session another window is still rendering.
+     *
+     *  The constructor asserts that authority whether a caller wants it or not:
+     *  `document.fonts.ready.then(fit)` and the `ResizeObserver` both land after
+     *  it returns and reach the `onResize` handler, so a panel built for a
+     *  hand-off would tell the PTY its geometry before it owned the session —
+     *  and the child would take a SIGWINCH for a window that is not yet showing
+     *  it. The synchronous `fitAddon.fit()` in the constructor is safe either
+     *  way; it runs before that handler exists.
+     *
+     *  Input is held rather than dropped: `started` stays false, so what is typed
+     *  into a panel mid-hand-off is buffered by `send` and delivered by
+     *  `activate`, exactly as it is for a session that has not spawned yet.
+     *
+     *  `activate()` is what ends it, and nothing else does. */
+    private suppressResize = false,
   ) {
     this.term = new Terminal({
       fontFamily: '"CaskaydiaCove Nerd Font Mono", "Cascadia Code", ui-monospace, monospace',
@@ -210,6 +232,7 @@ export class TerminalPanel {
       this.term.input(bytes);
       return false;
     });
+    this.term.loadAddon(this.serializeAddon);
     this.fitAddon.fit();
     if ((document as any).fonts?.ready) {
       (document as any).fonts.ready.then(() => this.fit());
@@ -386,6 +409,96 @@ export class TerminalPanel {
     this.gpu = null;
   }
 
+  /** Everything on this terminal's screen and in its scrollback, as the bytes
+   *  that would redraw it.
+   *
+   *  Read from the window **giving a session up**, while it is still alive. The
+   *  first design put a ring buffer per session in Rust and a `session_tail`
+   *  command beside it; this replaced it, and the reasoning is worth keeping. A
+   *  Rust buffer only helps when the source is already gone, which is not this
+   *  case — during a hand-off the source window is right there. It would also
+   *  cost resident memory per session for something read at most once in a
+   *  session's life. And the app already discards scrollback on every restart,
+   *  so an empty screen with a live conversation is a state people live with;
+   *  this is strictly better than that, not a regression from perfect. */
+  serialize(): string {
+    return this.serializeAddon.serialize();
+  }
+
+  /** Take over a session that is already running, without starting anything.
+   *
+   *  The third path, and it exists because the other two cannot be reused.
+   *  `start(..., resume: true)` runs `claude --resume` against a PTY that is
+   *  still alive — a second agent on one conversation, which is the defect the
+   *  whole epic begins with. This spawns nothing: it points the PTY's output at
+   *  this window and records the ownership, and the process never notices.
+   *
+   *  Listeners first, claim second. The output channel is created here and handed
+   *  to Rust inside the claim, so there is no window in which output has been
+   *  redirected to a panel that is not reading yet. */
+  async attach(): Promise<void> {
+    const { cols, rows } = this.term;
+    // Counts as sent: `activate` decides what the first authoritative size is,
+    // and this is what the PTY currently believes.
+    this.sentSize = { cols, rows };
+    await claimSession(this.session, this.openSink());
+  }
+
+  /** Put back what the person was looking at, then make the process redraw.
+   *
+   *  **A replay is not a live frame and must not pretend to be one.** Claude Code
+   *  is Ink: it repaints with cursor moves relative to the current width, so
+   *  content restored into a terminal of different `cols` — precisely the case
+   *  when the other monitor is a different size — stitches itself into garbage.
+   *  So the replay is the *history*, and the current frame is asked for again.
+   *
+   *  The asking is a resize to `rows - 1` and back. SIGWINCH is the only way to
+   *  get a true current frame out of a running TUI. Not `Ctrl+L`: that reaches
+   *  Claude Code as input, and typing into somebody's session on their behalf is
+   *  not a repaint.
+   *
+   *  One thing the repaint does not cover: modes set once at startup and never
+   *  re-sent. Bracketed paste (`?2004h`) is the one that matters — without it a
+   *  paste into a reattached terminal regresses permanently, and silently. The
+   *  alternate screen and application cursor keys are re-emitted by Ink on every
+   *  redraw, so they correct themselves. */
+  replay(scrollback: string) {
+    if (scrollback) this.term.write(scrollback);
+    // Re-asserted here because nothing else will re-assert it: unlike the modes
+    // Ink rewrites on each frame, this one is sent once at startup and the new
+    // terminal never saw it.
+    this.term.write("\u001b[?2004h");
+  }
+
+  /** Hand this panel its authority: the size it settled on goes to the PTY, and
+   *  the process is made to draw the frame it is actually showing.
+   *
+   *  Ends the suppression `suppressResize` describes, and releases whatever was
+   *  typed while the hand-off was in flight. */
+  activate() {
+    this.suppressResize = false;
+    const { cols, rows } = this.term;
+    // The first authoritative resize, sent directly rather than queued: the
+    // debounce exists to collapse a drag, and this is not one.
+    this.sentSize = { cols, rows };
+    resizeSession(this.session, cols, rows)
+      .then(() => this.forceRepaint(cols, rows))
+      .catch((e) => console.debug("hand-off resize failed", sessionRefusal(e) ?? e));
+    this.markStarted();
+  }
+
+  /** One SIGWINCH the process cannot ignore, and then the real size back.
+   *
+   *  A resize to the size it already has is not a change, so it produces no
+   *  signal and no repaint — hence the detour through `rows - 1`. Short enough
+   *  that nothing renders at the wrong height; a TUI redraws on the second one. */
+  private forceRepaint(cols: number, rows: number) {
+    if (rows <= 1) return;
+    resizeSession(this.session, cols, rows - 1)
+      .then(() => resizeSession(this.session, cols, rows))
+      .catch((e) => console.debug("repaint nudge failed", sessionRefusal(e) ?? e));
+  }
+
   /** Returns the outcome of the GitHub account binding: the caller decides
    *  whether to hang a badge on the tile. The environment is fixed here, at the
    *  birth of the process. */
@@ -510,6 +623,10 @@ export class TerminalPanel {
    *  another — the failure `setFontSize`'s comment above describes, arrived at from
    *  the other direction. */
   private queueResize(cols: number, rows: number) {
+    // A panel built for a hand-off has no authority over the PTY yet. Geometry
+    // still settles — the fit happened, xterm knows its grid — but nothing is
+    // told about it until `activate`, which sends the settled size once.
+    if (this.suppressResize) return;
     this.pendingSize = { cols, rows };
     if (this.sizeTimer !== null) return;
     this.sizeTimer = setTimeout(() => {

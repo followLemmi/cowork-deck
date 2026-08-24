@@ -10,7 +10,8 @@ import type { ViewName } from "./view";
 import {
   claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
-  revealPath, saveUiState, scheduleAck, schedulerReady,
+  revealPath, saveUiState, scheduleAck, schedulerReady, openWorkspaceWindow, onSessionOwner,
+  type HandOffTile,
 } from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
 import { TerminalDrawer, DEFAULT_TERMINAL_ROWS } from "./drawer";
@@ -50,7 +51,7 @@ import { resolveScheduledWorkspace } from "./schedule";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emitTo } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowRole } from "./window-role";
 
@@ -75,7 +76,7 @@ import type { WindowRole } from "./window-role";
  *  so function scope behaves exactly as module scope did. There was no top-level
  *  `await` to unwind.
  */
-export function startApp(role: WindowRole) {
+export function startApp(role: WindowRole): Promise<void> {
 
   /** Whether this window speaks for the app rather than for one workspace.
    *
@@ -88,6 +89,8 @@ export function startApp(role: WindowRole) {
    *  whole class at once, and it can only do that if the class has a boundary.
    */
   const isMain = role.kind === "main";
+  /** This window's own label — what `session://owner` is compared against. */
+  const myLabel = getCurrentWindow().label;
 
   installSprite();
   const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
@@ -1379,7 +1382,11 @@ export function startApp(role: WindowRole) {
     // so re-point the watcher and re-read the sidebar counts.
     void taskWatchSync();
     void refreshCounts();
-  }, (workspaceId) => deck.markAuthStale(workspaceId), isMain);
+  }, (workspaceId) => deck.markAuthStale(workspaceId), isMain,
+    // Absent in a window already pinned to one workspace: there is nowhere
+    // further to pull it, and a control that reopens the window you are in is
+    // worse than no control.
+    isMain ? (ws) => { void detachWorkspace(ws); } : null);
   /** Every launch path needs an active workspace. Saying so beats a button that
    *  looks broken — the old behaviour was a bare `return`. */
   async function requireWorkspace(): Promise<Workspace | null> {
@@ -1560,7 +1567,37 @@ export function startApp(role: WindowRole) {
     focusRegion(cycle[(i + step + cycle.length) % cycle.length]);
   }
 
+  /** Pull a workspace into a window of its own, sessions and all.
+   *
+   *  The plain trigger. The drag gesture (#248) ends in exactly this call — it is
+   *  built last and only works on macOS, so this is the path that has to exist
+   *  and the one every other platform keeps.
+   *
+   *  The order below is the ordering rule from #241, and none of it is
+   *  rearrangeable. `openWorkspaceWindow` resolves only once the new window has
+   *  attached its listeners (#239), so the payload cannot be emitted into a
+   *  window that is not listening — an emit to a webview with no listener is a
+   *  silent no-op at both ends. The scrollback is read *after* that, as late as
+   *  possible, so it is what the person was looking at rather than what they were
+   *  looking at a second ago. And this window gives nothing up here: it disposes
+   *  when `session://owner` says the other window has taken over, by which time
+   *  its writes have been refused since the claim (#240). Losing that race costs
+   *  nothing. */
+  async function detachWorkspace(ws: Workspace) {
+    try {
+      const label = await openWorkspaceWindow(ws.id);
+      const tiles = deck.handOffPayload(ws.id);
+      if (tiles.length) await emitTo(label, "workspace://take", { tiles });
+    } catch (e) {
+      await alertModal(`Could not open a window for ${ws.name}: ${String(e)}`);
+    }
+  }
+
   const COMMANDS: Record<string, () => void> = {
+    "detach-workspace": () => {
+      const ws = workspaces.active;
+      if (ws) void detachWorkspace(ws);
+    },
     "palette": () => openPalette(paletteCommands()),
     "new-session": () => { void newSession(); },
     // Whichever surface has the keyboard. Closing a deck tile because the caret
@@ -1661,5 +1698,34 @@ export function startApp(role: WindowRole) {
     await boot();
   }
 
-  void bootWithStoredScale();
+  /** The two listeners a hand-off needs, and the reason this function returns a
+   *  promise at all.
+   *
+   *  **Awaited, not fired and forgotten.** `listen` is asynchronous: registering
+   *  it is a round trip to the backend, and until it completes this window holds
+   *  no listener for the event. An emit to a webview in that state is a silent
+   *  no-op at both ends — so a window that answered `window_ready` before these
+   *  resolved would be told it may be spoken to while it still cannot hear, and
+   *  the workspace handed to it would go into the void. That is the exact failure
+   *  the handshake exists to prevent, and `void`-ing these would have reinvented
+   *  it one layer up.
+   *
+   *  Before the boot rather than inside it: the boot restores a layout and can
+   *  take a while, and there is nothing in it these two depend on. */
+  const handOffListeners = Promise.all([
+    // A workspace arriving from another window.
+    listen<{ tiles: HandOffTile[] }>("workspace://take", (e) => {
+      void deck.receive(e.payload.tiles);
+    }),
+    // A session changed hands. The window that asked for it ignores this; every
+    // other one gives up the tile without ending anything — the process, the PTY
+    // and the conversation carry on where they went.
+    onSessionOwner((session, owner) => {
+      if (owner !== myLabel) deck.releaseTile(session);
+    }),
+  ]);
+
+  return handOffListeners
+    .catch((e) => { console.error("hand-off listeners failed", e); })
+    .then(() => bootWithStoredScale());
 }

@@ -275,6 +275,7 @@ fn main() {
             commands::resize_session,
             commands::close_session,
             commands::window_ready,
+            commands::claim_session,
             commands::open_workspace_window,
             commands::load_layout,
             commands::save_layout,

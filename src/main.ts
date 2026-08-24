@@ -9,4 +9,4 @@ import { startApp } from "./app";
 import { roleOf } from "./window-role";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-startApp(roleOf(getCurrentWindow().label));
+void startApp(roleOf(getCurrentWindow().label));

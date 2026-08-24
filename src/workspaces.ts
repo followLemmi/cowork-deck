@@ -54,6 +54,12 @@ export class WorkspacesPanel {
      *  changes for the life of a window — and because a window's kind is known
      *  before the panel exists. */
     private persistActive = true,
+    /** Pull this workspace out into a window of its own.
+     *
+     *  Absent in a window that is already pinned to one workspace — there is
+     *  nowhere further to pull it — and absent in tests that do not care, which
+     *  is why it defaults to nothing rather than being required. */
+    private onDetach: ((ws: Workspace) => void) | null = null,
   ) {}
 
   setCounts(counts: Record<string, number>) {
@@ -180,13 +186,19 @@ export class WorkspacesPanel {
       // "switch to this": ✎ opens the form, 🗑 asks to delete. Matched with `closest`
       // so a glyph inside a button counts as that button.
       row.onclick = (e) => {
-        if ((e.target as Element | null)?.closest(".ws-edit, .ws-del")) return;
+        if ((e.target as Element | null)?.closest(".ws-edit, .ws-del, .ws-detach")) return;
         this.select(w.id);
       };
       const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
       edit.onclick = () => this.edit(w.id);
       const x = iconButton("trash", `Delete workspace: ${w.name}`, "ws-del btn--icon--danger");
       x.onclick = () => this.del(w.id);
+      // Excluded from the row's select handler above for the same reason ✎ and 🗑
+      // are: it means something other than "switch to this".
+      const detach = this.onDetach
+        ? iconButton("detach", `Open ${w.name} in its own window`, "ws-detach")
+        : null;
+      if (detach) detach.onclick = () => this.onDetach!(w);
       row.append(dot, label);
       const n = this.counts.get(w.id) ?? 0;
       if (n > 0) {
@@ -196,6 +208,7 @@ export class WorkspacesPanel {
         count.title = openTaskCountLabel(n);
         row.append(count);
       }
+      if (detach) row.append(detach);
       row.append(edit, x);
       // Appended last because `.ws-account` now wraps onto the row's second
       // line, and the DOM order is what a screen reader follows: `order: 1`

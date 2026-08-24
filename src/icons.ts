@@ -27,6 +27,13 @@ const NS = "http://www.w3.org/2000/svg";
 const PATHS: Record<string, string> = {
   chevron: '<polyline points="6,4 10,8 6,12"/>',
   x: '<path d="M4.5 4.5 L11.5 11.5"/><path d="M11.5 4.5 L4.5 11.5"/>',
+  // A window with one corner open and an arrow leaving through it: the shape
+  // every desktop uses for "this opens somewhere else". The box is deliberately
+  // the same rounded rectangle as `terminal` — what is being pulled out is a
+  // window of this app, not a link to elsewhere.
+  detach: '<path d="M8.2 3.5 H4 a1.5 1.5 0 0 0-1.5 1.5 v7 a1.5 1.5 0 0 0 1.5 1.5 h7 '
+    + 'a1.5 1.5 0 0 0 1.5-1.5 V7.8"/>'
+    + '<path d="M9.8 2.5 H13.5 V6.2"/><path d="M13.5 2.5 L8.4 7.6"/>',
   trash: '<path d="M3.5 4.5 h9"/><path d="M6.25 4.5 V3 h3.5 v1.5"/>'
     + '<path d="M5 4.5 l.5 8.5 h5 l.5-8.5"/>',
   pencil: '<path d="M10.4 3.1 l2.5 2.5 -8 8 -3.2 .7 .7-3.2 z"/><path d="M9.2 4.3 l2.5 2.5"/>',

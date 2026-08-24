@@ -1,6 +1,6 @@
 import { TerminalPanel } from "./terminal";
 import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionSnapshots, type NameKind, type SessionTokens } from "./ipc";
+import { gitStatus, sessionSnapshots, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
 import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
@@ -618,6 +618,12 @@ export class Deck {
     grabAttention?: boolean;
     /** "command" — разовый запуск `command` вместо сессии claude. */
     kind?: TileKind;
+    /** Take over a session that is already running instead of starting one, and
+     *  put this scrollback back on screen first.
+     *
+     *  The third path `TerminalPanel.attach` describes. Set only by `receive`,
+     *  when a workspace arrives from another window. */
+    attach?: { scrollback: string };
     command?: string;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
@@ -744,7 +750,9 @@ export class Deck {
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
-    const panel = new TerminalPanel(session, mount, isCommand);
+    // A panel taking over a live session is born without resize authority: it
+    // must not tell the PTY its geometry before it owns the session.
+    const panel = new TerminalPanel(session, mount, isCommand, opts.attach !== undefined);
     const names: TileNames = {
       // The placeholder slot always holds the launch string. On a context-named
       // tile it is the same string as `context`, which the resolver never reaches
@@ -771,7 +779,17 @@ export class Deck {
     this.startPolling();
     this.renderList();
     try {
-      if (isCommand) {
+      if (opts.attach) {
+        // The order is the design, and it is why this is not a branch of the
+        // launch path. Listeners and the claim first, so nothing arrives at a
+        // panel that is not reading; then the history, into a grid that has
+        // finished settling; then authority, which sends one resize and makes
+        // the process redraw. See `TerminalPanel.attach`, `replay`, `activate`.
+        await panel.attach();
+        panel.replay(opts.attach.scrollback);
+        panel.activate();
+        void this.persistLayout();
+      } else if (isCommand) {
         await panel.startCommand(cwd, opts.command ?? "");
         // Командный тайл в layout не попадает — persistLayout не зовём.
       } else {
@@ -1244,6 +1262,71 @@ export class Deck {
     if (this.zoomedSession === null) return false;
     this.zoomTo(null);
     return true;
+  }
+
+  /** Give a tile up because another window has taken its session over.
+   *
+   *  Everything `remove` does except ending the session — the PTY, the process
+   *  and the conversation carry on in the window that claimed them. Called from
+   *  the `session://owner` event rather than from the hand-off itself, so losing
+   *  the race costs nothing: this window's writes have been refused since the
+   *  claim (#240), and the tile is only a picture by then. */
+  releaseTile(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    tile.panel.dispose();
+    tile.el.remove();
+    this.tiles.delete(session);
+    if (tile.scheduledSkillId && this.scheduledSessions.get(tile.scheduledSkillId) === session) {
+      this.scheduledSessions.delete(tile.scheduledSkillId);
+    }
+    this.applyLayout();
+    this.usage.delete(session);
+    if (this.tiles.size === 0) this.stopPolling();
+    this.renderList();
+    void this.persistLayout();
+  }
+
+  /** Whether any tile here belongs to this workspace — what a pull-out asks
+   *  before opening a window for it. */
+  hasWorkspace(workspaceId: string): boolean {
+    return [...this.tiles.values()].some((t) => t.workspaceId === workspaceId);
+  }
+
+  /** Everything the window taking this workspace over needs to rebuild its
+   *  tiles, including what the person was looking at in each.
+   *
+   *  Read here, while this window is still alive and still rendering them. That
+   *  is the whole reason the scrollback needs no home in Rust. */
+  handOffPayload(workspaceId: string): HandOffTile[] {
+    return [...this.tiles.values()]
+      .filter((t) => t.workspaceId === workspaceId && t.kind !== "command")
+      .map((t) => ({
+        ...serializeTiles([{
+          session: t.session, workspacePath: t.workspacePath,
+          name: t.names.context ?? t.names.placeholder, workspaceId: t.workspaceId,
+          kind: t.kind, scheduledSkillId: t.scheduledSkillId, taskId: t.taskId,
+          userName: t.names.user,
+          nameKind: t.names.context === null ? "placeholder" : "context",
+          skillId: t.skillId, runId: t.runId,
+        }])[0],
+        scrollback: t.panel.serialize(),
+      }));
+  }
+
+  /** Build tiles for sessions this window is taking over from another one. */
+  async receive(tiles: HandOffTile[]) {
+    for (const e of tiles) {
+      if (this.tiles.has(e.sessionId)) continue;
+      await this.spawnTile({
+        session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
+        titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
+        prompt: null, resume: false,
+        scheduledSkillId: e.scheduledSkillId, taskId: e.taskId, skillId: e.skillId,
+        attach: { scrollback: e.scrollback },
+        grabAttention: false,
+      });
+    }
   }
 
   private remove(session: string) {

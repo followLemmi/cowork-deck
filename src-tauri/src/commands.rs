@@ -2011,6 +2011,57 @@ pub fn resize_session(
     state.pty.resize(&session, cols, rows).map_err(session_io_error)
 }
 
+/// What `session://owner` carries: a session and the window that now holds it.
+#[derive(Clone, Serialize)]
+pub struct OwnerPayload {
+    pub session: String,
+    pub owner: String,
+}
+
+/// Take a running session over, output and all.
+///
+/// The receiving half of a workspace moving between windows. The order is the
+/// whole design and it is not negotiable: **the receiving window becomes
+/// authoritative before the source gives anything up.** By the time this
+/// returns, the new window owns the session, its output arrives there, and every
+/// write from the old window is refused (#240) — so the source can dispose
+/// whenever it notices, and losing that race costs nothing.
+///
+/// It spawns nothing. `start_session` with `resume: true` would run
+/// `claude --resume` against a PTY that is still alive, which is a second agent
+/// on one conversation — the defect this whole epic starts from.
+///
+/// `sink` is a fresh output channel belonging to the calling window;
+/// `PtyManager::retarget` swaps it in under the same lock the reader takes, so a
+/// batch goes wholly to one window or wholly to the other. One already in flight
+/// lands in the source, which is why the caller reconciles what it buffered
+/// against the scrollback it was handed rather than assuming a clean cut.
+#[tauri::command(async)]
+pub async fn claim_session(
+    app: AppHandle, window: tauri::WebviewWindow, state: State<'_, AppState>,
+    session: String, sink: Channel<Response>,
+) -> Result<(), String> {
+    // Refuse an id nothing is running under, rather than recording an owner for
+    // a session that does not exist and leaving the caller to build a panel for
+    // it.
+    state.pty.retarget(&session, move |bytes: Vec<u8>| {
+        let _ = sink.send(Response::new(bytes));
+    }).map_err(session_io_error)?;
+
+    // After the retarget: if that failed there is nothing to own.
+    state.session_owners.claim(&session, window.label());
+
+    // Global rather than aimed at the source, because the source is whoever used
+    // to own it and this is the message telling them so. A window compares the
+    // owner against its own label; the one that matches has just asked for this
+    // and ignores it.
+    let _ = app.emit(
+        "session://owner",
+        OwnerPayload { session, owner: window.label().to_string() },
+    );
+    Ok(())
+}
+
 /// Name the one io error the frontend has to recognise, and pass every other
 /// through as it reads.
 ///
