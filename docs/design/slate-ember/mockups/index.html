@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>cowork-deck — Slate &amp; Ember</title>
+<link rel="stylesheet" href="assets/deck-ui.css" />
+<style>
+  /* This launcher is not a product screen. None of these rules port to the app. */
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 56px 24px 96px; display: flex; flex-direction: column; gap: 56px; }
+  .lede { font-size: var(--fs-lg); line-height: var(--lh-body); color: var(--fg-mid); max-width: 68ch; }
+  .h2 { font-family: var(--font-display); font-size: var(--fs-xl); font-weight: var(--fw-announce); letter-spacing: var(--ls-xl); }
+  .prose { color: var(--fg-mid); font-size: var(--fs-body); line-height: var(--lh-body); max-width: 72ch; }
+  .prose strong { color: var(--fg); font-weight: var(--fw-emph); }
+  .prose code, .note code { font-family: var(--font-mono); font-size: 0.9em; background: var(--bg-inset); padding: 1px 5px; border-radius: 3px; }
+  .grid3 { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .note { padding: 20px; display: flex; flex-direction: column; gap: 8px; }
+  .note h3 { font-family: var(--font-display); font-size: var(--fs-lg); font-weight: var(--fw-announce); color: var(--fg); }
+  .note p { color: var(--fg-mid); font-size: var(--fs-small); line-height: var(--lh-body); }
+  .sw-set { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); }
+  .sw { border: 1px solid var(--line); border-radius: var(--r-ctl); overflow: hidden; }
+  .sw-chip { height: 58px; display: grid; place-items: center; font-family: var(--font-mono); font-size: var(--fs-caption); }
+  .sw-meta { padding: 8px 10px; background: var(--bg-island); display: flex; flex-direction: column; gap: 2px; }
+  .sw-name { font-size: var(--fs-caption); color: var(--fg); font-weight: var(--fw-emph); }
+  .sw-hex { font-family: var(--font-mono); font-size: var(--fs-caption); color: var(--fg-dim); }
+  .spec { display: flex; flex-direction: column; gap: 18px; }
+  .spec-row { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; }
+  .spec-tag { flex: 0 0 128px; color: var(--fg-dim); font-size: var(--fs-caption); font-family: var(--font-mono); }
+  .links { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); }
+  .link { display: flex; flex-direction: column; gap: 10px; padding: 20px; text-decoration: none; transition: border-color 120ms, transform 120ms; }
+  .link:hover { border-color: var(--line-strong); transform: translateY(-2px); }
+  .link h3 { font-family: var(--font-display); font-size: var(--fs-lg); font-weight: var(--fw-announce); color: var(--fg); display: flex; align-items: center; gap: 10px; }
+  .link p { color: var(--fg-mid); font-size: var(--fs-small); line-height: var(--lh-body); }
+  .link-go { color: var(--fg-dim); font-size: var(--fs-caption); display: flex; align-items: center; gap: 6px; margin-top: auto; }
+  .link:hover .link-go { color: var(--fg); }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header style="display:flex;flex-direction:column;gap:20px" data-od-id="overview-header">
+    <div class="mark">
+      <span class="mark-glyph" data-app-mark></span>
+      <span class="mark-text">cowork<span>·deck</span></span>
+    </div>
+    <h1 class="screen-title" data-od-id="overview-title"
+        style="font-size:2.6rem;line-height:1.05;letter-spacing:-0.022em;max-width:22ch">
+      Slate &amp; Ember
+    </h1>
+    <p class="lede">
+      Warm graphite instead of a blue-cast One Dark, content on raised islands, a declared
+      16px base, and one state rail as the only accent gesture. The four screens below are the
+      shipped design; <code>../README.md</code> is why each decision is the one it is.
+    </p>
+  </header>
+
+  <!-- ======================= What was wrong ======================= -->
+  <section style="display:flex;flex-direction:column;gap:20px">
+    <h2 class="h2" data-od-id="heading-diagnosis">What was wrong, measured</h2>
+    <p class="prose">
+      Three complaints, and none of them was a matter of taste. Every number below came out of
+      the stylesheet this replaces.
+    </p>
+    <div class="grid3">
+      <article class="island note">
+        <h3 data-od-id="diag-grouping">Nothing grouped</h3>
+        <p>
+          <code>--border</code> measured <strong>1.28:1</strong> against its own panel — a
+          border nobody can see. There was no raised surface in the file at all, so the only
+          hierarchy left was type size, and the type was small.
+        </p>
+      </article>
+      <article class="island note">
+        <h3 data-od-id="diag-density">Empty where it needed density</h3>
+        <p>
+          <code>minmax(240px, 1fr)</code> spread four board columns across the whole window
+          while <code>.pr-detail-body</code> capped text at 72ch in the middle of 1970px. The
+          sidebar was one undifferentiated scroll of headings and rows.
+        </p>
+      </article>
+      <article class="island note">
+        <h3 data-od-id="diag-hue">Five hues for four meanings</h3>
+        <p>
+          A blue accent competed with green, amber, cyan and red states — five hues arguing on
+          a screen whose whole job is telling you what a dozen sessions are doing.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <!-- ======================= The three ideas ======================= -->
+  <section style="display:flex;flex-direction:column;gap:20px">
+    <h2 class="h2" data-od-id="heading-ideas">Three decisions; everything else follows</h2>
+    <div class="spec">
+      <div class="spec-row">
+        <span class="spec-tag">01 · islands</span>
+        <p class="prose" style="flex:1 1 420px">
+          Content lives on raised, rounded, hairlined surfaces above a darker ground.
+          Elevation is three things at once — a hairline, an inner top highlight, a soft
+          shadow; any one of them alone is a flat box again.
+        </p>
+      </div>
+      <div class="spec-row">
+        <span class="spec-tag">02 · hue = state</span>
+        <p class="prose" style="flex:1 1 420px">
+          The accent is <strong>near-achromatic</strong> light. In an app whose job is
+          reporting the state of N concurrent sessions, hue is a scarce resource and it belongs
+          to state. Green, amber and red mean working, needs-you and broken, and nothing else
+          ever borrows them. <em>Ended</em> has no hue: it is the absence of a signal, not a
+          signal.
+        </p>
+      </div>
+      <div class="spec-row">
+        <span class="spec-tag">03 · the rail</span>
+        <p class="prose" style="flex:1 1 420px">
+          The one flourish: a 3px bar on the left edge of every tile, row and card, carrying
+          its state colour. A dozen tiles read in one sweep instead of by reading a dozen small
+          chips. One gesture for the whole interface; three would be noise.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= Palette ======================= -->
+  <section style="display:flex;flex-direction:column;gap:20px">
+    <h2 class="h2" data-od-id="heading-palette">Palette</h2>
+    <p class="prose">
+      Authored in OKLch and resolved to sRGB by <code>../tools/palette.mjs</code>, which also
+      measures every pair the design asserts. Hex and <code>rgba()</code> in the stylesheet
+      because <code>scripts/contrast.mjs</code> parses those and nothing else — a colour that
+      script cannot read is a colour nobody can check.
+    </p>
+
+    <h3 class="caps">Surfaces — warm graphite, OKLch hue 70</h3>
+    <div class="sw-set" data-od-id="swatches">
+      <div class="sw"><div class="sw-chip" style="background:#0f0d0b;color:#efece8">void</div>
+        <div class="sw-meta"><span class="sw-name">--bg-void</span><span class="sw-hex">#0f0d0b · fg 16.4</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#171412;color:#efece8">chrome</div>
+        <div class="sw-meta"><span class="sw-name">--bg-chrome</span><span class="sw-hex">#171412 · fg 15.5</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#201e1b;color:#efece8">island</div>
+        <div class="sw-meta"><span class="sw-name">--bg-island</span><span class="sw-hex">#201e1b · fg 14.4</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#302d2a;color:#efece8">inset</div>
+        <div class="sw-meta"><span class="sw-name">--bg-inset</span><span class="sw-hex">#302d2a · step 1.21</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#13110f;color:#bab7b2">terminal</div>
+        <div class="sw-meta"><span class="sw-name">--bg-terminal</span><span class="sw-hex">#13110f · fg-mid 9.4</span></div></div>
+    </div>
+
+    <h3 class="caps">Ink and accent</h3>
+    <div class="sw-set">
+      <div class="sw"><div class="sw-chip" style="background:#201e1b;color:#efece8">Aa</div>
+        <div class="sw-meta"><span class="sw-name">--fg</span><span class="sw-hex">#efece8 · 14.4</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#201e1b;color:#bab7b2">Aa</div>
+        <div class="sw-meta"><span class="sw-name">--fg-mid</span><span class="sw-hex">#bab7b2 · 8.5</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#201e1b;color:#9a9690">Aa</div>
+        <div class="sw-meta"><span class="sw-name">--fg-dim</span><span class="sw-hex">#9a9690 · 5.1</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#d5eaf3;color:#0f0d0b">Aa</div>
+        <div class="sw-meta"><span class="sw-name">--accent</span><span class="sw-hex">#d5eaf3 · ink 15.5</span></div></div>
+    </div>
+
+    <h3 class="caps">State — the only owners of hue</h3>
+    <div class="sw-set">
+      <div class="sw"><div class="sw-chip" style="background:#2d3829;color:#7bd77f">Working</div>
+        <div class="sw-meta"><span class="sw-name">--st-working</span><span class="sw-hex">#7bd77f · 7.1 on chip</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#413922;color:#efc845">Needs you</div>
+        <div class="sw-meta"><span class="sw-name">--st-waiting</span><span class="sw-hex">#efc845 · 7.1 on chip</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#3a2a26;color:#fb817a">Error</div>
+        <div class="sw-meta"><span class="sw-name">--st-error</span><span class="sw-hex">#fb817a · 5.5 on chip</span></div></div>
+      <div class="sw"><div class="sw-chip" style="background:#201e1b;color:#bab7b2">Ended</div>
+        <div class="sw-meta"><span class="sw-name">--st-ended</span><span class="sw-hex">no hue · = --fg-mid</span></div></div>
+    </div>
+  </section>
+
+  <!-- ======================= Type ======================= -->
+  <section style="display:flex;flex-direction:column;gap:20px">
+    <h2 class="h2" data-od-id="heading-type">Type</h2>
+    <p class="prose">
+      Space Grotesk for display, IBM Plex Sans for the interface, CaskaydiaCove for code. The
+      base is <strong>16px</strong>, and the comparison that matters is not against the 13px
+      the old file declared: <code>ui-scale.ts</code> defaulted to a 1.15 multiplier, so the
+      app already shipped at 14.95px. Every step below is a rise against what was on screen,
+      not against a number nobody ever saw.
+    </p>
+    <div class="island" style="padding:24px;display:flex;flex-direction:column;gap:16px">
+      <div class="spec-row"><span class="spec-tag">xl · 22px</span><span class="screen-title">Pull requests</span></div>
+      <div class="spec-row"><span class="spec-tag">lg · 19px</span>
+        <span style="font-size:var(--fs-lg);font-weight:var(--fw-emph)">Sticky gutter overlaps at five-digit line numbers</span></div>
+      <div class="spec-row"><span class="spec-tag">body · 16px</span>
+        <span>Every tile is a live terminal in a folder you chose.</span></div>
+      <div class="spec-row"><span class="spec-tag">small · 14px</span>
+        <span style="font-size:var(--fs-small);color:var(--fg-mid)">6 checks passed · updated 22m ago · +829 −32 in 5 files</span></div>
+      <div class="spec-row"><span class="spec-tag">caption · 13px</span><span class="caps">Workspaces</span></div>
+      <div class="spec-row"><span class="spec-tag">mono · 14px</span>
+        <span style="font-family:var(--font-mono);font-size:var(--fs-small);color:var(--fg-mid)">src/diff-drawer.ts&nbsp;&nbsp;+268 −0</span></div>
+    </div>
+    <p class="prose">
+      Uppercase micro-headings carry <code>0.08em</code> of tracking. The file this replaces
+      used 0.06 and 0.04 for the same job; caps without positive tracking is the most reliable
+      amateur tell there is.
+    </p>
+  </section>
+
+  <!-- ======================= Screens ======================= -->
+  <section style="display:flex;flex-direction:column;gap:20px">
+    <h2 class="h2" data-od-id="heading-screens">The four screens</h2>
+    <p class="prose">
+      All interactive: sessions zoom on a double-click of the tile head, pull requests expand
+      and fetch their description, a file opens the diff, the drawer resizes by its grip, the
+      command palette really searches, the label filter really filters.
+    </p>
+    <div class="links">
+      <a class="island link" href="terminals-screen.html" data-od-id="link-terminals">
+        <h3><i data-ic="terminal"></i> Terminals</h3>
+        <p>
+          Top bar, a sidebar of three islands, four tiles in four states, zoom with a filmstrip
+          of status cards, and broadcast as a bar the deck makes room for.
+        </p>
+        <span class="link-go">Open <i data-ic="chevron"></i></span>
+      </a>
+      <a class="island link" href="board-screen.html" data-od-id="link-board">
+        <h3><i data-ic="columns"></i> Board</h3>
+        <p>
+          Capped columns, island cards, the GitHub issue list with its label filter, the board
+          editor, and the task dialog in its two-column shape.
+        </p>
+        <span class="link-go">Open <i data-ic="chevron"></i></span>
+      </a>
+      <a class="island link" href="pull-requests-screen.html" data-od-id="link-pr">
+        <h3><i data-ic="git-merge"></i> Pull requests</h3>
+        <p>
+          The list, an expanded pull request with rendered Markdown, four distinct check
+          states, and the diff drawer with its sticky gutter and relocated marker.
+        </p>
+        <span class="link-go">Open <i data-ic="chevron"></i></span>
+      </a>
+      <a class="island link" href="chrome-and-overlays.html" data-od-id="link-chrome">
+        <h3><i data-ic="sliders"></i> Shell and overlays</h3>
+        <p>
+          The command palette with live search, the scenario and workspace forms, settings with
+          a working text-size control, the floating pill, and four ways to say there is nothing
+          to show.
+        </p>
+        <span class="link-go">Open <i data-ic="chevron"></i></span>
+      </a>
+    </div>
+  </section>
+
+</div>
+
+<script src="assets/icons.js"></script>
+</body>
+</html>

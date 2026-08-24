@@ -1,0 +1,38 @@
+[
+ {
+  "filename": "acceptance/README.MD",
+  "previous_filename": "acceptance/README.md",
+  "status": "renamed",
+  "additions": 0,
+  "deletions": 0,
+  "changes": 0,
+  "blob_url": "https://github.com/cli/cli/blob/e90b8a3f23bfe3739ee087141fd07bd0e9ed2691/acceptance%2FREADME.MD"
+ },
+ {
+  "filename": ".agents/skills/vscode/agents/openai.yaml",
+  "status": "added",
+  "additions": 6,
+  "deletions": 0,
+  "changes": 6,
+  "patch": "@@ -0,0 +1,6 @@\n+interface:\n+  display_name: \"Vscode\"\n+  short_description: \"Repo-specific patterns and workflows for vscode\"\n+  default_prompt: \"Use the vscode repo skill to follow existing architecture, testing, and workflow conventions.\"\n+policy:\n+  allow_implicit_invocation: true\n\\ No newline at end of file",
+  "blob_url": "https://github.com/microsoft/vscode/blob/1231861cc9b6f5783c2ffe8f2257b5ba69ea9c55/.agents%2Fskills%2Fvscode%2Fagents%2Fopenai.yaml"
+ },
+ {
+  "filename": "compiler/rustc_codegen_gcc/libgccjit.version",
+  "status": "modified",
+  "additions": 1,
+  "deletions": 1,
+  "changes": 2,
+  "patch": "@@ -1 +1 @@\n-dfbee712e611693596ffec1de22177089c537491\n+6f155cc3f5a2dff33afe6cc3ed6c2e0e605ae6a3",
+  "blob_url": "https://github.com/rust-lang/rust/blob/bf57193d056f6d09b18885f75ba9e21cd7fca7bc/compiler%2Frustc_codegen_gcc%2Flibgccjit.version"
+ },
+ {
+  "filename": "src/gcc",
+  "status": "modified",
+  "additions": 1,
+  "deletions": 1,
+  "changes": 2,
+  "patch": "@@ -1 +1 @@\n-Subproject commit dfbee712e611693596ffec1de22177089c537491\n+Subproject commit 6f155cc3f5a2dff33afe6cc3ed6c2e0e605ae6a3",
+  "blob_url": null
+ }
+]

@@ -1,17 +1,8 @@
+import { openDialog } from "./dialog-shell";
 // Lightweight in-webview modal dialogs. The Tauri webview does not implement
 // window.prompt()/confirm()/alert() (prompt returns null with no UI), so these
 // vanilla replacements provide working text input and confirmation. No
 // dependencies; styled via .modal-* rules in styles.css.
-
-function makeOverlay(): { overlay: HTMLElement; box: HTMLElement } {
-  const overlay = document.createElement("div");
-  overlay.className = "modal-overlay";
-  const box = document.createElement("div");
-  box.className = "modal-box";
-  overlay.append(box);
-  document.body.append(overlay);
-  return { overlay, box };
-}
 
 function title(text: string): HTMLElement {
   const h = document.createElement("div");
@@ -20,7 +11,7 @@ function title(text: string): HTMLElement {
   return h;
 }
 
-function actions(okLabel = "OK", cancelLabel: string | null = "Отмена") {
+function actions(okLabel = "OK", cancelLabel: string | null = "Cancel") {
   const row = document.createElement("div");
   row.className = "modal-actions";
   const ok = document.createElement("button");
@@ -41,32 +32,19 @@ function actions(okLabel = "OK", cancelLabel: string | null = "Отмена") {
  *  on Cancel/Escape/backdrop click. */
 export function promptModal(label: string, initial = ""): Promise<string | null> {
   return new Promise((resolve) => {
-    const { overlay, box } = makeOverlay();
     const input = document.createElement("input");
     input.className = "modal-input";
     input.type = "text";
     input.value = initial;
     const { row, ok, cancel } = actions();
+    const { box, close } = openDialog({
+      onCancel: () => finish(null),
+      onAccept: () => finish(input.value),
+    });
+    const finish = (value: string | null) => { close(); resolve(value); };
     box.append(title(label), input, row);
-
-    const close = (value: string | null) => {
-      overlay.remove();
-      resolve(value);
-    };
-    ok.onclick = () => close(input.value);
-    cancel!.onclick = () => close(null);
-    overlay.addEventListener("mousedown", (e) => {
-      if (e.target === overlay) close(null);
-    });
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        close(input.value);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        close(null);
-      }
-    });
+    ok.onclick = () => finish(input.value);
+    cancel!.onclick = () => finish(null);
     input.focus();
     input.select();
   });
@@ -75,19 +53,15 @@ export function promptModal(label: string, initial = ""): Promise<string | null>
 /** Ask a yes/no question. Resolves true on OK, false on Cancel/backdrop. */
 export function confirmModal(message: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const { overlay, box } = makeOverlay();
     const { row, ok, cancel } = actions();
-    box.append(title(message), row);
-
-    const close = (value: boolean) => {
-      overlay.remove();
-      resolve(value);
-    };
-    ok.onclick = () => close(true);
-    cancel!.onclick = () => close(false);
-    overlay.addEventListener("mousedown", (e) => {
-      if (e.target === overlay) close(false);
+    const { box, close } = openDialog({
+      onCancel: () => finish(false),
+      onAccept: () => finish(true),
     });
+    const finish = (value: boolean) => { close(); resolve(value); };
+    box.append(title(message), row);
+    ok.onclick = () => finish(true);
+    cancel!.onclick = () => finish(false);
     ok.focus();
   });
 }
@@ -95,18 +69,11 @@ export function confirmModal(message: string): Promise<boolean> {
 /** Show a message with a single OK button. Resolves when dismissed. */
 export function alertModal(message: string): Promise<void> {
   return new Promise((resolve) => {
-    const { overlay, box } = makeOverlay();
     const { row, ok } = actions("OK", null);
+    const { box, close } = openDialog({ onCancel: finish, onAccept: finish });
+    function finish() { close(); resolve(); }
     box.append(title(message), row);
-
-    const close = () => {
-      overlay.remove();
-      resolve();
-    };
-    ok.onclick = close;
-    overlay.addEventListener("mousedown", (e) => {
-      if (e.target === overlay) close();
-    });
+    ok.onclick = finish;
     ok.focus();
   });
 }

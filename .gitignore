@@ -1,9 +1,20 @@
 target/
-node_modules/
+# No trailing slash: in a git worktree `node_modules` is a symlink to the main
+# checkout's copy, and `node_modules/` matches a directory only — so every
+# worktree reported the symlink as untracked.
+node_modules
 dist/
 .DS_Store
 src-tauri/gen/
 src-tauri/binaries/
 
-# Subagent-driven development scratch (ledger, briefs, review packages)
-.superpowers/
+# Code-intelligence and MCP caches: per-machine, disposable, and large
+# (.gitnexus is ~80 MB). The GitNexus instructions in CLAUDE.md are committed;
+# the index they read is not.
+.gitnexus/
+.serena/
+# Agent worktrees. These are full nested checkouts with their own .git files and
+# their own node_modules symlink; committing the directory would commit every
+# branch that has ever been checked out under it. The tooling in .claude/ IS
+# committed — see the commit that added it — this is only the worktrees it makes.
+.claude/worktrees/

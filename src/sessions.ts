@@ -1,7 +1,7 @@
 import { TerminalPanel } from "./terminal";
-import { onOutput, onState, onExit, closeSession, saveLayout, type SessionState, type Skill, type Workspace, type SessionEntry } from "./ipc";
-import { gitStatus, sessionTokens, type TokenUsage } from "./ipc";
-import { formatTokens, sumUsage, uniqueCwds } from "./observability";
+import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
+import { gitStatus, sessionSnapshots, type NameKind, type SessionTokens } from "./ipc";
+import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
@@ -10,19 +10,134 @@ import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
+import { icon, iconButton, type IconName } from "./icons";
+import { linksInWorkspace, liveSessionForTask, taskPrompt, type TaskSessionLink } from "./tasks";
+import { workingStep } from "./board-config";
+
+/** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
+ *  команды (установка gh, `gh auth login`): без хуков состояния, без
+ *  перезапуска и, главное, без автовосстановления. */
+export type TileKind = "claude" | "command";
 
 interface Tile {
-  session: string; name: string; panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
+  session: string; names: TileNames; nameEl: HTMLElement;
+  /** The open editor, when this tile is being renamed. Its presence is what
+   *  makes a commit idempotent: blur fires after Enter has already committed. */
+  renameInput: HTMLInputElement | null;
+  panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  authBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
+  /** Исход привязки GitHub-аккаунта на момент СТАРТА процесса. Живой сессии
+   *  окружение не поменять, поэтому значение не обновляется до перезапуска. */
+  auth?: SessionAuth;
+  /** Привязка воркспейса изменилась после старта — окружение устарело. */
+  authStale?: boolean;
+  kind?: TileKind;
+  /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
+  taskId?: string;
+  /** Scenario this tile was launched from, by any route. Wider than
+   *  `scheduledSkillId`, which stays what it was: the overlap guard's key. */
+  skillId?: string;
+  /** The run journal record this tile is currently in. Written by the backend,
+   *  minted here, and persisted so a restart can chain to it. */
+  runId?: string;
+  /** The placeholder values this tile was launched with, carried so a restart
+   *  can hand them back to the journal rather than opening a record that
+   *  forgets what it ran with. */
+  params?: Record<string, string>;
+}
+
+/** The four things that can name a tile, in one place so no reader can hold a
+ *  stale copy of a name.
+ *
+ *  There is no `autoNameable` flag: "this tile may take a transcript title" is
+ *  exactly `context === null`, so the two cannot disagree — and `openCommandTile`
+ *  supplies a context name, which excludes command tiles for free without
+ *  consulting `kind`. */
+export interface TileNames {
+  /** "☑ <card>", "<icon> <scenario>", a worktree name, a command label. */
+  context: string | null;
+  /** "session · <workspace>" — the only string an automatic title may replace. */
+  placeholder: string;
+  /** The latest title read out of the transcript. */
+  auto: string | null;
+  /** Hand-typed. Wins over everything, forever. */
+  user: string | null;
+}
+
+/** Longest name kept. The same string reaches `sessions.json`, a desktop
+ *  notification body and a confirmation sentence — and it must agree with
+ *  `TITLE_CAP` in `src-tauri/src/commands.rs`, which caps the automatic side. */
+export const NAME_CAP = 120;
+
+/** Clean up what someone typed or pasted: control characters out, whitespace
+ *  runs collapsed to one space, trimmed, capped at [`NAME_CAP`].
+ *
+ *  By code point rather than by UTF-16 unit, matching the Rust sanitiser — a cap
+ *  counted in units would split a surrogate pair and leave half a character. */
+export function normaliseName(raw: string): string {
+  const flat = raw.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+  return [...flat].slice(0, NAME_CAP).join("").trim();
+}
+
+/** What the tile, the sidebar row, the notification and the close question all
+ *  show. Every slot is trimmed and an empty one counts as absent.
+ *
+ *  A context name beating an automatic title is the row that carries the whole
+ *  decision: `☑ Fix the pill counter` and `⚡ Daily digest` are already
+ *  meaningful, and they are how the board and the sidebar say which card or
+ *  scenario a session belongs to. */
+export function resolveTileName(n: TileNames): string {
+  const some = (v: string | null) => {
+    const t = (v ?? "").trim();
+    return t === "" ? null : t;
+  };
+  return some(n.user) ?? some(n.context) ?? some(n.auto) ?? some(n.placeholder) ?? "";
 }
 
 const LABEL: Record<SessionState, string> = {
-  idle: "готов", working: "работает", waitingInput: "ждёт ввода", ended: "завершён", error: "ошибка",
+  idle: "idle", working: "working", waitingInput: "needs input", done: "done",
+  ended: "exited", error: "error",
 };
-const NOTIFY_ON: SessionState[] = ["waitingInput", "ended", "error"];
+// `done` is here because "the agent finished the job" is exactly what an
+// unsupervised session is started for. It stays out of the pill, though: the
+// pill answers "how many sessions are blocked on me".
+const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
+
+/** What an empty deck should say, and which one action it should offer.
+ *
+ *  `<main id="deck">` is an empty element until a session exists, so the app's most
+ *  likely first screen — and its screen every time the last session is closed — was an
+ *  unexplained dark rectangle.
+ *
+ *  Two states rather than one, because the action differs. With no workspace there is
+ *  nowhere for a session to run at all, and offering "New session" there produces
+ *  `Pick a workspace first.` in a modal: a question answered by a refusal. Pure, so the
+ *  copy can be asserted without standing a Deck up. */
+export function emptyDeckCopy(
+  activeWorkspaceName: string | null, anyWorkspaceExists: boolean,
+): { mark: IconName; title: string; body: string; action: string } {
+  if (activeWorkspaceName === null) {
+    return {
+      mark: "folder",
+      title: anyWorkspaceExists ? "Pick a workspace to start working" : "Add a workspace to start working",
+      body: "A workspace is a project folder. Sessions run in one, so it is the first thing "
+        + "the deck needs — and it is what binds the GitHub account git push will go out as.",
+      action: anyWorkspaceExists ? "Add another workspace" : "Add a workspace",
+    };
+  }
+  return {
+    mark: "terminal",
+    title: `No sessions in ${activeWorkspaceName}`,
+    body: "A session is a real claude process in this folder. It is a child of this window: "
+      + "closing the app ends it, and its scrollback stays on screen after it finishes so "
+      + "you can read what it did.",
+    action: "New session",
+  };
+}
 
 export class Deck {
   private tiles = new Map<string, Tile>();
@@ -33,13 +148,97 @@ export class Deck {
   private broadcasting = false;
   private bcastPanel: HTMLElement | null = null;
   private restoring = false;
+  /** The last layout `saveLayout` actually accepted, serialised. See
+   *  `persistLayout`: a write that would change nothing is skipped. */
+  private savedLayout: string | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private usage = new Map<string, TokenUsage>();
+  private usage = new Map<string, SessionTokens>();
   private activeWorkspaceId: string | null = null;
   private collapsed = new Set<string>();
   private zoomedSession: string | null = null;
   private strip: HTMLElement | null = null;
+  private emptyEl: HTMLElement | null = null;
+  private emptyActions: {
+    newSession: () => void; addWorkspace: () => void;
+    scenarios: () => Skill[]; runScenario: (s: Skill) => void;
+  } | null = null;
   constructor(private deckEl: HTMLElement, private listEl: HTMLElement, private workspaces: () => Workspace[]) {}
+
+  /** Wired after construction for the same reason `WorkspacesPanel.setSkillsSource` is:
+   *  the deck is built before the handlers it needs exist. Without them the empty deck
+   *  still renders and simply carries no buttons — an explanation is worth more than a
+   *  dark rectangle even with nothing to press. */
+  setEmptyActions(a: NonNullable<Deck["emptyActions"]>) {
+    this.emptyActions = a;
+    this.renderEmpty();
+  }
+
+  /** The deck with nothing on it. "Nothing" means nothing VISIBLE: tiles belonging to
+   *  another workspace stay in the DOM behind `ws-hidden`, so counting the map would
+   *  call a deck full while the screen is blank. */
+  private renderEmpty() {
+    const visible = [...this.tiles.values()]
+      .some((t) => !t.el.classList.contains("ws-hidden"));
+    if (visible) {
+      this.emptyEl?.remove();
+      this.emptyEl = null;
+      return;
+    }
+    const all = this.workspaces();
+    const active = this.activeWorkspaceId === null
+      ? null
+      : all.find((w) => w.id === this.activeWorkspaceId)?.name ?? null;
+    const copy = emptyDeckCopy(active, all.length > 0);
+
+    const box = document.createElement("div");
+    box.className = "deck-empty";
+    const mark = document.createElement("span");
+    mark.className = "deck-empty-mark";
+    mark.append(icon(copy.mark, 24));
+    const h = document.createElement("h2");
+    h.className = "deck-empty-title";
+    h.textContent = copy.title;
+    const p = document.createElement("p");
+    p.textContent = copy.body;
+    box.append(mark, h, p);
+
+    if (this.emptyActions) {
+      const go = document.createElement("button");
+      go.className = "deck-empty-go";
+      go.textContent = copy.action;
+      go.onclick = active === null
+        ? () => this.emptyActions!.addWorkspace()
+        : () => this.emptyActions!.newSession();
+      box.append(go);
+
+      // Scenarios are the fastest start there is — a session with its prompt already
+      // written — and on an empty deck the sidebar is the only place they appear. Quiet,
+      // because this screen has one primary and it is the button above.
+      const scenarios = active === null ? [] : this.emptyActions.scenarios();
+      if (scenarios.length > 0) {
+        const alt = document.createElement("div");
+        alt.className = "deck-empty-alt";
+        const caption = document.createElement("span");
+        caption.className = "deck-empty-caption";
+        caption.textContent = "or start from a scenario";
+        const row = document.createElement("div");
+        row.className = "deck-empty-alt-row";
+        for (const s of scenarios.slice(0, 4)) {
+          const b = document.createElement("button");
+          b.className = "deck-empty-scenario";
+          b.textContent = s.name;
+          b.onclick = () => this.emptyActions!.runScenario(s);
+          row.append(b);
+        }
+        alt.append(caption, row);
+        box.append(alt);
+      }
+    }
+
+    this.emptyEl?.remove();
+    this.emptyEl = box;
+    this.deckEl.appendChild(box);
+  }
 
   private startPolling() {
     if (this.pollTimer !== null) return;
@@ -54,7 +253,7 @@ export class Deck {
     try {
       const tiles = [...this.tiles.values()];
       if (tiles.length === 0) { this.stopPolling(); return; }
-      // git: один вызов на уникальный cwd; изоляция ошибок — одна упавшая IPC не должна ронять весь тик
+      // git: one call per unique cwd; errors are isolated — a single failed IPC must not bring down the whole tick
       const cwds = uniqueCwds(tiles.map((t) => ({ cwd: t.workspacePath })));
       const gitByCwd = new Map<string, { branch: string | null; dirty: boolean }>();
       await Promise.all(cwds.map(async (cwd) => {
@@ -68,25 +267,61 @@ export class Deck {
         if (!this.tiles.has(t.session)) continue;
         const g = gitByCwd.get(t.workspacePath);
         if (g && g.branch) {
-          t.gitBadge.textContent = `⎇ ${g.branch}${g.dirty ? " •" : ""}`;
+          t.gitBadge.replaceChildren(
+            icon("git-branch", 12),
+            document.createTextNode(` ${g.branch}${g.dirty ? " •" : ""}`),
+          );
           t.gitBadge.classList.remove("hidden");
         } else {
           t.gitBadge.classList.add("hidden");
         }
       }
-      // tokens: по сессии; изоляция ошибок + защита от гонки с удалением тайла
-      await Promise.all(tiles.map(async (t) => {
-        try {
-          const u = await sessionTokens(t.session);
-          if (!this.tiles.has(t.session)) return;
-          this.usage.set(t.session, u);
-          t.tokenBadge.textContent = `↑${formatTokens(u.input)} ↓${formatTokens(u.output)}`;
-          t.tokenBadge.title = `cache: +${formatTokens(u.cacheCreation)} / ${formatTokens(u.cacheRead)} прочитано`;
-          t.tokenBadge.classList.remove("hidden");
-        } catch (e) {
-          console.debug("sessionTokens failed", t.session, e);
+      // snapshots: one call for every session; errors isolated, plus a guard
+      // against racing with tile removal.
+      //
+      // Every open session is asked for, including command tiles and ones a card
+      // or a scenario already named: the same batch carries their token counts,
+      // computing a title off a buffer already in hand costs about nothing, and
+      // which name to show is a decision the resolver makes rather than a shape
+      // the IPC should encode. A tile carrying a hand-typed name is polled too,
+      // so clearing that name falls back to a title already in hand instead of
+      // going blank for a tick.
+      //
+      // Nothing here writes `sessions.json`: the automatic title is not
+      // persisted, so "do not save the layout every five seconds" is not a
+      // problem that needs a dirty check — it does not arise.
+      try {
+        const snaps = await sessionSnapshots(tiles.map((t) => t.session));
+        for (const t of tiles) {
+          if (!this.tiles.has(t.session)) continue;
+          const snap = snaps[t.session];
+          if (!snap) continue;
+          const u = snap.tokens;
+          // No reading available — the transcript is gone or would not open.
+          // Hide the badge rather than render a zero, which reads as an idle
+          // session and is indistinguishable from a real one. The name is left
+          // alone either way; the two halves of a snapshot fail separately.
+          if (!u) {
+            this.usage.delete(t.session);
+            t.tokenBadge.classList.add("hidden");
+          } else {
+            this.usage.set(t.session, u);
+            t.tokenBadge.textContent = formatContext(u.context);
+            t.tokenBadge.title = tokenTooltip(u);
+            t.tokenBadge.classList.remove("hidden");
+          }
+          // A missing title never clears the slot. Measured over 96 transcripts a
+          // title is minted once and never revised, so a null here is either "not
+          // yet" or "this read did not see it" — and blanking a name on the
+          // second would be a visible flicker for no information gained.
+          if (snap.title) {
+            t.names.auto = snap.title;
+            this.applyName(t);
+          }
         }
-      }));
+      } catch (e) {
+        console.debug("sessionSnapshots failed", e);
+      }
       this.renderList();
     } catch (e) {
       console.debug("pollOnce failed", e);
@@ -100,49 +335,238 @@ export class Deck {
   async wireEvents() {
     this.notifyOk = await isPermissionGranted();
     if (!this.notifyOk) this.notifyOk = (await requestPermission()) === "granted";
-    await onOutput((s, text) => this.tiles.get(s)?.panel.write(text));
+    // No output listener here any more. Each `TerminalPanel` owns a `Channel` that
+    // the backend writes its own session's bytes into, so there is nothing to
+    // demultiplex — and nothing that walks the tile map once per chunk of output.
     await onState((s, state) => this.setState(s, state));
-    await onExit((s) => { /* state already emitted; keep tile for scrollback */ void s; });
+    // The tile is kept for its scrollback and its state chip is already set —
+    // what is added here is the one thing the chip cannot say. "Ended" covers a
+    // clean exit, a build that failed, and a process the app hung up on its way
+    // out, and a person looking at a dead tile deserves to know which. Nothing
+    // is written for an ordinary success: that needs no epitaph.
+    await onExit((s, exit) => {
+      const said = describeExit(exit);
+      if (said) this.tiles.get(s)?.panel.write(`\r\n[${said}]\r\n`);
+    });
   }
 
-  async launch(workspace: Workspace, skill: Skill | null) {
-    const titleText = skill ? `${skill.icon} ${skill.name}` : `терминал · ${workspace.name}`;
+  /** A scenario, or a bare session when `skill` is null.
+   *
+   *  `params` is the values the prompt's placeholders were filled with, and it
+   *  is passed on rather than discarded: the run journal records what a run was
+   *  launched with, so it can later be offered again with those values in front
+   *  of the person instead of silently reused. */
+  async launch(workspace: Workspace, skill: Skill | null, params: Record<string, string> = {}) {
+    const titleText = skill ? `${skill.icon} ${skill.name}` : `session · ${workspace.name}`;
     await this.spawnTile({
       session: crypto.randomUUID(),
       cwd: workspace.path,
       workspaceId: workspace.id,
       titleText,
+      // A session launched without a scenario is the one tile nothing named, so
+      // it is the one a transcript title may take over.
+      nameKind: skill ? "context" : "placeholder",
       prompt: skill ? skill.prompt : null,
       resume: false,
+      ...(skill ? { skillId: skill.id, trigger: "manual" as const, params } : {}),
+    });
+  }
+
+  /** Бейдж рисуется ТОЛЬКО когда что-то не так: аккаунт не подключился или
+   *  окружение устарело после смены привязки. В норме шапка тайла чистая. */
+  private renderAuthBadge(tile: Tile) {
+    const { authBadge: b } = tile;
+    if (tile.authStale) {
+      b.textContent = "GitHub ⟳";
+      b.title = "Привязка воркспейса изменилась — окружение подхватится после перезапуска сессии";
+      b.className = "tile-auth stale";
+      return;
+    }
+    if (tile.auth?.degraded) {
+      b.textContent = "GitHub ✕";
+      b.title = `Аккаунт ${tile.auth.account ?? "?"} не подключён: ${tile.auth.degraded}`;
+      b.className = "tile-auth";
+      return;
+    }
+    b.textContent = "";
+    b.className = "tile-auth hidden";
+  }
+
+  /** Привязка воркспейса изменилась: у живых сессий окружение уже зафиксировано
+   *  при fork, поменять его нельзя — честно помечаем как устаревшее. */
+  markAuthStale(workspaceId: string) {
+    for (const t of this.tiles.values()) {
+      if (t.workspaceId !== workspaceId || t.kind === "command") continue;
+      t.authStale = true;
+      this.renderAuthBadge(t);
+    }
+  }
+
+  /** Открывает тайл с разовой пользовательской командой (установка gh,
+   *  `gh auth login`). Такой тайл не сохраняется в layout: восстановление
+   *  молча перезапустило бы sudo-команду на следующем старте приложения. */
+  async openCommandTile(titleText: string, command: string, cwd: string) {
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd,
+      titleText,
+      prompt: null,
+      resume: false,
+      kind: "command",
+      command,
     });
   }
 
   /** Fire a scheduled scenario as a fresh tile. Returns false (and does not
-   *  launch) if this scenario's previous scheduled session is still active. */
-  async launchScheduled(workspace: Workspace, skill: Skill, filledPrompt: string): Promise<boolean> {
+   *  launch) if this scenario's previous scheduled session is still active.
+   *
+   *  A scheduled scenario keeps at most one tile: once the guard lets a new
+   *  run through, the previous one is finished by definition, and leaving it
+   *  behind would add a tile per run — 24 a day for an hourly schedule. */
+  async launchScheduled(
+    workspace: Workspace,
+    skill: Skill,
+    filledPrompt: string,
+    /** Which of the two paths this fire came down: the backend scheduler, or
+     *  the ⏰ button. Both are recorded — the question a history answers is
+     *  "when did this scenario last run", not "who pressed it" — and both are
+     *  told apart, so the screen can filter one out. */
+    trigger: Extract<RunTrigger, "schedule" | "runNow">,
+    /** Occurrence this run is making up for, when it is not running on time.
+     *  Without it a tile appearing at 14:20 for a 09:00 schedule reads as a
+     *  fault rather than as catch-up. */
+    catchUpFor?: string,
+  ): Promise<boolean> {
     const prevSession = this.scheduledSessions.get(skill.id);
     const prevState = prevSession ? (this.tiles.get(prevSession)?.state ?? null) : null;
     if (shouldSkipOverlap(prevState)) {
       console.info("scheduled run skipped: previous still active", skill.id);
       return false;
     }
+    if (prevSession && this.tiles.has(prevSession)) this.remove(prevSession);
     const session = crypto.randomUUID();
     this.scheduledSessions.set(skill.id, session);
     await this.spawnTile({
       session,
       cwd: workspace.path,
       workspaceId: workspace.id,
-      titleText: `⏰ ${skill.icon} ${skill.name}`,
+      titleText: catchUpFor
+        ? `${skill.icon} ${skill.name} · catching up ${catchUpFor}`
+        : `${skill.icon} ${skill.name}`,
+      scheduled: true,
       prompt: filledPrompt,
       resume: false,
       scheduledSkillId: skill.id,
+      skillId: skill.id,
+      trigger,
+      params: skill.schedule?.defaults ?? {},
+      grabAttention: false,
     });
     return true;
+  }
+
+  /** Launch a session from a tracker card. If the card already has a live
+   *  session, focus it rather than raise a second one — the same call a
+   *  scheduled scenario makes when it skips an overlapping run. */
+  async launchFromTask(
+    workspace: Workspace, task: Task, cfg: BoardConfig,
+  ): Promise<"launched" | "focused"> {
+    if (this.focusTaskSession(task.id, workspace.id)) return "focused";
+    // ▶ writes the step itself, so the card moves whether or not the agent
+    // remembers to. A failure must not block the launch: the work matters more
+    // than the bookkeeping, and the board's stale marker will show the mismatch.
+    let current = task;
+    const step = workingStep(cfg);
+    if (step !== null && task.status !== step) {
+      // The prompt is built from `current` below, so it must reflect what the
+      // move actually did, not what it was meant to do: on a failed write
+      // `current` stays the unmoved card, which is the true state the session
+      // is starting from. Predicting the destination here would tell the
+      // agent a step it never reached whenever the write fails.
+      current = await updateTask(workspace.id, task.id, { status: step }).catch((e) => {
+        console.warn("could not move the card to the working step:", e);
+        return task;
+      });
+    }
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd: workspace.path,
+      workspaceId: workspace.id,
+      titleText: `☑ ${task.title}`,
+      prompt: taskPrompt(current, cfg),
+      resume: false,
+      taskId: task.id,
+    });
+    return "launched";
+  }
+
+  /** A session for a pull request, in the worktree prepared for it.
+   *
+   *  `cwd` is deliberately not the workspace path: the worktree keeps the
+   *  branch out of the workspace's own working copy, where other sessions are
+   *  running. `workspaceId` still points at the workspace, so the tile groups,
+   *  filters and inherits its account exactly like any other. */
+  async launchOnWorktree(
+    cwd: string, workspaceId: string, titleText: string, prompt: string,
+    /** Set for an issue, absent for a pull request. An issue session is both in a
+     *  worktree and linked to a card: without the link `derivedStatus` cannot
+     *  show "in progress" and a second ▶ would raise a duplicate session rather
+     *  than focus the first. */
+    taskId?: string,
+  ): Promise<"launched" | "focused"> {
+    // The same guard `launchFromTask` applies, and only where there is a card to
+    // apply it to. It is not redundant with the board hiding ▶: `derivedStatus`
+    // reads "in progress" only while the session is *busy*, so an idle session
+    // still linked to the issue leaves ▶ on screen — which is precisely the case
+    // that would otherwise put a second session in the same worktree.
+    //
+    // Asked of this workspace's links only. An issue number belongs to one
+    // repository, so a session on another workspace's #42 is a different piece of
+    // work; focusing it would hand the person a terminal in the wrong repository
+    // and leave the worktree just prepared here with nothing running in it.
+    //
+    // Still asked here even though the board now asks it before preparing the
+    // worktree: this is the last line before a second agent lands in the same
+    // directory, and it also covers callers that never went through the board.
+    if (taskId !== undefined && this.focusTaskSession(taskId, workspaceId)) return "focused";
+    await this.spawnTile({
+      session: crypto.randomUUID(),
+      cwd,
+      workspaceId,
+      titleText,
+      prompt,
+      resume: false,
+      taskId,
+    });
+    return "launched";
+  }
+
+  /** Whether any live tile is running inside `path`. Removal of a worktree
+   *  asks first: a session whose directory disappears comes back on the next
+   *  restore pointing at nothing. */
+  hasSessionIn(path: string): boolean {
+    return [...this.tiles.values()].some((t) => t.workspacePath === path);
+  }
+
+  /** What a session is called on its tile, for anything outside the deck that
+   *  has to name one to a person — the quit question, in particular. Falls back
+   *  to the id, which is at least something to go on for a session the deck no
+   *  longer holds. */
+  nameOf(session: string): string {
+    const t = this.tiles.get(session);
+    return t ? resolveTileName(t.names) : session;
   }
 
   setActiveWorkspace(id: string | null) {
     this.zoomedSession = null;
     this.activeWorkspaceId = id;
+    // Resolve this workspace's account binding now, while nobody is waiting for
+    // it. Entering a workspace is the last moment before a launch that is not
+    // itself a launch, so the `gh` call and the `claude` discovery happen here
+    // — off the main thread, and cached — instead of freezing the window at the
+    // moment a session is asked for. Fire-and-forget: a launch that arrives
+    // before this lands still resolves it the slow way.
+    if (id) void prepareWorkspace(id).catch((e) => console.debug("prepareWorkspace failed", e));
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
     let firstVisible: string | null = null;
     for (const t of this.tiles.values()) {
@@ -165,65 +589,149 @@ export class Deck {
 
   private async spawnTile(opts: {
     session: string; cwd: string; workspaceId?: string; titleText: string; prompt: string | null; resume: boolean;
+    /** What `titleText` is. A context name stands for the life of the tile; the
+     *  generic placeholder is the one string a transcript title may replace.
+     *  Absent means context — the safer of the two, since it leaves a name the
+     *  person recognises alone. */
+    nameKind?: NameKind;
+    /** A hand-typed name restored from the layout. */
+    userName?: string | null;
     scheduledSkillId?: string;
+    /** Tracker card this tile is working on. */
+    taskId?: string;
+    /** Scenario this launch came from, and how it started. Present together or
+     *  not at all: a trigger without a scenario names nothing, and a scenario
+     *  without a trigger cannot be recorded. */
+    skillId?: string;
+    trigger?: RunTrigger;
+    params?: Record<string, string>;
+    /** The record a `resume` continues. Read out of the restored layout entry;
+     *  a ⟳ inside a live app does not need it, since the backend still has the
+     *  predecessor open under the same session id. */
+    continuesRunId?: string | null;
+    /** Marks the tile as started by a schedule. Shown as its own icon rather
+     *  than glued to the title, which gets clipped by text-overflow. */
+    scheduled?: boolean;
+    /** Whether the new tile should take over the keyboard and the layout.
+     *  False for unattended work: a scheduled run announces itself through a
+     *  notification, not by yanking the caret out of whatever is being typed. */
+    grabAttention?: boolean;
+    /** "command" — разовый запуск `command` вместо сессии claude. */
+    kind?: TileKind;
+    command?: string;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
+    const grabAttention = opts.grabAttention ?? true;
+    const isCommand = opts.kind === "command";
     const el = document.createElement("div");
     el.className = "tile";
+    // The state rail's carrier. A data attribute rather than a class for the reason
+    // the session row documents: `.state-*` already means "a chip with this fill",
+    // and one of those names on the tile would paint a chip across the whole thing.
+    el.dataset.state = "idle";
     const head = document.createElement("div");
     head.className = "tile-head";
     const title = document.createElement("span");
-    title.textContent = titleText;
+    // A class, because the selector this used to rely on could not work. The rule was
+    // `.tile-head span:first-child`, and `head.insertBefore(bcastCheck, title)` below
+    // puts an `<input>` in front of the title on every tile — so the title is never
+    // `:first-child` and never got the `flex: 1` or the ellipsis that rule grants. A
+    // long session name pushed the badges out of the head instead of truncating.
+    title.className = "tile-name";
+    // The text and the tooltip are written together by `applyName`, and only by
+    // `applyName` — the tooltip is for the sighted reader of a truncated name and
+    // the accessible name comes from the text itself, so the two must never
+    // drift. One writer is what keeps that true now that a name can change.
+    const schedMark = opts.scheduled ? icon("clock", 12) : null;
+    if (schedMark) {
+      schedMark.classList.add("tile-sched-mark");
+      schedMark.setAttribute("aria-hidden", "false");
+      schedMark.setAttribute("role", "img");
+      schedMark.setAttribute("aria-label", "started on a schedule");
+    }
     const gitBadge = document.createElement("span");
     gitBadge.className = "tile-git hidden";
     const tokenBadge = document.createElement("span");
     tokenBadge.className = "tile-tokens hidden";
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
-    const clearBtn = document.createElement("button");
-    clearBtn.textContent = "⌫"; clearBtn.className = "tile-close"; clearBtn.title = "очистить";
+    // The pencil leads the action cluster because it is the least destructive of
+    // the four, and it sits after the state chip so the flexible name keeps one
+    // contiguous run of width. It is always in the DOM — so it is in the tab
+    // order and reachable by touch — and the stylesheet is what hides it until
+    // the tile is hovered, active or holds focus.
+    const renameBtn = iconButton("pencil", "Rename session", "tile-close tile-rename");
+    renameBtn.onclick = () => this.beginRename(session);
+    const clearBtn = iconButton("eraser", "Clear terminal", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
-    const close = document.createElement("button");
-    close.textContent = "✕"; close.className = "tile-close";
-    close.onclick = () => this.remove(session);
-    head.append(title, gitBadge, tokenBadge, label, clearBtn, close);
+    const close = iconButton("x", "Close session", "tile-close btn--icon--danger");
+    // Same question Cmd+W asks. Without it the mouse was the more dangerous
+    // of the two ways to do the same thing: one stray click killed a live
+    // session outright, while the keyboard asked first.
+    close.onclick = () => { void this.requestClose(session); };
+    const authBadge = document.createElement("span");
+    authBadge.className = "tile-auth hidden";
+    head.append(
+      ...(schedMark ? [schedMark] : []),
+      title, gitBadge, authBadge, tokenBadge, label, renameBtn, clearBtn, close,
+    );
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
     bcastCheck.classList.toggle("hidden", !this.broadcasting);
     head.insertBefore(bcastCheck, title);
-    const restart = document.createElement("button");
-    restart.textContent = "⟳"; restart.className = "tile-close"; restart.style.display = "none";
-    restart.title = "перезапустить";
+    const restart = iconButton("rotate", "Restart session", "tile-close");
+    restart.style.display = "none";
     restart.onclick = async () => {
       restart.style.display = "none";
-      tile.panel.write("\r\n[перезапуск сессии...]\r\n");
+      tile.panel.write("\r\n[restarting session...]\r\n");
       try {
-        await tile.panel.start(tile.workspacePath, null, true);
+        // A new record rather than a reopened one: a run is one launched PTY,
+        // and a record spanning a restart could never say which side of it a
+        // result came from. The chain comes from `scenarioLaunch` reading the
+        // tile's outgoing `runId`: by the time this button is on screen the
+        // session has ended, and the backend has already closed that record.
+        //
+        // The one launch that means to replace a live process: the backend
+        // refuses a spawn into an id it is already running, and this button is
+        // the only place that refusal is not what the caller wants. A tile whose
+        // process merely ended still holds its pty entry — the orphans of a
+        // build it started are reachable no other way — so the replacement is
+        // explicit even here.
+        tile.auth = await tile.panel.start(
+          tile.workspacePath, tile.workspaceId ?? null, null, tile.taskId ?? null, true,
+          scenarioLaunch(tile, "resume", null), true,
+        );
+        tile.authStale = false;
+        this.renderAuthBadge(tile);
         this.setState(session, "idle");
         void this.persistLayout();
       } catch (e) {
         this.setState(session, "error");
         const raw = String((e as { message?: string })?.message ?? e);
         const readable = raw.includes("claude-not-found")
-          ? "claude не найден — укажите путь и перезапустите"
+          ? "claude not found — set its path and restart"
           : raw;
-        tile.panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+        tile.panel.write(`\r\n[launch failed: ${readable}]\r\n`);
         restart.style.display = "inline";
       }
     };
     head.insertBefore(restart, close);
     head.addEventListener("dblclick", (e) => {
-      if ((e.target as HTMLElement).closest("button")) return;
+      // Buttons and anything editable. Double-clicking a word inside a header
+      // input is how a person selects it, and zooming the tile instead is a
+      // defect the broadcast checkbox already suffered from.
+      const t = e.target as HTMLElement;
+      if (t.closest("button, input, textarea, [contenteditable]")) return;
       this.toggleZoom(session);
     });
     const mount = document.createElement("div");
     mount.className = "tile-body";
     const searchBar = document.createElement("div");
     searchBar.className = "tile-search hidden";
-    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "поиск…";
-    const sNext = document.createElement("button"); sNext.textContent = "▼"; sNext.className = "tile-search-btn";
-    const sPrev = document.createElement("button"); sPrev.textContent = "▲"; sPrev.className = "tile-search-btn";
-    const sClose = document.createElement("button"); sClose.textContent = "✕"; sClose.className = "tile-search-btn";
+    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "search…";
+    const sNext = iconButton("chevron", "Next match", "tile-search-btn icon--down");
+    const sPrev = iconButton("chevron", "Previous match", "tile-search-btn icon--up");
+    const sClose = iconButton("x", "Close search", "tile-search-btn");
     searchBar.append(sInput, sPrev, sNext, sClose);
     sInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); tile.panel.search(sInput.value); }
@@ -236,43 +744,221 @@ export class Deck {
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
-    const panel = new TerminalPanel(session, mount);
-    const tile: Tile = {
-      session, name: title.textContent!, panel, state: "idle", el, label,
-      workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
+    const panel = new TerminalPanel(session, mount, isCommand);
+    const names: TileNames = {
+      // The placeholder slot always holds the launch string. On a context-named
+      // tile it is the same string as `context`, which the resolver never reaches
+      // — there is no way for the two to disagree.
+      context: opts.nameKind === "placeholder" ? null : titleText,
+      placeholder: titleText,
+      auto: null,
+      user: opts.userName ?? null,
     };
+    const tile: Tile = {
+      session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label,
+      workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
+      gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
+      kind: opts.kind, taskId: opts.taskId,
+      skillId: opts.skillId, params: opts.params,
+    };
+    this.applyName(tile);
     this.tiles.set(session, tile);
-    if (!resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
+    // The first tile ends the empty deck. `applyLayout` is only reached from here when a
+    // zoom has to be dropped, so this cannot wait for it — the panel would sit under the
+    // new terminal until something else moved the layout.
+    this.renderEmpty();
+    if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
     try {
-      await panel.start(cwd, prompt, resume);
-      void this.persistLayout();
+      if (isCommand) {
+        await panel.startCommand(cwd, opts.command ?? "");
+        // Командный тайл в layout не попадает — persistLayout не зовём.
+      } else {
+        tile.auth = await panel.start(
+          cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume,
+          scenarioLaunch(tile, opts.trigger, opts.continuesRunId ?? null),
+        );
+        this.renderAuthBadge(tile);
+        void this.persistLayout();
+      }
     } catch (e) {
       this.setState(session, "error");
       const raw = String((e as { message?: string })?.message ?? e);
       const readable = raw.includes("claude-not-found")
-        ? "claude не найден — укажите путь и перезапустите"
+        ? "claude not found — set its path and restart"
         : raw;
-      panel.write(`\r\n[ошибка запуска: ${readable}]\r\n`);
+      panel.write(`\r\n[launch failed: ${readable}]\r\n`);
     }
-    this.focusTile(session);
+    if (grabAttention) this.focusTile(session);
+    else {
+      // Still needs to obey the workspace filter, which focusTile would have
+      // triggered via renderList/applyLayout.
+      this.applyWorkspaceVisibility(session);
+      this.renderList();
+    }
+  }
+
+  /** The only writer of a tile's name into the DOM — text and tooltip together.
+   *
+   *  Called wherever a slot changes, rather than by each of them, so a tile, its
+   *  tooltip, its sidebar row, the notification body and `sessions.json` cannot
+   *  come to show four different names. */
+  private applyName(tile: Tile) {
+    // The input's value belongs to the person typing into it. The slots keep
+    // being filled while an edit is open — the tick still writes `names.auto` —
+    // and this repaints once the edit closes.
+    if (tile.renameInput) return;
+    const name = resolveTileName(tile.names);
+    tile.nameEl.textContent = name;
+    tile.nameEl.title = name;
+  }
+
+  /** Turn the header's name into an input, in place.
+   *
+   *  The editor lives in the tile header and nowhere else: `renderList()` rebuilds
+   *  the sidebar from `innerHTML` every five seconds and restores only
+   *  `data-focus-key`, so an input there would lose its value and its caret twice
+   *  a minute. */
+  private beginRename(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile || tile.renameInput) return;
+    // One edit at a time, app-wide.
+    for (const other of this.tiles.values()) this.commitRename(other);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "tile-name-input";
+    // Felt while typing rather than sprung afterwards. The commit normalises
+    // anyway, for the paths this cannot cover — a paste, or an IME.
+    input.maxLength = NAME_CAP;
+    // No `title`: the tooltip on the span is for a name too long to read, and on
+    // an input it would sit over what the person is typing.
+    input.setAttribute("aria-label", "Session name");
+    input.value = resolveTileName(tile.names);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.commitRename(tile);
+        tile.panel.focus();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        // Or it also reaches the window handler and leaves the zoom.
+        e.stopPropagation();
+        this.cancelRename(tile);
+        tile.panel.focus();
+      }
+    });
+    // Committing on blur, not discarding: throwing away someone's typing because
+    // they clicked a terminal is the hostile reading of the same gesture.
+    input.addEventListener("blur", () => this.commitRename(tile));
+    tile.renameInput = input;
+    tile.nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
+  /** Take what is in the editor, or nothing if it says the same as the automatic
+   *  name — clearing the field is the whole undo story, and there is nothing to
+   *  report about any of it, so no path here produces an error. */
+  private commitRename(tile: Tile) {
+    const input = tile.renameInput;
+    if (!input) return;
+    const typed = normaliseName(input.value);
+    const automatic = resolveTileName({ ...tile.names, user: null });
+    tile.names.user = typed === "" || typed === automatic ? null : typed;
+    this.closeRename(tile, input);
+    void this.persistLayout();
+  }
+
+  private cancelRename(tile: Tile) {
+    const input = tile.renameInput;
+    if (!input) return;
+    this.closeRename(tile, input);
+  }
+
+  /** Put the span back and repaint it. Clearing `renameInput` first is what makes
+   *  the blur this removal fires a no-op instead of a second commit. */
+  private closeRename(tile: Tile, input: HTMLInputElement) {
+    tile.renameInput = null;
+    input.replaceWith(tile.nameEl);
+    this.applyName(tile);
+    this.renderList();
+  }
+
+  /** Apply the active-workspace filter to one tile. Tiles used to be created
+   *  without it, so a scheduled run for another workspace appeared in whatever
+   *  deck was on screen and disappeared at the next switch. */
+  private applyWorkspaceVisibility(session: string) {
+    const t = this.tiles.get(session);
+    if (!t) return;
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
+    // Orphans stay visible everywhere, as in setActiveWorkspace.
+    const visible = rid === null || rid === this.activeWorkspaceId;
+    t.el.classList.toggle("ws-hidden", !visible);
+    this.applyLayout();
   }
 
   async restore(entries: SessionEntry[]) {
     this.restoring = true;
     try {
       for (const e of entries) {
+        if (e.scheduledSkillId) this.scheduledSessions.set(e.scheduledSkillId, e.sessionId);
         await this.spawnTile({
           session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
-          titleText: e.name, prompt: null, resume: true,
+          titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
+          prompt: null, resume: true,
+          scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
+          // Only a tile that was itself launched from a scenario gets a record.
+          // A restored card session or bare "+ session" stays out of the
+          // journal, which answers "what did my scenarios do" and nothing wider.
+          ...(e.skillId
+            ? { skillId: e.skillId, trigger: "resume" as const, continuesRunId: e.runId ?? null }
+            : {}),
         });
       }
     } finally {
       this.restoring = false;
     }
     void this.persistLayout();
+  }
+
+  /** Focus the session already running on this card, if there is one.
+   *
+   *  The guard `launchFromTask` and `launchOnWorktree` apply, exposed because the
+   *  board's issue path has to ask it *before* preparing a worktree: the check is
+   *  worthless behind a fallible IPC call, which is precisely the position it used
+   *  to be in. One implementation, so the three callers cannot come to disagree
+   *  about what "already running" means. */
+  focusTaskSession(taskId: string, workspaceId: string): boolean {
+    const alive = liveSessionForTask(taskId, this.taskLinks(workspaceId));
+    if (alive === null) return false;
+    this.focusTile(alive);
+    return true;
+  }
+
+  /** Live tiles in the shape the board needs, for one workspace.
+   *
+   *  The workspace is a required argument, not a filter a caller may forget: a
+   *  card id is unique only inside its own tracker (a GitHub issue number is the
+   *  first id two repositories can share), and every rule reading these links
+   *  matches on the id alone. Handing out the whole app's tiles is what let a
+   *  session on A's #42 speak for B's #42 — see `linksInWorkspace`. */
+  taskLinks(workspaceId: string): TaskSessionLink[] {
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    return linksInWorkspace(
+      [...this.tiles.values()].map((t) => ({
+        session: t.session,
+        taskId: t.taskId,
+        // The tile's own id wins, and is never discarded merely because the
+        // workspace list has not loaded yet — that would silently stop the launch
+        // guard matching. Only a tile without one (an older layout entry) falls
+        // back to being placed by its directory, exactly as the sidebar places it.
+        workspaceId: t.workspaceId ?? resolveWorkspaceId(undefined, t.workspacePath, ws) ?? undefined,
+        state: t.state,
+      })),
+      workspaceId,
+    );
   }
 
   get activeSession(): string | null {
@@ -296,12 +982,24 @@ export class Deck {
   }
   async closeActive() {
     const id = this.activeSession;
-    if (!id) return;
-    const t = this.tiles.get(id);
-    if (t && (t.state === "working" || t.state === "waitingInput")) {
-      if (!(await confirmModal("Закрыть активную сессию?"))) return;
-    }
-    this.remove(id);
+    if (id) await this.requestClose(id);
+  }
+
+  /** Close a session, asking first when it is still alive. `ended`/`error`
+   *  tiles hold nothing but scrollback, so those go without a question. */
+  private async requestClose(session: string) {
+    const t = this.tiles.get(session);
+    const alive = t && (t.state === "working" || t.state === "waitingInput" || t.state === "done");
+    if (alive && !(await confirmModal(
+      `Close session “${resolveTileName(t.names)}”? It is still alive.`,
+    ))) return;
+    this.remove(session);
+  }
+  /** Open the editor on whichever tile has the keyboard, and do nothing when
+   *  there is none — the same shape as `closeActive` and `searchActive`. */
+  renameActive() {
+    const id = this.activeSession;
+    if (id) this.beginRename(id);
   }
   searchActive() {
     const id = this.activeSession;
@@ -318,6 +1016,10 @@ export class Deck {
   toggleBroadcast() {
     this.broadcasting = !this.broadcasting;
     for (const t of this.tiles.values()) t.bcastCheck.classList.toggle("hidden", !this.broadcasting);
+    // The deck makes room for the bar rather than letting it float over the bottom
+    // tile's last rows — which is the output a person is about to type at. The
+    // padding lives in the stylesheet; this only says when it applies.
+    this.deckEl.classList.toggle("has-bcast", this.broadcasting);
     if (this.broadcasting) this.showBroadcastPanel();
     else this.hideBroadcastPanel();
   }
@@ -328,7 +1030,7 @@ export class Deck {
       panel.className = "bcast-panel";
       const input = document.createElement("input");
       input.className = "bcast-input"; input.type = "text";
-      input.placeholder = "broadcast: ввод во все отмеченные сессии, Enter — отправить";
+      input.placeholder = "broadcast: type into every ticked session, Enter to send";
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -351,6 +1053,25 @@ export class Deck {
   private hideBroadcastPanel() {
     this.bcastPanel?.classList.add("hidden");
     for (const t of this.tiles.values()) t.bcastCheck.checked = false;
+  }
+
+  /** Go to a session wherever it is, switching workspace when it lives in
+   *  another one — a tile the deck is not currently showing cannot take focus,
+   *  and focusing it silently would look like the control did nothing.
+   *
+   *  Public because the history screen's "go to the session" needs exactly the
+   *  path the pill and the notification already take. Returns false when there
+   *  is no such tile: the caller decides whether that is worth saying. */
+  focusSession(session: string): boolean {
+    if (!this.tiles.has(session)) return false;
+    this.focusSessionAnywhere(session);
+    return true;
+  }
+
+  /** Sessions with a live tile, for callers deciding whether to offer a way to
+   *  one. Command tiles included: they are tiles. */
+  liveSessions(): string[] {
+    return [...this.tiles.keys()];
   }
 
   private focusSessionAnywhere(session: string) {
@@ -377,7 +1098,6 @@ export class Deck {
       this.zoomTo(session);
     }
     for (const t of this.tiles.values()) t.el.classList.toggle("is-active", t === tile);
-    this.deckEl.classList.toggle("has-active", this.tiles.size > 0);
     tile.el.scrollIntoView?.({ block: "nearest" });
     tile.panel.focus();
     this.renderList();
@@ -389,12 +1109,19 @@ export class Deck {
     const prev = tile.state;
     tile.state = state;
     tile.label.className = `tile-state state-${state}`;
+    // Keeps the tile's rail in step with its chip. Two carriers, one source.
+    tile.el.dataset.state = state;
     tile.label.textContent = LABEL[state];
-    tile.restartBtn.style.display = (state === "ended" || state === "error") ? "inline" : "none";
+    // У командного тайла перезапуск не предлагаем: он поднял бы claude, а не
+    // повторил команду. Разовое действие повторяется из своего экрана.
+    const restartable = tile.kind !== "command" && (state === "ended" || state === "error");
+    tile.restartBtn.style.display = restartable ? "inline" : "none";
     this.renderList();
     if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       const id = this.notify.register(session);
-      sendNotification({ id, title: `cowork-deck · ${LABEL[state]}`, body: tile.name });
+      sendNotification({
+        id, title: `cowork-deck · ${LABEL[state]}`, body: resolveTileName(tile.names),
+      });
     }
   }
 
@@ -414,8 +1141,15 @@ export class Deck {
         this.deckEl.appendChild(t.el);
       }
       if (this.strip) { this.strip.remove(); this.strip = null; }
+      // Last, so the panel is appended after the tiles it replaces have been moved —
+      // and here rather than in each caller, because this is the one function every
+      // path that changes what the deck holds already goes through.
+      this.renderEmpty();
       return;
     }
+    // A zoomed session is a session, so the deck is not empty.
+    this.emptyEl?.remove();
+    this.emptyEl = null;
     this.deckEl.classList.add("is-zoomed");
     if (!this.strip) {
       this.strip = document.createElement("div");
@@ -486,6 +1220,22 @@ export class Deck {
     this.animateLayoutChange(() => { this.zoomedSession = session; this.applyLayout(); });
   }
 
+  /** Zoom the active tile. Until now the only way in was a double-click on the
+   *  header — a headline feature with no keyboard path at all. */
+  toggleZoomActive() {
+    const id = this.activeSession;
+    if (id) this.toggleZoom(id);
+  }
+
+  /** Move keyboard focus into the active terminal. Half of region cycling: the
+   *  terminal swallows Tab, so getting back in needs an explicit route too. */
+  focusActiveTerminal(): boolean {
+    const id = this.activeSession;
+    if (!id) return false;
+    this.tiles.get(id)?.panel.focus();
+    return true;
+  }
+
   toggleZoom(session: string) {
     this.zoomTo(this.zoomedSession === session ? null : session);
   }
@@ -509,7 +1259,6 @@ export class Deck {
     this.applyLayout();
     this.usage.delete(session);
     if (this.tiles.size === 0) this.stopPolling();
-    if (this.tiles.size === 0) this.deckEl.classList.remove("has-active");
     this.renderList();
     void this.persistLayout();
   }
@@ -517,28 +1266,63 @@ export class Deck {
   private persistLayout() {
     if (this.restoring) return Promise.resolve();
     const entries = serializeTiles([...this.tiles.values()].map((t) => ({
-      session: t.session, workspacePath: t.workspacePath, name: t.name, workspaceId: t.workspaceId,
+      session: t.session, workspacePath: t.workspacePath,
+      name: t.names.context ?? t.names.placeholder, workspaceId: t.workspaceId,
+      kind: t.kind,
+      scheduledSkillId: t.scheduledSkillId,
+      taskId: t.taskId,
+      userName: t.names.user,
+      nameKind: t.names.context === null ? "placeholder" : "context",
+      skillId: t.skillId,
+      runId: t.runId,
     })));
-    return saveLayout(entries).catch((e) => console.debug("saveLayout failed", e));
+    // Skip a write that would change nothing. Not something the naming needs —
+    // it is here because it lives in the function this change touches, and it
+    // collapses the redundant writes the spawn, restart and remove bursts
+    // already produce. The memo is assigned only once the write has resolved:
+    // a failed save has to stay dirty, or the next real change is skipped too.
+    const serialized = JSON.stringify(entries);
+    if (serialized === this.savedLayout) return Promise.resolve();
+    return saveLayout(entries)
+      .then(() => { this.savedLayout = serialized; })
+      .catch((e) => console.debug("saveLayout failed", e));
   }
 
   private renderList() {
+    // The whole list is rebuilt via innerHTML, and the poll rebuilds it every
+    // five seconds. That was harmless only while nothing in it could hold
+    // focus; now that rows are buttons, the focused key has to be remembered
+    // and restored, or keyboard focus would jump to the top of the page twice
+    // a minute.
+    const focusKey = this.listEl.contains(document.activeElement)
+      ? (document.activeElement as HTMLElement).dataset.focusKey ?? null
+      : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
+    // Sent on every render, unchanged count included. The pill window registers
+    // its listener asynchronously, and an event that arrives before it is ready
+    // is dropped rather than queued — re-sending is the only way back from that,
+    // and from a send that failed. Repeating is free now that the pill asks the
+    // window before showing itself (src/pill.ts); it was the unconditional
+    // `show()` at the other end, not this line, that stole the keyboard.
     void emit("pill://count", { n: waiting });
-    const header = waiting > 0 ? `Сессии · ${waiting} ${waitingVerb(waiting)} ввода` : "Сессии";
+    const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
-    const total = sumUsage([...this.usage.values()]);
+    // The bill across every session, subagents included. Context does not
+    // aggregate — each session has its own window and adding them describes
+    // nothing — so the footer carries spend and the tiles carry context.
+    const total = sumUsage([...this.usage.values()].map((t) => t.spend));
     if (this.usage.size > 0) {
       const sum = document.createElement("div");
       sum.className = "sess-tokens-sum";
-      sum.textContent = `Σ токенов · ↑${formatTokens(total.input)} ↓${formatTokens(total.output)}`;
+      sum.textContent =
+        `Total spend · ${formatTokens(total.output)} out · ${formatTokens(spendIn(total))} in`;
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
       tiles.map((t) => ({
-        session: t.session, name: t.name, state: t.state,
+        session: t.session, name: resolveTileName(t.names), state: t.state,
         workspaceId: t.workspaceId, workspacePath: t.workspacePath,
       })),
       this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path })),
@@ -547,25 +1331,32 @@ export class Deck {
     for (const g of groups) {
       const wsId = g.workspace?.id ?? ORPHAN_KEY;
       const color = g.workspace?.color ?? "var(--fg-subtle)";
-      const name = g.workspace?.name ?? "Другие";
+      const name = g.workspace?.name ?? "Other";
       const collapsed = this.collapsed.has(wsId);
       const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
 
-      const head = document.createElement("div");
+      const head = document.createElement("button");
+      head.dataset.focusKey = `group:${wsId}`;
+      head.setAttribute("aria-expanded", String(!collapsed));
       head.className = "sess-group-head"
         + (g.workspace && g.workspace.id === this.activeWorkspaceId ? " active" : "");
       const toggle = document.createElement("span");
       toggle.className = "sess-group-toggle";
-      toggle.textContent = collapsed ? "▸" : "▾";
+      // One chevron, rotated: every arrow in the app now opens at the same
+      // angle and carries the same stroke weight.
+      toggle.append(icon("chevron", 12));
+      toggle.classList.toggle("icon--down", !collapsed);
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = color;
       const nm = document.createElement("span");
-      nm.className = "sess-group-name"; nm.textContent = name;
+      // Truncates the same way `.ws-label` does, and for the same reason: a
+      // workspace name against a sidebar's width.
+      nm.className = "sess-group-name"; nm.textContent = name; nm.title = name;
       head.append(toggle, dot, nm);
       if (groupWaiting > 0) {
         const badge = document.createElement("span");
         badge.className = "sess-group-badge";
-        badge.textContent = `${groupWaiting} ${waitingVerb(groupWaiting)}`;
+        badge.textContent = `${groupWaiting} waiting`;
         head.append(badge);
       }
       head.onclick = () => {
@@ -577,9 +1368,27 @@ export class Deck {
 
       for (const t of g.tiles) {
         const live = this.tiles.get(t.session);
-        const row = document.createElement("div");
-        row.className = "sess-row" + (live?.el.classList.contains("is-active") ? " active" : "");
-        row.style.borderLeftColor = color;
+        const row = document.createElement("button");
+        row.dataset.focusKey = `session:${t.session}`;
+        row.setAttribute("aria-label", `${t.name} — ${LABEL[t.state]}`);
+        const isActive = !!live?.el.classList.contains("is-active");
+        row.className = "sess-row" + (isActive ? " active" : "");
+        // The `active` class was the only carrier: a background tint and a left
+        // border, both invisible to a screen reader, on the row telling the person
+        // which of a dozen sessions they are looking at. `aria-current` rather than
+        // `aria-selected` — this is a list of things to go to, not a widget with a
+        // selection, and it is the same reading as `.ws-label` below.
+        if (isActive) row.setAttribute("aria-current", "true");
+        // The left edge used to be a 3px border in the WORKSPACE's colour, which the
+        // group heading three lines up already carries as a dot — so it was a second
+        // rendering of the grouping and said nothing about the row. It is a state
+        // rail now: the one thing a list of a dozen sessions exists to answer, and
+        // readable in a single sweep instead of by reading a dozen small chips.
+        //
+        // A data attribute rather than a class: `.state-*` already means "a chip with
+        // this fill and this text colour", and putting one of those names on the row
+        // would paint a chip's background across the whole line.
+        row.dataset.state = t.state;
         row.onclick = () => this.focusSessionAnywhere(t.session);
         const stateSpan = document.createElement("span");
         stateSpan.className = `tile-state state-${t.state}`;
@@ -590,15 +1399,45 @@ export class Deck {
         this.listEl.appendChild(row);
       }
     }
+    if (focusKey) {
+      this.listEl.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
+    }
   }
+}
+
+/** The scenario half of a launch, minted at the moment the PTY is asked for.
+ *
+ *  The run id is created here, beside the session id, and written straight onto
+ *  the tile — `persistLayout` runs immediately afterwards, so the link survives
+ *  a restart, which is the only way a resumed tile can chain its new record to
+ *  the one it continues. Minting an identifier is not writing a record: every
+ *  line of the journal is written in Rust.
+ *
+ *  Returns null for a tile that is not a scenario run at all, which is what
+ *  keeps cards, issues, pull requests and bare sessions out of the journal. */
+function scenarioLaunch(
+  tile: Tile, trigger: RunTrigger | undefined, continuesRunId: string | null,
+): ScenarioLaunch | null {
+  if (!tile.skillId || !trigger) return null;
+  // The record this tile is leaving, captured before the new id overwrites it.
+  // A ⟳ is only offered once the session has ended or errored, and both of
+  // those have already closed the predecessor in Rust and dropped it from
+  // `open_runs` — so the backend has nothing left to chain to and the link has
+  // to come from here. A tile being built for the first time has no `runId`,
+  // which is why this stays a fallback rather than an override.
+  const previous = tile.runId ?? null;
+  tile.runId = crypto.randomUUID();
+  return {
+    runId: tile.runId,
+    skillId: tile.skillId,
+    trigger,
+    params: tile.params ?? {},
+    continuesRunId: continuesRunId ?? previous,
+  };
 }
 
 export function waitingCount(states: SessionState[]): number {
   return states.filter((s) => s === "waitingInput").length;
-}
-
-export function waitingVerb(n: number): string {
-  return n % 10 === 1 && n % 100 !== 11 ? "ждёт" : "ждут";
 }
 
 export function nextWaitingAcross(
@@ -617,13 +1456,39 @@ export function nextWaitingAcross(
   return null;
 }
 
+/** What reaches `sessions.json`.
+ *
+ *  `name` is the **launch** name — never the resolved one. A transcript title is
+ *  not persisted at all: `startPolling()` fires a tick immediately, so a restored
+ *  tile refills it within one round trip and a stored copy could only go stale.
+ *  A hand-typed name goes in its own field, and `nameKind` records which of the
+ *  two kinds `name` is, so the next launch knows whether a title may replace it. */
 export function serializeTiles(
-  tiles: { session: string; workspacePath: string; name: string; workspaceId?: string }[],
+  tiles: {
+    session: string; workspacePath: string; name: string; workspaceId?: string;
+    scheduledSkillId?: string; taskId?: string;
+    kind?: TileKind;
+    userName?: string | null;
+    nameKind?: NameKind;
+    skillId?: string;
+    runId?: string;
+  }[],
 ): SessionEntry[] {
-  return tiles.map((t) => ({
-    sessionId: t.session, cwd: t.workspacePath, name: t.name,
-    ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
-  }));
+  return tiles
+    // Командный тайл — разовое действие пользователя (установка пакета, вход в
+    // аккаунт). Восстанавливать его на следующем запуске нельзя: это молча
+    // выполнило бы sudo-команду без спроса.
+    .filter((t) => t.kind !== "command")
+    .map((t) => ({
+      sessionId: t.session, cwd: t.workspacePath, name: t.name,
+      ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+      ...(t.scheduledSkillId ? { scheduledSkillId: t.scheduledSkillId } : {}),
+      ...(t.taskId ? { taskId: t.taskId } : {}),
+      ...(t.userName ? { userName: t.userName } : {}),
+      ...(t.skillId ? { skillId: t.skillId } : {}),
+      ...(t.runId ? { runId: t.runId } : {}),
+      nameKind: t.nameKind ?? "context",
+    }));
 }
 
 export function selectedFromChecks(checks: { session: string; checked: boolean }[]): string[] {

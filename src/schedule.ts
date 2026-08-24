@@ -1,14 +1,20 @@
-import type { Schedule, SchedulePreset, SessionState, Skill, Workspace } from "./ipc";
+import type {
+  RunRecord, Schedule, SchedulePreset, ScheduleRun, SessionState, Skill, Workspace,
+} from "./ipc";
 import { parsePlaceholders } from "./placeholders";
+// One phrasing for one outcome code, wherever it is shown. Lives with the run
+// vocabulary because the history screen says the same thing about the same
+// record.
+import { OUTCOME_TEXT } from "./runs";
 
-const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const pad = (n: number): string => String(n).padStart(2, "0");
 
 export function describeSchedule(s: Schedule): string {
   const p = s.preset;
-  if (p.kind === "hourly") return `каждый час в :${pad(p.minute)}`;
-  if (p.kind === "daily") return `ежедневно ${pad(p.hour)}:${pad(p.minute)}`;
-  return `еженедельно ${WEEKDAYS[p.weekday]} ${pad(p.hour)}:${pad(p.minute)}`;
+  if (p.kind === "hourly") return `hourly at :${pad(p.minute)}`;
+  if (p.kind === "daily") return `daily at ${pad(p.hour)}:${pad(p.minute)}`;
+  return `weekly on ${WEEKDAYS[p.weekday]} at ${pad(p.hour)}:${pad(p.minute)}`;
 }
 
 /** Next fire strictly after `now`, in local time. Display-only; the backend
@@ -35,10 +41,87 @@ export function nextRun(p: SchedulePreset, now: Date): Date {
 export function nextRunLabel(p: SchedulePreset, now: Date): string {
   const d = nextRun(p, now);
   const t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  if (d.toDateString() === now.toDateString()) return `сегодня ${t}`;
+  if (d.toDateString() === now.toDateString()) return `today ${t}`;
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
-  if (d.toDateString() === tomorrow.toDateString()) return `завтра ${t}`;
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow ${t}`;
+  return `${WEEKDAYS[d.getDay()]} ${t}`;
+}
+
+/** One sentence saying what the controls in the schedule editor add up to:
+ *  the rule, when it next fires, and which folder it will fire in.
+ *
+ *  The last part is not decoration. An unpinned scenario runs in whatever
+ *  workspace happens to be active at the time (`resolveScheduledWorkspace`),
+ *  so a nightly job can land in a different project than the one it was set
+ *  up in, and nothing in the form used to hint at that. */
+export function schedulePreview(
+  p: SchedulePreset,
+  now: Date,
+  workspaceName: string | null,
+): string {
+  const rule = describeSchedule({ preset: p, defaults: {}, enabled: true });
+  const where = workspaceName
+    ? `in workspace “${workspaceName}”`
+    : "in whichever workspace is active at the time";
+  return `Runs ${rule} · next run ${nextRunLabel(p, now)} · ${where}.`;
+}
+
+/** The line under a scenario's name: rule, next run, and what came of the
+ *  last run. Replaces a native tooltip that no keyboard user could reach
+ *  and that went stale as soon as the panel stopped re-rendering.
+ *
+ *  Two sources, and the split is the point. `run` is `schedule_state.json`, the
+ *  scheduler's **gate**: when the next occurrence is, which only the side that
+ *  actually fires can say. `last` is the run journal, which is what actually
+ *  happened — and it is wider than the gate ever was, because `lastOutcome`
+ *  only ever knew about scheduled fires and a scenario run by hand left no
+ *  trace in it at all. Where they disagree, the journal wins: it is a record of
+ *  runs, and the gate is a record of attempts. */
+export function scheduleRowText(
+  s: Schedule, run: ScheduleRun | null, now: Date, last: RunRecord | null = null,
+): string {
+  const rule = describeSchedule(s);
+  if (!s.enabled) return `schedule is off · ${rule}`;
+
+  // Prefer what the backend says: it owns the firing, and a second copy of
+  // the arithmetic here would drift from it with nothing to catch the drift.
+  const next = run?.nextRunMs != null ? stamp(run.nextRunMs, now) : nextRunLabel(s.preset, now);
+  const parts = [rule, `next run ${next}`];
+  if (last) {
+    if (last.status === "failed-to-launch") {
+      const why = last.reason === null ? "nothing started" : OUTCOME_TEXT[last.reason] ?? last.reason;
+      parts.push(`${stamp(last.startedAt, now)} did not run: ${why}`);
+    } else {
+      parts.push(`last run ${stamp(last.startedAt, now)}`);
+    }
+  } else if (run?.lastOutcome && run.lastOutcome !== "launched") {
+    // Nothing in the journal yet — a schedule that last fired before the
+    // journal existed, or with recording switched off. The gate's own memory is
+    // the only thing left to say anything with, and saying nothing would read
+    // as "it has never failed".
+    const why = OUTCOME_TEXT[run.lastOutcome] ?? run.lastOutcome;
+    parts.push(`${stamp(run.lastAttempt, now)} did not run: ${why}`);
+  } else if (run?.lastRun) {
+    parts.push(`last run ${stamp(run.lastRun, now)}`);
+  } else if (run) {
+    parts.push("has not run yet");
+  }
+  return parts.join(" · ");
+}
+
+/** An instant as "today 09:00" / "yesterday 09:00" / "tomorrow 09:00" / "Mon 09:00". */
+function stamp(ms: number, now: Date): string {
+  const d = new Date(ms);
+  const t = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.toDateString() === now.toDateString()) return `today ${t}`;
+  const shifted = (days: number) => {
+    const x = new Date(now);
+    x.setDate(now.getDate() + days);
+    return x.toDateString();
+  };
+  if (d.toDateString() === shifted(-1)) return `yesterday ${t}`;
+  if (d.toDateString() === shifted(1)) return `tomorrow ${t}`;
   return `${WEEKDAYS[d.getDay()]} ${t}`;
 }
 
@@ -54,16 +137,16 @@ export function validateSchedule(
   defaults: Record<string, string>,
 ): { ok: true } | { ok: false; error: string } {
   if (!enabled) return { ok: true };
-  if (!inRange(preset.minute, 0, 59)) return { ok: false, error: "Минуты: 0–59" };
+  if (!inRange(preset.minute, 0, 59)) return { ok: false, error: "Minutes: 0–59" };
   if (preset.kind !== "hourly" && !inRange(preset.hour, 0, 23)) {
-    return { ok: false, error: "Часы: 0–23" };
+    return { ok: false, error: "Hours: 0–23" };
   }
   if (preset.kind === "weekly" && !inRange(preset.weekday, 0, 6)) {
-    return { ok: false, error: "День недели: 0–6" };
+    return { ok: false, error: "Weekday: 0–6" };
   }
   for (const name of parsePlaceholders(prompt)) {
     if (!defaults[name] || !defaults[name].trim()) {
-      return { ok: false, error: `Заполните значение по умолчанию для {{${name}}}` };
+      return { ok: false, error: `Fill in a default value for {{${name}}}` };
     }
   }
   return { ok: true };

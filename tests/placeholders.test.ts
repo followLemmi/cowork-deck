@@ -26,16 +26,32 @@ describe("fillPlaceholders", () => {
 describe("resolvePrompt", () => {
   it("returns prompt unchanged and does not ask when no placeholders", async () => {
     const ask = vi.fn();
-    expect(await resolvePrompt("plain", ask)).toBe("plain");
+    expect(await resolvePrompt("plain", ask)).toEqual({ prompt: "plain", params: {} });
     expect(ask).not.toHaveBeenCalled();
   });
-  it("asks and fills when placeholders present", async () => {
+  // Both halves come back, and the second one is the point: the run journal
+  // records what a run was launched with, so it can be offered again later with
+  // those values in front of the person rather than silently reapplied.
+  it("asks and fills when placeholders present, and hands back the values", async () => {
     const ask = vi.fn().mockResolvedValue({ branch: "feat/x" });
-    expect(await resolvePrompt("on {{branch}}", ask)).toBe("on feat/x");
+    expect(await resolvePrompt("on {{branch}}", ask))
+      .toEqual({ prompt: "on feat/x", params: { branch: "feat/x" } });
     expect(ask).toHaveBeenCalledWith(["branch"]);
   });
   it("returns null when the user cancels", async () => {
     const ask = vi.fn().mockResolvedValue(null);
     expect(await resolvePrompt("on {{branch}}", ask)).toBeNull();
   });
+});
+
+// A prompt is written in whatever language its author thinks in, whatever the
+// UI's language is, so placeholder names are not reliably ASCII. `\w` is
+// ASCII-only in JavaScript, so {{ветка}} matched nothing: no field was offered
+// and the literal braces were sent to claude as part of the prompt.
+it("recognises non-ASCII placeholder names", () => {
+  expect(parsePlaceholders("Review {{ветка}} and {{задача}}")).toEqual(["ветка", "задача"]);
+});
+
+it("substitutes them too", () => {
+  expect(fillPlaceholders("Branch {{ветка}}", { "ветка": "main" })).toBe("Branch main");
 });

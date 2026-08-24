@@ -2,6 +2,7 @@
 name = "cowork-deck"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 default-run = "cowork-deck"
 
 [[bin]]
@@ -11,6 +12,14 @@ path = "src/main.rs"
 [[bin]]
 name = "cowork_report"
 path = "src/bin/cowork_report.rs"
+
+[[bin]]
+name = "cowork_task"
+path = "src/bin/cowork_task.rs"
+
+[lib]
+name = "cowork_deck"
+path = "src/lib.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -26,3 +35,17 @@ base64 = "0.22"
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-window-state = "2"
 chrono = "0.4"
+ulid = "3"
+notify = "6"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
+tauri-plugin-opener = "2.5.4"
+
+# Signals and process-session lookup for `pty.rs`. Killing what a session
+# started means naming a process group and enumerating a session's members,
+# and neither has a std equivalent — `Child::kill` reaches one pid.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

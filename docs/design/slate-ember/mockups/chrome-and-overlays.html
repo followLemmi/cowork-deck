@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>cowork-deck — Shell, overlays and states</title>
+<link rel="stylesheet" href="assets/deck-ui.css" />
+<style>
+  /* Page-only scaffolding for the component sheet. Nothing here ports to the app. */
+  .sheet { max-width: 1120px; margin: 0 auto; padding: 24px 24px 64px; display: flex; flex-direction: column; gap: 40px; }
+  .sec { display: flex; flex-direction: column; gap: 16px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .sec-note { color: var(--fg-dim); font-size: var(--fs-small); line-height: var(--lh-body); max-width: 74ch; }
+  .demo { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .demo--col { flex-direction: column; }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <header class="topbar">
+    <div class="mark">
+      <span class="mark-glyph" data-app-mark></span>
+      <span class="mark-text">cowork<span>·deck</span></span>
+    </div>
+    <nav class="seg" aria-label="Screen">
+      <button type="button" aria-selected="false" data-nav="terminals-screen.html">
+        <i data-ic="terminal"></i> Terminals
+      </button>
+      <button type="button" aria-selected="false" data-nav="board-screen.html">
+        <i data-ic="columns"></i> Board
+      </button>
+      <button type="button" aria-selected="false" data-nav="pull-requests-screen.html">
+        <i data-ic="git-merge"></i> Pull requests
+        <span class="seg-badge">2</span>
+      </button>
+    </nav>
+    <span class="topbar-spacer"></span>
+    <button type="button" class="ws-chip">
+      <span class="dot" style="background:#7bd77f"></span>
+      cowork-deck <span class="ws-chip-login">followLemmi</span>
+      <i data-ic="chevron" class="ic--down"></i>
+    </button>
+    <button type="button" class="btn--icon" title="Command palette" aria-label="Command palette"
+            data-open="palette"><i data-ic="search"></i></button>
+    <button type="button" class="btn--icon" title="Settings" aria-label="Settings"
+            data-open="settings"><i data-ic="sliders"></i></button>
+  </header>
+
+  <main class="screen" style="padding:0">
+    <div class="sheet">
+
+      <!-- ============================================================ -->
+      <section class="sec">
+        <div class="sec-head">
+          <h1 class="screen-title">Shell, overlays and states</h1>
+        </div>
+        <p class="sec-note">
+          The bar above is the real one. Everything below is the rest of the chrome — the
+          command palette, the forms, settings, the floating pill, and the four ways a screen
+          can have nothing to show. Open each one; they behave the way they would in the app.
+        </p>
+        <div class="demo">
+          <!-- Ghost, not primary: none of these six is "the" action of this sheet,
+               and three solid buttons down one page is the pattern the charter
+               calls a failed delivery. The primaries on this page are the ones
+               inside the forms, where they mean something. -->
+          <button type="button" class="btn btn--ghost" data-open="palette">
+            <i data-ic="search"></i> Command palette <span class="kbd">⌃⇧K</span>
+          </button>
+          <button type="button" class="btn btn--quiet" data-open="scenario">Scenario form</button>
+          <button type="button" class="btn btn--quiet" data-open="workspace">Workspace form</button>
+          <button type="button" class="btn btn--quiet" data-open="settings">Settings</button>
+          <button type="button" class="btn btn--quiet" data-open="confirm">Confirm a delete</button>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <section class="sec">
+        <div class="sec-head">
+          <h2 class="screen-title">The floating pill</h2>
+          <span class="chip chip--plain">always on top · its own window</span>
+        </div>
+        <p class="sec-note">
+          It counts only the sessions blocked on a decision. A session that merely finished its
+          turn announces itself with a notification instead — parking at the prompt when it is
+          done is not the same as being unable to continue, and a pill that counted both would
+          be lit permanently.
+        </p>
+        <div class="demo" style="gap:24px;align-items:center">
+          <div class="pill pill--waiting" data-od-id="pill-waiting">
+            <span class="pill-dot"></span>
+            <span class="pill-count">2</span>
+            <span class="pill-text">
+              <span class="pill-label">need a decision</span>
+              <span class="pill-sub">diff drawer · refund webhook</span>
+            </span>
+          </div>
+          <div class="pill pill--calm" data-od-id="pill-calm">
+            <span class="pill-count">0</span>
+            <span class="pill-text">
+              <span class="pill-label">nothing waiting</span>
+              <span class="pill-sub">6 sessions · 3 working</span>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <section class="sec">
+        <div class="sec-head">
+          <h2 class="screen-title">Session states</h2>
+        </div>
+        <p class="sec-note">
+          Five states and one deliberate absence. <em>Done</em> is the same green as
+          <em>Working</em> without the breathing, because the work finished and nothing is
+          happening — and <em>Ended</em> has no hue at all: it is the absence of a signal, not a
+          signal. Each chip pairs its colour with its own fill, and each is measured; a
+          translucent fill drags the ground towards the text, so the alphas differ by hue rather
+          than being one number applied five times.
+        </p>
+        <div class="demo">
+          <span class="chip-state is-idle">Idle</span>
+          <span class="chip-state is-working">Working</span>
+          <span class="chip-state is-waiting">Needs you</span>
+          <span class="chip-state is-done">Done</span>
+          <span class="chip-state is-ended">Ended</span>
+          <span class="chip-state is-error">Error</span>
+        </div>
+        <p class="sec-note">
+          The same five, as the rail — which is how state is actually read across a dozen tiles
+          at once. Nothing else in the interface is allowed these hues.
+        </p>
+        <div class="island" style="max-width:420px">
+          <div class="island-body">
+            <div class="row rail is-working"><span class="row-main"><span class="row-title">tests · main</span></span></div>
+            <div class="row rail is-waiting"><span class="row-main"><span class="row-title">diff drawer · feat/drawer</span></span></div>
+            <div class="row rail is-done"><span class="row-main"><span class="row-title">release notes · main</span></span></div>
+            <div class="row rail is-ended"><span class="row-main"><span class="row-title">changelog · main</span></span></div>
+            <div class="row rail is-error"><span class="row-main"><span class="row-title">pill sizing · fix/pill</span></span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <section class="sec">
+        <div class="sec-head">
+          <h2 class="screen-title">Buttons and fields</h2>
+        </div>
+        <p class="sec-note">
+          One primary per screen. Hover moves the <em>ground</em> and never the ink: the old set
+          muted its icon buttons with <code>opacity: 0.7</code>, which composited the panel into
+          the glyph and put every icon control in the app at 2.67:1 while sitting still. Disabled
+          is the only state allowed to lose contrast.
+        </p>
+        <div class="demo">
+          <!-- "Save" rather than the app's real CTA: "New session" is the primary on
+               the empty state further down, and the same words on two solid buttons
+               reads as two ways to do one thing. -->
+          <button type="button" class="btn btn--primary"><i data-ic="check"></i> Save</button>
+          <button type="button" class="btn btn--ghost"><i data-ic="play"></i> Run now</button>
+          <button type="button" class="btn btn--quiet"><i data-ic="external"></i> Open in browser</button>
+          <button type="button" class="btn btn--dashed"><i data-ic="plus"></i> Add a workspace</button>
+          <button type="button" class="btn btn--quiet" disabled><i data-ic="git-merge"></i> Merge</button>
+          <button type="button" class="btn--icon" aria-label="Edit"><i data-ic="pencil"></i></button>
+          <button type="button" class="btn--icon btn--danger" aria-label="Delete"><i data-ic="trash"></i></button>
+        </div>
+        <div class="demo" style="max-width:520px">
+          <div class="form-row" style="flex:1 1 240px">
+            <label class="form-label" for="d1">A field is recognised by its fill</label>
+            <input class="field" id="d1" placeholder="A placeholder at 4.5:1, not 3.4" />
+          </div>
+          <div class="form-row" style="flex:0 0 auto">
+            <label class="form-label" for="d2">Select</label>
+            <div class="select"><select id="d2"><option>Daily</option><option>Weekly</option><option>Hourly</option></select></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <section class="sec">
+        <div class="sec-head">
+          <h2 class="screen-title">Nothing to show</h2>
+        </div>
+        <p class="sec-note">
+          Four different shapes, because they are four different situations: no data yet, data
+          that has not arrived, a source that cannot be read, and a source that is fine but
+          empty. Collapsing them into one grey box is how "it is broken" and "you have not set
+          it up" become indistinguishable.
+        </p>
+
+        <div class="banner banner--warn" data-od-id="banner-config">
+          <i data-ic="alert"></i>
+          <span class="banner-body">
+            <strong>board.json could not be parsed</strong> — the board is showing the default
+            <code>open</code>/<code>done</code> steps instead. The file on disk was left exactly
+            as it is, so your typo is still there to fix.
+          </span>
+          <button type="button" class="btn btn--quiet">Show the file</button>
+        </div>
+
+        <div class="banner banner--error" data-od-id="banner-auth">
+          <i data-ic="alert"></i>
+          <span class="banner-body">
+            <strong>gh is not authenticated for evgeny-jvl</strong> — this workspace's sessions
+            will start without the access they expect, and <code>git push</code> will go out as
+            the wrong person or not at all.
+          </span>
+          <button type="button" class="btn btn--quiet">Fix</button>
+        </div>
+
+        <div class="demo" style="align-items:stretch">
+          <div class="island" style="flex:1 1 340px;padding:8px">
+            <div class="empty">
+              <h3 class="empty-title">No open pull requests</h3>
+              <p>
+                Nothing is waiting on <code>followLemmi/cowork-deck</code>. Closed ones are on
+                GitHub; this screen deliberately does not carry them.
+              </p>
+            </div>
+          </div>
+          <div class="island" style="flex:1 1 340px;padding:8px">
+            <div class="skeleton">
+              <p class="form-hint">Reading the repository's pull requests…</p>
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---------------------------------------------------------------
+             The deck with nothing in it. `<main id="deck">` is an empty element until a
+             session is added, so the app's most likely first screen — and its screen
+             every time the last session is closed — was an unexplained dark rectangle.
+             Two states, not one, because the action differs: with no workspace there is
+             nothing to start a session IN, and offering "New session" there produces
+             "Pick a workspace first." in a modal, which is a question answered by a
+             refusal. -->
+        <p class="sec-note" style="margin-top:8px">
+          The deck screen with no sessions on it. Two states rather than one: the first
+          answers <em>where would it even run</em>, the second <em>what do I start</em>.
+        </p>
+
+        <div class="island" style="padding:8px" data-od-id="deck-empty-no-workspace">
+          <div class="empty empty--center" style="max-width:54ch">
+            <span class="empty-mark"><i data-ic="folder"></i></span>
+            <h3 class="empty-title">Add a workspace to start working</h3>
+            <p>
+              A workspace is a project folder. Sessions run <em>in</em> one, so it is the
+              first thing the deck needs — and it is what binds the GitHub account that
+              <code>git push</code> will go out as.
+            </p>
+            <button type="button" class="btn btn--primary"><i data-ic="plus"></i> Add a workspace</button>
+          </div>
+        </div>
+
+        <div class="island" style="padding:8px" data-od-id="deck-empty-no-sessions">
+          <div class="empty empty--center" style="max-width:58ch">
+            <span class="empty-mark"><i data-ic="terminal"></i></span>
+            <h3 class="empty-title">No sessions in cowork-deck</h3>
+            <p>
+              A session is a real <code>claude</code> process in this folder. It is a child
+              of this window: closing the app ends it, and its scrollback stays on screen
+              after it finishes so you can read what it did.
+            </p>
+            <button type="button" class="btn btn--primary"><i data-ic="plus"></i> New session</button>
+            <!-- Scenarios are the fastest start there is — a session with its prompt
+                 already written — and on an empty deck the sidebar is the only place they
+                 appear. Quiet, because "New session" above is this screen's one primary. -->
+            <div class="empty-alt">
+              <span class="caps">or start from a scenario</span>
+              <div class="empty-alt-row">
+                <button type="button" class="btn btn--quiet"><i data-ic="shield"></i> Nightly review</button>
+                <button type="button" class="btn btn--quiet"><i data-ic="flask"></i> Fix the failing test</button>
+                <button type="button" class="btn btn--quiet"><i data-ic="book"></i> Write the session note</button>
+              </div>
+            </div>
+            <p class="empty-kbd">
+              Everything here is in the command palette — <span class="kbd">Ctrl</span>
+              <span class="kbd">Shift</span> <span class="kbd">K</span>
+            </p>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- ===================== Command palette ===================== -->
+<div class="overlay" id="palette" hidden>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette"
+       data-od-id="command-palette">
+    <div class="palette-search">
+      <i data-ic="search"></i>
+      <input id="pal-input" type="text" placeholder="Run a command, or jump to a session"
+             aria-label="Search commands" autocomplete="off" />
+      <button type="button" class="btn--icon" data-close aria-label="Close"><i data-ic="x"></i></button>
+    </div>
+    <div class="palette-list" id="pal-list" role="listbox" aria-label="Commands"></div>
+    <div class="palette-foot">
+      <span><span class="kbd">↑</span> <span class="kbd">↓</span> move</span>
+      <span><span class="kbd">⏎</span> run</span>
+      <span><span class="kbd">esc</span> close</span>
+      <span style="margin-left:auto" id="pal-count"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Scenario form ===================== -->
+<div class="overlay" id="scenario" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="sc-title" data-od-id="scenario-form">
+    <div class="modal-head">
+      <h2 class="modal-title" id="sc-title">Edit scenario</h2>
+      <span class="head-spacer"></span>
+      <button type="button" class="btn--icon" data-close aria-label="Cancel"><i data-ic="x"></i></button>
+    </div>
+
+    <div class="modal-body">
+      <div class="form-row">
+        <label class="form-label" for="sc-name">Name</label>
+        <input class="field" id="sc-name" value="Nightly review" />
+      </div>
+
+      <div class="form-row">
+        <span class="form-label">Mark</span>
+        <!-- Offered from the app's own set instead of free-text emoji: a user's
+             choice cannot reintroduce the mismatch the sprite exists to remove. -->
+        <div class="swatches" role="group" aria-label="Scenario mark">
+          <button type="button" class="icon-swatch" aria-pressed="false" aria-label="Play"><i data-ic="play"></i></button>
+          <button type="button" class="icon-swatch" aria-pressed="true" aria-label="Shield"><i data-ic="shield"></i></button>
+          <button type="button" class="icon-swatch" aria-pressed="false" aria-label="Rocket"><i data-ic="rocket"></i></button>
+          <button type="button" class="icon-swatch" aria-pressed="false" aria-label="Flask"><i data-ic="flask"></i></button>
+          <button type="button" class="icon-swatch" aria-pressed="false" aria-label="Book"><i data-ic="book"></i></button>
+          <button type="button" class="icon-swatch" aria-pressed="false" aria-label="Chart"><i data-ic="chart"></i></button>
+          <button type="button" class="icon-swatch" aria-pressed="false" aria-label="Wrench"><i data-ic="wrench"></i></button>
+          <button type="button" class="icon-swatch" aria-pressed="false" aria-label="Sparkle"><i data-ic="sparkle"></i></button>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label" for="sc-prompt">Opening prompt</label>
+        <textarea class="field field--mono" id="sc-prompt" rows="5">Review everything merged into main since {{since}}. Report only what a reviewer would block on: a contract broken without a migration, a state nothing resets, a measurement the code claims and does not make. Skip style.</textarea>
+        <p class="form-hint">
+          <code>{{since}}</code> is filled in at start. A scheduled run uses the stored default
+          below, since nobody is there to type it.
+        </p>
+      </div>
+
+      <div class="form-row">
+        <label class="form-label" for="sc-ws">Workspace</label>
+        <div class="select"><select id="sc-ws" style="width:100%">
+          <option selected>cowork-deck</option><option>lemsoft-api</option><option>vault-index</option>
+        </select></div>
+      </div>
+
+      <!-- The schedule reads as a section rather than as more flat form. -->
+      <div class="fieldset" data-od-id="schedule-section">
+        <div class="fieldset-head">
+          <i data-ic="clock" class="ic"></i>
+          <h3 class="caps">Schedule</h3>
+          <span class="head-spacer"></span>
+          <label class="ed-check"><input type="checkbox" checked id="sc-on" /> on</label>
+        </div>
+
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+          <div class="form-row">
+            <label class="form-label" for="sc-every">Every</label>
+            <div class="select"><select id="sc-every">
+              <option>hour</option><option selected>day</option><option>week</option>
+            </select></div>
+          </div>
+          <div class="form-row">
+            <label class="form-label" for="sc-hh">Hour</label>
+            <input class="field tabular" id="sc-hh" type="number" min="0" max="23" value="2" style="width:76px" />
+          </div>
+          <div class="form-row">
+            <label class="form-label" for="sc-mm">Minute</label>
+            <input class="field tabular" id="sc-mm" type="number" min="0" max="59" value="0" style="width:76px" />
+          </div>
+        </div>
+
+        <p class="form-hint" style="color:var(--fg-mid)">
+          Next run <strong>tomorrow at 02:00</strong>, on this machine, through your own Claude
+          Code. The scheduler lives inside the app, so it only fires while this window is open —
+          a run missed while it was closed is caught up once on the next launch, however long it
+          has been.
+        </p>
+
+        <div class="form-row">
+          <label class="form-label" for="sc-since">Stored default for <code>{{since}}</code></label>
+          <input class="field field--mono" id="sc-since" value="the last successful run" />
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-acts">
+      <button type="button" class="btn btn--quiet" style="margin-right:auto">
+        <i data-ic="clock-play"></i> Run now
+      </button>
+      <button type="button" class="btn btn--quiet" data-close>Cancel</button>
+      <button type="button" class="btn btn--primary" data-close>Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Workspace form ===================== -->
+<div class="overlay" id="workspace" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ws-title" data-od-id="workspace-form">
+    <div class="modal-head">
+      <h2 class="modal-title" id="ws-title">Edit workspace</h2>
+      <span class="head-spacer"></span>
+      <button type="button" class="btn--icon" data-close aria-label="Cancel"><i data-ic="x"></i></button>
+    </div>
+
+    <div class="modal-body">
+      <div class="form-row">
+        <label class="form-label" for="w-name">Name</label>
+        <input class="field" id="w-name" value="lemsoft-api" />
+      </div>
+
+      <div class="form-row">
+        <label class="form-label" for="w-path">Folder</label>
+        <div style="display:flex;gap:8px">
+          <input class="field field--mono" id="w-path" value="~/jvl/lemsoft-api" />
+          <button type="button" class="btn btn--quiet" style="white-space:nowrap">
+            <i data-ic="folder"></i> Pick
+          </button>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <span class="form-label">Colour</span>
+        <div class="swatches" role="group" aria-label="Workspace colour">
+          <button type="button" class="swatch" style="background:#7bd77f" aria-pressed="false" aria-label="Green"></button>
+          <button type="button" class="swatch" style="background:#efc845" aria-pressed="true" aria-label="Amber"></button>
+          <button type="button" class="swatch" style="background:#fb817a" aria-pressed="false" aria-label="Red"></button>
+          <button type="button" class="swatch" style="background:#d5eaf3" aria-pressed="false" aria-label="Ice"></button>
+          <button type="button" class="swatch" style="background:#bab7b2" aria-pressed="false" aria-label="Grey"></button>
+        </div>
+      </div>
+
+      <div class="fieldset">
+        <div class="fieldset-head">
+          <i data-ic="user" class="ic"></i>
+          <h3 class="caps">GitHub account</h3>
+        </div>
+        <div class="row" style="cursor:default;background:var(--bg-island)">
+          <span class="row-main">
+            <span class="row-title">evgeny-jvl</span>
+            <span class="row-sub">gh · token checked 3m ago</span>
+          </span>
+          <span class="chip-state is-working">Authenticated</span>
+        </div>
+        <p class="form-hint">
+          This workspace's sessions start with this account's access, so
+          <code>gh pr list</code>, <code>git push</code> and commit authorship all go out as the
+          right person. Other workspaces keep their own accounts at the same time — the app never
+          switches the active <code>gh</code> account and never writes to
+          <code>~/.config/gh</code>.
+        </p>
+      </div>
+
+      <div class="fieldset">
+        <div class="fieldset-head">
+          <i data-ic="columns" class="ic"></i>
+          <h3 class="caps">Board source</h3>
+        </div>
+        <label class="check">
+          <input type="checkbox" name="src" />
+          <span class="check-text">Markdown cards in a folder</span>
+          <span class="check-hint">
+            <code>.cowork/tasks</code> in the project, or any folder you point at — a dedicated
+            repo, an Obsidian vault.
+          </span>
+        </label>
+        <label class="check">
+          <input type="checkbox" name="src" checked />
+          <span class="check-text">The repository's GitHub issues</span>
+          <span class="check-hint">
+            Open and closed issues of <code>jvl/lemsoft-api</code>, under this workspace's own
+            account. One source per workspace, never both at once.
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <div class="modal-acts">
+      <button type="button" class="btn btn--quiet btn--danger" style="margin-right:auto"
+              data-open="confirm"><i data-ic="trash"></i> Delete workspace</button>
+      <button type="button" class="btn btn--quiet" data-close>Cancel</button>
+      <button type="button" class="btn btn--primary" data-close>Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Settings ===================== -->
+<div class="overlay" id="settings" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="set-title" data-od-id="settings">
+    <div class="modal-head">
+      <h2 class="modal-title" id="set-title">Settings</h2>
+      <span class="head-spacer"></span>
+      <button type="button" class="btn--icon" data-close aria-label="Close"><i data-ic="x"></i></button>
+    </div>
+
+    <div class="modal-body">
+      <div class="form-row">
+        <span class="form-label">Text size</span>
+        <!-- A column rather than a row of chips: each label is a sentence-length
+             thing, and it has to stay readable at the step it is previewing. This
+             control is live on this page — it moves the whole scale, because every
+             step is a `rem` off one base. -->
+        <div class="demo--col demo" role="group" aria-label="Text size" id="sizes"></div>
+        <p class="form-hint">
+          One value on <code>:root</code> moves every step, which is what makes this a setting
+          rather than a hundred edited declarations. Hit targets stay in CSS pixels on purpose —
+          a 24px minimum expressed in <code>rem</code> would fall under it at the smallest step.
+        </p>
+      </div>
+
+      <div class="fieldset">
+        <div class="fieldset-head">
+          <i data-ic="bell" class="ic"></i>
+          <h3 class="caps">Notifications</h3>
+        </div>
+        <label class="check">
+          <input type="checkbox" checked />
+          <span class="check-text">A session is blocked on a decision</span>
+          <span class="check-hint">Clicking the notification focuses that session.</span>
+        </label>
+        <label class="check">
+          <input type="checkbox" checked />
+          <span class="check-text">A session finished its turn</span>
+          <span class="check-hint">
+            Separate on purpose: an interactive <code>claude</code> parks at the prompt when it
+            is done, which is not the same as being unable to continue.
+          </span>
+        </label>
+        <label class="check">
+          <input type="checkbox" />
+          <span class="check-text">A scheduled run produced nothing</span>
+          <span class="check-hint">No workspace, a skipped overlap, <code>claude</code> missing.</span>
+        </label>
+      </div>
+
+      <div class="fieldset">
+        <div class="fieldset-head">
+          <i data-ic="terminal" class="ic"></i>
+          <h3 class="caps">The claude binary</h3>
+        </div>
+        <div style="display:flex;gap:8px">
+          <input class="field field--mono" value="/home/evgeny/.local/bin/claude"
+                 aria-label="Path to the claude binary" />
+          <button type="button" class="btn btn--quiet" style="white-space:nowrap">
+            <i data-ic="folder"></i> Pick
+          </button>
+        </div>
+        <p class="form-hint">Found on <code>PATH</code>. Version 2.1.9.</p>
+      </div>
+    </div>
+
+    <div class="modal-acts">
+      <button type="button" class="btn btn--primary" data-close>Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Confirm ===================== -->
+<div class="overlay" id="confirm" hidden>
+  <div class="modal modal--narrow" role="dialog" aria-modal="true" aria-labelledby="cf-title"
+       data-od-id="confirm-delete">
+    <div class="modal-head">
+      <h2 class="modal-title" id="cf-title">Delete lemsoft-api?</h2>
+    </div>
+    <!-- What it costs, named, before the button that does it. -->
+    <p class="modal-sub">
+      2 running sessions in this workspace will be ended, and 3 scenarios that point at it
+      will stop working — they stay in the list, struck through, so you can repoint them.
+      <br /><br />
+      Nothing on disk is touched: the folder, its cards and its git history stay exactly as
+      they are.
+    </p>
+    <div class="modal-acts">
+      <button type="button" class="btn btn--quiet" data-close>Keep it</button>
+      <button type="button" class="btn btn--ghost btn--danger" data-close>Delete the workspace</button>
+    </div>
+  </div>
+</div>
+
+<script src="assets/icons.js"></script>
+<script>
+(function () {
+  document.querySelectorAll("[data-nav]").forEach((b) => {
+    b.addEventListener("click", () => { location.href = b.dataset.nav; });
+  });
+
+  /* ---- Overlays -------------------------------------------------------- */
+  function open(id) {
+    const el = document.getElementById(id);
+    el.hidden = false;
+    const first = el.querySelector("input, select, textarea, button:not([data-close])");
+    if (first) first.focus();
+  }
+  function close(el) { el.hidden = true; }
+  document.addEventListener("click", (e) => {
+    const o = e.target.closest("[data-open]");
+    if (o) { open(o.dataset.open); return; }
+    if (e.target.closest("[data-close]")) { close(e.target.closest(".overlay")); return; }
+    if (e.target.classList.contains("overlay")) close(e.target);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") document.querySelectorAll(".overlay:not([hidden])").forEach(close);
+    /* The palette's own binding. Ctrl+Shift on Windows and Linux leaves bare
+       Ctrl+K to readline inside `claude`. */
+    if (e.key.toLowerCase() === "k" && e.ctrlKey && e.shiftKey) {
+      e.preventDefault();
+      open("palette");
+    }
+  });
+
+  /* ---- Single-select groups ------------------------------------------- */
+  document.querySelectorAll("[role=group]").forEach((g) => {
+    g.addEventListener("click", (e) => {
+      const b = e.target.closest("[aria-pressed]");
+      if (!b) return;
+      g.querySelectorAll("[aria-pressed]").forEach((o) =>
+        o.setAttribute("aria-pressed", String(o === b)));
+    });
+  });
+  /* The two board sources are exclusive: one per workspace, never both. */
+  document.querySelectorAll('input[name="src"]').forEach((box) => {
+    box.addEventListener("change", () => {
+      if (!box.checked) return;
+      document.querySelectorAll('input[name="src"]').forEach((o) => { if (o !== box) o.checked = false; });
+    });
+  });
+
+  /* ---- Text size: a live control, because every step is a rem --------- */
+  const STEPS = [0.85, 1, 1.15, 1.3, 1.45];
+  const BASE = 15;
+  const sizes = document.getElementById("sizes");
+  sizes.innerHTML = STEPS.map((s) =>
+    '<button type="button" class="filter" style="width:100%;text-align:left;font-size:'
+    + (BASE * s).toFixed(2) + 'px" aria-pressed="' + (s === 1.15) + '" data-scale="' + s + '">'
+    + Math.round(s * 100) + "% · " + (BASE * s).toFixed(2) + "px</button>").join("");
+  document.documentElement.style.fontSize = (BASE * 1.15).toFixed(2) + "px";
+  sizes.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-scale]");
+    if (!b) return;
+    sizes.querySelectorAll("[data-scale]").forEach((o) =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    document.documentElement.style.fontSize = (BASE * Number(b.dataset.scale)).toFixed(2) + "px";
+  });
+
+  /* ---- The command palette ------------------------------------------- */
+  const COMMANDS = [
+    { g: "Sessions", i: "plus", label: "New session", keys: ["⌃⇧", "N"] },
+    { g: "Sessions", i: "broadcast", label: "Broadcast input to several sessions", keys: ["⌃⇧", "B"] },
+    { g: "Sessions", i: "rotate", label: "Restart this session, resuming its context", keys: ["⌃⇧", "R"] },
+    { g: "Sessions", i: "expand", label: "Zoom this session", keys: ["⌃⇧", "Z"] },
+    { g: "Sessions", i: "search", label: "Find in this terminal", keys: ["⌃⇧", "F"] },
+    { g: "Sessions", i: "eraser", label: "Clear this terminal", keys: ["⌃⇧", "L"] },
+    { g: "Screens", i: "terminal", label: "Go to Terminals", keys: ["⌃⇧", "1"] },
+    { g: "Screens", i: "columns", label: "Go to Board", keys: ["⌃⇧", "2"] },
+    { g: "Screens", i: "git-merge", label: "Go to Pull requests", keys: ["⌃⇧", "3"] },
+    { g: "Screens", i: "clear", label: "Move between the sidebar and the terminal", keys: ["F6"] },
+    { g: "Board", i: "plus", label: "File a task without leaving the deck", keys: ["⌃⇧", "T"] },
+    { g: "Board", i: "sliders", label: "Configure the board", keys: [] },
+    { g: "Scenarios", i: "clock-play", label: "Run a scheduled scenario now", keys: [] },
+    { g: "Scenarios", i: "shield", label: "Run scenario: Nightly review", keys: [] },
+    { g: "Scenarios", i: "flask", label: "Run scenario: Fix the failing test", keys: [] },
+    { g: "Workspaces", i: "folder", label: "New workspace", keys: [] },
+    { g: "Workspaces", i: "user", label: "Bind a GitHub account to this workspace", keys: [] },
+    { g: "App", i: "sliders", label: "Settings", keys: ["⌃⇧", ","] },
+  ];
+  const list = document.getElementById("pal-list");
+  const input = document.getElementById("pal-input");
+  const palCount = document.getElementById("pal-count");
+  let sel = 0;
+
+  function draw(q) {
+    const hits = COMMANDS.filter((c) => c.label.toLowerCase().includes(q.toLowerCase()));
+    sel = Math.min(sel, Math.max(0, hits.length - 1));
+    let html = "", group = null;
+    hits.forEach((c, n) => {
+      if (c.g !== group) { group = c.g; html += '<p class="palette-group caps">' + c.g + "</p>"; }
+      html += '<button type="button" class="palette-item" role="option" data-n="' + n + '"'
+        + ' aria-selected="' + (n === sel) + '">'
+        + '<i data-ic="' + c.i + '"></i><span class="palette-label">' + c.label + "</span>"
+        + '<span class="palette-keys">'
+        + c.keys.map((k) => '<span class="kbd">' + k + "</span>").join("")
+        + "</span></button>";
+    });
+    if (!hits.length) {
+      html = '<p class="form-hint" style="padding:16px">Nothing matches “'
+        + q.replace(/</g, "&lt;") + "”. Every binding the app has is in this list, so a miss "
+        + "means the command does not exist yet.</p>";
+    }
+    list.innerHTML = html;
+    hydrateIcons(list);
+    palCount.textContent = hits.length + " of " + COMMANDS.length;
+  }
+  input.addEventListener("input", () => { sel = 0; draw(input.value); });
+  input.addEventListener("keydown", (e) => {
+    const items = list.querySelectorAll(".palette-item");
+    if (!items.length) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); sel = (sel + 1) % items.length; }
+    else if (e.key === "ArrowUp") { e.preventDefault(); sel = (sel - 1 + items.length) % items.length; }
+    else if (e.key === "Enter") { e.preventDefault(); close(document.getElementById("palette")); return; }
+    else return;
+    items.forEach((el, n) => el.setAttribute("aria-selected", String(n === sel)));
+    /* Scrolled by hand rather than with `scrollIntoView`: that method scrolls
+       every ancestor scroll container, which in an embedded preview means the
+       host's frame moves instead of this list. */
+    const el = items[sel];
+    const top = el.offsetTop - list.offsetTop;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (top + el.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = top + el.offsetHeight - list.clientHeight;
+    }
+  });
+  list.addEventListener("mousemove", (e) => {
+    const it = e.target.closest(".palette-item");
+    if (!it) return;
+    sel = Number(it.dataset.n);
+    list.querySelectorAll(".palette-item").forEach((el, n) =>
+      el.setAttribute("aria-selected", String(n === sel)));
+  });
+  draw("");
+})();
+</script>
+</body>
+</html>

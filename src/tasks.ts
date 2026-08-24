@@ -1,0 +1,192 @@
+import type { BoardConfig, BoardStep, SessionState, Task } from "./ipc";
+import { isKnownStep, isTerminal, kindLabel, workingStep } from "./board-config";
+
+/** A live tile, as far as the board cares: which card it came from, which
+ *  workspace that card belongs to, and how the session is doing. */
+export interface TaskSessionLink {
+  session: string;
+  taskId?: string;
+  /** The workspace whose tracker owns `taskId`. Absent when the tile could not be
+   *  placed in one at all — see `linksInWorkspace`. */
+  workspaceId?: string;
+  state: SessionState;
+}
+
+// Re-exported so the board keeps one import for everything card-shaped; the
+// reader itself lives with the rest of them in board-config.ts.
+export { kindLabel };
+
+/** States in which a session still counts as alive — launching a second session
+ *  for the same card would duplicate the work. */
+const ALIVE: SessionState[] = ["idle", "working", "waitingInput"];
+/** States in which the card should read as "in progress" on the board. */
+const BUSY: SessionState[] = ["working", "waitingInput"];
+
+/** One workspace's links, and the reason every rule below is asked of the result
+ *  rather than of every tile in the app.
+ *
+ *  A card id is unique inside its own tracker and nowhere else. That was true but
+ *  harmless while every id was a ULID — globally unique, so a match really was the
+ *  same card — and a GitHub issue number is the first id two repositories can
+ *  legitimately share. Unfiltered, a session on A's #42 makes B's #42 read "in
+ *  progress" (which withholds ▶ from it entirely) and makes B's launch guard focus
+ *  A's session: a terminal attached to another repository, with a fresh worktree
+ *  left behind in B.
+ *
+ *  A link naming no workspace is dropped rather than matched everywhere. It cannot
+ *  be shown to belong to this one, and "it might be anybody's" is precisely the
+ *  reading that lands work in the wrong repository; the cost is a possible second
+ *  session on one card, which is recoverable, against a wrong-repository session,
+ *  which is not. */
+export function linksInWorkspace(links: TaskSessionLink[], workspaceId: string): TaskSessionLink[] {
+  return links.filter((l) => l.workspaceId !== undefined && l.workspaceId === workspaceId);
+}
+
+export function liveSessionForTask(taskId: string, links: TaskSessionLink[]): string | null {
+  const hit = links.find((l) => l.taskId === taskId && ALIVE.includes(l.state));
+  return hit ? hit.session : null;
+}
+
+/** Board status. Never stored: a dead session simply stops being counted, so a
+ *  card cannot get stuck "in progress". */
+export function derivedStatus(
+  task: Task, links: TaskSessionLink[], cfg: BoardConfig,
+): "open" | "done" | "working" {
+  if (isTerminal(cfg, task.status)) return "done";
+  const busy = links.some((l) => l.taskId === task.id && BUSY.includes(l.state));
+  return busy ? "working" : "open";
+}
+
+/** Initial prompt for a session launched from a card. */
+export function taskPrompt(task: Task, cfg: BoardConfig): string {
+  const lines = [
+    "A task from the cowork-deck tracker.",
+    "",
+    `Title: ${task.title}`,
+    `Kind: ${kindLabel(cfg, task.kind)}`,
+    `id: ${task.id}`,
+    `Card file: ${task.path}`,
+  ];
+  const body = task.body.trim();
+  if (body) lines.push("", body);
+  // Omitted entirely when the configuration has no steps: "The board's steps
+  // are: ." is worse than silence, and a prompt is the one place an agent
+  // cannot check a claim against anything else. This is Task 4's ruling —
+  // `taskPrompt` deliberately shipped without a steps line until now, and the
+  // reviewer of Task 4 flagged its absence as correct rather than missing.
+  if (cfg.steps.length > 0) {
+    const steps = cfg.steps.map((s) => s.id).join(", ");
+    lines.push(
+      "",
+      `This card is in step "${task.status}". The board's steps are: ${steps}.`,
+      `Move it as the work progresses: "$COWORK_TASK_BIN" status ${task.id} <step>`,
+      // The snapshot above ages the moment anyone edits the board, and the
+      // prompt has no way to say so later. Naming the live source here is what
+      // keeps the sentence from becoming a stale authority.
+      `The board can change while you work; "$COWORK_TASK_BIN" steps lists it as it is now.`,
+    );
+  }
+  lines.push(
+    "",
+    `When the work is finished, close the card: "$COWORK_TASK_BIN" done ${task.id}`,
+  );
+  return lines.join("\n");
+}
+
+/** Initial prompt for a session launched from a GitHub issue.
+ *
+ *  Replaces `taskPrompt` wholesale on this path rather than branching inside it:
+ *  every one of `taskPrompt`'s three `"$COWORK_TASK_BIN"` references and its
+ *  `Card file:` line is wrong here, and a shared builder with two modes is a
+ *  builder one edit away from leaking either model into the other. The two
+ *  non-leak invariants are tested in both directions.
+ *
+ *  No steps line and no status command: the board has two steps, both named by
+ *  the close instruction, and nothing between them to move to. */
+export function issuePrompt(task: Task, repo: string): string {
+  const lines = [
+    // `repo` is `repoFromIssueUrl`'s answer and that is `""` for a URL it cannot
+    // read — a reachable input, not a hypothetical one — so the clause is omitted
+    // rather than interpolated into "in .", a sentence about nothing.
+    repo ? `GitHub issue #${task.id} in ${repo}.` : `GitHub issue #${task.id}.`,
+    "",
+    `Title: ${task.title}`,
+    task.path,
+  ];
+  const body = task.body.trim();
+  if (body) lines.push("", body);
+  lines.push(
+    "",
+    `When the work is finished, close the issue: gh issue close ${task.id}`,
+    "Do not close it if the work is incomplete — a closed issue is visible to",
+    "everyone in the repository.",
+  );
+  return lines.join("\n");
+}
+
+export interface BoardColumn {
+  step: BoardStep;
+  tasks: Task[];
+  /** How many the cap is hiding. Always 0 for a non-terminal step. */
+  hidden: number;
+}
+
+export interface BoardColumns {
+  columns: BoardColumn[];
+  /** Cards naming a step the configuration does not know. Alive and visible:
+   *  they arrive from a hand-edited or synced board.json, not from the editor. */
+  unknown: Task[];
+  /** Cards belonging to other projects in a shared root — counted, not silently hidden. */
+  foreign: { project: string; count: number }[];
+}
+
+/** Descending by timestamp; an empty timestamp sorts last rather than throwing. */
+function byTimeDesc(a: string, b: string): number {
+  if (!a && !b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+  return a < b ? 1 : a > b ? -1 : 0;
+}
+
+export function boardColumns(
+  tasks: Task[], project: string, cfg: BoardConfig, doneLimit = 20,
+): BoardColumns {
+  const mine: Task[] = [];
+  const foreignCount = new Map<string, number>();
+  for (const t of tasks) {
+    // A damaged card is always ours to show: it may be damaged *because* the
+    // project field is missing, and hiding it would lose the task silently.
+    if (t.damaged || t.project === project) mine.push(t);
+    else foreignCount.set(t.project, (foreignCount.get(t.project) ?? 0) + 1);
+  }
+
+  const columns = cfg.steps.map((step) => {
+    const all = mine.filter((t) => t.status === step.id);
+    const sorted = step.terminal === true
+      ? all.sort((a, b) => byTimeDesc(a.resolved ?? "", b.resolved ?? ""))
+      : all.sort((a, b) => byTimeDesc(a.created, b.created));
+    // The cap is for a column that only grows and is only ever reviewed. A
+    // non-terminal column hiding a card is hiding work.
+    if (step.terminal !== true) return { step, tasks: sorted, hidden: 0 };
+    return {
+      step,
+      tasks: sorted.slice(0, doneLimit),
+      hidden: Math.max(0, sorted.length - doneLimit),
+    };
+  });
+
+  return {
+    columns,
+    unknown: mine.filter((t) => !isKnownStep(cfg, t.status)),
+    foreign: [...foreignCount.entries()].map(([p, count]) => ({ project: p, count })),
+  };
+}
+
+/** A card parked in the working step with nothing running on it. Possible only
+ *  because ▶ now writes the step, so the board has to say so rather than let it
+ *  read as work in progress. */
+export function isStale(task: Task, links: TaskSessionLink[], cfg: BoardConfig): boolean {
+  const working = workingStep(cfg);
+  if (working === null || task.status !== working) return false;
+  return !links.some((l) => l.taskId === task.id && ALIVE.includes(l.state));
+}
