@@ -48,7 +48,7 @@ function makeDeck() {
   const deckEl = document.createElement("div");
   const listEl = document.createElement("div");
   document.body.append(deckEl, listEl);
-  return { deck: new Deck(deckEl, listEl, () => [WS as never]), listEl };
+  return { deck: new Deck(deckEl, listEl, () => [WS as never]), listEl, deckEl };
 }
 
 const remote = (state: "waitingInput" | "working") => [
@@ -136,5 +136,32 @@ describe("giving a tile up", () => {
     await deck.launch(WS as never, null);
     expect(deck.handOffPayload(WS.id).length).toBe(1);
     expect(deck.handOffPayload("some-other-workspace")).toEqual([]);
+  });
+});
+
+/** An orphan — a session whose workspace was deleted — is deliberately visible
+ *  in every workspace filter, so it stays reachable. Under a per-window layout
+ *  "everywhere" would mean every window drawing the same session, so the rule
+ *  needs an owner: the main window. Part of #246. */
+describe("a session whose workspace is gone", () => {
+  /** No workspace matches its id or its path, which is what makes it an orphan. */
+  const ORPHANED = { id: "deleted", name: "Gone", path: "/gone", color: "#000" };
+
+  it("stays visible in the main window", async () => {
+    const { deck, deckEl } = makeDeck();
+    deck.setWindowLabel("main");
+    await deck.launch(ORPHANED as never, null);
+    deck.setActiveWorkspace(WS.id);
+    expect(deckEl.querySelector(".tile")?.classList.contains("ws-hidden")).toBe(false);
+  });
+
+  /** A window pinned to one workspace shows that workspace and nothing else, or
+   *  the same orphan would be drawn in every window at once. */
+  it("is not drawn in a window pinned to a workspace", async () => {
+    const { deck, deckEl } = makeDeck();
+    deck.setWindowLabel("workspace-w");
+    await deck.launch(ORPHANED as never, null);
+    deck.setActiveWorkspace(WS.id);
+    expect(deckEl.querySelector(".tile")?.classList.contains("ws-hidden")).toBe(true);
   });
 });

@@ -71,6 +71,8 @@ export class WorkspacesPanel {
     } | null = null,
     /** Raise the window a detached workspace lives in. */
     private onRaise: ((ws: Workspace) => void) | null = null,
+    /** A workspace has been deleted, and any window pinned to it has to go. */
+    private onDeleted: ((workspaceId: string) => void) | null = null,
   ) {}
 
   /** Which workspaces are open in a window of their own.
@@ -166,6 +168,12 @@ export class WorkspacesPanel {
   private async del(id: string) {
     if (!(await confirmModal(describeDeleteImpact(id, this.getSkills())))) return;
     this.items = await removeWorkspace(id);
+    // A window pinned to this workspace is now pinned to nothing. It hands its
+    // sessions back — they survive as orphans in the main window — and closes.
+    // Never a window showing "no workspace": that would be a fourth window state
+    // nothing else in the app has, and every later change would have to keep
+    // answering for it.
+    this.onDeleted?.(id);
     if (this.activeId === id) {
       const next = this.items[0]?.id ?? null;
       this.activeId = null;

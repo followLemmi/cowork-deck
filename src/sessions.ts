@@ -6,6 +6,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { emit } from "@tauri-apps/api/event";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { notifyIdSeed } from "./cross-window";
+import { workspaceIdOf } from "./window-role";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
@@ -168,8 +169,19 @@ export class Deck {
   setRemoteFocus(fn: (label: string, session: string) => void) { this.onRemoteFocus = fn; }
   setWindowLabel(label: string) {
     this.windowLabel = label;
+    this.adoptsOrphans = workspaceIdOf(label) === null;
     this.notify = new NotifyRouter(notifyIdSeed(label));
   }
+  /** Whether a session whose workspace no longer exists belongs here.
+   *
+   *  An orphan is deliberately visible in every workspace filter, so a session
+   *  whose workspace was deleted stays reachable. Under a per-window layout that
+   *  rule has no home — "everywhere" would mean every window showing it, which
+   *  is the same session drawn twice. So: **orphans belong to the main window.**
+   *  Its filter is "my workspace, plus orphans"; a window pinned to a workspace
+   *  shows that workspace only. The same rule as before, with one owner instead
+   *  of N. */
+  private adoptsOrphans = true;
   private notify = new NotifyRouter();
   private broadcasting = false;
   private bcastPanel: HTMLElement | null = null;
@@ -597,9 +609,9 @@ export class Deck {
     let firstVisible: string | null = null;
     for (const t of this.tiles.values()) {
       const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
-      // Orphan tiles (rid === null) stay visible everywhere so a session whose
-      // workspace was deleted remains reachable.
-      const visible = rid === null || rid === id;
+      // An orphan stays reachable, in the window that owns orphans. See
+      // `adoptsOrphans`.
+      const visible = (rid === null && this.adoptsOrphans) || rid === id;
       t.el.classList.toggle("ws-hidden", !visible);
       if (visible) {
         t.panel.fit();
@@ -937,8 +949,8 @@ export class Deck {
     if (!t) return;
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
     const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
-    // Orphans stay visible everywhere, as in setActiveWorkspace.
-    const visible = rid === null || rid === this.activeWorkspaceId;
+    // Orphans belong to the window that adopts them, as in setActiveWorkspace.
+    const visible = (rid === null && this.adoptsOrphans) || rid === this.activeWorkspaceId;
     t.el.classList.toggle("ws-hidden", !visible);
     this.applyLayout();
   }

@@ -1382,6 +1382,19 @@ export function startApp(role: WindowRole): Promise<void> {
    *  the Spaces caution stay with the window they are about. */
   const raiseListener = listen("window://raise", () => { void raiseThisWindow(); });
 
+  /** The workspace this window is pinned to has been deleted.
+   *
+   *  Its sessions are not lost — they go back to the main window and live on
+   *  there as orphans, which is exactly what a session whose workspace was
+   *  deleted has always been. This window then closes, because a window pinned
+   *  to nothing is a state the rest of the app has no answer for.
+   *
+   *  Through the close handler rather than beside it, so the hand-back happens
+   *  once and in one place whatever ends the window. */
+  const goneListener = listen("workspace://gone", () => {
+    void getCurrentWindow().close();
+  });
+
   async function raiseThisWindow() {
     const w = getCurrentWindow();
     await w.unminimize().catch(() => {});
@@ -1479,7 +1492,8 @@ export function startApp(role: WindowRole): Promise<void> {
     // Clicking a detached workspace's row raises its window rather than
     // switching to it — switching would show an empty deck, since its tiles are
     // somewhere else.
-    (ws) => { void emitTo(workspaceLabel(ws.id), "window://raise", {}); });
+    (ws) => { void emitTo(workspaceLabel(ws.id), "window://raise", {}); },
+    (workspaceId) => { void emitTo(workspaceLabel(workspaceId), "workspace://gone", {}); });
   /** Every launch path needs an active workspace. Saying so beats a button that
    *  looks broken — the old behaviour was a bare `return`. */
   async function requireWorkspace(): Promise<Workspace | null> {
@@ -1872,6 +1886,7 @@ export function startApp(role: WindowRole): Promise<void> {
 
   const handOffListeners = Promise.all([
     closeListener,
+    goneListener,
     focusListener,
     raiseListener,
     waitingListener,
