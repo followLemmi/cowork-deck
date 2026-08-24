@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 /** `waitingInput` — blocked until a human decides (a permission request).
@@ -287,17 +287,26 @@ export const prWorktreeRemove = (workspaceId: string, number: number, branch: st
  *  аккаунта и, если резолв не удался, причина — её показывает бейдж на тайле. */
 export interface SessionAuth { account: string | null; degraded: string | null; }
 
+/** Where a session's pty output is delivered. One channel per terminal, created
+ *  by the panel that will draw the bytes, handed to the backend at spawn.
+ *
+ *  **Bytes, not text, and per-session, not broadcast.** Both halves of that are
+ *  load-bearing; see `OutputSink` in `terminal.ts` for why the bytes must stay
+ *  bytes, and `start_session` in `commands.rs` for why the transport is a
+ *  channel. */
+export type OutputSink = Channel<ArrayBuffer>;
+
 export const startSession = (
   session: string, cwd: string, workspaceId: string | null, initialPrompt: string | null,
-  taskId: string | null, cols: number, rows: number, resume: boolean,
+  taskId: string | null, cols: number, rows: number, resume: boolean, sink: OutputSink,
 ) => invoke<SessionAuth>("start_session", {
-  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
+  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, sink,
 });
 /** Разовый запуск пользовательской команды в тайле-терминале (установка gh,
  *  `gh auth login`). Не сессия агента: хуков состояния нет. */
 export const startCommandSession = (
-  session: string, cwd: string, command: string, cols: number, rows: number,
-) => invoke<void>("start_command_session", { session, cwd, command, cols, rows });
+  session: string, cwd: string, command: string, cols: number, rows: number, sink: OutputSink,
+) => invoke<void>("start_command_session", { session, cwd, command, cols, rows, sink });
 export const writeSession = (session: string, data: string) => invoke<void>("write_session", { session, data });
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
@@ -305,36 +314,6 @@ export const closeSession = (session: string) => invoke<void>("close_session", {
 export const loadLayout = () => invoke<SessionEntry[]>("load_layout");
 export const saveLayout = (sessions: SessionEntry[]) => invoke<void>("save_layout", { sessions });
 
-/** Bytes, not text. **The decode is deliberately not done here**, and that is
- *  the whole point of this function's shape.
- *
- *  It used to return a string, via `new TextDecoder().decode(bytes)` — a fresh
- *  decoder per event, with no memory of the one before it. The reader thread in
- *  `pty.rs` cuts the stream wherever a 4096-byte read happens to end, which
- *  respects no character boundary, so a multi-byte sequence split across two
- *  events came back as `U+FFFD` on both sides: one 3-byte glyph became two or
- *  three cells and every column after it on that line was off by one or two.
- *  With the agent's whole TUI drawn out of `─ │ ⏺ ✻ ⎿`, that is a frame that
- *  visibly stops lining up.
- *
- *  macOS made it four times as likely: the Darwin tty caps a single read at 1024
- *  bytes no matter how big the buffer is, so the same output arrives in four
- *  times as many pieces, each with its own boundary. Measured against a writer
- *  that emits a whole frame in one `write` — which is how Ink, and so Claude
- *  Code, repaints — one line in five came out corrupted.
- *
- *  `Terminal.write` takes a `Uint8Array` and runs xterm's own stateful UTF-8
- *  decoder, which holds a partial sequence until the rest of it arrives. Handing
- *  the bytes over intact is what makes the problem cease to exist rather than
- *  become rarer. */
-export function decodeB64Bytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
-}
-
-export const onOutput = (cb: (session: string, bytes: Uint8Array) => void): Promise<UnlistenFn> =>
-  listen<{ session: string; dataB64: string }>("session://output", (e) =>
-    cb(e.payload.session, decodeB64Bytes(e.payload.dataB64)));
 export const onState = (cb: (session: string, state: SessionState) => void): Promise<UnlistenFn> =>
   listen<{ session: string; state: SessionState }>("session://state", (e) =>
     cb(e.payload.session, e.payload.state));

@@ -26,7 +26,6 @@ vi.mock("../src/terminal", () => ({
 }));
 
 vi.mock("../src/ipc", () => ({
-  onOutput: vi.fn().mockResolvedValue(() => {}),
   onState: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),
   closeSession: vi.fn(),
