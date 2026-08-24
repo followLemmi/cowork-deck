@@ -447,6 +447,24 @@ html, body, #app { height: 100%; margin: 0; }
    caption at `--fg-dim` and stay above 4.5:1 in every state. */
 .ws-row:hover, .sess-row:hover, .sk-row:hover { background: var(--bg-hover); }
 .ws-row.active, .sess-row.active { background: var(--sel); }
+/* A workspace or a session that lives in another window.
+   Dimmed rather than greyed out, and the distinction is the whole design: the row
+   is not unavailable, it does something different — it raises the window that has
+   it. So it keeps its hover, its focus ring and its full contrast on the name; what
+   drops is the state rail, which is this window's answer about this window's tiles
+   and has nothing to say about a session it is not rendering.
+   No `opacity`: that would take the foreground down with the ground and put the
+   captions under AA, which is the rule the old icon buttons broke. */
+.ws-row.detached, .sess-row.remote { background: var(--bg-terminal); }
+.sess-row.remote { border-left-color: transparent; }
+/* The mark that says "elsewhere" at a glance, in the corner the state rail is not
+   using. Content rather than an icon element: the row is rebuilt from `innerHTML`
+   every five seconds, and a pseudo-element costs nothing to redraw. */
+.ws-row.detached .ws-label::after, .sess-row.remote::after {
+  content: "⧉";
+  margin-inline-start: var(--sp-1);
+  color: var(--fg-dim);
+}
 /* A selected row's ground is lighter, and `--fg-dim` measures 4.36 on it — under
    AA. Raising the row's own captions one step is the documented other half of the
    selection alpha; `scripts/contrast.mjs` holds both ends.

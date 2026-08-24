@@ -54,8 +54,9 @@ import { applyBoardEdit, openBoardEditor } from "./board-editor";
 import { listen, emit, emitTo } from "@tauri-apps/api/event";
 import {
   allSessions, sumWaiting, windowOf,
-  type SessionsByWindow, type WindowSessions,
+  type RemoteSession, type SessionsByWindow, type WindowSessions,
 } from "./cross-window";
+import { workspaceIdOf, workspaceLabel } from "./window-role";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowRole } from "./window-role";
 
@@ -512,6 +513,9 @@ export function startApp(role: WindowRole): Promise<void> {
 
   const deck = new Deck(deckEl, listMount, () => workspaces.all);
   deck.setWindowLabel(myLabel);
+  // Clicking a proxy row: raise the window that holds the session, and let it
+  // focus the tile. Both halves happen there — see `session://focus`.
+  deck.setRemoteFocus((label, session) => { void emitTo(label, "session://focus", { session }); });
   deck.wireNotificationFocus();
   /** The terminal drawer reads the active workspace at the moment a terminal is
    *  opened rather than being told about it: the active one changes under it, and
@@ -1373,6 +1377,11 @@ export function startApp(role: WindowRole): Promise<void> {
     deck.focusSession(e.payload.session);
   });
 
+  /** Come to the front, because somebody clicked this window's row in another
+   *  one. Raising is done here rather than by the asker so the permission and
+   *  the Spaces caution stay with the window they are about. */
+  const raiseListener = listen("window://raise", () => { void raiseThisWindow(); });
+
   async function raiseThisWindow() {
     const w = getCurrentWindow();
     await w.unminimize().catch(() => {});
@@ -1391,7 +1400,34 @@ export function startApp(role: WindowRole): Promise<void> {
     // The pill's payload stays a bare number: it has one addressee and one job,
     // and the adding is done here, where the whole picture is.
     void emit("pill://count", { n: sumWaiting(sessionsByWindow) });
+    showElsewhere();
   });
+
+  /** Draw what is happening in the other windows, here.
+   *
+   *  A workspace pulled out must not simply vanish from the main window — the
+   *  owner's requirement, and the reason is plain: a workspace that disappears
+   *  when you pull it out looks like a workspace you have lost. So its row stays,
+   *  detached, and its sessions stay listed under it as proxies. Clicking either
+   *  raises the window that has it.
+   *
+   *  Derived from the same reports the count is, rather than from a second
+   *  channel: a window says what it holds on every render, so a window that has
+   *  gone stops being drawn as soon as it is dropped, and one that opens appears
+   *  on its first report. */
+  function showElsewhere() {
+    const detached = new Set<string>();
+    const proxies: (RemoteSession & { label: string })[] = [];
+    for (const [label, sessions] of sessionsByWindow) {
+      if (label === myLabel) continue;
+      const id = workspaceIdOf(label);
+      if (id === null) continue; // the pill, and anything added later
+      detached.add(id);
+      for (const s of sessions) proxies.push({ ...s, label });
+    }
+    workspaces.setDetached(detached);
+    deck.setRemoteSessions(proxies);
+  }
 
   // Selecting a workspace (click, startup restore of the active one, or after a
   // deletion re-selects the next one) switches the deck to that workspace's tiles
@@ -1429,7 +1465,11 @@ export function startApp(role: WindowRole): Promise<void> {
     // Absent in a window already pinned to one workspace: there is nowhere
     // further to pull it, and a control that reopens the window you are in is
     // worse than no control.
-    isMain ? (ws) => { void detachWorkspace(ws); } : null);
+    isMain ? (ws) => { void detachWorkspace(ws); } : null,
+    // Clicking a detached workspace's row raises its window rather than
+    // switching to it — switching would show an empty deck, since its tiles are
+    // somewhere else.
+    (ws) => { void emitTo(workspaceLabel(ws.id), "window://raise", {}); });
   /** Every launch path needs an active workspace. Saying so beats a button that
    *  looks broken — the old behaviour was a bare `return`. */
   async function requireWorkspace(): Promise<Workspace | null> {
@@ -1770,6 +1810,7 @@ export function startApp(role: WindowRole): Promise<void> {
 
   const handOffListeners = Promise.all([
     focusListener,
+    raiseListener,
     waitingListener,
     scaleListener,
     // A workspace arriving from another window.

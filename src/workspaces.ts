@@ -60,7 +60,26 @@ export class WorkspacesPanel {
      *  nowhere further to pull it — and absent in tests that do not care, which
      *  is why it defaults to nothing rather than being required. */
     private onDetach: ((ws: Workspace) => void) | null = null,
+    /** Raise the window a detached workspace lives in. */
+    private onRaise: ((ws: Workspace) => void) | null = null,
   ) {}
+
+  /** Which workspaces are open in a window of their own.
+   *
+   *  The owner's requirement, verbatim: *"we need to show this pulled-out
+   *  workspace as disabled in the main window, so the user sees it did not
+   *  disappear into the void."* So the row stays exactly where it was, in a
+   *  third state beside active and inactive: visibly inactive, not selectable as
+   *  this window's workspace, and clicking it raises the window that has it. */
+  private detached = new Set<string>();
+  setDetached(ids: Set<string>) {
+    // Cheap identity check, because this arrives on every report from every
+    // window — five seconds apart at rest — and `render()` rebuilds the list
+    // from `innerHTML`, which would throw away focus and any open tooltip.
+    if (ids.size === this.detached.size && [...ids].every((id) => this.detached.has(id))) return;
+    this.detached = new Set(ids);
+    this.render();
+  }
 
   setCounts(counts: Record<string, number>) {
     this.counts = new Map(Object.entries(counts));
@@ -156,8 +175,12 @@ export class WorkspacesPanel {
     this.mount.innerHTML = "<h3>Workspaces</h3>";
     for (const w of this.items) {
       const row = document.createElement("div");
-      const isActive = w.id === this.activeId;
-      row.className = "ws-row" + (isActive ? " active" : "");
+      const isDetached = this.detached.has(w.id);
+      // A detached workspace is not this window's active one even if it was when
+      // it left, or the deck would filter to a workspace whose tiles are all
+      // somewhere else.
+      const isActive = w.id === this.activeId && !isDetached;
+      row.className = "ws-row" + (isActive ? " active" : "") + (isDetached ? " detached" : "");
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = w.color;
       const label = document.createElement("button");
@@ -171,6 +194,11 @@ export class WorkspacesPanel {
       // on the row, because the button is what the person lands on and what a
       // reader announces.
       if (isActive) label.setAttribute("aria-current", "true");
+      // Says what it does, rather than being marked unavailable. `aria-disabled`
+      // would be wrong twice over: the control works, and what it does is not
+      // what the others do. The same reading `src/view.ts` settled on for the
+      // view bar — stay a real button and let the accessible name carry it.
+      if (isDetached) label.setAttribute("aria-label", `${w.name} — in its own window; open it`);
       // Select on a click anywhere in the row that is not a control — the same shape
       // as `BoardView.makeOpenable`, and for the same reason: the name was the only
       // target, which made a workspace a thin strip of clickable text in a row that
@@ -187,6 +215,9 @@ export class WorkspacesPanel {
       // so a glyph inside a button counts as that button.
       row.onclick = (e) => {
         if ((e.target as Element | null)?.closest(".ws-edit, .ws-del, .ws-detach")) return;
+        // Clicking a detached workspace raises its window instead of switching
+        // to it. Switching would show an empty deck: its tiles are elsewhere.
+        if (isDetached) { this.onRaise?.(w); return; }
         this.select(w.id);
       };
       const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
@@ -195,7 +226,10 @@ export class WorkspacesPanel {
       x.onclick = () => this.del(w.id);
       // Excluded from the row's select handler above for the same reason ✎ and 🗑
       // are: it means something other than "switch to this".
-      const detach = this.onDetach
+      // No pull-out control on a workspace that is already out. The count badge
+      // beside it deliberately keeps working — the workspace is still being
+      // worked on, just not here.
+      const detach = this.onDetach && !isDetached
         ? iconButton("detach", `Open ${w.name} in its own window`, "ws-detach")
         : null;
       if (detach) detach.onclick = () => this.onDetach!(w);

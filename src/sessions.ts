@@ -148,6 +148,24 @@ export class Deck {
   /** Set by `app.ts` before anything is announced. The default keeps a Deck
    *  built in a test working without one. */
   private windowLabel = "main";
+  /** Sessions held by other windows, as they last reported them.
+   *
+   *  Only the main window fills this. They are drawn in the sidebar exactly
+   *  where they would be if they were here — under their workspace's heading,
+   *  counted by its waiting badge — so a workspace pulled into a window of its
+   *  own does not disappear into the void. Clicking one raises the window that
+   *  has it. */
+  private remote: { session: string; name: string; state: SessionState; workspaceId?: string; label: string }[] = [];
+  setRemoteSessions(
+    list: { session: string; name: string; state: SessionState; workspaceId?: string; label: string }[],
+  ) {
+    this.remote = list;
+    this.renderList();
+  }
+  /** Ask the window holding a session to raise itself and focus it. Set by
+   *  `app.ts`; absent in a window that has no proxies. */
+  private onRemoteFocus: (label: string, session: string) => void = () => {};
+  setRemoteFocus(fn: (label: string, session: string) => void) { this.onRemoteFocus = fn; }
   setWindowLabel(label: string) {
     this.windowLabel = label;
     this.notify = new NotifyRouter(notifyIdSeed(label));
@@ -1426,10 +1444,20 @@ export class Deck {
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
-      tiles.map((t) => ({
-        session: t.session, name: resolveTileName(t.names), state: t.state,
-        workspaceId: t.workspaceId, workspacePath: t.workspacePath,
-      })),
+      [
+        ...tiles.map((t) => ({
+          session: t.session, name: resolveTileName(t.names), state: t.state,
+          workspaceId: t.workspaceId, workspacePath: t.workspacePath,
+        })),
+        // Proxies, mixed in rather than listed apart: a session is under its
+        // workspace wherever it is being rendered, and a separate "elsewhere"
+        // section would make the person answer "which list is this in?" before
+        // they could answer "who is waiting for me?".
+        ...this.remote.map((r) => ({
+          session: r.session, name: r.name, state: r.state,
+          workspaceId: r.workspaceId, workspacePath: "", remote: r.label,
+        })),
+      ],
       this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path })),
     );
     const ORPHAN_KEY = "__orphan__";
@@ -1475,9 +1503,19 @@ export class Deck {
         const live = this.tiles.get(t.session);
         const row = document.createElement("button");
         row.dataset.focusKey = `session:${t.session}`;
-        row.setAttribute("aria-label", `${t.name} — ${LABEL[t.state]}`);
+        // A proxy says where it is, in its accessible name, because that is the
+        // one thing about it a sighted reader gets from the dimmed row and a
+        // screen reader would otherwise get from nothing at all. Not
+        // `aria-disabled`: the row is not disabled, it does something different.
+        row.setAttribute(
+          "aria-label",
+          t.remote
+            ? `${t.name} — ${LABEL[t.state]} — in another window`
+            : `${t.name} — ${LABEL[t.state]}`,
+        );
         const isActive = !!live?.el.classList.contains("is-active");
-        row.className = "sess-row" + (isActive ? " active" : "");
+        row.className = "sess-row" + (isActive ? " active" : "")
+          + (t.remote ? " remote" : "");
         // The `active` class was the only carrier: a background tint and a left
         // border, both invisible to a screen reader, on the row telling the person
         // which of a dozen sessions they are looking at. `aria-current` rather than
@@ -1494,7 +1532,9 @@ export class Deck {
         // this fill and this text colour", and putting one of those names on the row
         // would paint a chip's background across the whole line.
         row.dataset.state = t.state;
-        row.onclick = () => this.focusSessionAnywhere(t.session);
+        row.onclick = t.remote
+          ? () => this.onRemoteFocus(t.remote!, t.session)
+          : () => this.focusSessionAnywhere(t.session);
         const stateSpan = document.createElement("span");
         stateSpan.className = `tile-state state-${t.state}`;
         stateSpan.textContent = LABEL[t.state];

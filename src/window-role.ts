@@ -13,6 +13,15 @@
  *  here would silently render the placeholder in a window that is pinned to one. */
 const WORKSPACE_PREFIX = "workspace-";
 
+/** The label for the window pinned to `workspaceId`.
+ *
+ *  The other half of `workspace_label` in `src-tauri/src/windows.rs`, and pinned
+ *  to the same literal by the test beside this one — a drift is invisible at
+ *  runtime and would address a window that does not exist. */
+export function workspaceLabel(workspaceId: string): string {
+  return WORKSPACE_PREFIX + workspaceId;
+}
+
 /** The workspace a label names, or null for the main window, the pill, or
  *  anything added later. */
 export function workspaceIdOf(label: string): string | null {

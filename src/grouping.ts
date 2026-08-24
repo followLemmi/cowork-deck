@@ -4,6 +4,13 @@ export interface WorkspaceMeta { id: string; name: string; color: string; path: 
 export interface GroupTile {
   session: string; name: string; state: SessionState;
   workspaceId?: string; workspacePath: string;
+  /** The label of the window holding this session, when it is not this one.
+   *
+   *  A workspace pulled into a window of its own does not vanish from the main
+   *  window's sidebar — its sessions stay listed, as proxies, and clicking one
+   *  raises the window that has it. That is what keeps "who is blocked on me"
+   *  reaching the other monitor. Absent for a session this window renders. */
+  remote?: string;
 }
 export interface TileGroup { workspace: WorkspaceMeta | null; tiles: GroupTile[]; }
 
