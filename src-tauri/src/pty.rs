@@ -1,7 +1,36 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+/// How long the coalescer waits for more output before handing on what it has.
+///
+/// **This window is the macOS fix.** One call to `on_output` becomes one
+/// `WKWebView.evaluateJavaScript` on the webview's main thread, and on Darwin the
+/// tty caps a single read at 1024 bytes — four times smaller than the 4096 Linux
+/// gives, so the same agent output cost four times the main-thread calls. Under a
+/// streaming TUI that was hundreds of evals a second, all queued ahead of the
+/// keystrokes the same thread has to deliver: the terminal drew fast and typed
+/// slow. Batching cuts the call count by one to two orders of magnitude without
+/// changing a byte of what is sent.
+///
+/// 4ms is chosen to be under a frame at 240Hz: output cannot be shown sooner than
+/// the next paint anyway, so the wait is invisible, while a keystroke echo — the
+/// one place latency is felt — is delayed by at most this.
+const COALESCE_WINDOW: Duration = Duration::from_millis(4);
+
+/// Ceiling on one batch, so a process dumping megabytes (a `cat` of a log) cannot
+/// grow an unbounded `Vec` before the window expires. Reached only under a flood,
+/// where an extra flush costs nothing next to the bytes themselves.
+const MAX_BATCH: usize = 64 * 1024;
+
+/// Read buffer. Bigger than the 4096 it replaces because the syscall returns as
+/// soon as *any* byte is available — a larger buffer costs nothing in latency and
+/// saves reads whenever the pty has more than 4KB queued. On Darwin the tty caps
+/// the return at 1024 regardless, which is exactly why the coalescer above exists.
+const READ_BUF: usize = 64 * 1024;
 
 struct Session {
     master: Box<dyn MasterPty + Send>,
@@ -81,13 +110,54 @@ impl PtyManager {
         let writer: Arc<Mutex<Box<dyn Write + Send>>> =
             Arc::new(Mutex::new(pair.master.take_writer().map_err(to_io)?));
 
-        // Reader thread: stream output until EOF.
+        // Reader thread: stream output until EOF. It does nothing but read and
+        // hand off, so a slow consumer can never stall the pty and make the child
+        // block on its own stdout.
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
+            let mut buf = vec![0u8; READ_BUF];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
-                    Ok(n) => on_output(buf[..n].to_vec()),
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        // Coalescer thread: collect reads that arrive within `COALESCE_WINDOW` of
+        // each other and pass them on as one. Order is preserved and no byte is
+        // added, dropped or reframed — a batch is exactly the concatenation of the
+        // reads it replaces, which is what lets xterm's stateful UTF-8 decoder keep
+        // working across a glyph split by a read boundary.
+        std::thread::spawn(move || {
+            // `recv` blocks, so nothing is polled while the session is idle, and it
+            // ends the loop when the reader thread hits EOF and drops its sender.
+            while let Ok(mut batch) = rx.recv() {
+                let deadline = Instant::now() + COALESCE_WINDOW;
+                let mut closed = false;
+                while batch.len() < MAX_BATCH {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        break;
+                    }
+                    match rx.recv_timeout(deadline - now) {
+                        Ok(more) => batch.extend_from_slice(&more),
+                        Err(RecvTimeoutError::Timeout) => break,
+                        // The reader hit EOF. Flush what is in hand before leaving,
+                        // or the last of a short-lived command's output is lost.
+                        Err(RecvTimeoutError::Disconnected) => {
+                            closed = true;
+                            break;
+                        }
+                    }
+                }
+                on_output(batch);
+                if closed {
+                    break;
                 }
             }
         });
@@ -197,6 +267,78 @@ mod tests {
         }
         assert!(String::from_utf8_lossy(&got).contains("COWORK_OK"), "got: {:?}", String::from_utf8_lossy(&got));
         assert!(erx.recv_timeout(Duration::from_secs(5)).is_ok(), "exit not reported");
+    }
+
+    /// The coalescer is a batching layer, and a batching layer that is not
+    /// byte-transparent silently corrupts every multi-byte glyph it cuts. What is
+    /// pinned here is that a batch is the concatenation of the reads it replaced —
+    /// same bytes, same order — including the tail written just before EOF, which
+    /// is the one a naive "flush on timeout" loop drops on the floor.
+    #[test]
+    fn coalescing_is_byte_transparent_including_the_tail_before_eof() {
+        let mgr = PtyManager::new();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (etx, erx) = mpsc::channel::<bool>();
+
+        // Enough to cross many read boundaries — on Darwin the tty hands back at
+        // most 1024 bytes a read, so this is 256+ of them — and multi-byte
+        // throughout, so any cut mishandled by the batcher shows up as mojibake
+        // rather than as a length that still matches.
+        let unit = "─┤абв┃";
+        let reps = 4096;
+        let expected: String = unit.repeat(reps);
+
+        #[cfg(windows)]
+        let (prog, args) = (
+            "cmd",
+            vec!["/C".to_string(), format!("for /L %i in (1,1,{reps}) do @<nul set /p={unit}")],
+        );
+        #[cfg(not(windows))]
+        let (prog, args) = (
+            "/bin/sh",
+            vec!["-c".to_string(), format!("i=0; while [ $i -lt {reps} ]; do printf %s '{unit}'; i=$((i+1)); done")],
+        );
+
+        mgr.spawn(
+            "coalesce", prog, &args, ".", 80, 24, &[],
+            move |bytes| { let _ = tx.send(bytes); },
+            move |ok| { let _ = etx.send(ok); },
+        )
+        .unwrap();
+
+        // Collect until the child has exited AND the stream has gone quiet, so the
+        // final batch — the one flushed on Disconnected — is counted.
+        let mut got: Vec<u8> = Vec::new();
+        let mut batches = 0usize;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(400)) {
+                Ok(b) => { batches += 1; got.extend_from_slice(&b); }
+                Err(_) => if got.len() >= expected.len() { break },
+            }
+        }
+        let _ = erx.recv_timeout(Duration::from_secs(5));
+
+        // A pty echoes and may translate \n; this payload contains neither, so the
+        // comparison is exact rather than "contains".
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            expected,
+            "coalescing changed the byte stream (got {} bytes, wanted {})",
+            got.len(),
+            expected.len()
+        );
+
+        // And it actually batched. Uncoalesced, Darwin's 1024-byte read cap alone
+        // would make this at least `expected.len() / 1024` callbacks — each one a
+        // main-thread `evaluateJavaScript`. The bound is loose on purpose: under
+        // load the windows only grow, so this can fail from too little batching
+        // but never from too much.
+        let uncoalesced_floor = expected.len() / 1024;
+        assert!(
+            batches < uncoalesced_floor / 2,
+            "expected far fewer than {uncoalesced_floor} callbacks, got {batches}"
+        );
     }
 
     #[test]

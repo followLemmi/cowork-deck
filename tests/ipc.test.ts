@@ -4,11 +4,12 @@ vi.mock("@tauri-apps/api/core");
 vi.mock("@tauri-apps/api/event");
 
 import {
-  listWorkspaces, startSession, decodeB64Bytes, onOutput, onScheduledFire, scheduleAck, updateTask,
+  listWorkspaces, startSession, onScheduledFire, scheduleAck, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage, prList, prMerge, prWorktreeAdd,
   issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove, trackerOpenCount,
 } from "../src/ipc";
-import type { BoardConfig } from "../src/ipc";
+import { startCommandSession } from "../src/ipc";
+import type { BoardConfig, OutputSink } from "../src/ipc";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -26,10 +27,11 @@ describe("ipc", () => {
 
   it("startSession passes all params incl. resume", async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
-    await startSession("s1", "/proj", "w1", "do the thing", "01AAA", 80, 24, false);
+    const sink = {} as OutputSink;
+    await startSession("s1", "/proj", "w1", "do the thing", "01AAA", 80, 24, false, sink);
     expect(invoke).toHaveBeenCalledWith("start_session", {
       session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing",
-      taskId: "01AAA", cols: 80, rows: 24, resume: false, scenario: null,
+      taskId: "01AAA", cols: 80, rows: 24, resume: false, sink, scenario: null,
     });
   });
 
@@ -39,7 +41,7 @@ describe("ipc", () => {
   // than "what did I run yesterday".
   it("startSession carries the scenario a launch came from", async () => {
     vi.mocked(invoke).mockResolvedValue({ account: null, degraded: null });
-    await startSession("s1", "/proj", "w1", "go", null, 80, 24, false, {
+    await startSession("s1", "/proj", "w1", "go", null, 80, 24, false, {} as OutputSink, {
       runId: "r1", skillId: "sk1", trigger: "manual", params: { branch: "dev" },
       continuesRunId: null,
     });
@@ -53,12 +55,25 @@ describe("ipc", () => {
 
   it("startSession forwards the workspace id so the backend can resolve its account", async () => {
     vi.mocked(invoke).mockResolvedValue({ account: "followLemmi", degraded: null });
-    const auth = await startSession("s1", "/proj", "w1", null, null, 80, 24, false);
-    expect(invoke).toHaveBeenCalledWith("start_session", {
+    const auth = await startSession("s1", "/proj", "w1", null, null, 80, 24, false, {} as OutputSink);
+    expect(invoke).toHaveBeenCalledWith("start_session", expect.objectContaining({
       session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: null,
       taskId: null, cols: 80, rows: 24, resume: false, scenario: null,
-    });
+    }));
     expect(auth).toEqual({ account: "followLemmi", degraded: null });
+  });
+
+  /** The channel has to reach the backend under the name the Rust command declares
+   *  its parameter with (`sink`), or Tauri rejects the invoke and the session never
+   *  starts. Nothing else on this path would notice: the panel would open, the
+   *  process would not. */
+  it("startCommandSession hands the output channel over as `sink`", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    const sink = {} as OutputSink;
+    await startCommandSession("s1", "/proj", "gh auth login", 80, 24, sink);
+    expect(invoke).toHaveBeenCalledWith("start_command_session", {
+      session: "s1", cwd: "/proj", command: "gh auth login", cols: 80, rows: 24, sink,
+    });
   });
 
   // The occurrence has to survive the round trip: the backend records only
@@ -188,40 +203,4 @@ describe("ipc", () => {
     expect(invoke).toHaveBeenCalledWith("tracker_open_count", { workspaceId: "w1" });
   });
 
-  it("decodeB64Bytes round-trips utf8 as bytes", () => {
-    const str = "héllo";
-    const utf8 = new TextEncoder().encode(str);
-    const b64 = btoa(String.fromCharCode(...utf8));
-    expect(decodeB64Bytes(b64)).toEqual(utf8);
-  });
-
-  // The regression this pins is a frame that stops lining up. `pty.rs` cuts the
-  // stream on a byte boundary that respects no character, and on Darwin the tty
-  // caps a read at 1024 bytes, so it cuts four times as often as on Linux. When
-  // this function decoded each event on its own, a glyph split across two of them
-  // came back as replacement characters on both sides — one cell became two or
-  // three, and the rest of the line was off by that much.
-  it("onOutput delivers bytes, so a glyph split across two events survives", async () => {
-    const received: Uint8Array[] = [];
-    await onOutput((_s, bytes) => { received.push(bytes) });
-    const handler = vi.mocked(listen).mock.calls[0][1] as (e: unknown) => void;
-
-    const glyph = new TextEncoder().encode("─");        // e2 94 80, one cell
-    const halves = [glyph.subarray(0, 1), glyph.subarray(1)];
-    const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
-    for (const half of halves) {
-      handler({ payload: { session: "s1", dataB64: b64(half) } });
-    }
-
-    const joined = new Uint8Array([...received[0], ...received[1]]);
-    expect(joined).toEqual(glyph);
-    // Intact, so xterm's own stateful decoder can hold the partial sequence and
-    // finish the glyph when the second event arrives.
-    expect(new TextDecoder().decode(joined)).toBe("─");
-    // And what the old string-returning path made of the very same two events:
-    // three replacement characters where there was one glyph — the truncated lead
-    // byte, then both orphaned continuation bytes. One cell became three, so the
-    // rest of that line sat two columns to the right of where it belonged.
-    expect(halves.map((h) => new TextDecoder().decode(h)).join("")).toBe("���");
-  });
 });

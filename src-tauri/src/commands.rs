@@ -46,9 +46,9 @@ use crate::model::{
 use crate::pty::PtyManager;
 use crate::store::Store;
 use crate::which;
-use base64::Engine;
 use serde::Serialize;
 use std::sync::Mutex;
+use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, State};
 
 pub struct AppState {
@@ -149,8 +149,6 @@ pub fn session_env(
     env
 }
 
-#[derive(Clone, Serialize)]
-struct OutputPayload { session: String, #[serde(rename = "dataB64")] data_b64: String }
 #[derive(Clone, Serialize)]
 struct StatePayload { session: String, state: crate::model::SessionState }
 #[derive(Clone, Serialize)]
@@ -1433,6 +1431,23 @@ pub fn start_session(
     cols: u16,
     rows: u16,
     resume: bool,
+    // Where this session's pty output goes.
+    //
+    // A per-session `Channel` rather than a broadcast `app.emit`, and the
+    // difference is not tidiness. `emit` builds a JS source string with the
+    // payload embedded as a JSON literal and runs it through
+    // `WKWebView.evaluateJavaScript` — which meant every chunk of terminal
+    // output was base64'd (+33%), pasted into JavaScript source, parsed by the
+    // JS parser, `atob`'d, and walked a byte at a time by a `Uint8Array.from`
+    // callback, all on the one thread that also has to deliver keystrokes.
+    //
+    // A channel carrying `Response::new(bytes)` sends `InvokeResponseBody::Raw`,
+    // which Tauri hands over the custom protocol as binary once a message
+    // clears 1KB (`tauri::ipc::channel::MAX_RAW_DIRECT_EXECUTE_THRESHOLD`) —
+    // no base64, no JS parse of the payload, no per-byte callback. Ordering is
+    // preserved by the index the JS `Channel` reorders on, so the byte stream
+    // stays intact across a glyph split by a batch boundary.
+    sink: Channel<Response>,
     // Set when this launch comes from a scenario, by any route. Absent for a
     // card, an issue, a pull request or a bare "+ session" — the journal
     // answers "what did my scenarios do", not "what did I run yesterday".
@@ -1503,11 +1518,8 @@ pub fn start_session(
         env.push(("PATH".to_string(), path_env));
     }
 
-    let app_out = app.clone();
-    let sess_out = session.clone();
     let on_output = move |bytes: Vec<u8>| {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let _ = app_out.emit("session://output", OutputPayload { session: sess_out.clone(), data_b64: b64 });
+        let _ = sink.send(Response::new(bytes));
     };
 
     let app_exit = app.clone();
@@ -1562,6 +1574,8 @@ pub fn start_command_session(
     command: String,
     cols: u16,
     rows: u16,
+    // Same binary path as `start_session`'s — see the note there.
+    sink: Channel<Response>,
 ) -> Result<(), String> {
     let (program, args) = if cfg!(windows) {
         ("cmd".to_string(), vec!["/C".to_string(), command])
@@ -1569,11 +1583,8 @@ pub fn start_command_session(
         ("sh".to_string(), vec!["-lc".to_string(), command])
     };
 
-    let app_out = app.clone();
-    let sess_out = session.clone();
     let on_output = move |bytes: Vec<u8>| {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let _ = app_out.emit("session://output", OutputPayload { session: sess_out.clone(), data_b64: b64 });
+        let _ = sink.send(Response::new(bytes));
     };
 
     let app_exit = app.clone();

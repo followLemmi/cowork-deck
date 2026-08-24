@@ -5,6 +5,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 (globalThis as any).ResizeObserver ??= class {
   observe() {} unobserve() {} disconnect() {}
 };
+// Nor an IntersectionObserver, and nor Tauri's injected internals — the panel builds
+// a real output `Channel`, whose constructor registers its handler through them.
+(globalThis as any).IntersectionObserver ??= class {
+  observe() {} unobserve() {} disconnect() {}
+};
+(globalThis as any).window.__TAURI_INTERNALS__ ??= {
+  transformCallback: () => 1,
+  unregisterCallback: () => {},
+};
 
 let captured: ((e: any) => boolean) | null = null;
 vi.mock("@xterm/xterm", () => ({
@@ -24,6 +33,7 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }));
 vi.mock("../src/ipc", () => ({ startSession: vi.fn(), writeSession: vi.fn(), resizeSession: vi.fn() }));
 
 import { TerminalPanel } from "../src/terminal";
