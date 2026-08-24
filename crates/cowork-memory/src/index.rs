@@ -104,8 +104,16 @@ pub fn save(cache: &Path, ix: &Index) -> Result<()> {
 
     // Write to temporaries and rename, so a crash never leaves a truncated
     // file that load would try to interpret. A leftover .tmp is harmless.
-    let meta_tmp = cache.join("meta.json.tmp");
-    let emb_tmp = cache.join("emb.bin.tmp");
+    //
+    // The pid is in the name because this process is not the only writer:
+    // `search` calls `update` when the cache is cold, so two searches started
+    // together are two processes saving the same index. Sharing one temporary
+    // name, each would write into the other's file and rename whatever it found
+    // there — a torn index that `load` accepts because its length still checks
+    // out. The rename itself is atomic and stays the arbiter of who wins.
+    let pid = std::process::id();
+    let meta_tmp = cache.join(format!("meta.json.{pid}.tmp"));
+    let emb_tmp = cache.join(format!("emb.bin.{pid}.tmp"));
     std::fs::write(&meta_tmp, serde_json::to_vec(&ix.meta)?)?;
     std::fs::write(&emb_tmp, bytes)?;
     std::fs::rename(&emb_tmp, cache.join("emb.bin"))?;
