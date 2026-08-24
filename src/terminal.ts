@@ -13,6 +13,21 @@ import { matchHotkey, isMacPlatform } from "./commands";
 import { terminalKeyBytes } from "./terminal-keys";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
 
+/** How long a size has to stand still before the PTY is told about it.
+ *
+ *  A resize is not a repaint. It is an ioctl, a `SIGWINCH`, and a full-screen redraw
+ *  by whatever is running in the terminal — `claude` answers one by drawing its whole
+ *  interface again, and that output comes back to be parsed and painted. Measured on
+ *  a drag of the terminal drawer's grip: 81 `pointermove` events produced 150
+ *  `resize_session` calls, so the agent was asked to repaint itself a hundred and
+ *  fifty times for one gesture, and the app to paint every answer.
+ *
+ *  100 ms is short enough to feel immediate on a discrete resize — a window snap, a
+ *  zoom — and long enough that a drag of any human speed lands one resize at its end.
+ *  xterm's own geometry is not held back by it: the terminal follows the pointer, and
+ *  it is only the child process that waits. */
+const PTY_RESIZE_QUIET_MS = 100;
+
 /** How many terminals may hold a WebGL context at the same time.
  *
  *  **A cap is not optional, and going over it is worse than staying on the DOM
@@ -42,6 +57,14 @@ export class TerminalPanel {
   private lastSearch = "";
   private ro: ResizeObserver | null = null;
   private rafId: number | null = null;
+  /** The size the PTY has not been told about yet, and the timer that will tell it. */
+  private pendingSize: { cols: number; rows: number } | null = null;
+  private sizeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The last size the backend was given, so a fit that changes nothing costs
+   *  nothing. `applyLayout`, a workspace switch and the post-animation refit all
+   *  call `fit()` on tiles whose box did not move, and each of those used to be an
+   *  IPC round trip and a redraw. */
+  private sentSize: { cols: number; rows: number } | null = null;
   /** Keystrokes typed before the process exists, in the order they were typed.
    *
    *  `onData` is wired in the constructor and the terminal takes focus straight
@@ -197,7 +220,7 @@ export class TerminalPanel {
     this.ro.observe(mount);
     this.watchVisibility();
     this.term.onData((d) => { this.send(d); });
-    this.term.onResize(({ cols, rows }) => { void resizeSession(this.session, cols, rows); });
+    this.term.onResize(({ cols, rows }) => this.queueResize(cols, rows));
     window.addEventListener(UI_SCALE_EVENT, this.onScaleEvent);
   }
 
@@ -368,6 +391,10 @@ export class TerminalPanel {
       }
     }
     const { cols, rows } = this.term;
+    // The process is born at this size, so it counts as sent: a fit between the
+    // constructor and here — `document.fonts.ready` fires in that window — would
+    // otherwise land a resize telling the backend what it was just told.
+    this.sentSize = { cols, rows };
     try {
       return await startSession(
         this.session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume,
@@ -397,6 +424,7 @@ export class TerminalPanel {
       }
     }
     const { cols, rows } = this.term;
+    this.sentSize = { cols, rows };            // born at this size — see `start`
     try {
       return await startShellSession(this.session, cwd, workspaceId, cols, rows, this.openSink());
     } finally {
@@ -407,6 +435,7 @@ export class TerminalPanel {
    *  no account binding — the environment is inherited as it is. */
   async startCommand(cwd: string, command: string): Promise<void> {
     const { cols, rows } = this.term;
+    this.sentSize = { cols, rows };            // born at this size — see `start`
     try {
       await startCommandSession(this.session, cwd, command, cols, rows, this.openSink());
     } finally {
@@ -447,9 +476,42 @@ export class TerminalPanel {
       console.debug("terminal fit skipped", e);
     }
   }
+
+  /** Hold a new size for `PTY_RESIZE_QUIET_MS` and then send it, dropping every
+   *  size the gesture passed through on the way.
+   *
+   *  Trailing edge, and that is the load-bearing half: the size that reaches the
+   *  child has to be the one the gesture *ended* on. Send the leading edge instead
+   *  and the terminal is left drawing at one width while the process wraps at
+   *  another — the failure `setFontSize`'s comment above describes, arrived at from
+   *  the other direction. */
+  private queueResize(cols: number, rows: number) {
+    this.pendingSize = { cols, rows };
+    if (this.sizeTimer !== null) return;
+    this.sizeTimer = setTimeout(() => {
+      this.sizeTimer = null;
+      const next = this.pendingSize;
+      this.pendingSize = null;
+      if (next === null) return;
+      if (this.sentSize?.cols === next.cols && this.sentSize.rows === next.rows) return;
+      this.sentSize = next;
+      // `catch` rather than a bare `void`: a session can end while a size is being
+      // held, and the backend then answers a resize for a session it no longer has.
+      // That is not a failure worth a console error, but it is an unhandled
+      // rejection if nobody takes it.
+      resizeSession(this.session, next.cols, next.rows)
+        .catch((e) => console.debug("terminal resize skipped", e));
+    }, PTY_RESIZE_QUIET_MS);
+  }
   dispose() {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.rafId = null;
+    // Dropped rather than flushed. A panel is disposed when its session closes, and
+    // the size of a PTY that is going away is not worth an ioctl — nor worth the
+    // timer outliving the panel to send one.
+    if (this.sizeTimer !== null) clearTimeout(this.sizeTimer);
+    this.sizeTimer = null;
+    this.pendingSize = null;
     this.ro?.disconnect();
     this.ro = null;
     this.io?.disconnect();
