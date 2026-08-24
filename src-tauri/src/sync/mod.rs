@@ -11,3 +11,4 @@
 
 pub mod machine;
 pub mod manifest;
+pub mod projection;

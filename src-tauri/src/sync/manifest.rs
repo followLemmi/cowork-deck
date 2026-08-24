@@ -50,6 +50,10 @@ pub const ALLOWED: &[&str] = &[
     // Sharded per machine: the journal is append-only, and two machines
     // appending to one file conflict on every single sync.
     "runs/*/*.jsonl",
+    // The label beside the shard it names. Without it the repository holds two
+    // opaque ids and cannot say which one is the laptop — see
+    // `projection::machine_label_path` for what that costs and what it does not.
+    "runs/*/machine.json",
 ];
 
 /// Directories that exist inside the root and are never worth walking: a
@@ -73,7 +77,7 @@ pub fn gitignore() -> String {
     s.push_str("# Git cannot re-include a file whose parent directory is excluded.\n");
     s.push_str("!*/\n\n");
     for p in ALLOWED {
-        s.push_str("!");
+        s.push('!');
         s.push_str(p);
         s.push('\n');
     }
@@ -135,6 +139,7 @@ mod tests {
             "Diaries/reviewer/2026-08.md",
             "scenarios/sk-1.json",
             "runs/m-1/runs.jsonl",
+            "runs/m-1/machine.json",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -158,6 +163,9 @@ mod tests {
             "runs.jsonl",
             "accounts.json",
             "secrets.json",
+            // At the root it is this machine's private identity and must not
+            // travel; inside a shard it is that shard's label and must. Two
+            // files, one name, opposite answers — worth asserting both.
             "machine.json",
             "gh-noauth/hosts.yml",
             ".index/meta.json",

@@ -13,17 +13,19 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Machine {
-    /// Stable for the life of this installation. Appears in the repository as a
-    /// directory name, which is why it is random rather than derived from the
-    /// hostname: a shard name is not worth publishing a machine's name for.
-    pub id: String,
-    /// For this person, on this machine, in this app. Never published — the
-    /// file holding it is not on the allowlist.
+    /// Stable for the life of this installation, and a directory name in the
+    /// repository.
     ///
-    /// Which means the repository alone cannot say which shard is the laptop.
-    /// Making that visible is a decision for the projection (#313), which owns
-    /// what the repository's contents look like; putting it here would be this
-    /// module guessing at that.
+    /// Random rather than derived from the hostname, and stability is the
+    /// reason: machines get renamed, and an id that followed the hostname would
+    /// split this machine's journal in two at the moment it happened.
+    pub id: String,
+    /// A name for this machine, for a person reading a list of them.
+    ///
+    /// `machine.json` at the sync root does not travel. The projection publishes
+    /// the label separately, inside the journal shard it names
+    /// (`projection::machine_label_path`), because a history screen that can
+    /// only say "another machine" is no use to someone with three.
     pub label: String,
 }
 
@@ -142,13 +144,18 @@ mod tests {
         fs::remove_dir_all(&d).unwrap();
     }
 
-    /// The file is in the sync root, so the allowlist is what keeps it home.
+    /// This file sits in the sync root, so the allowlist is what keeps it home.
+    ///
+    /// Narrow on purpose: `runs/*/machine.json` — the label beside a journal
+    /// shard — *does* travel, and an assertion that no pattern mentions the name
+    /// would forbid the wrong one. The proof that both land on the right side is
+    /// the git-backed test in `manifest`, which has one of each.
     #[test]
-    fn machine_json_is_not_on_the_allowlist() {
+    fn the_root_machine_file_is_not_on_the_allowlist() {
         assert!(
-            !crate::sync::manifest::ALLOWED.iter().any(|p| p.contains("machine.json")),
-            "machine.json must never travel: it names this machine, and its id \
-             is meaningful only beside the journal shard it points at"
+            !crate::sync::manifest::ALLOWED.contains(&"machine.json"),
+            "the root machine.json must never travel: it is this installation's \
+             own identity, and publishing it would give two machines one id"
         );
     }
 }
