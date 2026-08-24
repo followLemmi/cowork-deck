@@ -5,6 +5,7 @@ import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwd
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
+import { notifyIdSeed } from "./cross-window";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
@@ -144,6 +145,13 @@ export class Deck {
   /** skillId -> session of that scenario's most recent scheduled run. */
   private scheduledSessions = new Map<string, string>();
   private notifyOk = false;
+  /** Set by `app.ts` before anything is announced. The default keeps a Deck
+   *  built in a test working without one. */
+  private windowLabel = "main";
+  setWindowLabel(label: string) {
+    this.windowLabel = label;
+    this.notify = new NotifyRouter(notifyIdSeed(label));
+  }
   private notify = new NotifyRouter();
   private broadcasting = false;
   private bcastPanel: HTMLElement | null = null;
@@ -1382,13 +1390,27 @@ export class Deck {
       : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
-    // Sent on every render, unchanged count included. The pill window registers
-    // its listener asynchronously, and an event that arrives before it is ready
-    // is dropped rather than queued — re-sending is the only way back from that,
-    // and from a send that failed. Repeating is free now that the pill asks the
-    // window before showing itself (src/pill.ts); it was the unconditional
-    // `show()` at the other end, not this line, that stole the keyboard.
-    void emit("pill://count", { n: waiting });
+    // What this window has, not what the app has — and said as a list rather
+    // than a number.
+    //
+    // It used to send `pill://count` with its own partial total, which the pill
+    // trusted absolutely: with two windows open the pill flapped between two
+    // partial counts every five seconds, whichever arrived last winning. The
+    // main window now does the adding, because it is the only participant that
+    // sees everybody. The same message also says *where* each session is, which
+    // is what lets "who is blocked on me" reach the other monitor.
+    //
+    // Sent on every render, unchanged included. A listener registers
+    // asynchronously, and an event arriving before it is ready is dropped rather
+    // than queued — re-sending is the only way back from that, and from a send
+    // that failed.
+    void emit("session://waiting", {
+      label: this.windowLabel,
+      sessions: tiles.map((t) => ({
+        session: t.session, name: resolveTileName(t.names),
+        state: t.state, workspaceId: t.workspaceId,
+      })),
+    });
     const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";

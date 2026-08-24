@@ -52,11 +52,21 @@ async function makeDeck() {
   return { deck, emitState };
 }
 
-/** Every `pill://count` the deck sent, in order. */
+/** How many sessions each `session://waiting` said were waiting, in order.
+ *
+ *  The deck used to send `pill://count` with a number, and the pill trusted it
+ *  absolutely — which made two windows flap between two partial totals every
+ *  five seconds. A window now reports **its own sessions** and the main window
+ *  does the adding, because it is the only participant that hears everybody
+ *  (#243). What is asserted here is unchanged in substance: this deck says what
+ *  it has, on every render, including when nothing moved. */
 const counts = () =>
   vi.mocked(emit).mock.calls
-    .filter(([name]) => name === "pill://count")
-    .map(([, payload]) => (payload as { n: number }).n);
+    .filter(([name]) => name === "session://waiting")
+    .map(([, payload]) => {
+      const { sessions } = payload as { sessions: { state: string }[] };
+      return sessions.filter((x) => x.state === "waitingInput").length;
+    });
 
 describe("Deck — the pill count on the wire", () => {
   beforeEach(() => {

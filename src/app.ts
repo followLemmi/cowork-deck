@@ -1,6 +1,6 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
-import { Deck } from "./sessions";
+import { Deck, nextWaitingAcross } from "./sessions";
 import { applyView, firstFocusable } from "./view";
 import { settingsDialog } from "./settings";
 import {
@@ -51,7 +51,11 @@ import { resolveScheduledWorkspace } from "./schedule";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
-import { listen, emitTo } from "@tauri-apps/api/event";
+import { listen, emit, emitTo } from "@tauri-apps/api/event";
+import {
+  allSessions, sumWaiting, windowOf,
+  type SessionsByWindow, type WindowSessions,
+} from "./cross-window";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowRole } from "./window-role";
 
@@ -507,6 +511,7 @@ export function startApp(role: WindowRole): Promise<void> {
   }
 
   const deck = new Deck(deckEl, listMount, () => workspaces.all);
+  deck.setWindowLabel(myLabel);
   deck.wireNotificationFocus();
   /** The terminal drawer reads the active workspace at the moment a terminal is
    *  opened rather than being told about it: the active one changes under it, and
@@ -1343,11 +1348,49 @@ export function startApp(role: WindowRole): Promise<void> {
   // participant that sees every session — its own, the orphans, and the proxy
   // rows for detached workspaces (#243, #244).
   if (isMain) void listen("pill://focus-next", async () => {
+    // Across every window, not just this one. "Who is blocked on me" is the one
+    // command whose entire purpose is that question, and answering it for one
+    // monitor is answering the wrong question.
+    const target = nextWaitingAcross(allSessions(sessionsByWindow), null);
+    const where = target ? windowOf(sessionsByWindow, target.session) : null;
+    if (target && where && where !== myLabel) {
+      await emitTo(where, "session://focus", { session: target.session });
+      return;
+    }
+    await raiseThisWindow();
+    deck.focusNextWaiting();
+  });
+
+  /** Focus a session because another window asked — the far end of the routing
+   *  above, and of a click on a detached workspace's session row (#244).
+   *
+   *  Raising happens here rather than at the sender, and only on an explicit
+   *  gesture. `set_focus` on a window living on another macOS Space yanks the
+   *  person across Spaces, which is tolerable when they just clicked something
+   *  and never when a poll decided it. */
+  const focusListener = listen<{ session: string }>("session://focus", async (e) => {
+    await raiseThisWindow();
+    deck.focusSession(e.payload.session);
+  });
+
+  async function raiseThisWindow() {
     const w = getCurrentWindow();
     await w.unminimize().catch(() => {});
     await w.show().catch(() => {});
     await w.setFocus().catch(() => {});
-    deck.focusNextWaiting();
+  }
+
+  /** Every window's sessions, as each of them last reported. Only the main
+   *  window keeps this filled — it is the only participant that hears everybody
+   *  and the only one that needs to. */
+  const sessionsByWindow: SessionsByWindow = new Map();
+
+  const waitingListener = listen<WindowSessions>("session://waiting", (e) => {
+    if (!isMain) return;
+    sessionsByWindow.set(e.payload.label, e.payload.sessions);
+    // The pill's payload stays a bare number: it has one addressee and one job,
+    // and the adding is done here, where the whole picture is.
+    void emit("pill://count", { n: sumWaiting(sessionsByWindow) });
   });
 
   // Selecting a workspace (click, startup restore of the active one, or after a
@@ -1451,6 +1494,11 @@ export function startApp(role: WindowRole): Promise<void> {
   function setScale(scale: number): void {
     applyScale(scale, document.documentElement);
     broadcastScale(currentScale());
+    // `broadcastScale` is a DOM event on `window`, so it reaches this window's
+    // terminals and no others — while `ui_state.json` claims the size is the
+    // app's. Without this the other window's terminals stayed at the old size
+    // until something else happened to move them.
+    void emit("ui://scale", { scale: currentScale(), from: myLabel });
     saveUiState({ uiScale: currentScale() })
       .catch((e) => console.debug("ui scale save failed", e));
   }
@@ -1712,7 +1760,18 @@ export function startApp(role: WindowRole): Promise<void> {
    *
    *  Before the boot rather than inside it: the boot restores a layout and can
    *  take a while, and there is nothing in it these two depend on. */
+  const scaleListener = listen<{ scale: number; from: string }>("ui://scale", (e) => {
+    // Applied, not re-announced: the sender told everybody, and echoing would
+    // put two windows in a loop for a preference neither of them changed.
+    if (e.payload.from === myLabel) return;
+    applyScale(e.payload.scale, document.documentElement);
+    broadcastScale(e.payload.scale);
+  });
+
   const handOffListeners = Promise.all([
+    focusListener,
+    waitingListener,
+    scaleListener,
     // A workspace arriving from another window.
     listen<{ tiles: HandOffTile[] }>("workspace://take", (e) => {
       void deck.receive(e.payload.tiles);

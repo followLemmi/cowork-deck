@@ -96,7 +96,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
+  getCurrentWindow: () => ({ label: "main", unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
 }));
 
 /** Let the promise chain behind a click settle. */
