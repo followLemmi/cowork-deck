@@ -12,7 +12,8 @@
     "contrast": "node scripts/contrast.mjs",
     "tauri": "tauri",
     "stage:reporter": "bash scripts/stage-reporter.sh",
-    "stage:task": "bash scripts/stage-sidecar.sh cowork_task"
+    "stage:task": "bash scripts/stage-sidecar.sh cowork_task",
+    "stage:memory": "bash scripts/stage-memory.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

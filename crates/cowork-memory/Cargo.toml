@@ -1,0 +1,30 @@
+[package]
+name = "cowork-memory"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cowork_memory"
+path = "src/main.rs"
+
+[lib]
+name = "cowork_memory"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: without it, serde_json's fast float parser can be off by
+# 1 ULP for some values. FileStat.mtime round-trips through meta.json on
+# every `update`, and a 1-ULP drift there makes an untouched file look
+# "changed" and forces a spurious re-embed.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+clap = { version = "4", features = ["derive"] }
+ureq = "2"
+# Pinned exactly. A caret requirement on a pre-release still admits later
+# pre-releases of the same version, and rc.12 moved `Session::inputs` behind an
+# accessor, bumped ndarray to 0.17, and made `ort::Error` neither Send nor Sync
+# — which stops it converting into `anyhow::Error` with `?` at all.
+ort = "=2.0.0-rc.10"
+ndarray = "0.16"
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
