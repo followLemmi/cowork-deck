@@ -1,7 +1,10 @@
-use crate::scan::FileStat;
+use crate::corpus::chunk_note;
+use crate::embed::Embedder;
+use crate::scan::{detect_scope, scan, FileStat};
+use crate::DIARY_SCOPE;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -121,14 +124,20 @@ pub fn save(cache: &Path, ix: &Index) -> Result<()> {
     Ok(())
 }
 
-use crate::corpus::chunk_note;
-use crate::embed::Embedder;
-use crate::scan::{detect_scope, scan};
-
 pub struct UpdateReport {
     pub files: usize,
     pub chunks: usize,
     pub changed: usize,
+    /// Paths re-chunked and re-embedded this run, in scan order. Carried so a
+    /// verbose run can name them: on an incremental indexer the interesting
+    /// question is always *which* files were re-embedded, and a count cannot
+    /// answer it.
+    pub reindexed: Vec<String>,
+    /// Files that left the corpus and lost their chunks.
+    pub deleted: usize,
+    /// The embedder's width changed, so every file was re-embedded rather than
+    /// only the modified ones.
+    pub rebuilt: bool,
 }
 
 /// Incremental reindex: unchanged files keep their rows, changed files are
@@ -178,6 +187,9 @@ pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, U
                 files: ix.meta.files.len(),
                 chunks: 0,
                 changed: 0,
+                reindexed: Vec::new(),
+                deleted: 0,
+                rebuilt: false,
             };
             return Ok((ix, report));
         }
@@ -185,6 +197,9 @@ pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, U
             files: old.meta.files.len(),
             chunks: old.meta.chunks.len(),
             changed: 0,
+            reindexed: Vec::new(),
+            deleted: 0,
+            rebuilt: false,
         };
         return Ok((old, report));
     }
@@ -239,12 +254,12 @@ pub fn update(root: &Path, cache: &Path, emb: &dyn Embedder) -> Result<(Index, U
         files: ix.meta.files.len(),
         chunks: ix.meta.chunks.len(),
         changed: changed.len() + deleted,
+        reindexed: changed,
+        deleted,
+        rebuilt: dim_changed,
     };
     Ok((ix, report))
 }
-
-use crate::DIARY_SCOPE;
-use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Hit {

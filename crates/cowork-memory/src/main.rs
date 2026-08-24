@@ -77,8 +77,23 @@ fn main() -> Result<()> {
             let e = embedder(&cli.root)?;
             let (_ix, rep) = update(&cli.root, &cache, e.as_ref())?;
             if verbose {
-                eprintln!("root: {}", cli.root.display());
+                eprintln!("root:  {}", cli.root.display());
                 eprintln!("cache: {}", cache.display());
+                if rep.rebuilt {
+                    eprintln!("the embedder's width changed — rebuilding every file");
+                }
+                // One line per file, because on an incremental indexer the
+                // question a verbose run is asked is which files were
+                // re-embedded, and "3 files changed" cannot answer it.
+                for f in &rep.reindexed {
+                    eprintln!("reindexed {f}");
+                }
+                if rep.deleted > 0 {
+                    eprintln!("{} file(s) left the corpus", rep.deleted);
+                }
+                if rep.reindexed.is_empty() && rep.deleted == 0 {
+                    eprintln!("nothing changed");
+                }
             }
             println!(
                 "indexed {} files, {} chunks ({} files changed)",

@@ -131,6 +131,46 @@ fn status_tells_an_absent_index_from_a_built_one() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+/// On an incremental indexer the question a verbose run is asked is *which*
+/// files were re-embedded. A count cannot answer it, and neither can the two
+/// paths this used to print.
+#[test]
+fn verbose_update_names_the_files_it_reindexed() {
+    let root = fixture_root("verbose");
+
+    let (_, stderr, ok) = run(&root, &["update", "--verbose"]);
+    assert!(ok, "update failed: {stderr}");
+    assert!(
+        stderr.contains("reindexed ws-1/Sessions/2026-07/27-scheduler.md"),
+        "the first run must name what it indexed: {stderr}"
+    );
+
+    // Nothing touched since: the run has to say so rather than repeat the list.
+    let (_, stderr, ok) = run(&root, &["update", "--verbose"]);
+    assert!(ok, "second update failed: {stderr}");
+    assert!(!stderr.contains("reindexed "), "nothing changed: {stderr}");
+    assert!(stderr.contains("nothing changed"), "got: {stderr}");
+
+    // One file edited: exactly that one comes back, and the diary does not.
+    fs::write(
+        root.join("ws-1/Sessions/2026-07/27-scheduler.md"),
+        "# Планировщик\n\n## TL;DR\nПереписано целиком, поэтому файл обязан переиндексироваться заново.\n",
+    )
+    .unwrap();
+    let (_, stderr, ok) = run(&root, &["update", "--verbose"]);
+    assert!(ok, "third update failed: {stderr}");
+    assert!(
+        stderr.contains("reindexed ws-1/Sessions/2026-07/27-scheduler.md"),
+        "the edited file must be named: {stderr}"
+    );
+    assert!(
+        !stderr.contains("reindexed Diaries/"),
+        "an untouched file must not be re-embedded: {stderr}"
+    );
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
 /// The app reads this JSON to decide what its settings panel offers, and the
 /// index says nothing about the model: the cache outlives a deleted model, so a
 /// `ready` index alongside a missing model is an ordinary state, not a

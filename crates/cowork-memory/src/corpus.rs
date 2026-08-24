@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use crate::{BIG_FILE, CHUNK_MAX, INFO_MIN, TLDR_MIN};
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 /// Byte offsets of every line start in `s`.
@@ -48,9 +49,6 @@ pub fn find_title(body: &str, rel_path: &str) -> String {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
-
-use crate::{CHUNK_MAX, BIG_FILE, INFO_MIN, TLDR_MIN};
-use std::collections::HashSet;
 
 /// First `n` characters (not bytes) of `s`.
 fn take_chars(s: &str, n: usize) -> String {
