@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const BASE: &str =
     "https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/resolve/main";
@@ -33,11 +34,48 @@ pub trait Fetcher {
     fn fetch(&self, url: &str, from: u64) -> Result<Box<dyn Read>>;
 }
 
-pub struct HttpFetcher;
+/// Timeouts for the download.
+///
+/// `timeout_read` in ureq bounds a single socket read, not the whole transfer,
+/// and that distinction is the reason a timeout is safe here at all: the model
+/// is 470 MB, so a deadline on the request as a whole would abort a download
+/// that is merely slow. What these catch is a connection that has stopped
+/// producing bytes altogether — without them the download waits on a silent
+/// socket forever, and the only symptom the app can show is a progress line
+/// that never advances.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+pub struct HttpFetcher {
+    agent: ureq::Agent,
+}
+
+impl HttpFetcher {
+    pub fn new() -> HttpFetcher {
+        HttpFetcher::with_timeouts(CONNECT_TIMEOUT, READ_TIMEOUT)
+    }
+
+    /// The same fetcher with explicit timeouts, so a test can prove the
+    /// deadline fires without waiting a minute for it.
+    pub fn with_timeouts(connect: Duration, read: Duration) -> HttpFetcher {
+        HttpFetcher {
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(connect)
+                .timeout_read(read)
+                .build(),
+        }
+    }
+}
+
+impl Default for HttpFetcher {
+    fn default() -> HttpFetcher {
+        HttpFetcher::new()
+    }
+}
 
 impl Fetcher for HttpFetcher {
     fn fetch(&self, url: &str, from: u64) -> Result<Box<dyn Read>> {
-        let req = ureq::get(url);
+        let req = self.agent.get(url);
         let req = if from > 0 {
             req.set("Range", &format!("bytes={from}-"))
         } else {
@@ -139,6 +177,37 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Cursor;
+    use std::net::TcpListener;
+
+    /// A socket that accepts and then says nothing, which is what a stalled
+    /// mirror looks like from here. Without a read timeout this test hangs
+    /// forever rather than failing — which is exactly the production symptom.
+    #[test]
+    fn a_silent_server_fails_on_the_read_timeout_instead_of_hanging() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        // Held open, never written to. The thread is detached and dies with the
+        // test process; parking it keeps the accepted connection alive so the
+        // client waits on silence rather than on a closed socket.
+        std::thread::spawn(move || {
+            let _keep = listener.accept();
+            std::thread::park();
+        });
+
+        let f = HttpFetcher::with_timeouts(
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+        );
+        let started = std::time::Instant::now();
+        let out = f.fetch(&format!("http://{addr}/model.onnx"), 0);
+
+        assert!(out.is_err(), "a server that never answers must not succeed");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "gave up after {:?} — the timeout is not being applied",
+            started.elapsed()
+        );
+    }
 
     struct CannedFetcher {
         body: Vec<u8>,

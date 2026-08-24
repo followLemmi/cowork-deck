@@ -150,7 +150,7 @@ fn main() -> Result<()> {
                     cowork_memory::model::download_one(
                         &dir,
                         &f,
-                        &cowork_memory::model::HttpFetcher,
+                        &cowork_memory::model::HttpFetcher::new(),
                         &mut |got, total| {
                             // One line per megabyte, so callers can parse progress.
                             if got == total || got - last >= 1_000_000 {
