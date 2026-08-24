@@ -112,6 +112,11 @@ pub struct AppState {
     /// listener for that event is a silent no-op at both ends, so a window that
     /// has not announced itself is not spoken to. See `windows::WindowReady`.
     pub windows_ready: std::sync::Arc<crate::windows::WindowReady>,
+    /// Which window may write to which session. Claimed where a session is
+    /// spawned, cleared where one closes and where a window is destroyed, and
+    /// checked before every write and resize. See `ownership::SessionOwners`
+    /// for why the frontend cannot be the layer that decides this.
+    pub session_owners: crate::ownership::SessionOwners,
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
@@ -1601,6 +1606,7 @@ pub fn issue_worktree_remove(
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<AppState>,
     session: String,
     cwd: String,
@@ -1737,6 +1743,10 @@ pub fn start_session(
         crate::run_journal::failed_to_start(&session, &e);
         return Err(e);
     }
+    // After the spawn, so a session that failed to start leaves no owner behind
+    // for a later id collision to inherit. The window that started a session
+    // owns it until it hands it on.
+    state.session_owners.claim(&session, window.label());
     Ok(outcome.auth)
 }
 
@@ -1749,6 +1759,7 @@ pub fn start_session(
 #[tauri::command]
 pub fn start_command_session(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<AppState>,
     session: String,
     cwd: String,
@@ -1784,7 +1795,9 @@ pub fn start_command_session(
     state
         .pty
         .spawn(&session, &program, &args, &cwd, cols, rows, &[], false, on_output, on_exit)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    state.session_owners.claim(&session, window.label());
+    Ok(())
 }
 
 /// How many shells may be open at once.
@@ -1868,6 +1881,7 @@ fn shell_name(program: &str) -> String {
 #[tauri::command]
 pub fn start_shell_session(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<AppState>,
     session: String,
     cwd: String,
@@ -1922,6 +1936,7 @@ pub fn start_shell_session(
         .spawn(&session, &program, &args, &cwd, cols, rows, &outcome.env, false, on_output, on_exit)
         .map_err(|e| e.to_string())?;
 
+    state.session_owners.claim(&session, window.label());
     if let Ok(mut shells) = state.shells.lock() {
         shells.insert(session);
     }
@@ -1967,13 +1982,47 @@ pub fn save_terminals(
     state.store.lock().unwrap().save_terminals(&layout).map_err(|e| e.to_string())
 }
 
+/// Input for a session, from the window that owns it.
+///
+/// `window` comes from the runtime, so there is no token to pass and no call
+/// site to change — `src/broadcast.ts` included. The refusals are named rather
+/// than described: `not-owner` tells a window it is stale and should dispose,
+/// `no-session` says the session is gone, which for a keystroke arriving just
+/// after a close is ordinary. Both used to be `Ok(())`, which is exactly why a
+/// stale window could never detect itself.
 #[tauri::command]
-pub fn write_session(state: State<AppState>, session: String, data: String) -> Result<(), String> {
-    state.pty.write(&session, data.as_bytes()).map_err(|e| e.to_string())
+pub fn write_session(
+    window: tauri::WebviewWindow, state: State<AppState>, session: String, data: String,
+) -> Result<(), String> {
+    state.session_owners.check(&session, window.label()).map_err(|r| r.as_str().to_string())?;
+    state.pty.write(&session, data.as_bytes()).map_err(session_io_error)
 }
+/// A new geometry for a session, from the window that owns it.
+///
+/// The ownership check is what keeps a resize that was in flight across the IPC
+/// boundary when ownership changed from reaching the child: without it the
+/// process gets a SIGWINCH for a geometry no visible window has, and an Ink
+/// application repaints at the wrong width.
 #[tauri::command]
-pub fn resize_session(state: State<AppState>, session: String, cols: u16, rows: u16) -> Result<(), String> {
-    state.pty.resize(&session, cols, rows).map_err(|e| e.to_string())
+pub fn resize_session(
+    window: tauri::WebviewWindow, state: State<AppState>, session: String, cols: u16, rows: u16,
+) -> Result<(), String> {
+    state.session_owners.check(&session, window.label()).map_err(|r| r.as_str().to_string())?;
+    state.pty.resize(&session, cols, rows).map_err(session_io_error)
+}
+
+/// Name the one io error the frontend has to recognise, and pass every other
+/// through as it reads.
+///
+/// A session the manager no longer holds is `NotFound`, and that is a race
+/// between a keystroke and a close rather than a fault. Anything else reached
+/// the PTY and failed there, which is worth its own words.
+fn session_io_error(e: std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        crate::ownership::NO_SESSION.to_string()
+    } else {
+        e.to_string()
+    }
 }
 #[tauri::command]
 pub fn close_session(state: State<AppState>, session: String) {
@@ -1983,6 +2032,7 @@ pub fn close_session(state: State<AppState>, session: String) {
     // cannot overwrite `ended` with an exit code nobody asked for.
     crate::run_journal::close(&session, crate::runs::RunStatus::Ended);
     state.pty.kill(&session);
+    state.session_owners.release(&session);
     crate::transcripts::forget(&session);
 }
 

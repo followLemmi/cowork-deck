@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../src/ipc", () => ({ writeSession: vi.fn() }));
+vi.mock("../src/ipc", () => ({ writeSession: vi.fn().mockResolvedValue(undefined) }));
 
 import { broadcastInput } from "../src/broadcast";
 import { writeSession } from "../src/ipc";

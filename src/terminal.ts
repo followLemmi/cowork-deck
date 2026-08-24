@@ -9,6 +9,7 @@ import {
   startSession, startCommandSession, startShellSession, writeSession, resizeSession,
   prepareWorkspace, type OutputSink, type ScenarioLaunch, type SessionAuth, type ShellStart,
 } from "./ipc";
+import { sessionRefusal, SESSION_GONE, SESSION_NOT_OWNER } from "./session-refusal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import { terminalKeyBytes } from "./terminal-keys";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
@@ -230,11 +231,34 @@ export class TerminalPanel {
     this.started = true;
     const held = this.pending;
     this.pending = [];
-    for (const d of held) void writeSession(this.session, d);
+    for (const d of held) this.writeToPty(d);
   }
   private send(data: string) {
     if (!this.started) { this.pending.push(data); return; }
-    void writeSession(this.session, data);
+    this.writeToPty(data);
+  }
+
+  /** One write to the PTY, and what to do when the backend refuses it.
+   *
+   *  `catch` rather than a bare `void`, for the reason the resize below already
+   *  had one: a write can now be refused, and an unhandled rejection is what a
+   *  bare `void` makes of that. The two refusals are not the same thing —
+   *  `no-session` is a keystroke landing just after a close, which is ordinary;
+   *  `not-owner` means another window is rendering this session and this panel is
+   *  stale. Acting on the second — giving up the panel — belongs with the hand-off
+   *  that can produce it (#241). Until that exists there is no window to be stale
+   *  *for*, so it is recorded and not acted on: disposing a panel here today could
+   *  only ever be a reaction to a bug, and it would make a tile vanish. */
+  private writeToPty(data: string) {
+    writeSession(this.session, data).catch((e) => {
+      const refusal = sessionRefusal(e);
+      if (refusal === SESSION_GONE) return;
+      if (refusal === SESSION_NOT_OWNER) {
+        console.debug("write refused: this window no longer owns", this.session);
+        return;
+      }
+      console.debug("terminal write failed", e);
+    });
   }
 
   /** A fresh output channel for one spawn.
@@ -500,7 +524,7 @@ export class TerminalPanel {
       // That is not a failure worth a console error, but it is an unhandled
       // rejection if nobody takes it.
       resizeSession(this.session, next.cols, next.rows)
-        .catch((e) => console.debug("terminal resize skipped", e));
+        .catch((e) => console.debug("terminal resize skipped", sessionRefusal(e) ?? e));
     }, PTY_RESIZE_QUIET_MS);
   }
   dispose() {

@@ -38,7 +38,7 @@ vi.mock("../src/ipc", () => ({
   startSession: vi.fn().mockResolvedValue({ kind: "none" }),
   startCommandSession: vi.fn().mockResolvedValue(undefined),
   startShellSession: vi.fn().mockResolvedValue({ shell: "/bin/sh" }),
-  writeSession: vi.fn(),
+  writeSession: vi.fn().mockResolvedValue(undefined),
   prepareWorkspace: vi.fn().mockResolvedValue(undefined),
   resizeSession: (s: string, c: number, r: number) => resizeSession(s, c, r),
 }));

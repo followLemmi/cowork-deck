@@ -14,6 +14,7 @@ mod scheduler;
 mod tasks_cmd;
 mod transcripts;
 mod which;
+mod ownership;
 mod windows;
 use cowork_deck::tasks;
 
@@ -161,6 +162,7 @@ fn main() {
                 quit_asked: AtomicBool::new(false),
                 issue_open_counts: Mutex::new(std::collections::HashMap::new()),
                 windows_ready: std::sync::Arc::new(windows::WindowReady::default()),
+                session_owners: ownership::SessionOwners::default(),
             });
 
             // Scheduled scenarios: the backend decides *when* and emits
@@ -225,6 +227,12 @@ fn main() {
             if let tauri::WindowEvent::Destroyed = event {
                 if let Some(state) = window.try_state::<AppState>() {
                     state.windows_ready.forget(window.label());
+                    // Ownership only. The sessions this window held are **not**
+                    // ended — closing a window returns its workspace and never
+                    // costs a session, so they become unowned here and wait to
+                    // be re-homed (#245). Anything this window still sends is
+                    // refused from this moment, which is the point.
+                    state.session_owners.release_window(window.label());
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

@@ -359,6 +359,13 @@ impl PtyManager {
         Ok(())
     }
 
+    /// A session this manager does not hold.
+    ///
+    /// Both `write` and `resize` used to answer `Ok(())` here, and that silence
+    /// is what made a stale window undetectable: it wrote into nothing, was told
+    /// nothing, and carried on believing it owned a terminal. `NotFound` is the
+    /// kind, so the command layer can tell this apart from a write that reached
+    /// the PTY and failed there.
     pub fn write(&self, session: &str, data: &[u8]) -> std::io::Result<()> {
         // Only hold the map lock long enough to clone out this session's writer
         // handle. The blocking IO below runs against the per-session writer
@@ -368,7 +375,7 @@ impl PtyManager {
             let map = self.sessions.lock().unwrap();
             match map.get(session) {
                 Some(s) => Arc::clone(&s.writer),
-                None => return Ok(()),
+                None => return Err(no_such_session(session)),
             }
         };
 
@@ -380,11 +387,10 @@ impl PtyManager {
 
     pub fn resize(&self, session: &str, cols: u16, rows: u16) -> std::io::Result<()> {
         let map = self.sessions.lock().unwrap();
-        if let Some(s) = map.get(session) {
-            s.master
-                .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-                .map_err(to_io)?;
-        }
+        let Some(s) = map.get(session) else { return Err(no_such_session(session)) };
+        s.master
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(to_io)?;
         Ok(())
     }
 
@@ -659,6 +665,15 @@ fn all_pids() -> Vec<i32> {
     // No portable process-table read. The polite signals still go out; only the
     // sweep for jobs in their own process group is missing.
     Vec::new()
+}
+
+/// The error a session this manager does not hold produces.
+///
+/// `NotFound` and nothing else in the kind, because the command layer reads the
+/// kind to tell "there is no such session" from "the write reached the PTY and
+/// failed" — and only the first of those is ordinary enough to swallow.
+fn no_such_session(session: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::NotFound, format!("no such session: {session}"))
 }
 
 fn to_io<E: std::fmt::Display>(e: E) -> std::io::Error {
