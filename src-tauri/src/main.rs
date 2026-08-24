@@ -2,6 +2,7 @@
 
 mod model;
 mod store;
+mod sync;
 mod gh;
 mod gh_pr;
 mod hooks;
