@@ -12,6 +12,11 @@
 /// captured when discovery had to go through that shell: a program that is
 /// really an `env node` script (npm's claude), or one that spawns helpers,
 /// needs that PATH in its own environment too.
+///
+/// Read it as "the environment this program was *validated* under", nothing
+/// wider: it is `None` for every other route, including ones whose spawns
+/// still need a real PATH. A caller that wants a PATH regardless of how the
+/// program turned up wants `login_path` behind this.
 #[derive(Clone)]
 pub struct Resolution {
     pub program: String,
@@ -140,5 +145,91 @@ pub fn output_with_deadline(
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
             Err(_) => return None,
         }
+    }
+}
+
+/// The login shell's `$PATH`, independent of how anything was discovered.
+///
+/// `Resolution::path_env` carries one only when discovery had to consult the
+/// login shell, and that is the wrong condition for a session: the PATH is
+/// needed less by `claude` itself than by everything it spawns — stdio MCP
+/// servers (`npx ...`, `#!/usr/bin/env node` shims), hooks, the Bash tool.
+/// They all resolve through PATH, whatever `claude` is.
+///
+/// The nesting inverts the usual expectation, which is why it went unnoticed:
+/// an npm-installed `claude` works, because it fails `version_runs` under
+/// launchd's PATH, falls through to the login shell and picks up a PATH on the
+/// way. A natively installed one is a self-contained binary, so it passes at
+/// the candidate-paths stage and short-circuits the only stage that captures
+/// anything — and its sessions then find no `node` (#332).
+///
+/// One login shell per process, bounded like every probe here. `None` on
+/// Windows, and on an exotic `$SHELL` that cannot do `-l -c`.
+pub fn login_path() -> Option<String> {
+    // Failures are cached too, unlike the discovery caches next door. Those
+    // stay retryable because installing the missing program is a thing a user
+    // does while the app runs; nothing anyone does mid-session turns a `$SHELL`
+    // that cannot do `-l -c` into one that can, and re-probing would spend a
+    // login shell per launch to learn the same answer.
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(probe_login_path).clone()
+}
+
+/// The marker the probe prints its answer behind. Prefixed rather than printed
+/// bare because login profiles echo to stdout, and here — unlike `login_shell`,
+/// where a wrong line loses to validation — nothing downstream would catch
+/// profile noise handed to a session as its PATH. It also keeps an empty
+/// `$PATH` distinguishable from a shell that printed nothing at all.
+const PATH_MARKER: &str = "cowork-path=";
+
+fn probe_login_path() -> Option<String> {
+    if cfg!(windows) {
+        return None;
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let mut cmd = std::process::Command::new(shell);
+    cmd.args(["-l", "-c", &format!(r#"printf '{PATH_MARKER}%s\n' "$PATH""#)]);
+    // A login shell runs the user's profile, which can do anything, including
+    // hang. Bound it; this sits on a session-start path.
+    let out = output_with_deadline(cmd, std::time::Duration::from_secs(5))?;
+    if !out.status.success() {
+        return None;
+    }
+    marked_path(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The last marked line's value, empty rejected — a shell that answered with
+/// nothing is a shell that gave us no PATH, not a PATH of nothing.
+fn marked_path(stdout: &str) -> Option<String> {
+    let path = stdout.lines().rev().find_map(|l| l.trim().strip_prefix(PATH_MARKER))?;
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marked_path_survives_a_chatty_profile() {
+        // Both halves of what a profile does: noise before the answer, and
+        // noise after it — the second is why the marker exists at all.
+        let out = "nvm: using v22\ncowork-path=/opt/homebrew/bin:/usr/bin\nWelcome!\n";
+        assert_eq!(marked_path(out).as_deref(), Some("/opt/homebrew/bin:/usr/bin"));
+    }
+
+    #[test]
+    fn marked_path_rejects_silence_and_emptiness() {
+        // A profile that printed something else entirely, and a `$PATH` that
+        // was genuinely empty. Both mean "no PATH to hand on".
+        assert_eq!(marked_path("Welcome!\n"), None);
+        assert_eq!(marked_path("cowork-path=\n"), None);
+    }
+
+    #[test]
+    fn marked_path_takes_the_last_answer() {
+        // A profile that re-execs the shell prints the marker twice; the
+        // innermost run is the one whose PATH the session would see.
+        let out = "cowork-path=/first\ncowork-path=/second\n";
+        assert_eq!(marked_path(out).as_deref(), Some("/second"));
     }
 }
