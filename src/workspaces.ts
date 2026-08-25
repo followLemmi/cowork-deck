@@ -78,9 +78,6 @@ export class WorkspacesPanel {
     const row = this.mount.querySelector<HTMLElement>(`.ws-row[data-ws="${workspaceId}"]`);
     row?.querySelector(".ws-label")?.setAttribute("aria-expanded", String(on));
     row?.classList.toggle("is-open", on);
-    // The workspace's own pages fold with its sessions: they are its children too.
-    const nav = this.mount.querySelector<HTMLElement>(`.ws-nav[data-ws="${workspaceId}"]`);
-    if (nav) nav.hidden = !on;
   }
 
   /** The deck's count, written into the row without re-rendering it. */
@@ -92,8 +89,6 @@ export class WorkspacesPanel {
     if (n > 0) slot.title = `${n} of this workspace's sessions are waiting for a decision`;
   }
   private activeId: string | null = null;
-  /** Open tasks per workspace; filled in by main.ts. */
-  private counts = new Map<string, number>();
   constructor(
     private mount: HTMLElement,
     private onSelect: (ws: Workspace) => void,
@@ -155,11 +150,6 @@ export class WorkspacesPanel {
     // from `innerHTML`, which would throw away focus and any open tooltip.
     if (ids.size === this.detached.size && [...ids].every((id) => this.detached.has(id))) return;
     this.detached = new Set(ids);
-    this.render();
-  }
-
-  setCounts(counts: Record<string, number>) {
-    this.counts = new Map(Object.entries(counts));
     this.render();
   }
 
@@ -392,52 +382,28 @@ export class WorkspacesPanel {
          On the second line, beside the account, because the first line is already
          a name, two counts and three controls in a 280px column. */
       if (isActive) {
-        const scope = document.createElement("span");
+        /* A button, not a label, and that is the change: it used to only STATE that
+           three pages were showing this workspace, while the way IN to two of them
+           was two extra rows under every workspace in the tree. Now the statement
+           is the door — one target on the one row it is true of, instead of twelve
+           identical rows down the column.
+           The journal stays in the rail, so this opens the board and the tab beside
+           it is one keystroke away. */
+        const scope = document.createElement("button");
+        scope.type = "button";
         scope.className = "ws-scope";
-        /* The app's own words for its pages, not the mockups': the two rows under
-           this one say "Board" and "Pull requests", and a chip naming the same
-           things differently is a second vocabulary for one set of facts. */
         scope.textContent = "board · PRs · journal";
-        scope.title = "The queue, the pull requests and the journal are showing this workspace";
+        scope.title = "Open this workspace's board and pull requests";
+        scope.onclick = (e) => {
+          // The row switches workspace; this is a control inside it with its own
+          // job, so the row's own handler must not also fire.
+          e.stopPropagation();
+          this.onOpenPage?.(w.id, "board");
+        };
         sub.append(scope);
       }
       if (sub.childElementCount > 0) row.append(sub);
       this.mount.appendChild(row);
-      /* The workspace's OWN pages, as its children — because that is what they
-         are. A board and a list of pull requests belong to one repository, and in
-         the rail beside the journal and the scenarios they read as the app's, so
-         switching workspace silently changed what they were about. Here the tree
-         says whose they are by containing them, and pressing one makes that
-         workspace active on the way in.
-         Rendered by this panel rather than by the deck: they are navigation, and
-         the deck's `.ws-kids` below is rebuilt on every poll. */
-      const nav = document.createElement("div");
-      nav.className = "ws-nav";
-      nav.dataset.ws = w.id;
-      const page = (icon: IconName, label: string, id: "board" | "pr", badge: string | null) => {
-        const b = iconButton(icon, label, "ws-page");
-        const text = document.createElement("span");
-        text.className = "ws-page-name";
-        text.textContent = label;
-        b.append(text);
-        if (badge !== null) {
-          const n = document.createElement("span");
-          n.className = "ws-page-count";
-          n.textContent = badge;
-          b.append(n);
-        }
-        b.onclick = () => this.onOpenPage?.(w.id, id);
-        return b;
-      };
-      const open = this.counts.get(w.id) ?? 0;
-      nav.append(
-        /* The open-task count lives here now. On the workspace's own row it was a
-           number beside a number — "12" beside "1 waiting" — and neither said what
-           it counted; on the board's row it is the board's. */
-        page("list", "Board", "board", open > 0 ? String(open) : null),
-        page("git-merge", "Pull requests", "pr", null),
-      );
-      this.mount.appendChild(nav);
       /* The workspace's sessions go here, and the deck is what fills them: one
          tree, one row per workspace, its sessions as its children. See
          `Deck.setTree`. */

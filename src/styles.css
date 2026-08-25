@@ -590,7 +590,6 @@ html, body, #app { height: 100%; margin: 0; }
    and a clipped fourth is a worse kanban than the full-width screen this replaced.
    At 58rem the deck still keeps about 700px, which is 80-odd columns for the
    zoomed tile, so the panel taking its room does not re-wrap a transcript. */
-#sidebar.is-wide { width: var(--panel-wide-w, min(58rem, 62vw)); }
 /* Collapsed to nothing, with the rail left standing: the panel goes and the way
    back stays. `border-right-color` goes with the width, or a 1px line hangs in the
    window with nothing on either side of it. The width is animated, which is what
@@ -612,7 +611,6 @@ html, body, #app { height: 100%; margin: 0; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .panel-title { color: var(--fg); font-size: var(--fs-sm); font-weight: var(--fw-bold); }
-#panel-wide[hidden] { display: none; }
 
 /* One page shows at a time. `overflow: auto` is per page rather than on the stack,
    so the head stays put and each page keeps its own scroll position. */
@@ -640,6 +638,94 @@ html, body, #app { height: 100%; margin: 0; }
   overflow: auto;
 }
 #ws-page.hidden, #sk-page.hidden { display: none; }
+
+/* --- The workspace's own panel -------------------------------------------
+   The board and the pull requests, on the right of the deck.
+
+   They were pages of the left panel, then rows inside every workspace in the
+   tree, and both were wrong for the same two reasons. A kanban needs columns and
+   the left panel is a 300px column of names, so every visit forced the panel to
+   take the deck's width — a rebuild of the whole window to glance at a board. And
+   as rows in the tree they cost two lines per workspace forever: on six
+   workspaces that is twelve identical navigation rows against eight session rows,
+   measured at 261px of the column — the height of four sessions — spent on two
+   buttons pressed once an hour.
+
+   So: its own column, on the side this app already means by "the thing I am
+   looking at". Three properties follow from that and none is decoration.
+
+   IT IS ABOUT ONE WORKSPACE, AND SAYS WHICH. Its head names the repository and
+   the account, so "whose board is this" is answered before it is asked. That was
+   the defect that took these two out of the rail in the first place.
+
+   IT TAKES FROM THE DECK, NOT FROM THE PANEL. The deck is a grid of tiles that
+   reflows; it gives width up and takes it back. The left panel is a list of names
+   and has nothing to give.
+
+   IT CLOSES ON A ZOOM. A zoomed tile puts its tool panel on this same side,
+   inside the tile frame, and two panels on one edge is a person guessing which
+   one they are dragging.
+
+   `[hidden]` needs its own rule because `display: grid` below would outrank the
+   attribute's UA `display: none` — the same trap `#board.hidden` documents. */
+#wspanel {
+  position: relative; flex: none; min-width: 0;
+  /* A custom property rather than an inline width, for the reason the left panel
+     documents: the fallback tracks the window and the text size, and an inline
+     pixel value would freeze both the moment anything was dragged. */
+  width: var(--wsp-w, clamp(26rem, 32vw, 42rem));
+  /* Three rows: the head that names the repository, the two tabs, the page. */
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--bg-void);
+  transition: width var(--dur-2) var(--ease-out);
+}
+#wspanel[hidden] { display: none; }
+/* Wide is the DIFF's, not the page's. A list of pull requests is a list of names;
+   what needs room is the patch, so the width is asked for when a diff opens and
+   given back when it closes. A panel that opened wide because it was wide last
+   time would be the full-width screens back under another name. */
+#wspanel.is-wide { width: var(--wsp-wide-w, min(64rem, 62vw)); }
+@media (prefers-reduced-motion: reduce) { #wspanel { transition: none; } }
+
+#wsp-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-3);
+}
+.wsp-titles { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+/* The repository and the account, in that order: the same two facts the left
+   panel's head carries, because the same question applies to a board. */
+.wsp-scope {
+  color: var(--fg-dim); font-size: var(--fs-xs);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wsp-title { color: var(--fg); font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+
+/* Two tabs, because they are two views of one thing: the work of this repository.
+   A rail entry each would put them back among the app-wide pages, which is what
+   made them lie about their subject. */
+.wsp-tabs { display: flex; gap: 2px; padding: 0 var(--sp-3) var(--sp-2); }
+.wsp-tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px var(--sp-3); border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--fg-mid);
+  font: inherit; font-size: var(--fs-sm); cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.wsp-tab:hover { background: var(--bg-hover); color: var(--fg); }
+.wsp-tab[aria-selected="true"] { background: var(--sel); color: var(--fg); }
+.wsp-tab-count {
+  color: var(--fg-dim); font-variant-numeric: tabular-nums; font-size: var(--fs-xs);
+}
+.wsp-tab[aria-selected="true"] .wsp-tab-count { color: var(--fg-mid); }
+#wsp-body { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+#wsp-body > .panel-page { flex: 1; }
+/* On the left edge, because that is the edge it shares with the deck — the box a
+   drag here is taking from. */
+.wsp-grip {
+  position: absolute; left: -3px; top: 0; bottom: 0; width: 7px;
+  cursor: col-resize; z-index: 2;
+}
 
 /* --- Islands -------------------------------------------------------------
    The sidebar was one undifferentiated scroll: `h3`, rows, `h3`, rows, with
@@ -792,7 +878,12 @@ html, body, #app { height: 100%; margin: 0; }
 /* The chip that says what being the active workspace is FOR. `--sel` and not a
    state hue: it is not a state, it is which of three panels' subject this is —
    and hue in this app belongs to what a session is doing. */
+/* A button now, not a label — it opens the workspace's panel. Reset the native
+   look, keep the chip, and give it the two states a control owes: the hover moves
+   the FILL and the ink goes UP, never toward the background. */
 .ws-scope {
+  border: 0; font: inherit; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
   display: inline-flex; align-items: center; flex: none;
   padding: 1px 7px; border-radius: var(--r-pill);
   background: var(--sel); color: var(--fg-mid);
@@ -800,7 +891,15 @@ html, body, #app { height: 100%; margin: 0; }
 }
 /* At the width where the account already had to go, this goes with it: the row
    says which workspace is active with its rail and its tint either way. */
-@media (max-width: 1180px) { .ws-scope { display: none; } }
+.ws-scope:hover { background: var(--bg-hover-2); color: var(--fg); }
+/* At the width where the account already had to go this stays, because it is a
+   control now rather than a caption: hiding the only pointer route to the board
+   would leave the palette and the keys as the only ones. It loses its words
+   instead — the chip keeps the height, the title says the rest. */
+@media (max-width: 1180px) {
+  .ws-scope { font-size: 0; padding: 1px 6px; }
+  .ws-scope::after { content: "···"; font-size: var(--fs-xs); }
+}
 
 /* --- The state rail -----------------------------------------------------
    The redesign's one flourish, and the thing that makes a dozen sessions readable
@@ -1288,23 +1387,6 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    sessions are, because they are the same kind of child: things that belong to this
    repository and to no other. A row rather than a chip — it navigates, and every
    other thing in this panel that navigates is a row. */
-.ws-nav { display: flex; flex-direction: column; padding-left: 14px; }
-.ws-nav[hidden] { display: none; }
-.ws-page {
-  display: flex; align-items: center; gap: 6px;
-  width: 100%; min-height: 26px; padding: 3px 6px; margin: 1px 0;
-  background: none; border: 0; border-radius: var(--r-sm);
-  color: var(--fg-mid); font: inherit; font-size: var(--fs-xs);
-  text-align: left; cursor: pointer;
-  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
-}
-.ws-page:hover { background: var(--bg-hover); color: var(--fg); }
-.ws-page .icon { flex: none; color: var(--fg-dim); }
-.ws-page:hover .icon { color: var(--fg); }
-.ws-page-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The board's open count, on the board's own row. On the workspace's row it was a
-   number beside another number and neither said what it counted. */
-.ws-page-count { flex: none; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
 
 /* Everything that trails the name, in one group that does not wrap: the row wraps
    so the account can have its own line, and without this the three buttons wrapped

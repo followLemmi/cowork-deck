@@ -103,7 +103,9 @@ describe("the window hotkey handler and text entry", () => {
     document.body.innerHTML =
       '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
       + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
-      + '<div id="board" class="hidden"></div></div></div>';
+      + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
+    + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
+    + '</div></div>';
 
     await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();

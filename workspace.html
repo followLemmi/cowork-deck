@@ -34,9 +34,7 @@
         <nav id="rail" aria-label="Panels"></nav>
         <aside id="sidebar">
           <div id="panel-head"></div>
-          <div id="panel-stack">
-            <div id="board" class="panel-page hidden"></div>
-          </div>
+          <div id="panel-stack"></div>
         </aside>
         <!-- The deck and the terminal drawer are one column: the drawer is a
              strip under the deck, not a fourth screen and not a floating panel.
@@ -46,6 +44,16 @@
           <main id="deck"></main>
           <div id="terminals"></div>
         </div>
+        <!-- The workspace's own two pages, on the side of the window this app
+             already means by "what I am looking at". Kept in step with the other
+             three copies of this body — `page-bodies.test.ts` is what makes that
+             request enforceable. -->
+        <aside id="wspanel" hidden>
+          <div id="wsp-head"></div>
+          <div id="wsp-body">
+            <div id="board" class="panel-page hidden"></div>
+          </div>
+        </aside>
       </div>
     </div>
     <script type="module" src="/src/workspace.ts"></script>

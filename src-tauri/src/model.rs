@@ -538,8 +538,16 @@ pub struct UiState {
     /// size, and baking a pixel default here would freeze both.
     #[serde(rename = "panelPx", default)]
     pub panel_px: Option<u32>,
-    #[serde(rename = "panelWidePx", default)]
-    pub panel_wide_px: Option<u32>,
+    /// And how wide the workspace panel is — the board and the pull requests, on
+    /// the other side of the deck. Two numbers, because the diff's width and the
+    /// page's answer different questions: this was `panelWidePx` while the board
+    /// was a page of the LEFT panel, and the rename is the honest record of the
+    /// board having moved. Nothing reads the old key, so a stored one is ignored
+    /// rather than migrated: the loss is one dragged width, once.
+    #[serde(rename = "wspPx", default)]
+    pub wsp_px: Option<u32>,
+    #[serde(rename = "wspWidePx", default)]
+    pub wsp_wide_px: Option<u32>,
     /// And how wide the tool panel inside a zoomed tile is. Same reasoning; its
     /// floor is the 80-column rule, which is enforced where the panel is drawn
     /// rather than here — a stored number cannot know what the terminal is doing.
@@ -593,7 +601,8 @@ impl Default for UiState {
             // None, and not a pixel figure: until a person drags one, the width
             // belongs to the stylesheet, which tracks the window and the text size.
             panel_px: None,
-            panel_wide_px: None,
+            wsp_px: None,
+            wsp_wide_px: None,
             tool_px: None,
         }
     }
@@ -625,8 +634,10 @@ pub struct UiStatePatch {
     pub terminal_rows: Option<u32>,
     #[serde(rename = "panelPx")]
     pub panel_px: Option<u32>,
-    #[serde(rename = "panelWidePx")]
-    pub panel_wide_px: Option<u32>,
+    #[serde(rename = "wspPx")]
+    pub wsp_px: Option<u32>,
+    #[serde(rename = "wspWidePx")]
+    pub wsp_wide_px: Option<u32>,
     #[serde(rename = "toolPx")]
     pub tool_px: Option<u32>,
 }

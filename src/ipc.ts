@@ -94,7 +94,8 @@ export interface UiState {
    *  Px and not `ch`, unlike the diff drawer's width and the drawer's rows: what
    *  is being sized is a column of names, not a grid of characters. */
   panelPx?: number;
-  panelWidePx?: number;
+  wspPx?: number;
+  wspWidePx?: number;
   /** And the tool panel inside a zoomed tile. One width for the app, not one per
    *  tile: sizing it is sizing the tool, and every session's tools are the same
    *  tool. Its floor is the 80-column rule, which is enforced where the panel is
@@ -116,7 +117,8 @@ export interface UiStatePatch {
   recordScenarioRuns?: boolean;
   terminalRows?: number;
   panelPx?: number;
-  panelWidePx?: number;
+  wspPx?: number;
+  wspWidePx?: number;
   toolPx?: number;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.

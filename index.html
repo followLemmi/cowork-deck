@@ -32,12 +32,11 @@
         <nav id="rail" aria-label="Panels"></nav>
         <aside id="sidebar">
           <div id="panel-head"></div>
-          <!-- One page shows at a time; `#board`, `#pr` and `#history` are three
-               of the five, which is why the two that were full-width screens can
-               ask the panel for the deck's width instead of the deck's place. -->
-          <div id="panel-stack">
-            <div id="board" class="panel-page hidden"></div>
-          </div>
+          <!-- One page shows at a time, and there are three: the tree, the journal
+               and the scenarios. The board and the pull requests are NOT here — each
+               belongs to one repository, so they live in `#wspanel` on the other
+               side of the deck, where the thing they are about is named above them. -->
+          <div id="panel-stack"></div>
         </aside>
         <!-- The deck and the terminal drawer are one column: the drawer is a
              strip under the deck, not a fourth screen and not a floating panel.
@@ -47,6 +46,20 @@
           <main id="deck"></main>
           <div id="terminals"></div>
         </div>
+        <!-- The workspace's own two pages, on the side of the window where this app
+             already puts "the thing I am looking at right now" — the same side as a
+             zoomed tile's tool panel, and for the same reason. Hidden until asked
+             for, named after the repository it is about, and closed by a zoom,
+             because the tool panel wants that side inside the tile frame.
+             `#board` and `#pr` are moved in here by `app.ts`: both existed as pages
+             of the left panel, and a kanban in a 300px column of names was the
+             defect that moved them. -->
+        <aside id="wspanel" hidden>
+          <div id="wsp-head"></div>
+          <div id="wsp-body">
+            <div id="board" class="panel-page hidden"></div>
+          </div>
+        </aside>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

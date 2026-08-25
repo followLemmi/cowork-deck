@@ -1,7 +1,10 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
-import { applyPanel, firstFocusable, PANEL_TITLE, PANEL_WIDE } from "./view";
+import {
+  applyPanel, applyWorkspacePanel, firstFocusable,
+  PANEL_TITLE, WORKSPACE_PAGES, WORKSPACE_TITLE,
+} from "./view";
 import { wireResizer } from "./resize";
 import { settingsDialog } from "./settings";
 import { syncDialog } from "./sync-dialog";
@@ -9,7 +12,7 @@ import { offerBanner, shouldOffer } from "./sync-offer";
 import {
   applyScale, broadcastScale, clampScale, currentScale, nextScale, prevScale, scaleLabel,
 } from "./ui-scale";
-import type { PanelPage } from "./view";
+import type { PanelPage, WorkspacePage } from "./view";
 import {
   claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
@@ -232,31 +235,25 @@ export function startApp(role: WindowRole): Promise<void> {
   const panelTitles = document.createElement("div");
   panelTitles.className = "panel-titles";
   panelTitles.append(panelScope, panelTitle);
-  /* Only on the two pages that need width. A control that is present and does
-     nothing is worse than one that is absent: `applyPanel` hides it everywhere
-     else, and the same rule governs the key. */
-  const wideBtn = iconButton("columns", "Give the panel the deck's width");
-  wideBtn.id = "panel-wide";
-  wideBtn.onclick = () => setWide(!sidebar.classList.contains("is-wide"));
   /* Collapsing leaves the rail, which is the point: the panel goes and the way
      back stays. A control that hid its own way back would be a control nobody
      presses twice. */
   const shutBtn = iconButton("chevron", "Collapse the panel", "icon--left");
   shutBtn.id = "panel-shut";
   shutBtn.onclick = () => setCollapsed(!sidebar.classList.contains("is-collapsed"));
-  panelHead.append(panelTitles, wideBtn, shutBtn);
+  panelHead.append(panelTitles, shutBtn);
 
   /* --- The panel's width is the person's ---------------------------------
-     Two widths, because they answer two questions: a column of names and a kanban
-     do not want the same one, and sizing one says nothing about the other. Written
-     as a custom property rather than an inline `width`, so the stylesheet keeps
-     the default — `clamp(17.5rem, 19vw, 24rem)` tracks the window and the text
-     size, and an inline pixel width would freeze both the moment anything was
-     dragged. */
+     ONE width now, and that is the change: this column held a kanban until the
+     board moved to `#wspanel`, and a column of names and a kanban wanted two
+     different widths out of one box. What is left here is three lists of names.
+     Written as a custom property rather than an inline `width`, so the stylesheet
+     keeps the default — `clamp(17.5rem, 19vw, 24rem)` tracks the window and the
+     text size, and an inline pixel width would freeze both the moment anything
+     was dragged. */
   const panelGrip = document.createElement("div");
   panelGrip.className = "panel-grip";
   sidebar.append(panelGrip);
-  const panelWide = () => sidebar.classList.contains("is-wide");
   wireResizer({
     grip: panelGrip,
     grow: "right",
@@ -265,14 +262,107 @@ export function startApp(role: WindowRole): Promise<void> {
     max: () => Math.round(window.innerWidth * 0.7),
     read: () => sidebar.getBoundingClientRect().width,
     write: (px) => {
-      sidebar.style.setProperty(panelWide() ? "--panel-wide-w" : "--panel-w", `${px}px`);
+      sidebar.style.setProperty("--panel-w", `${px}px`);
       // The terminals have to be refitted, and the tool panel's 80-column floor
       // re-checked: both follow a box this drag is moving.
       deck.refit();
     },
     commit: (px) => {
-      const patch = panelWide() ? { panelWidePx: Math.round(px) } : { panelPx: Math.round(px) };
-      saveUiState(patch).catch((e) => console.debug("panel width save failed", e));
+      saveUiState({ panelPx: Math.round(px) })
+        .catch((e) => console.debug("panel width save failed", e));
+    },
+  });
+
+  /* --- The workspace's own panel -----------------------------------------
+     The board and the pull requests, on the right of the deck, about ONE
+     repository — the one named in its head.
+
+     Why not in the rail: a global switch that silently changed its subject every
+     time the workspace changed was the old tab bar's defect in a new shape. Why
+     not rows in the tree, which is where they went next: two rows per workspace is
+     twelve identical navigation rows on six workspaces, measured at 261px of a
+     300px column — the height of four session rows — and a kanban opened in that
+     column had to take the deck's width every single time.
+
+     The head, the tabs and the grip are built here; the two pages themselves are
+     `#board` from the markup and `prEl` below, which is why neither needed
+     rewriting to move. */
+  const wspEl = document.querySelector<HTMLElement>("#wspanel")!;
+  const wspHead = document.querySelector<HTMLElement>("#wsp-head")!;
+  const wspBody = document.querySelector<HTMLElement>("#wsp-body")!;
+  const wspScope = document.createElement("span");
+  wspScope.className = "wsp-scope";
+  const wspTitle = document.createElement("span");
+  wspTitle.className = "wsp-title";
+  const wspTitles = document.createElement("div");
+  wspTitles.className = "wsp-titles";
+  wspTitles.append(wspScope, wspTitle);
+  /* Right-pointing, because that is where the panel goes: the rule the whole shell
+     follows is that an arrow names its destination. */
+  const wspShut = iconButton("chevron", "Close the workspace panel");
+  wspShut.onclick = () => closeWorkspacePanel();
+  wspHead.append(wspTitles, wspShut);
+
+  /* A real tab widget, so it is allowed to claim one: `role="tablist"`, two
+     `role="tab"`s over one region, a roving tabindex from `applyWorkspacePanel`
+     and the arrow keys below. The rail next door deliberately does NOT claim it,
+     because navigation between the pages of a panel is not this. */
+  const wspTabs = document.createElement("div");
+  wspTabs.className = "wsp-tabs";
+  wspTabs.setAttribute("role", "tablist");
+  wspTabs.setAttribute("aria-label", "What this workspace shows");
+  const wspTabEls = {} as Record<WorkspacePage, HTMLButtonElement>;
+  /* The board's count, and only when it is not zero: "0" beside a page that says
+     "nothing open" is the same fact stated twice. */
+  const wspCount = document.createElement("span");
+  wspCount.className = "wsp-tab-count";
+  wspCount.hidden = true;
+  for (const page of WORKSPACE_PAGES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "wsp-tab";
+    b.dataset.page = page;
+    b.setAttribute("role", "tab");
+    b.append(document.createTextNode(WORKSPACE_TITLE[page]));
+    b.onclick = () => showWorkspacePage(page);
+    if (page === "board") b.append(wspCount);
+    wspTabEls[page] = b;
+    wspTabs.append(b);
+  }
+  wspTabs.addEventListener("keydown", (e) => {
+    const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (step === 0) return;
+    e.preventDefault();
+    const at = WORKSPACE_PAGES.indexOf(wspPage);
+    const next = WORKSPACE_PAGES[(at + step + WORKSPACE_PAGES.length) % WORKSPACE_PAGES.length];
+    showWorkspacePage(next);
+    wspTabEls[next].focus();
+  });
+  wspEl.insertBefore(wspTabs, wspBody);
+
+  /* On the left edge, because the deck is the box a drag here takes from. Two
+     widths remembered rather than one: the diff's and the page's answer different
+     questions, and sizing one says nothing about the other. */
+  const wspGrip = document.createElement("div");
+  wspGrip.className = "wsp-grip";
+  wspEl.append(wspGrip);
+  const wspWide = () => wspEl.classList.contains("is-wide");
+  wireResizer({
+    grip: wspGrip,
+    grow: "left",
+    label: "Workspace panel width",
+    min: 320,
+    max: () => Math.round(window.innerWidth * 0.75),
+    read: () => wspEl.getBoundingClientRect().width,
+    write: (px) => {
+      wspEl.style.setProperty(wspWide() ? "--wsp-wide-w" : "--wsp-w", `${px}px`);
+      // The deck is the box this drag is moving, so its terminals have to be
+      // refitted and the tool panel's 80-column floor re-checked.
+      deck.refit();
+    },
+    commit: (px) => {
+      const patch = wspWide() ? { wspWidePx: Math.round(px) } : { wspPx: Math.round(px) };
+      saveUiState(patch).catch((e) => console.debug("workspace panel width save failed", e));
     },
   });
 
@@ -393,7 +483,7 @@ export function startApp(role: WindowRole): Promise<void> {
          panel asks for it — not on arrival. The list beside it is four rows of
          text, and a panel that took the deck's width to show those would be the
          full-width screens back under another name. */
-      setWide(true);
+      setWspWide(true);
     },
   });
 
@@ -426,7 +516,7 @@ export function startApp(role: WindowRole): Promise<void> {
       prView.focusFile(pr.number, fileIndex);
       // And gives it back with the diff, which is what makes the widening read as
       // the diff's doing rather than the page's.
-      setWide(false);
+      setWspWide(false);
     },
     // Resolved at call time and guarded the same way `onFetch` is, for the same
     // reason: this can be pressed moments before a workspace switch.
@@ -618,7 +708,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  processes. The interval is the source's, from `boardPollMs`. */
   function scheduleBoardPoll() {
     stopBoardPolling();
-    if (currentPage !== "board" || !document.hasFocus()) return;
+    if (!boardVisible || !document.hasFocus()) return;
     const source = sourceOf(workspaces.active?.tracker ?? null);
     boardTimer = setTimeout(() => void boardTick(), boardPollMs(source));
   }
@@ -642,20 +732,22 @@ export function startApp(role: WindowRole): Promise<void> {
     scheduleBoardPoll();
   }
 
-  /** Give the panel the deck's width, or give it back.
+  /** Give the workspace panel more of the deck, or give it back.
    *
    *  The deck yields by falling into its filmstrip — the layout a zoom already
    *  produces — rather than by disappearing, which is the distinction the whole
-   *  shell rests on. A kanban and a diff are the two things in this app that
-   *  genuinely need width; everything else in the panel is a list of names. */
-  function setWide(on: boolean) {
-    sidebar.classList.toggle("is-wide", on);
+   *  shell rests on. Only one thing asks for this: a diff. The kanban gets the
+   *  panel's own width, which is already three times the left panel's, and the
+   *  list of pull requests is a list of names. */
+  function setWspWide(on: boolean) {
+    wspEl.classList.toggle("is-wide", on);
     if (on) {
       if (!deck.isZoomed()) wideZoomed = deck.zoomActive();
     } else if (wideZoomed) {
       deck.exitZoom();
       wideZoomed = false;
     }
+    deck.refit();
   }
 
   /** Collapse the panel to the rail, or bring it back.
@@ -676,43 +768,88 @@ export function startApp(role: WindowRole): Promise<void> {
     currentPage = page;
     // Choosing a page is asking to see it.
     if (sidebar.classList.contains("is-collapsed")) setCollapsed(false);
-    boardVisible = page === "board";
     applyPanel({
-      pages: {
-        sessions: sessionsPage, board: boardEl, pr: prEl,
-        history: historyEl, scenarios: scenariosPage,
-      },
+      pages: { sessions: sessionsPage, history: historyEl, scenarios: scenariosPage },
       buttons: railBtns,
     }, page);
     panelTitle.textContent = PANEL_TITLE[page];
-    // The button is only on the pages that can use it, and the width follows the
-    // page rather than being remembered per page: a panel that opens wide because
-    // it was wide last time is a panel that took the deck's width for a list of
-    // names.
-    /* The button is offered on the two pages that CAN use the width; only the
-       kanban takes it on arrival. */
-    wideBtn.hidden = !(page === "board" || page === "pr");
-    setWide(PANEL_WIDE[page]);
     moveRailInk();
-    if (page === "board") {
-      // The read is unconditional — opening the page is a deliberate act — and the
-      // chain is armed separately, so an unfocused window reads once and then
-      // waits (see `scheduleBoardPoll`).
-      void refreshBoard();
-      scheduleBoardPoll();
-    } else {
-      stopBoardPolling();
-    }
-    // Leaving a page stops its polling in the same breath as hiding it: a timer
-    // that outlives the page keeps talking to GitHub about something nobody is
-    // looking at.
-    if (page === "pr") void refreshPrs();
-    else stopPrPolling();
     // Always on entering, and only then: the page re-reads on `runs://changed`
     // while it is visible and does not poll at all. Opening it is a deliberate
     // act, so the read is unconditional.
     if (page === "history") void refreshHistory();
   }
+  /** Which of the two the workspace panel is holding.
+   *
+   *  It survives a close on purpose: the two tabs are two views of one thing —
+   *  the work of this repository — so coming back should land where it was left
+   *  rather than resetting to the board every time. */
+  let wspPage: WorkspacePage = "board";
+
+  /** Open the panel on one page. The one route in, from every entry point: the
+   *  chip on the active workspace's row, the crumb, the palette and the keys.
+   *
+   *  A workspace id is passed when a row was pressed and omitted when it was not,
+   *  in which case the active one is the answer — and the head says which it was,
+   *  before anybody has to ask. */
+  function openWorkspacePage(page: WorkspacePage, workspaceId?: string) {
+    if (workspaceId != null && workspaces.active?.id !== workspaceId) {
+      workspaces.activate(workspaceId);
+    }
+    /* A zoomed tile puts its tool panel on this same edge, inside the tile frame.
+       Two panels on one edge is a person guessing which one a drag will move, so
+       the zoom goes rather than the panel opening under it. */
+    if (deck.isZoomed()) deck.exitZoom();
+    wspEl.hidden = false;
+    showWorkspacePage(page);
+  }
+
+  /** Switch the tab. The panel is already open — the tabs live inside it. */
+  function showWorkspacePage(page: WorkspacePage) {
+    wspPage = page;
+    boardVisible = page === "board" && !wspEl.hidden;
+    applyWorkspacePanel({ pages: { board: boardEl, pr: prEl }, tabs: wspTabEls }, page);
+    drawWspHead();
+    /* The read on arrival is unconditional — opening a page is a deliberate act —
+       and the poll chain is armed separately, so an unfocused window reads once and
+       then waits. Leaving a page stops its polling in the same breath as hiding it:
+       a timer that outlives the page keeps talking to GitHub about something nobody
+       is looking at. */
+    if (page === "board") { void refreshBoard(); scheduleBoardPoll(); }
+    else stopBoardPolling();
+    if (page === "pr") void refreshPrs();
+    else stopPrPolling();
+    deck.refit();
+  }
+
+  /** Put it away. Both polls stop and the deck takes its width back. */
+  function closeWorkspacePanel() {
+    if (wspEl.hidden) return;
+    wspEl.hidden = true;
+    boardVisible = false;
+    stopBoardPolling();
+    stopPrPolling();
+    setWspWide(false);
+    deck.refit();
+    /* Focus does not vanish with the panel: the chip that opens it is where this
+       came from, and a closed panel that left the caret nowhere is a keyboard dead
+       end. */
+    workspaces.focusActive();
+  }
+
+  /** Whose panel this is, in the two facts that answer it: the repository, and the
+   *  account a push from it goes out as. This is the whole reason these two pages
+   *  are allowed to exist outside the tree — in the rail they showed one
+   *  repository while naming none. */
+  function drawWspHead() {
+    const ws = workspaces.active;
+    wspTitle.textContent = WORKSPACE_TITLE[wspPage];
+    wspScope.textContent = ws
+      ? `${ws.name} · ${ws.github?.login ?? "no account bound"}`
+      : "No workspace is selected";
+    if (ws) wspScope.title = ws.path;
+  }
+
   /** The mark travels to the button that is current. Read from the DOM rather
    *  than computed from an index, so a rail that grows a sixth entry needs no
    *  arithmetic here. */
@@ -761,6 +898,15 @@ export function startApp(role: WindowRole): Promise<void> {
     deck.setActiveWorkspace(id);
     terminals.setWorkspace(id);
     drawPanelScope();
+    /* The workspace panel follows, because its head NAMES the repository: leaving
+       the previous name written above a board that has already changed is the exact
+       defect that took these two pages out of the rail.
+       The head and the count only. The READ belongs to the switch itself, which
+       already does it once for whichever page is open — doing it here as well is
+       two reads of one board for one act, and the poll chain re-arms from there at
+       the new source's interval. */
+    drawWspHead();
+    drawWspCount();
   }
 
   /** Whose data the panel is holding, written where it is read: above the page,
@@ -1164,9 +1310,28 @@ export function startApp(role: WindowRole): Promise<void> {
   }
 
   /** The sidebar counts — one handle covering every workspace. */
+  /** Open tasks per workspace, and the one number that gets shown: the active
+   *  workspace's, on the board's own tab.
+   *
+   *  It used to be a badge in the tree — first beside the waiting count on the
+   *  workspace's own line, where "12" beside "1 waiting" said neither what it
+   *  counted, then on a "Board" row of its own under every workspace. On the tab it
+   *  sits beside the page it counts, which is the only place it needs no
+   *  explaining. */
   async function refreshCounts() {
-    try { workspaces.setCounts(await taskOpenCounts()); }
-    catch (e) { console.debug("taskOpenCounts failed", e); }
+    try {
+      openCounts = await taskOpenCounts();
+      drawWspCount();
+    } catch (e) { console.debug("taskOpenCounts failed", e); }
+  }
+  let openCounts: Record<string, number> = {};
+  function drawWspCount() {
+    const id = workspaces.active?.id;
+    const n = id ? (openCounts[id] ?? 0) : 0;
+    wspCount.hidden = n === 0;
+    wspCount.textContent = n > 0 ? String(n) : "";
+    if (n > 0) wspTabEls.board.title = `${n} open`;
+    else wspTabEls.board.removeAttribute("title");
   }
 
   /** ✓ on a card. A file card is resolved; an issue is closed, which is public, so
@@ -1369,6 +1534,11 @@ export function startApp(role: WindowRole): Promise<void> {
     loading: false,
   };
 
+  /** The mirror of `boardVisible`, and a function rather than a variable because
+   *  the pull request page has no watcher to keep one honest: the answer is two
+   *  facts that are already on screen. */
+  const prVisible = () => !wspEl.hidden && wspPage === "pr";
+
   function stopPrPolling() {
     if (prTimer !== null) { clearTimeout(prTimer); prTimer = null; }
   }
@@ -1378,7 +1548,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  the two conditions are checked and one place that owns the handle. */
   function schedulePrPoll() {
     stopPrPolling();
-    if (currentPage !== "pr" || !document.hasFocus()) return;
+    if (!prVisible() || !document.hasFocus()) return;
     prTimer = setTimeout(() => void refreshPrs(), pollIntervalMs(prState.prs));
   }
 
@@ -1464,11 +1634,11 @@ export function startApp(role: WindowRole): Promise<void> {
   // window polls nothing, and coming back refreshes at once rather than at the
   // next tick.
   window.addEventListener("focus", () => {
-    if (currentPage === "pr") void refreshPrs();
+    if (prVisible()) void refreshPrs();
     // Coming back refreshes at once rather than at the next tick, which is the
     // whole point of pausing on blur — and `boardTick` re-arms the chain the blur
     // cleared.
-    if (currentPage === "board") void boardTick();
+    if (boardVisible) void boardTick();
   });
   window.addEventListener("blur", () => { stopPrPolling(); stopBoardPolling(); });
 
@@ -1743,7 +1913,7 @@ export function startApp(role: WindowRole): Promise<void> {
     // row has to be cleared from here. Two repositories both have a #7, and a
     // stale mark would land on whichever row happens to share the number.
     prView.setOpenDiff(null, null);
-    if (currentPage === "pr") void refreshPrs();
+    if (prVisible()) void refreshPrs();
     // The records on screen belong to the workspace that was active a moment ago.
     // A run belongs to the workspace it actually happened in, so switching
     // workspace switches what is listed — the same rule the other three screens
@@ -1850,10 +2020,11 @@ export function startApp(role: WindowRole): Promise<void> {
   workspaces.setTreeHooks({
     reselect: (id) => deck.toggleGroup(id),
     rendered: () => deck.repaintList(),
-    /* Activating on the way in is the whole point of these two living in the tree:
-       the page that opens is about the workspace whose row you pressed, and it says
-       so in the panel's head before it is asked. */
-    openPage: (id, page) => { workspaces.activate(id); setPanel(page); },
+    /* The chip on the active workspace's row, which used to only STATE that three
+       pages were showing this workspace and now opens two of them. Activating on
+       the way in survives from when these were rows in the tree: the panel that
+       opens is about the workspace whose row was pressed, and its head says so. */
+    openPage: (id, page) => openWorkspacePage(page, id),
   });
 
   /** The top bar's readings, and the rail's dot, from the deck's own counts.
@@ -1910,6 +2081,12 @@ export function startApp(role: WindowRole): Promise<void> {
   deck.setZoomListener((zoomed) => {
     if (zoomed) setCollapsed(true, false);
     else if (!collapsedByHand) setCollapsed(false, false);
+    /* And the workspace panel goes, because a zoomed tile's tool panel takes this
+       same edge inside the tile frame. Two panels on one edge is a person guessing
+       which one a drag will move. It is not brought back on un-zoom: it was opened
+       by hand and closed by the app, and restoring it would put a board over a deck
+       somebody just came back to. */
+    if (zoomed) closeWorkspacePanel();
   });
   /* One width for the tool panel, remembered for the app: every session's tools
      are the same tool, so sizing it once is sizing it. Written on the root, which
@@ -2025,8 +2202,11 @@ export function startApp(role: WindowRole): Promise<void> {
          the keyboard route, as it is for the pages themselves. */
       { id: "panel", title: "Panel: collapse or show", run: () => setCollapsed(!sidebar.classList.contains("is-collapsed")) },
       { id: "sessions", title: "Panel: workspaces and sessions", run: () => setPanel("sessions") },
-      { id: "board", title: "Panel: the task board", run: () => setPanel("board") },
-      { id: "prs", title: "Panel: pull requests", run: () => setPanel("pr") },
+      /* Named for what they are about rather than for where they live: these two
+         are one workspace's, and the panel they open says which. */
+      { id: "board", title: "Workspace: the task board", run: () => openWorkspacePage("board") },
+      { id: "prs", title: "Workspace: pull requests", run: () => openWorkspacePage("pr") },
+      { id: "wsp-close", title: "Workspace panel: close", run: () => closeWorkspacePanel() },
       { id: "history", title: "Panel: the journal", run: () => setPanel("history") },
       { id: "scenarios", title: "Panel: scenarios", run: () => setPanel("scenarios") },
       { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
@@ -2248,8 +2428,8 @@ export function startApp(role: WindowRole): Promise<void> {
     "prev-region": () => cycleRegion(-1),
     "panel": () => setCollapsed(!sidebar.classList.contains("is-collapsed")),
     "sessions": () => setPanel("sessions"),
-    "board": () => setPanel("board"),
-    "prs": () => setPanel("pr"),
+    "board": () => openWorkspacePage("board"),
+    "prs": () => openWorkspacePage("pr"),
     "history": () => setPanel("history"),
     "scenarios": () => setPanel("scenarios"),
     "new-task": () => { void captureTask(); },
@@ -2332,7 +2512,8 @@ export function startApp(role: WindowRole): Promise<void> {
          widths so that a value nobody has set leaves the stylesheet's own — which
          tracks the window and the text size — in charge. */
       if (ui.panelPx) sidebar.style.setProperty("--panel-w", `${ui.panelPx}px`);
-      if (ui.panelWidePx) sidebar.style.setProperty("--panel-wide-w", `${ui.panelWidePx}px`);
+      if (ui.wspPx) wspEl.style.setProperty("--wsp-w", `${ui.wspPx}px`);
+      if (ui.wspWidePx) wspEl.style.setProperty("--wsp-wide-w", `${ui.wspWidePx}px`);
       if (ui.toolPx) document.documentElement.style.setProperty("--tool-w", `${ui.toolPx}px`);
     } catch (e) {
       console.debug("ui state read failed, using the defaults", e);

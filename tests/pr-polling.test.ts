@@ -126,7 +126,9 @@ describe("pull request polling", () => {
       // before any of the polling under test here can run.
       '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
       + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
-      + '<div id="board" class="hidden"></div></div></div>';
+      + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
+    + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
+    + '</div></div>';
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
 
     await import("../src/app").then((m) => m.startApp({ kind: "main" }));
@@ -147,7 +149,10 @@ describe("pull request polling", () => {
     // by a selector either.
     const foot = document.querySelector<HTMLButtonElement>("#rail .rail-btn:not([data-page])")!;
     expect(foot.getAttribute("aria-label")).toBe("Settings");
-    const [termBtn] = buttons;
+    /* Leaving is CLOSING now, not pressing a rail button: the rail holds the app's
+       three pages and these two are in a panel of their own, so the way out is that
+       panel's own control — which is also the way out a person has. */
+    const termBtn = { click: () => document.querySelector<HTMLButtonElement>("#wsp-head button")!.click() };
     const prBtn = { click: () => treeHooks!.openPage(active!.id, "pr") };
 
     // Opening the view reads once, then once per interval. Nothing is running,
@@ -217,7 +222,7 @@ describe("board polling", () => {
     active = WS;
     listTasksMock.mockClear();
 
-    const [termBtn] = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
+    const termBtn = { click: () => document.querySelector<HTMLButtonElement>("#wsp-head button")!.click() };
     const boardBtn = { click: () => treeHooks!.openPage(active!.id, "board") };
 
     // Opening reads once, then once per interval — and exactly once, which a
@@ -264,7 +269,7 @@ describe("board polling", () => {
   it("polls a github board every thirty seconds, not every five", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const [termBtn] = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
+    const termBtn = { click: () => document.querySelector<HTMLButtonElement>("#wsp-head button")!.click() };
     const boardBtn = { click: () => treeHooks!.openPage(active!.id, "board") };
 
     // Re-entered after the switch, so the interval is chosen from the workspace
@@ -300,7 +305,7 @@ describe("board polling", () => {
   it("re-arms at the new source's interval when the workspace changes", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const [termBtn] = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
+    const termBtn = { click: () => document.querySelector<HTMLButtonElement>("#wsp-head button")!.click() };
     const boardBtn = { click: () => treeHooks!.openPage(active!.id, "board") };
 
     // Open the board on the GitHub workspace, so a thirty-second tick is armed.
@@ -361,7 +366,7 @@ describe("the last good list", () => {
   it("keeps a github board's cards through a failed tick, and never a file board's", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const [termBtn] = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
+    const termBtn = { click: () => document.querySelector<HTMLButtonElement>("#wsp-head button")!.click() };
     const boardBtn = { click: () => treeHooks!.openPage(active!.id, "board") };
 
     active = WS_GH;
@@ -405,7 +410,7 @@ describe("the last good list", () => {
   it("draws the unavailable screen when gh is missing, never a board", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const [termBtn] = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
+    const termBtn = { click: () => document.querySelector<HTMLButtonElement>("#wsp-head button")!.click() };
     const boardBtn = { click: () => treeHooks!.openPage(active!.id, "board") };
 
     active = WS_GH;
@@ -449,7 +454,7 @@ describe("the loading state", () => {
   it("never skeletons over a board that already has rows", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const [termBtn] = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
+    const termBtn = { click: () => document.querySelector<HTMLButtonElement>("#wsp-head button")!.click() };
     const boardBtn = { click: () => treeHooks!.openPage(active!.id, "board") };
 
     active = WS_GH;
@@ -482,7 +487,7 @@ describe("the loading state", () => {
   it("keeps a failed pull request read on screen instead of skeletoning over it", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const [termBtn] = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
+    const termBtn = { click: () => document.querySelector<HTMLButtonElement>("#wsp-head button")!.click() };
     const prBtn = { click: () => treeHooks!.openPage(active!.id, "pr") };
 
     active = WS;

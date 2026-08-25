@@ -36,6 +36,10 @@ const REQUIRED = [
   // held: the rail selects what the panel shows, the ledger says what wants a
   // person, and the panel is a head over a stack of pages.
   "rail", "ledger", "panel-head", "panel-stack",
+  // The workspace panel, and the two boxes inside it that `startApp` queries with a
+  // non-null assertion. `#board` above moved INTO it: the board is one
+  // repository's, and the left panel is a column of names.
+  "wspanel", "wsp-head", "wsp-body",
 ];
 
 describe("the pages that mount the app", () => {

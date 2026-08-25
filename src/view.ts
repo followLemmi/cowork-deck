@@ -18,32 +18,32 @@
  *  they belonged to one screen out of four. There is one stage now and it is
  *  always the deck, so the drawer under it always belongs.
  */
-export type PanelPage = "sessions" | "board" | "pr" | "history" | "scenarios";
+export type PanelPage = "sessions" | "history" | "scenarios";
 
-export const PANEL_PAGES: PanelPage[] = ["sessions", "board", "pr", "history", "scenarios"];
+export const PANEL_PAGES: PanelPage[] = ["sessions", "history", "scenarios"];
 
 /** What each page is called in the panel's own head. The rail says it in an
- *  accessible name; the head says it in words, because a rail of five icons
- *  cannot. */
+ *  accessible name; the head says it in words, because a rail of icons cannot. */
 export const PANEL_TITLE: Record<PanelPage, string> = {
   sessions: "Workspaces and sessions",
-  board: "Board",
-  pr: "Pull requests",
   history: "Journal",
   scenarios: "Scenarios",
 };
 
-/** Which pages may take the deck's width — the deck falling into its filmstrip,
- *  the same mechanism a zoomed tile already uses, which is why the deck YIELDING
- *  space is not the deck disappearing.
+/** The two pages that are NOT the app's — see `WORKSPACE_TITLE`. */
+export type WorkspacePage = "board" | "pr";
+
+export const WORKSPACE_PAGES: WorkspacePage[] = ["board", "pr"];
+
+/** What the workspace panel's two tabs are called.
  *
- *  Two of them may, and only one takes it on arrival. A kanban is columns and
- *  needs all of them on screen at once; a list of pull requests is a list of
- *  names, and it is the DIFF that needs room — so the pull request page opens
- *  narrow and widens when a diff is opened in it. A panel that took the deck's
- *  width to show four rows of text would be the screens back under a new name. */
-export const PANEL_WIDE: Record<PanelPage, boolean> = {
-  sessions: false, board: true, pr: false, history: false, scenarios: false,
+ *  They were three words in the rail beside the journal and the scenarios, which
+ *  made them read as the app's own pages — and then they changed subject in
+ *  silence every time the workspace changed. They are the same two words here,
+ *  under a head that names the repository, which is the whole fix. */
+export const WORKSPACE_TITLE: Record<WorkspacePage, string> = {
+  board: "Board",
+  pr: "Pull requests",
 };
 
 export interface PanelElements {
@@ -58,6 +58,31 @@ export function applyPanel(el: PanelElements, page: PanelPage): void {
   for (const name of PANEL_PAGES) {
     el.pages[name]?.classList.toggle("hidden", name !== page);
     mark(el.buttons[name], name === page);
+  }
+}
+
+export interface WorkspacePanelElements {
+  pages: Record<WorkspacePage, HTMLElement>;
+  tabs: Record<WorkspacePage, HTMLElement>;
+}
+
+/** Show one of the workspace panel's two pages.
+ *
+ *  `aria-selected` here and `aria-current` in `applyPanel`, and the difference is
+ *  not cosmetic: the rail is navigation between pages of one panel, while these
+ *  two ARE a tab widget — two controls over one region, implemented with
+ *  `role="tablist"` and arrow keys in `app.ts`. Claiming the pattern is only
+ *  allowed when the pattern is there. */
+export function applyWorkspacePanel(el: WorkspacePanelElements, page: WorkspacePage): void {
+  for (const name of WORKSPACE_PAGES) {
+    el.pages[name]?.classList.toggle("hidden", name !== page);
+    const tab = el.tabs[name];
+    if (!tab) continue;
+    const on = name === page;
+    tab.setAttribute("aria-selected", String(on));
+    // A roving tabindex, which is the half of the pattern people forget: one stop
+    // for the whole tablist, and the arrows move within it.
+    tab.tabIndex = on ? 0 : -1;
   }
 }
 

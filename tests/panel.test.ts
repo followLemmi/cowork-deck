@@ -2,16 +2,27 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import styles from "../src/styles.css?raw";
 import {
-  applyPanel, firstFocusable, PANEL_PAGES, PANEL_TITLE, PANEL_WIDE,
+  applyPanel, applyWorkspacePanel, firstFocusable,
+  PANEL_PAGES, PANEL_TITLE, WORKSPACE_PAGES, WORKSPACE_TITLE,
   type PanelElements, type PanelPage,
+  type WorkspacePage, type WorkspacePanelElements,
 } from "../src/view";
 
-/** Mirrors the four pages that mount the app: the rail, the panel as a head over a
- *  stack of pages, and the deck OUTSIDE that stack. The last part is the whole
- *  point of the file — this is the one test that reads the real stylesheet, and a
- *  harness that put the deck inside the panel could not catch the regression the
- *  shell exists to make impossible. */
-function mount(): PanelElements & { deck: HTMLElement } {
+/** Mirrors the four pages that mount the app: the rail, the left panel as a head
+ *  over a stack of pages, the deck OUTSIDE that stack, and the workspace panel on
+ *  the other side of the deck. The deck's position is the whole point of the file —
+ *  this is the one test that reads the real stylesheet, and a harness that put the
+ *  deck inside a panel could not catch the regression the shell exists to make
+ *  impossible.
+ *
+ *  Two panels now, and the split is the subject: three pages on the left are the
+ *  APP's — every workspace's tree, every run's journal, every scenario — and the
+ *  two on the right are ONE repository's. */
+function mount(): PanelElements & {
+  deck: HTMLElement;
+  wsp: WorkspacePanelElements;
+  wspEl: HTMLElement;
+} {
   document.head.replaceChildren();
   const style = document.createElement("style");
   style.textContent = styles;
@@ -21,12 +32,19 @@ function mount(): PanelElements & { deck: HTMLElement } {
     '<nav id="rail"></nav>' +
     '<aside id="sidebar"><div id="panel-head"></div><div id="panel-stack">' +
     '<div id="ws-page" class="panel-page"></div>' +
-    '<div id="board" class="panel-page hidden"></div>' +
-    '<div id="pr" class="pr-view panel-page hidden"></div>' +
     '<div id="history" class="panel-page hidden"></div>' +
     '<div id="sk-page" class="panel-page hidden"></div>' +
     '</div></aside>' +
     '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>' +
+    '<aside id="wspanel" hidden><div id="wsp-head"></div>' +
+    '<div class="wsp-tabs" role="tablist">' +
+    '<button class="wsp-tab" role="tab" data-page="board"></button>' +
+    '<button class="wsp-tab" role="tab" data-page="pr"></button>' +
+    '</div>' +
+    '<div id="wsp-body">' +
+    '<div id="board" class="panel-page hidden"></div>' +
+    '<div id="pr" class="pr-view panel-page hidden"></div>' +
+    '</div></aside>' +
     "</div></div>";
   const pick = (sel: string) => document.querySelector<HTMLElement>(sel)!;
   const rail = pick("#rail");
@@ -40,11 +58,18 @@ function mount(): PanelElements & { deck: HTMLElement } {
   }
   return {
     pages: {
-      sessions: pick("#ws-page"), board: pick("#board"), pr: pick("#pr"),
-      history: pick("#history"), scenarios: pick("#sk-page"),
+      sessions: pick("#ws-page"), history: pick("#history"), scenarios: pick("#sk-page"),
     },
     buttons,
     deck: pick("#deck"),
+    wspEl: pick("#wspanel"),
+    wsp: {
+      pages: { board: pick("#board"), pr: pick("#pr") },
+      tabs: {
+        board: pick('.wsp-tab[data-page="board"]'),
+        pr: pick('.wsp-tab[data-page="pr"]'),
+      },
+    },
   };
 }
 
@@ -74,12 +99,13 @@ describe("applyPanel", () => {
     }
   });
 
-  /** Three of the five pages declare their `display` with an id selector, so their
-   *  `hidden` has to as well: a grouped class rule would leave `display: flex`
-   *  winning and two pages on screen at once. jsdom's getComputedStyle is what
-   *  makes this checkable — and also what makes the grouping trap real, since it
-   *  applies a group's highest specificity to every selector in it. */
-  it.each(["board", "pr", "sessions", "scenarios"] as PanelPage[])(
+  /** The pages that declare their `display` with an id selector need their
+   *  `hidden` declared with one too: a grouped class rule would leave
+   *  `display: flex` winning and two pages on screen at once. jsdom's
+   *  getComputedStyle is what makes this checkable — and also what makes the
+   *  grouping trap real, since it applies a group's highest specificity to every
+   *  selector in it. */
+  it.each(["sessions", "scenarios"] as PanelPage[])(
     "hides #%s against the real stylesheet",
     (page) => {
       applyPanel(el, "history");
@@ -100,24 +126,101 @@ describe("applyPanel", () => {
   });
 
   it("drops aria-current instead of setting it to false", () => {
-    applyPanel(el, "board");
+    applyPanel(el, "history");
     applyPanel(el, "sessions");
     // `aria-current="false"` is announced by some readers; the absent state here
     // is "not this one", which is what no attribute means.
-    expect(el.buttons.board.hasAttribute("aria-current")).toBe(false);
+    expect(el.buttons.history.hasAttribute("aria-current")).toBe(false);
   });
 
   it("carries a title for every page, because a rail of icons cannot", () => {
     for (const page of PANEL_PAGES) expect(PANEL_TITLE[page]).toBeTruthy();
   });
 
-  /** Which page takes the deck's width ON ARRIVAL — one, and it is the kanban,
-   *  whose columns all have to be on screen at once. The pull request page can take
-   *  it too but does not ask until a diff is opened in it: the list beside the diff
-   *  is four rows of text, and a panel that took the deck's width for those would be
-   *  the full-width screens back under another name. */
-  it("gives the deck's width to the kanban and to nothing else on arrival", () => {
-    expect(PANEL_PAGES.filter((p) => PANEL_WIDE[p])).toEqual(["board"]);
+  /** The left panel has no wide mode any more, and this is the assertion that
+   *  keeps it from growing one back. It had one because the kanban lived here, in a
+   *  column sized for names — so every visit to a board took the deck's width and
+   *  dropped it into its filmstrip. The board has its own panel now; what is left
+   *  on this side is three lists of names, and none of them wants the deck's
+   *  room. */
+  it("never asks for the deck's width, on any page", () => {
+    for (const page of PANEL_PAGES) {
+      applyPanel(el, page);
+      const side = document.querySelector<HTMLElement>("#sidebar")!;
+      expect(side.classList.contains("is-wide")).toBe(false);
+    }
+    expect(styles).not.toContain("#sidebar.is-wide");
+  });
+});
+
+/** The workspace panel: two tabs over one region, about one repository.
+ *
+ *  These two were pages of the left panel and then rows inside every workspace of
+ *  the tree. Both failed the same way — the first made a 300px column hold a
+ *  kanban, the second charged two rows per workspace forever — and the fix is one
+ *  panel that names its subject in its own head. */
+describe("applyWorkspacePanel", () => {
+  let el: ReturnType<typeof mount>;
+  beforeEach(() => { el = mount(); });
+
+  it("shows exactly one of the two at a time", () => {
+    for (const page of WORKSPACE_PAGES) {
+      applyWorkspacePanel(el.wsp, page);
+      expect(WORKSPACE_PAGES.filter((p) => shown(el.wsp.pages[p]))).toEqual([page]);
+    }
+  });
+
+  /** Both pages declare `display` with an id selector — `#board { display: flex }`
+   *  is the rule this project has already been bitten by twice — so the hiding has
+   *  to outweigh an id. Read against the real stylesheet for that reason. */
+  it.each(["board", "pr"] as WorkspacePage[])(
+    "hides #%s against the real stylesheet",
+    (page) => {
+      const other: WorkspacePage = page === "board" ? "pr" : "board";
+      applyWorkspacePanel(el.wsp, other);
+      expect(getComputedStyle(el.wsp.pages[page]).display).toBe("none");
+      expect(shown(el.wsp.pages[other])).toBe(true);
+    },
+  );
+
+  /** A real tab widget, so it owes the whole pattern: one selected tab, and a
+   *  roving tabindex so the tablist is ONE stop on the way round rather than one
+   *  stop per tab. `aria-selected="false"` stays on the unselected one — unlike
+   *  `aria-current`, it is part of the pattern and readers expect both halves. */
+  it("selects exactly one tab and moves the tab stop with it", () => {
+    for (const page of WORKSPACE_PAGES) {
+      applyWorkspacePanel(el.wsp, page);
+      const on = WORKSPACE_PAGES.filter(
+        (p) => el.wsp.tabs[p].getAttribute("aria-selected") === "true",
+      );
+      expect(on).toEqual([page]);
+      expect(WORKSPACE_PAGES.map((p) => (el.wsp.tabs[p] as HTMLButtonElement).tabIndex))
+        .toEqual(WORKSPACE_PAGES.map((p) => (p === page ? 0 : -1)));
+    }
+  });
+
+  it("carries a title for each of the two", () => {
+    for (const page of WORKSPACE_PAGES) expect(WORKSPACE_TITLE[page]).toBeTruthy();
+  });
+
+  /** The panel is hidden with the attribute, and `display: grid` in its own rule
+   *  would outrank the UA's `[hidden] { display: none }` — the same trap
+   *  `#board.hidden` documents. This is that rule's test. */
+  it("is not on screen while hidden, against the real stylesheet", () => {
+    expect(getComputedStyle(el.wspEl).display).toBe("none");
+    el.wspEl.hidden = false;
+    expect(getComputedStyle(el.wspEl).display).toBe("grid");
+  });
+
+  /** Switching tabs does not ask for width. Only a diff does, and it asks from the
+   *  drawer that opens it — a panel that arrived wide because it was wide last time
+   *  would be the full-width screens back under another name. */
+  it("leaves the width alone", () => {
+    el.wspEl.hidden = false;
+    for (const page of WORKSPACE_PAGES) {
+      applyWorkspacePanel(el.wsp, page);
+      expect(el.wspEl.classList.contains("is-wide")).toBe(false);
+    }
   });
 });
 
@@ -132,14 +235,14 @@ describe("firstFocusable", () => {
 
   it("finds nothing inside the page that is hidden", () => {
     el.pages.sessions.innerHTML = '<button id="row">a session row</button>';
-    el.pages.board.innerHTML = '<button id="card">a board card</button>';
-    applyPanel(el, "board");
+    el.pages.history.innerHTML = '<button id="run">a run</button>';
+    applyPanel(el, "history");
     expect(firstFocusable(el.pages.sessions)).toBeNull();
-    expect(firstFocusable(el.pages.board)?.id).toBe("card");
+    expect(firstFocusable(el.pages.history)?.id).toBe("run");
 
     applyPanel(el, "sessions");
     expect(firstFocusable(el.pages.sessions)?.id).toBe("row");
-    expect(firstFocusable(el.pages.board)).toBeNull();
+    expect(firstFocusable(el.pages.history)).toBeNull();
   });
 
   it("skips a hidden block and keeps looking rather than stopping at it", () => {
@@ -155,14 +258,14 @@ describe("firstFocusable", () => {
   });
 
   it("ignores a disabled control, which cannot take focus", () => {
-    el.pages.board.innerHTML = '<button disabled>no</button><button id="yes">yes</button>';
-    applyPanel(el, "board");
-    expect(firstFocusable(el.pages.board)?.id).toBe("yes");
+    el.wsp.pages.board.innerHTML = '<button disabled>no</button><button id="yes">yes</button>';
+    applyWorkspacePanel(el.wsp, "board");
+    expect(firstFocusable(el.wsp.pages.board)?.id).toBe("yes");
   });
 
   it("returns null when there is genuinely nothing, so the caller can fall back", () => {
-    el.pages.board.innerHTML = "<p>an empty board</p>";
-    applyPanel(el, "board");
-    expect(firstFocusable(el.pages.board)).toBeNull();
+    el.wsp.pages.board.innerHTML = "<p>an empty board</p>";
+    applyWorkspacePanel(el.wsp, "board");
+    expect(firstFocusable(el.wsp.pages.board)).toBeNull();
   });
 });
