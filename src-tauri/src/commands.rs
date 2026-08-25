@@ -710,6 +710,17 @@ pub fn prepare_workspace(state: State<AppState>, workspace_id: String) -> Sessio
     session_auth(&state, Some(&workspace_id), github.as_ref()).auth
 }
 
+/// The sentence a workspace with no folder on this machine gets.
+///
+/// A marker the frontend can match on, the way `unavailableFrom` matches the
+/// `gh` states, plus prose for anywhere that only shows the text.
+pub fn no_local_path(workspace_id: Option<&str>) -> String {
+    let _ = workspace_id;
+    "no-local-path: this workspace has no folder on this machine yet. \
+     Point it at one before starting a session here."
+        .to_string()
+}
+
 /// Cap on one page of pull requests. Named rather than inlined because the
 /// frontend prints "showing N of M" against it: a silently truncated list reads
 /// as a complete one.
@@ -1281,7 +1292,15 @@ fn workspace_path(state: &State<AppState>, workspace_id: &str) -> Result<String,
         let store = state.store.lock().map_err(|_| "store lock".to_string())?;
         store.workspaces().into_iter().find(|w| w.id == workspace_id).map(|w| w.path)
     };
-    found.ok_or_else(|| "no such workspace".to_string())
+    // Empty is not the same as absent, and both are refused: a workspace that
+    // arrived over sync exists as a record while naming no folder here, and
+    // every caller of this — worktrees, git status, `gh` resolving from a
+    // directory — would otherwise run somewhere unspecified.
+    match found {
+        Some(p) if !p.trim().is_empty() => Ok(p),
+        Some(_) => Err(no_local_path(Some(workspace_id))),
+        None => Err("no such workspace".to_string()),
+    }
 }
 
 /// Where this pull request's worktree would live, and whether it is there.
@@ -1632,6 +1651,15 @@ pub fn start_session(
     // see `PtyManager::spawn`.
     replace: bool,
 ) -> Result<SessionAuth, String> {
+    // A workspace that arrived over sync has no folder on this machine until
+    // somebody says where it is (#316). Everything downstream — the pty's
+    // working directory, worktrees, `gh` resolving a repository from where it
+    // stands — assumes this names a directory that exists. Refused here with a
+    // sentence, because the alternative is a shell in an unspecified directory
+    // and a failure three layers further in.
+    if cwd.trim().is_empty() {
+        return Err(no_local_path(workspace_id.as_deref()));
+    }
     let resolved = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let program = resolved.program;
     let settings = build_settings_json(&state.reporter_path, state.listener_port, &session, &state.task_bin_path);
@@ -2453,6 +2481,21 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
         tokens: Some(SessionTokens { context: last_context(main), spend, subagents: counted }),
         title,
         title_source,
+    }
+}
+
+#[cfg(test)]
+mod path_guard_tests {
+    use super::no_local_path;
+
+    /// The marker is what the frontend matches on, the way `unavailableFrom`
+    /// matches the `gh` states — so it is bare and stays at the front, and the
+    /// prose after it can be reworded without breaking the match.
+    #[test]
+    fn the_sentence_carries_a_marker_and_says_what_to_do() {
+        let m = no_local_path(Some("ws-1"));
+        assert!(m.starts_with("no-local-path:"), "{m}");
+        assert!(m.to_lowercase().contains("point it at one"), "{m}");
     }
 }
 
