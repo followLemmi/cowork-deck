@@ -41,6 +41,7 @@ vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn().mockResolvedValue(undefi
 
 import { Deck } from "../src/sessions";
 import { closeSession } from "../src/ipc";
+import { emit } from "@tauri-apps/api/event";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#61afef" };
 
@@ -99,6 +100,39 @@ describe("sessions held by another window", () => {
     const row = listEl.querySelector<HTMLElement>(".sess-row.remote")!;
     expect(row.getAttribute("aria-disabled")).toBeNull();
     expect(row.getAttribute("aria-label")).toContain("another window");
+  });
+
+  /** The loop this guard exists to stop, and it is not an optimisation.
+   *
+   *  `renderList` emits `session://waiting` so the other windows know what is
+   *  here, and a Tauri emit is global — the sender hears itself. The main window's
+   *  own report therefore comes back to its own listener, which recomputes the
+   *  proxies and calls this. Rendering unconditionally closed the circle: render,
+   *  emit, hear, render, as fast as the machine could go.
+   *
+   *  It did not look like a loop. The sidebar is rebuilt from `innerHTML`, so a
+   *  row strobed under the cursor as `:hover` was dropped and reapplied, and a
+   *  click never landed because the element it went down on was gone before it
+   *  came up. */
+  it("does not re-render when nothing about them has changed", () => {
+    const { deck } = makeDeck();
+    const announcements = () =>
+      vi.mocked(emit).mock.calls.filter(([name]) => name === "session://waiting").length;
+
+    deck.setRemoteSessions(remote("working"));
+    const after = announcements();
+
+    deck.setRemoteSessions(remote("working"));
+    deck.setRemoteSessions(remote("working"));
+    expect(announcements()).toBe(after);
+  });
+
+  /** And a real change still lands, once. */
+  it("re-renders when one of them changes state", () => {
+    const { deck, listEl } = makeDeck();
+    deck.setRemoteSessions(remote("working"));
+    deck.setRemoteSessions(remote("waitingInput"));
+    expect(listEl.querySelector(".sess-group-badge")?.textContent).toBe("1 waiting");
   });
 
   /** A window that has gone stops reporting, and its proxies go with it rather

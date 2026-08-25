@@ -157,12 +157,33 @@ export class Deck {
    *  own does not disappear into the void. Clicking one raises the window that
    *  has it. */
   private remote: { session: string; name: string; state: SessionState; workspaceId?: string; label: string }[] = [];
+  /** What the other windows hold, as they last reported it.
+   *
+   *  **The comparison is load-bearing, not an optimisation.** `renderList` emits
+   *  `session://waiting` so the other windows know what is here, and a Tauri emit
+   *  is global — the sender hears itself. So the main window's own report comes
+   *  straight back to its own listener, which recomputes the proxies and calls
+   *  this. Rendering unconditionally closed that circle: render, emit, hear,
+   *  render, at whatever rate the machine could manage.
+   *
+   *  What it looked like is worth writing down, because it does not look like a
+   *  loop. The sidebar is rebuilt from `innerHTML`, so `:hover` was dropped and
+   *  reapplied continuously — a row strobing under the cursor — and a click never
+   *  landed, because the element it went down on was gone before it came up.
+   *
+   *  Comparing serialised is the same idiom `persistLayout` uses below, and for a
+   *  list this size it costs nothing worth measuring. A real change still
+   *  re-renders, once: the second pass finds the proxies unchanged and stops. */
   setRemoteSessions(
     list: { session: string; name: string; state: SessionState; workspaceId?: string; label: string }[],
   ) {
+    const serialized = JSON.stringify(list);
+    if (serialized === this.remoteSerialized) return;
+    this.remoteSerialized = serialized;
     this.remote = list;
     this.renderList();
   }
+  private remoteSerialized = "[]";
   /** Ask the window holding a session to raise itself and focus it. Set by
    *  `app.ts`; absent in a window that has no proxies. */
   private onRemoteFocus: (label: string, session: string) => void = () => {};
