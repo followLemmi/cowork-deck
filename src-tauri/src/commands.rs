@@ -269,7 +269,17 @@ pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Works
 }
 #[tauri::command]
 pub fn remove_workspace(state: State<AppState>, id: String) -> Result<Vec<Workspace>, String> {
-    state.store.lock().unwrap().delete_workspace(&id).map_err(|e| e.to_string())
+    let (left, dir) = {
+        let store = state.store.lock().unwrap();
+        (store.delete_workspace(&id).map_err(|e| e.to_string())?, store.dir.clone())
+    };
+    // Deletion is an event, and this is the moment it happens. Sync cannot work
+    // it out later by comparing the repository against the store: a record that
+    // arrived in a pull and has not been merged yet is indistinguishable from
+    // one deleted here, and guessing wrong deletes another machine's workspace.
+    // Its memory is deliberately left where it is.
+    crate::sync::publish::forget_workspace(&dir, &id);
+    Ok(left)
 }
 #[tauri::command]
 pub fn list_skills(state: State<AppState>) -> Vec<Skill> {
@@ -281,7 +291,12 @@ pub fn save_skill(state: State<AppState>, sk: Skill) -> Result<Vec<Skill>, Strin
 }
 #[tauri::command]
 pub fn remove_skill(state: State<AppState>, id: String) -> Result<Vec<Skill>, String> {
-    state.store.lock().unwrap().delete_skill(&id).map_err(|e| e.to_string())
+    let (left, dir) = {
+        let store = state.store.lock().unwrap();
+        (store.delete_skill(&id).map_err(|e| e.to_string())?, store.dir.clone())
+    };
+    crate::sync::publish::forget_scenario(&dir, &id);
+    Ok(left)
 }
 
 /// Runtime schedule state for the UI. The backend owns this file; without a

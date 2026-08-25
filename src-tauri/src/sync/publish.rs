@@ -4,9 +4,10 @@
 //! which is the memory the sidecar writes, and none of the configuration. The
 //! projection describes the shape; this is what puts it on disk.
 //!
-//! Files are removed as well as written. A workspace deleted here has to
-//! disappear from the repository too, or the next machine to pull would resurrect
-//! it, and deleting it again would be a fight rather than an action.
+//! Writing only. Removal is deliberately *not* done by comparing the repository
+//! against the store: from here, a record that arrived in a pull and has not
+//! been merged yet looks exactly like one deleted locally. `forget_workspace` is
+//! called when somebody actually deletes one.
 
 use crate::model::{Skill, Workspace};
 use crate::sync::activation;
@@ -16,7 +17,6 @@ use crate::sync::projection::{
     machine_label_path, project_skill, project_workspace, runs_shard, scenario_path,
     workspace_path,
 };
-use std::collections::BTreeSet;
 use std::path::Path;
 
 /// What the repository should contain, written where sync will find it.
@@ -36,7 +36,6 @@ pub fn publish(
     std::fs::write(root.join(".gitignore"), manifest::gitignore())?;
     std::fs::write(root.join(activation::MARKER), activation::marker_body())?;
 
-    let mut keep_workspaces = BTreeSet::new();
     for w in workspaces {
         let wire = project_workspace(w, repo_of(w).as_deref());
         let p = workspace_path(root, &w.id);
@@ -44,10 +43,8 @@ pub fn publish(
             std::fs::create_dir_all(dir)?;
         }
         write_if_changed(&p, &serde_json::to_string_pretty(&wire)?)?;
-        keep_workspaces.insert(w.id.clone());
     }
 
-    let mut keep_scenarios = BTreeSet::new();
     let scen_dir = root.join("scenarios");
     std::fs::create_dir_all(&scen_dir)?;
     for s in skills {
@@ -55,7 +52,6 @@ pub fn publish(
             &scenario_path(root, &s.id),
             &serde_json::to_string_pretty(&project_skill(s))?,
         )?;
-        keep_scenarios.insert(format!("{}.json", s.id));
     }
 
     // This machine's journal, in its own shard, beside its own label.
@@ -71,8 +67,6 @@ pub fn publish(
         &serde_json::to_string_pretty(machine)?,
     )?;
 
-    prune_workspaces(root, &keep_workspaces);
-    prune_scenarios(&scen_dir, &keep_scenarios);
     Ok(())
 }
 
@@ -92,38 +86,25 @@ fn write_if_changed(path: &Path, body: &str) -> std::io::Result<()> {
     std::fs::write(path, body)
 }
 
-/// A workspace removed locally loses its `workspace.json`, and nothing else.
+/// Forget one workspace, because somebody deleted it here.
+///
+/// Deletion is an event, not something to infer. A sweep comparing the
+/// repository against the local store cannot tell a workspace deleted here from
+/// one that arrived in a pull and has not been merged yet — and it used to
+/// delete the second kind, commit that, and push it, so the machine it came
+/// from lost its own record on the next pull.
 ///
 /// **Its memory stays.** The notes under that id are the history of work that
 /// really happened, and deleting a workspace is not a statement about it. An
 /// orphaned corpus is recoverable; a deleted one is not.
-fn prune_workspaces(root: &Path, keep: &BTreeSet<String>) {
-    let Ok(entries) = std::fs::read_dir(root) else { return };
-    for e in entries.flatten() {
-        let p = e.path();
-        if !p.is_dir() {
-            continue;
-        }
-        let Some(name) = p.file_name().and_then(|n| n.to_str()) else { continue };
-        if name.starts_with('.') || name == "scenarios" || name == "runs" || name == "Diaries" {
-            continue;
-        }
-        if !keep.contains(name) {
-            let _ = std::fs::remove_file(p.join("workspace.json"));
-        }
-    }
+pub fn forget_workspace(root: &Path, id: &str) {
+    let _ = std::fs::remove_file(workspace_path(root, id));
 }
 
-/// A deleted scenario, unlike a workspace, leaves nothing behind worth keeping.
-fn prune_scenarios(dir: &Path, keep: &BTreeSet<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for e in entries.flatten() {
-        let p = e.path();
-        let Some(name) = p.file_name().and_then(|n| n.to_str()) else { continue };
-        if p.is_file() && name.ends_with(".json") && !keep.contains(name) {
-            let _ = std::fs::remove_file(p);
-        }
-    }
+/// Forget one scenario. Unlike a workspace it leaves nothing behind worth
+/// keeping, so the file is the whole of it.
+pub fn forget_scenario(root: &Path, id: &str) {
+    let _ = std::fs::remove_file(scenario_path(root, id));
 }
 
 #[cfg(test)]
@@ -209,7 +190,8 @@ mod tests {
     fn a_workspace_deleted_here_stops_being_published() {
         let r = root("prune");
         publish(&r, &[ws("ws-1"), ws("ws-2")], &[], &machine(), &no_repo).unwrap();
-        publish(&r, &[ws("ws-1")], &[], &machine(), &no_repo).unwrap();
+
+        forget_workspace(&r, "ws-2");
 
         assert!(r.join("ws-1/workspace.json").is_file());
         assert!(!r.join("ws-2/workspace.json").exists(), "its record goes");
@@ -225,11 +207,51 @@ mod tests {
         fs::create_dir_all(r.join("ws-2/Sessions/2026-08")).unwrap();
         fs::write(r.join("ws-2/Sessions/2026-08/24-topic.md"), "# a session\n").unwrap();
 
-        publish(&r, &[ws("ws-1")], &[], &machine(), &no_repo).unwrap();
+        forget_workspace(&r, "ws-2");
 
         assert!(!r.join("ws-2/workspace.json").exists());
         assert!(r.join("ws-2/Facts.md").is_file(), "an orphaned corpus is recoverable");
         assert!(r.join("ws-2/Sessions/2026-08/24-topic.md").is_file());
+    }
+
+    #[test]
+    fn forgetting_something_that_was_never_there_is_not_an_error() {
+        let r = root("forgetnone");
+        forget_workspace(&r, "never-existed");
+        forget_scenario(&r, "never-existed");
+    }
+
+    /// The failure this file had, and the reason pruning left it.
+    ///
+    /// A record that arrived in a pull but has not been merged into the local
+    /// store yet is indistinguishable, from here, from one deleted locally. A
+    /// sweep that infers deletion from absence therefore deletes the other
+    /// machine's workspace, commits that, pushes it — and the machine it came
+    /// from loses its own record on the next pull.
+    #[test]
+    fn a_record_pulled_but_not_yet_adopted_survives() {
+        let r = root("pulled");
+        // As a pull would have left it: on disk, not in this machine's store.
+        fs::create_dir_all(r.join("ws-from-a")).unwrap();
+        fs::write(r.join("ws-from-a/workspace.json"), "{\"id\":\"ws-from-a\"}").unwrap();
+
+        publish(&r, &[ws("ws-1")], &[], &machine(), &no_repo).unwrap();
+
+        assert!(
+            r.join("ws-from-a/workspace.json").is_file(),
+            "another machine's record must not be deleted for being unfamiliar"
+        );
+    }
+
+    #[test]
+    fn a_scenario_pulled_but_not_yet_adopted_survives() {
+        let r = root("pulledscen");
+        fs::create_dir_all(r.join("scenarios")).unwrap();
+        fs::write(r.join("scenarios/sk-from-a.json"), "{\"id\":\"sk-from-a\"}").unwrap();
+
+        publish(&r, &[], &[], &machine(), &no_repo).unwrap();
+
+        assert!(r.join("scenarios/sk-from-a.json").is_file());
     }
 
     #[test]

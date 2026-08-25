@@ -217,6 +217,10 @@ pub fn run_once(
         Ok(p) => {
             if p.pulled {
                 st.last_pull = Some(now);
+                // What arrived is on disk; this is what makes it exist for the
+                // app. Without it a pulled workspace is a file nobody reads —
+                // and the next `publish` used to delete it for being unfamiliar.
+                adopt_into_store(root, workspaces, skills);
             }
             if p.pushed {
                 st.last_push = Some(now);
@@ -229,6 +233,58 @@ pub fn run_once(
     }
     st.save(root);
     st
+}
+
+/// Merge what a pull brought into the local store.
+///
+/// Records only. The questions a pull raises — where is this project on this
+/// machine, are these two the same one — are asked lazily by the surface, and
+/// answering them here would mean deciding for the person.
+///
+/// A workspace already here keeps everything local: its path, its ssh key, the
+/// tracker history that describes cards on this disk. A scenario already here
+/// keeps whether its schedule is switched on.
+fn adopt_into_store(
+    root: &std::path::Path,
+    workspaces: &[crate::model::Workspace],
+    skills: &[crate::model::Skill],
+) {
+    let no_repo = |_: &crate::model::Workspace| None;
+    let adopted = crate::sync::adopt::adopt(root, workspaces, skills, &no_repo);
+
+    for path in &adopted.unreadable {
+        // Named rather than skipped: a record that quietly fails to arrive is
+        // indistinguishable from one that was never synced.
+        eprintln!("warning: sync could not read {path}");
+    }
+
+    // Nothing arrived at all — an empty repository, or a pull that changed only
+    // memory. Writing an empty list over a populated store would be the worst
+    // possible reading of that.
+    if adopted.workspaces.is_empty() && adopted.skills.is_empty() {
+        return;
+    }
+
+    if let Err(e) = write_merged(root, &adopted) {
+        eprintln!("warning: sync could not save what it pulled ({e})");
+    }
+}
+
+fn write_merged(
+    root: &std::path::Path,
+    adopted: &crate::sync::adopt::Adopted,
+) -> std::io::Result<()> {
+    // A `Store` of its own rather than the app's, and only because taking the
+    // shared lock here would hold it across a write while the caller already
+    // released it. Same directory, same files.
+    let store = crate::store::Store::new(root.to_path_buf());
+    if !adopted.workspaces.is_empty() {
+        store.save_workspaces(&adopted.workspaces)?;
+    }
+    if !adopted.skills.is_empty() {
+        store.save_skills(&adopted.skills)?;
+    }
+    Ok(())
 }
 
 /// The token for whichever account owns the remote.
@@ -293,4 +349,160 @@ pub fn sync_blocked_kinds() -> Vec<Blocked> {
 #[tauri::command(async)]
 pub fn sync_fault(state: State<AppState>) -> Result<Option<Fault>, String> {
     Ok(SyncState::load(&root(&state)?).fault)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Workspace;
+    use crate::sync::git;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn ws(id: &str, name: &str, path: &str) -> Workspace {
+        Workspace {
+            id: id.into(),
+            name: name.into(),
+            path: path.into(),
+            color: "#8ab4f8".into(),
+            github: None,
+            tracker: None,
+        }
+    }
+
+    struct TwoMachines {
+        root: PathBuf,
+        a: PathBuf,
+        b: PathBuf,
+    }
+
+    /// Two config directories and one bare repository between them: the shape
+    /// the manual check has to use two computers for, as far as it can be taken
+    /// without them.
+    fn two_machines(tag: &str) -> TwoMachines {
+        let root = std::env::temp_dir().join(format!("cd-two-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let origin = root.join("origin.git");
+        assert!(std::process::Command::new("git")
+            .args(["init", "--bare", "--quiet", "-b", "main"])
+            .arg(&origin)
+            .output()
+            .unwrap()
+            .status
+            .success());
+
+        let url = format!("file://{}", origin.display());
+        let mut dirs = Vec::new();
+        for name in ["a", "b"] {
+            let d = root.join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join(".gitignore"), crate::sync::manifest::gitignore()).unwrap();
+            git::init_with_remote(&d, &url).unwrap();
+            for (k, v) in [("user.email", "t@example.com"), ("user.name", "T")] {
+                assert!(std::process::Command::new("git")
+                    .arg("-C").arg(&d).args(["config", k, v])
+                    .output().unwrap().status.success());
+            }
+            dirs.push(d);
+        }
+        TwoMachines { root, a: dirs[0].clone(), b: dirs[1].clone() }
+    }
+
+    impl Drop for TwoMachines {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn stored(dir: &Path) -> Vec<Workspace> {
+        crate::store::Store::new(dir.to_path_buf()).workspaces()
+    }
+
+    /// The upgrade path, end to end: a person who already has workspaces
+    /// switches sync on, and a second machine gets them.
+    #[test]
+    fn a_workspace_reaches_the_other_machine_and_lands_in_its_store() {
+        let t = two_machines("adopt");
+        let mine = vec![ws("ws-1", "cowork-deck", "/here/deck")];
+        crate::store::Store::new(t.a.clone()).save_workspaces(&mine).unwrap();
+
+        assert_eq!(run_once(&t.a, &mine, &[]).fault, None, "switching sync on must just work");
+        assert_eq!(run_once(&t.b, &[], &[]).fault, None);
+
+        let there = stored(&t.b);
+        assert_eq!(there.len(), 1, "the record has to exist for the app, not only on disk");
+        assert_eq!(there[0].id, "ws-1");
+        assert_eq!(there[0].name, "cowork-deck");
+        assert!(there[0].path.is_empty(), "and it names no folder on this machine");
+    }
+
+    /// The defect this test was written for. B pulls A's record, and B's own
+    /// next cycle used to delete it for being unfamiliar, push that deletion,
+    /// and take A's workspace with it.
+    #[test]
+    fn the_other_machines_record_survives_this_machines_next_cycle() {
+        let t = two_machines("survive");
+        let mine = vec![ws("ws-1", "deck", "/here/deck")];
+        crate::store::Store::new(t.a.clone()).save_workspaces(&mine).unwrap();
+        run_once(&t.a, &mine, &[]);
+
+        // B adopts it, then runs again with its own view of the world.
+        run_once(&t.b, &[], &[]);
+        let after_first = stored(&t.b);
+        run_once(&t.b, &after_first, &[]);
+
+        assert!(t.b.join("ws-1/workspace.json").is_file(), "B kept it");
+
+        // And A does not lose it when B's cycle reaches the remote.
+        run_once(&t.a, &mine, &[]);
+        assert!(t.a.join("ws-1/workspace.json").is_file(), "A kept it too");
+        assert_eq!(stored(&t.a).len(), 1);
+    }
+
+    /// A path resolved here must survive every future pull. Blanking it would
+    /// break a working workspace on a timer.
+    #[test]
+    fn adopting_never_blanks_a_path_this_machine_has_answered() {
+        let t = two_machines("keeppath");
+        let mine = vec![ws("ws-1", "deck", "/on/a/deck")];
+        crate::store::Store::new(t.a.clone()).save_workspaces(&mine).unwrap();
+        run_once(&t.a, &mine, &[]);
+
+        run_once(&t.b, &[], &[]);
+        // The person points it at a folder here.
+        let mut theirs = stored(&t.b);
+        theirs[0].path = "/on/b/deck".into();
+        crate::store::Store::new(t.b.clone()).save_workspaces(&theirs).unwrap();
+
+        run_once(&t.b, &theirs, &[]);
+        assert_eq!(stored(&t.b)[0].path, "/on/b/deck", "a pull must not undo the answer");
+    }
+
+    #[test]
+    fn a_workspace_deleted_here_is_withdrawn_rather_than_left_to_be_guessed() {
+        let t = two_machines("delete");
+        let mine = vec![ws("ws-1", "deck", "/here/deck"), ws("ws-2", "site", "/here/site")];
+        crate::store::Store::new(t.a.clone()).save_workspaces(&mine).unwrap();
+        run_once(&t.a, &mine, &[]);
+
+        crate::sync::publish::forget_workspace(&t.a, "ws-2");
+        let left: Vec<Workspace> = mine.iter().filter(|w| w.id != "ws-2").cloned().collect();
+        run_once(&t.a, &left, &[]);
+
+        run_once(&t.b, &[], &[]);
+        assert!(!t.b.join("ws-2/workspace.json").exists(), "the deletion travels");
+        assert_eq!(stored(&t.b).len(), 1);
+    }
+
+    #[test]
+    fn a_cycle_with_sync_switched_off_does_nothing_at_all() {
+        let dir = std::env::temp_dir().join(format!("cd-off-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let st = run_once(&dir, &[ws("ws-1", "deck", "/here")], &[]);
+        assert_eq!(st, SyncState::default());
+        assert!(!dir.join("ws-1").exists(), "nothing is written before sync is on");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

@@ -165,6 +165,99 @@ pub fn commit_all(repo: &Path, message: &str) -> Result<bool, GitError> {
     Ok(true)
 }
 
+/// Whether this branch has an upstream to pull from and push to.
+///
+/// A clone has one from the start; a directory turned into a repository by
+/// `init_with_remote` does not, and that is the first machine's path — the one
+/// where somebody switches sync on for the first time. Without asking, `pull`
+/// and `push` both fail with "there is no tracking information for the current
+/// branch", which reads as a fault and is really a setup step nobody did.
+pub fn has_upstream(repo: &Path) -> bool {
+    run(
+        repo,
+        "upstream",
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        &Auth::default(),
+        LOCAL_DEADLINE,
+    )
+    .is_ok()
+}
+
+/// Give this branch an upstream when the remote already has one to offer.
+///
+/// This is how the *second* machine adopts an existing repository. It cannot
+/// clone: its config directory is already full of its own workspaces and
+/// memory, so cloning over it would mean moving all of that out of the way
+/// first. What it does instead is fetch, and bind the local branch to the remote
+/// one if there is a remote one.
+///
+/// `Ok(false)` means the remote has nothing on this branch — the first machine's
+/// case, where the first push is what creates it.
+pub fn ensure_upstream(repo: &Path, auth: &Auth) -> Result<bool, GitError> {
+    if has_upstream(repo) {
+        return Ok(true);
+    }
+    run(repo, "fetch", &["fetch", "--quiet", "origin"], auth, NETWORK_DEADLINE)?;
+
+    // `branch --show-current`, not `rev-parse HEAD`: a clone of an empty
+    // repository has an unborn branch, and `rev-parse` calls that an ambiguous
+    // argument. Unborn is exactly the state the first sync is in.
+    let branch = run(
+        repo,
+        "branch",
+        &["branch", "--show-current"],
+        &Auth::default(),
+        LOCAL_DEADLINE,
+    )?;
+    if branch.is_empty() {
+        // Detached head. Nothing to bind, and nothing sensible to guess.
+        return Ok(false);
+    }
+    let remote_ref = format!("origin/{branch}");
+    if run(
+        repo,
+        "branch",
+        &["rev-parse", "--verify", "--quiet", &remote_ref],
+        &Auth::default(),
+        LOCAL_DEADLINE,
+    )
+    .is_err()
+    {
+        return Ok(false);
+    }
+
+    // An unborn branch cannot be given an upstream — git answers "no commit on
+    // branch yet" — and unborn is exactly what a machine joining an existing
+    // repository has. Naming the remote and the branch pulls without needing
+    // one, and leaves a commit for the binding below to attach to.
+    let unborn = run(
+        repo,
+        "head",
+        &["rev-parse", "--verify", "--quiet", "HEAD"],
+        &Auth::default(),
+        LOCAL_DEADLINE,
+    )
+    .is_err();
+    if unborn {
+        run(
+            repo,
+            "pull",
+            &["pull", "--rebase", "--quiet", "origin", &branch],
+            auth,
+            NETWORK_DEADLINE,
+        )?;
+    }
+
+    run(
+        repo,
+        "branch",
+        &["branch", &format!("--set-upstream-to={remote_ref}"), &branch],
+        &Auth::default(),
+        LOCAL_DEADLINE,
+    )?;
+    Ok(true)
+}
+
 /// Rebase onto the remote. Rebase rather than merge, so the history stays a line
 /// a person can read rather than a lattice of merges between two of their own
 /// machines.
@@ -176,8 +269,21 @@ pub fn pull_rebase(repo: &Path, auth: &Auth) -> Result<(), GitError> {
 /// Push. There is no force anywhere in this module, and that is deliberate: when
 /// a disk dies the remote is the only copy of the memory. A rejected push means
 /// rebase and try again, or surface a conflict (#318) — never overwrite.
+///
+/// The first push from a directory that was never cloned also sets the upstream,
+/// so every push after it is an ordinary one.
 pub fn push(repo: &Path, auth: &Auth) -> Result<(), GitError> {
-    run(repo, "push", &["push", "--quiet"], auth, NETWORK_DEADLINE)?;
+    if has_upstream(repo) {
+        run(repo, "push", &["push", "--quiet"], auth, NETWORK_DEADLINE)?;
+    } else {
+        run(
+            repo,
+            "push",
+            &["push", "--quiet", "--set-upstream", "origin", "HEAD"],
+            auth,
+            NETWORK_DEADLINE,
+        )?;
+    }
     Ok(())
 }
 

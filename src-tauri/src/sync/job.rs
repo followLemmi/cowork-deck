@@ -88,6 +88,30 @@ pub struct Progress {
     pub pushed: bool,
 }
 
+/// Pull, unless there is demonstrably nothing to pull from.
+///
+/// Two states have to be told apart from a real failure, and both belong to the
+/// *first* sync rather than to any edge case. A directory turned into a
+/// repository has no upstream until the first push sets one. And a repository
+/// created empty has no branch, which git reports as a merge configuration
+/// error rather than as "nothing there".
+///
+/// Reported as faults, either would make a fresh setup look broken to the person
+/// who had just finished it — and the corpus would never reach the remote.
+fn pull_if_there_is_anything_to_pull(repo: &Path, auth: &Auth) -> Result<bool, GitError> {
+    // Binds the branch to the remote's when there is one to bind to — which is
+    // how a second machine joins a repository it cannot clone into, its own
+    // config directory being already full.
+    if !git::ensure_upstream(repo, auth)? {
+        return Ok(false);
+    }
+    match git::pull_rebase(repo, auth) {
+        Ok(()) => Ok(true),
+        Err(e) if is_empty_remote(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Whether a failed pull means "there is nothing on the other end yet".
 ///
 /// Worth telling apart from every other failure: reported as a fault, the first
@@ -98,6 +122,7 @@ fn is_empty_remote(e: &GitError) -> bool {
     let m = message.to_lowercase();
     m.contains("no such ref was fetched")
         || m.contains("couldn't find remote ref")
+        || m.contains("no tracking information")
 }
 
 /// A git failure, read for what it means rather than repeated verbatim.
@@ -151,13 +176,9 @@ pub fn sync_once(repo: &Path, auth: &Auth, message: &str, now: i64) -> Result<Pr
     // replays our work onto theirs, which is the outcome we want anyway.
     let committed = git::commit_all(repo, message).map_err(|e| classify(&e, now))?;
 
-    match git::pull_rebase(repo, auth) {
-        Ok(()) => progress.pulled = true,
-        // The remote has no commits yet. Not an edge case — it is the first
-        // sync on the first machine, every time: a repository created empty has
-        // no branch to pull, and git reports that as a merge configuration
-        // error rather than as "nothing there".
-        Err(e) if is_empty_remote(&e) => {}
+    match pull_if_there_is_anything_to_pull(repo, auth) {
+        Ok(true) => progress.pulled = true,
+        Ok(false) => {}
         Err(e) => {
             if git::rebase_in_progress(repo) {
                 return Err(Fault::Conflict { files: conflicted_files(repo) });
@@ -177,7 +198,7 @@ pub fn sync_once(repo: &Path, auth: &Auth, message: &str, now: i64) -> Result<Pr
         Err(first) => {
             // The remote moved between our pull and our push. Rebase and try
             // once more — never force. Failing twice is a real fault.
-            if git::pull_rebase(repo, auth).is_err() {
+            if pull_if_there_is_anything_to_pull(repo, auth).is_err() {
                 if git::rebase_in_progress(repo) {
                     return Err(Fault::Conflict { files: conflicted_files(repo) });
                 }

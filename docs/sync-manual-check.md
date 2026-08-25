@@ -33,6 +33,17 @@ rules, and prints two lists.
 - [ ] On **A**, create the repository. Check on github.com that it is **private**.
 - [ ] The repository has a `.gitignore` and a `.cowork-sync.json` in its first commit — not added later.
 
+## Upgrading into it, with workspaces you already have
+
+Sync is off after an update and nothing switches it on. There is **no offer at
+startup** — you have to open **Memory sync…** in the palette. That is a gap
+rather than a decision (#315 asked for an offer, dismissible, once), and it is
+worth deciding on before release.
+
+- [ ] Update an installation that already has workspaces and scenarios. Nothing prompts, nothing changes, and the deck behaves exactly as before.
+- [ ] Switch sync on. Every existing workspace and scenario appears in the repository without anyone filling anything in.
+- [ ] Nothing was asked about workspaces you already had — they are already local, and there is nothing to answer.
+
 ## What is in the repository, and what is not
 
 Look at the repository on github.com, not only at the local directory.
