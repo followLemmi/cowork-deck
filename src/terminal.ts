@@ -589,6 +589,14 @@ export class TerminalPanel {
    *  lines —
    *  `[restarting session...]` and the launch failures — which are written by
    *  `sessions.ts` and never cross a chunk boundary. */
+  /** How many columns the terminal is showing.
+   *
+   *  Read by the tool panel beside it, which may not squeeze this box under 80:
+   *  `fit()` follows whatever box the terminal sits in, so a panel that narrows it
+   *  re-wraps the agent's output — and this app has already shipped that bug once,
+   *  when the filmstrip resized a PTY to about 22 columns by 3 rows. */
+  get cols(): number { return this.term.cols; }
+
   write(data: string | Uint8Array) { this.term.write(data); }
   focus() { this.term.focus(); }
   search(term: string) { if (term) { this.lastSearch = term; this.searchAddon.findNext(term); } }

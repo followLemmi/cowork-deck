@@ -17,7 +17,8 @@
 //! `gh_invocation`), which is what makes concurrent commands safe here.
 //!
 //! **Every command that spawns a process or touches the network carries it.**
-//! That is all of `gh_*`, `pr_*`, `issue_*` and `git_status` here, and the whole
+//! That is all of `gh_*`, `pr_*`, `issue_*`, `git_status`, `git_changes` and
+//! `worktree_files` here, and the whole
 //! of `tasks_cmd`, whose file board reads a directory that may be on a network
 //! mount. The three deliberate exceptions, which stay on the main thread:
 //!
@@ -48,8 +49,8 @@
 use crate::gh;
 use crate::hooks::build_settings_json;
 use crate::model::{
-    GitStatus, SessionEntry, SessionTokens, Skill, TokenUsage, UiState, UiStatePatch, Workspace,
-    WorkspaceGithub,
+    GitChange, GitChanges, GitStatus, SessionEntry, SessionTokens, Skill, TokenUsage, UiState,
+    UiStatePatch, Workspace, WorkspaceGithub,
 };
 use crate::pty::PtyManager;
 use crate::store::Store;
@@ -2423,6 +2424,102 @@ pub fn git_status(cwd: String) -> GitStatus {
     GitStatus { branch, dirty }
 }
 
+/// The files in a session's own checkout, as git sees them.
+///
+/// `git ls-files` rather than a directory walk, and that is the whole design: the
+/// question a worktree raises is "what is MINE here", and `--exclude-standard`
+/// answers it with the repository's own ignore rules instead of a list of ignore
+/// patterns we would have to keep in step with them. `node_modules` and `target`
+/// are absent because the repository says they are, not because this code knows
+/// their names.
+///
+/// Tracked and untracked-but-not-ignored, which is the same pair a person sees in
+/// `git status`. Paths are relative to `cwd` and separated by `\n`; a path with a
+/// newline in it comes back quoted by git and is left that way rather than
+/// silently splitting into two files that do not exist.
+#[tauri::command(async)]
+pub fn worktree_files(cwd: String) -> Vec<String> {
+    use std::process::Command;
+    let out = Command::new("git")
+        .arg("-C").arg(&cwd)
+        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    let mut files: Vec<String> = out.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// What this checkout has changed, file by file, with the branch it is on.
+///
+/// Two reads folded into one answer, because they are two halves of one question
+/// and a caller asking twice would paint half of it: `--porcelain` says WHICH
+/// files and how, `--numstat` says how much. A file appears once, with zeroes when
+/// git has nothing to diff it against.
+#[tauri::command(async)]
+pub fn git_changes(cwd: String) -> GitChanges {
+    use std::process::Command;
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C").arg(&cwd)
+            .args(args)
+            .output().ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim().to_string();
+    GitChanges {
+        branch: Some(branch).filter(|b| !b.is_empty() && b != "HEAD"),
+        files: merge_changes(&git(&["status", "--porcelain"]), &git(&["diff", "--numstat", "HEAD"])),
+    }
+}
+
+/// Fold `git status --porcelain` and `git diff --numstat HEAD` into one list.
+///
+/// Split out from the command because it is the part with rules in it, and rules
+/// are what tests can hold: the mark is the WORKTREE's letter when there is one
+/// and the index's otherwise (a file staged and then edited again is `M` either
+/// way, but one staged and untouched since reads `M` only in the index column); a
+/// rename's path is the destination, since that is the file that exists now; and a
+/// binary file's `-` in numstat is a zero rather than a parse failure.
+fn merge_changes(porcelain: &str, numstat: &str) -> Vec<GitChange> {
+    let mut sizes: std::collections::HashMap<&str, (u32, u32)> = std::collections::HashMap::new();
+    for line in numstat.lines() {
+        let mut parts = line.split('\t');
+        let added = parts.next().unwrap_or("-");
+        let removed = parts.next().unwrap_or("-");
+        let Some(path) = parts.next() else { continue };
+        sizes.insert(
+            path,
+            (added.parse().unwrap_or(0), removed.parse().unwrap_or(0)),
+        );
+    }
+    let mut files = Vec::new();
+    for line in porcelain.lines() {
+        if line.len() < 4 { continue }
+        let (status, rest) = line.split_at(2);
+        let index = status.as_bytes()[0] as char;
+        let work = status.as_bytes()[1] as char;
+        let mark = if work != ' ' { work } else { index };
+        // `R  old -> new`: the destination is the file that exists now, and the one
+        // a person clicking the row wants opened.
+        let path = rest.trim_start();
+        let path = path.rsplit(" -> ").next().unwrap_or(path);
+        let (added, removed) = sizes.get(path).copied().unwrap_or((0, 0));
+        files.push(GitChange {
+            mark: mark.to_string(),
+            path: path.to_string(),
+            added,
+            removed,
+        });
+    }
+    files
+}
+
 /// Fold `message.usage.*` into `acc`, **once per API request**. Tolerant of
 /// non-JSON lines and lines without usage (user messages, meta).
 ///
@@ -2825,6 +2922,74 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
         tokens: Some(SessionTokens { context: last_context(main), spend, subagents: counted }),
         title,
         title_source,
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::merge_changes;
+
+    /// The mark is the worktree's letter when there is one. A file staged and then
+    /// edited again reads `MM`, and what a person is looking at is the second M.
+    #[test]
+    fn takes_the_worktree_letter_when_there_is_one() {
+        let files = merge_changes("MM src/app.ts\n", "4\t2\tsrc/app.ts\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].mark, "M");
+        assert_eq!(files[0].path, "src/app.ts");
+        assert_eq!((files[0].added, files[0].removed), (4, 2));
+    }
+
+    /// And the index's when the worktree column is blank — a file staged and not
+    /// touched since is a change, and one this would otherwise mark with a space.
+    #[test]
+    fn falls_back_to_the_index_letter() {
+        let files = merge_changes("A  tests/new.test.ts\n", "12\t0\ttests/new.test.ts\n");
+        assert_eq!(files[0].mark, "A");
+        assert_eq!(files[0].added, 12);
+    }
+
+    /// An untracked file has no counts, and 0/0 is the honest answer: `git diff`
+    /// has nothing to compare it against, so its length is a number git never
+    /// states. It is still a change, and it is still listed.
+    #[test]
+    fn lists_an_untracked_file_with_no_counts() {
+        let files = merge_changes("?? notes.md\n", "");
+        assert_eq!(files[0].mark, "?");
+        assert_eq!(files[0].path, "notes.md");
+        assert_eq!((files[0].added, files[0].removed), (0, 0));
+    }
+
+    /// A rename's path is the destination: that is the file that exists now, and
+    /// the one a row leads to.
+    #[test]
+    fn a_rename_reports_where_the_file_went() {
+        let files = merge_changes("R  src/old.ts -> src/new.ts\n", "0\t0\tsrc/new.ts\n");
+        assert_eq!(files[0].mark, "R");
+        assert_eq!(files[0].path, "src/new.ts");
+    }
+
+    /// numstat writes `-` for a binary file. Not a parse failure — a zero, beside
+    /// the mark that says it changed.
+    #[test]
+    fn a_binary_file_counts_as_zero_rather_than_failing() {
+        let files = merge_changes(" M docs/images/deck.png\n", "-\t-\tdocs/images/deck.png\n");
+        assert_eq!(files[0].mark, "M");
+        assert_eq!((files[0].added, files[0].removed), (0, 0));
+    }
+
+    /// A clean checkout is an empty list, not an error and not a fabricated row.
+    #[test]
+    fn a_clean_checkout_has_no_files() {
+        assert!(merge_changes("", "").is_empty());
+    }
+
+    /// numstat carries a path that porcelain does not — a staged deletion whose
+    /// entry has already been committed away, say — and the list follows
+    /// porcelain: it is the one that says what the working tree looks like now.
+    #[test]
+    fn numstat_alone_does_not_invent_a_row() {
+        assert!(merge_changes("", "3\t1\tsrc/ghost.ts\n").is_empty());
     }
 }
 

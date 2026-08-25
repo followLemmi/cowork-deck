@@ -300,6 +300,8 @@ fn main() {
             commands::load_ui_state,
             commands::save_ui_state,
             commands::git_status,
+            commands::git_changes,
+            commands::worktree_files,
             commands::session_snapshots,
             commands::scheduler_ready,
             commands::schedule_ack,

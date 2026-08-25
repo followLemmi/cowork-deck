@@ -159,6 +159,12 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     case "close_session": return null;
     case "git_status":
       return F.gitByCwd[args.cwd as string] ?? { branch: null, dirty: false };
+    // The tool panel's two reads. A folder with no entry answers empty rather than
+    // throwing: "not a git checkout" is a real state and the panel says so.
+    case "worktree_files":
+      return F.filesByCwd[args.cwd as string] ?? [];
+    case "git_changes":
+      return F.changesByCwd[args.cwd as string] ?? { branch: null, files: [] };
     case "session_snapshots": {
       // Every requested id gets an entry, exactly as the Rust command promises —
       // a mock that dropped the unknown ones would hide the bug it exists to show.

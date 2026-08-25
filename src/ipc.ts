@@ -731,6 +731,22 @@ export interface SessionSnapshot {
   titleSource: TitleSource | null;
 }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
+
+/** One changed file in a session's own checkout. `mark` is git's own letter — M,
+ *  A, D, R, `?` for untracked, U for a conflict — because anyone with a worktree
+ *  open has read those, and a second vocabulary for one fact is a second thing to
+ *  learn. `added`/`removed` are 0 for an untracked file: git has nothing to diff
+ *  it against, and its length is a number git never states. */
+export interface GitChange { mark: string; path: string; added: number; removed: number }
+export interface GitChanges { branch: string | null; files: GitChange[] }
+/** What this session's checkout has changed. Per session, not per workspace: a
+ *  session launched on an issue runs in a worktree of its own, and "what have I
+ *  changed here" is a question the board cannot answer for it. */
+export const gitChanges = (cwd: string) => invoke<GitChanges>("git_changes", { cwd });
+/** The files in this session's checkout, as git sees them: tracked plus
+ *  untracked-not-ignored, so the repository's own ignore rules decide what is not
+ *  worth showing rather than a list of names kept here. */
+export const worktreeFiles = (cwd: string) => invoke<string[]>("worktree_files", { cwd });
 /** One invoke per tick for every open session — the title and the token counts
  *  come from the same bytes, so asking per session would read each transcript
  *  twice. Every requested id comes back, including ids with no transcript. */

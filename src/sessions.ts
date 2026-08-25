@@ -10,6 +10,7 @@ import { workspaceIdOf } from "./window-role";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
+import { TileTools } from "./tile-tools";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
 import { icon, iconButton, type IconName } from "./icons";
@@ -29,6 +30,9 @@ interface Tile {
   panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  /** The tools that belong to this session, inside its frame and only while it is
+   *  zoomed. See `tile-tools.ts` for why they are not in the app's panel. */
+  tools: TileTools;
   authBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
@@ -850,7 +854,21 @@ export class Deck {
     sNext.onclick = () => tile.panel.search(sInput.value);
     sPrev.onclick = () => tile.panel.searchPrev(sInput.value);
     sClose.onclick = () => { searchBar.classList.add("hidden"); tile.panel.focus(); };
-    el.append(head, searchBar, mount);
+    /* The tile's work area is a ROW: the terminal, then the tools that belong to
+       this session, then the strip that opens them. The strip is on the right, the
+       opposite edge from the app's panel, and that distance is doing real work — it
+       is what stops "Files" in here being read as the project's files rather than
+       this checkout's. Both are `display: none` until the tile is zoomed. */
+    const work = document.createElement("div");
+    work.className = "tile-work";
+    const tools = new TileTools({
+      cwd,
+      cols: () => tile.panel.cols,
+      termWidth: () => mount.getBoundingClientRect().width,
+      source: () => this.sourceOfTile(tile),
+    });
+    work.append(mount, tools.panel, tools.rail);
+    el.append(head, searchBar, work);
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
@@ -867,7 +885,7 @@ export class Deck {
       user: opts.userName ?? null,
     };
     const tile: Tile = {
-      session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label,
+      session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label, tools,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
       gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
@@ -1247,6 +1265,24 @@ export class Deck {
     }
   }
 
+  /** What launched this session, in words that can be true of it. The scenario's
+   *  NAME rather than its id where the app can resolve one: an id is not something
+   *  a person recognises, and the deck can already reach the scenario list for the
+   *  empty deck's sake. */
+  private sourceOfTile(tile: Tile): { kind: string; detail: string | null; prompt: string | null } {
+    if (tile.skillId) {
+      const skill = this.emptyActions?.scenarios().find((x) => x.id === tile.skillId);
+      return {
+        kind: tile.scheduledSkillId ? "Scenario, on its schedule" : "Scenario",
+        detail: skill?.name ?? null,
+        prompt: tile.prompt,
+      };
+    }
+    if (tile.taskId) return { kind: "Card", detail: tile.taskId, prompt: tile.prompt };
+    if (tile.kind === "command") return { kind: "Command", detail: null, prompt: tile.prompt };
+    return { kind: "Started by hand", detail: null, prompt: tile.prompt };
+  }
+
   private applyLayout() {
     const parts = zoomParticipants(
       [...this.tiles.values()].map((t) => ({
@@ -1260,6 +1296,7 @@ export class Deck {
       this.deckEl.classList.remove("is-zoomed");
       for (const t of this.tiles.values()) {
         t.el.classList.remove("minimized", "zoomed");
+        t.tools.setZoomed(false);
         this.deckEl.appendChild(t.el);
       }
       if (this.strip) { this.strip.remove(); this.strip = null; }
@@ -1280,12 +1317,14 @@ export class Deck {
     const z = this.tiles.get(parts.zoomed)!;
     z.el.classList.add("zoomed");
     z.el.classList.remove("minimized");
+    z.tools.setZoomed(true);
     this.deckEl.appendChild(z.el);
     this.deckEl.appendChild(this.strip);
     for (const s of parts.minimized) {
       const t = this.tiles.get(s)!;
       t.el.classList.add("minimized");
       t.el.classList.remove("zoomed");
+      t.tools.setZoomed(false);
       this.strip.appendChild(t.el);
     }
   }

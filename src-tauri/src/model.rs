@@ -607,6 +607,35 @@ pub struct GitStatus {
     pub dirty: bool,
 }
 
+/// One changed file in a session's own checkout.
+///
+/// `mark` is git's own letter — M, A, D, R, ? for untracked, U for a conflict —
+/// rather than a word of ours. Anyone who has a worktree open has read those
+/// letters; translating them would be a second vocabulary for one fact.
+///
+/// `added` and `removed` are 0 for an untracked file, which is not the same as a
+/// file with no changes: `git diff` has nothing to compare it against, and
+/// counting its whole length as added would be a number git never states.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GitChange {
+    pub mark: String,
+    pub path: String,
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// What a session's own checkout has changed, file by file.
+///
+/// For the tool panel on a zoomed tile: a session launched on an issue runs in a
+/// worktree of its own, so "what have I changed here" is a per-session question
+/// that the app-level board cannot answer — it does not know which of a dozen
+/// sessions is being asked about.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct GitChanges {
+    pub branch: Option<String>,
+    pub files: Vec<GitChange>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub struct TokenUsage {
     pub input: u64,
