@@ -1,7 +1,7 @@
 import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiState, type Workspace, type UiState, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
-import { iconButton } from "./icons";
+import { iconButton, type IconName } from "./icons";
 
 /** Confirmation text for deleting a workspace. Deleting one strands every
  *  scenario pinned to it — they stop being runnable, and any schedule on them
@@ -40,7 +40,62 @@ export class WorkspacesPanel {
     /** Привязка воркспейса к GitHub-аккаунту изменилась: живые сессии этого
      *  воркспейса работают на устаревшем окружении до перезапуска. */
     private onGithubChanged: (workspaceId: string) => void = () => {},
+    /** Whether selecting a workspace here is remembered as the app's startup
+     *  workspace.
+     *
+     *  True for the main window, false for a window pinned to one workspace. A
+     *  pinned window selects its own workspace as it boots, and persisting that
+     *  would rewrite what the *main* window opens with — so pulling a workspace
+     *  out would silently change which project the app starts on next time.
+     *  `ui_state.json` holds one answer for the app, and it is the main
+     *  window's.
+     *
+     *  Set at construction rather than flipped afterwards, because it never
+     *  changes for the life of a window — and because a window's kind is known
+     *  before the panel exists. */
+    private persistActive = true,
+    /** Pull this workspace out into a window of its own.
+     *
+     *  Absent in a window that is already pinned to one workspace — there is
+     *  nowhere further to pull it — and absent in tests that do not care, which
+     *  is why it defaults to nothing rather than being required. */
+    /** The one control that moves a workspace between windows, in whichever
+     *  direction this window can move it: out, in the main window, and back, in
+     *  a window pinned to one workspace. One slot rather than two, because the
+     *  two are never both available and a row with a disabled twin of the
+     *  control beside it says less than a row with one control that works. */
+    private moveAction: {
+      icon: IconName;
+      label: (name: string) => string;
+      run: (ws: Workspace) => void;
+      /** Begin a possible tear-out from a press on the row. Absent where the
+       *  platform cannot place a window, and where there is nowhere to tear to.
+       *  The row's ordinary click is untouched either way: a press that does not
+       *  become a drag has to cost nothing. */
+      drag?: (ws: Workspace, e: PointerEvent) => void;
+    } | null = null,
+    /** Raise the window a detached workspace lives in. */
+    private onRaise: ((ws: Workspace) => void) | null = null,
+    /** A workspace has been deleted, and any window pinned to it has to go. */
+    private onDeleted: ((workspaceId: string) => void) | null = null,
   ) {}
+
+  /** Which workspaces are open in a window of their own.
+   *
+   *  The owner's requirement, verbatim: *"we need to show this pulled-out
+   *  workspace as disabled in the main window, so the user sees it did not
+   *  disappear into the void."* So the row stays exactly where it was, in a
+   *  third state beside active and inactive: visibly inactive, not selectable as
+   *  this window's workspace, and clicking it raises the window that has it. */
+  private detached = new Set<string>();
+  setDetached(ids: Set<string>) {
+    // Cheap identity check, because this arrives on every report from every
+    // window — five seconds apart at rest — and `render()` rebuilds the list
+    // from `innerHTML`, which would throw away focus and any open tooltip.
+    if (ids.size === this.detached.size && [...ids].every((id) => this.detached.has(id))) return;
+    this.detached = new Set(ids);
+    this.render();
+  }
 
   setCounts(counts: Record<string, number>) {
     this.counts = new Map(Object.entries(counts));
@@ -65,7 +120,9 @@ export class WorkspacesPanel {
 
   private select(id: string) {
     this.activeId = id;
-    saveUiState({ activeWorkspaceId: id }).catch((e) => console.debug("saveUiState failed", e));
+    if (this.persistActive) {
+      saveUiState({ activeWorkspaceId: id }).catch((e) => console.debug("saveUiState failed", e));
+    }
     const ws = this.active;
     if (ws) this.onSelect(ws);
     this.render();
@@ -116,6 +173,12 @@ export class WorkspacesPanel {
   private async del(id: string) {
     if (!(await confirmModal(describeDeleteImpact(id, this.getSkills())))) return;
     this.items = await removeWorkspace(id);
+    // A window pinned to this workspace is now pinned to nothing. It hands its
+    // sessions back — they survive as orphans in the main window — and closes.
+    // Never a window showing "no workspace": that would be a fourth window state
+    // nothing else in the app has, and every later change would have to keep
+    // answering for it.
+    this.onDeleted?.(id);
     if (this.activeId === id) {
       const next = this.items[0]?.id ?? null;
       this.activeId = null;
@@ -134,8 +197,12 @@ export class WorkspacesPanel {
     this.mount.innerHTML = "<h3>Workspaces</h3>";
     for (const w of this.items) {
       const row = document.createElement("div");
-      const isActive = w.id === this.activeId;
-      row.className = "ws-row" + (isActive ? " active" : "");
+      const isDetached = this.detached.has(w.id);
+      // A detached workspace is not this window's active one even if it was when
+      // it left, or the deck would filter to a workspace whose tiles are all
+      // somewhere else.
+      const isActive = w.id === this.activeId && !isDetached;
+      row.className = "ws-row" + (isActive ? " active" : "") + (isDetached ? " detached" : "");
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = w.color;
       const label = document.createElement("button");
@@ -149,6 +216,11 @@ export class WorkspacesPanel {
       // on the row, because the button is what the person lands on and what a
       // reader announces.
       if (isActive) label.setAttribute("aria-current", "true");
+      // Says what it does, rather than being marked unavailable. `aria-disabled`
+      // would be wrong twice over: the control works, and what it does is not
+      // what the others do. The same reading `src/view.ts` settled on for the
+      // view bar — stay a real button and let the accessible name carry it.
+      if (isDetached) label.setAttribute("aria-label", `${w.name} — in its own window; open it`);
       // Select on a click anywhere in the row that is not a control — the same shape
       // as `BoardView.makeOpenable`, and for the same reason: the name was the only
       // target, which made a workspace a thin strip of clickable text in a row that
@@ -164,13 +236,29 @@ export class WorkspacesPanel {
       // "switch to this": ✎ opens the form, 🗑 asks to delete. Matched with `closest`
       // so a glyph inside a button counts as that button.
       row.onclick = (e) => {
-        if ((e.target as Element | null)?.closest(".ws-edit, .ws-del")) return;
+        if ((e.target as Element | null)?.closest(".ws-edit, .ws-del, .ws-detach")) return;
+        // Clicking a detached workspace raises its window instead of switching
+        // to it. Switching would show an empty deck: its tiles are elsewhere.
+        if (isDetached) { this.onRaise?.(w); return; }
         this.select(w.id);
       };
       const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
       edit.onclick = () => this.edit(w.id);
       const x = iconButton("trash", `Delete workspace: ${w.name}`, "ws-del btn--icon--danger");
       x.onclick = () => this.del(w.id);
+      // Excluded from the row's select handler above for the same reason ✎ and 🗑
+      // are: it means something other than "switch to this".
+      // No pull-out control on a workspace that is already out. The count badge
+      // beside it deliberately keeps working — the workspace is still being
+      // worked on, just not here.
+      const beginDrag = this.moveAction?.drag;
+      if (beginDrag && !isDetached) {
+        row.addEventListener("pointerdown", (e) => beginDrag(w, e));
+      }
+      const move = this.moveAction && !isDetached
+        ? iconButton(this.moveAction.icon, this.moveAction.label(w.name), "ws-detach")
+        : null;
+      if (move) move.onclick = () => this.moveAction!.run(w);
       row.append(dot, label);
       const n = this.counts.get(w.id) ?? 0;
       if (n > 0) {
@@ -180,6 +268,7 @@ export class WorkspacesPanel {
         count.title = openTaskCountLabel(n);
         row.append(count);
       }
+      if (move) row.append(move);
       row.append(edit, x);
       // Appended last because `.ws-account` now wraps onto the row's second
       // line, and the DOM order is what a screen reader follows: `order: 1`

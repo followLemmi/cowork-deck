@@ -197,16 +197,49 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
       return F.prDiffs[args.number as number] ?? F.genericDiff(args.number as number);
     case "pr_merge_options": return F.mergeOptions;
 
+    /* The window plugin.
+     *
+     * These used to fall through to the `plugin:` case below, which answers
+     * `null` and logs nothing — so the pill's show/hide, the focus a
+     * notification click produces, and the raise a detached workspace's row asks
+     * for could not be exercised or screenshot at all. They are answered
+     * truthfully now, against a per-label visibility the harness keeps, which is
+     * what `pill.ts` reads back before deciding whether to show itself.
+     *
+     * The `pill://count` path in particular is a state machine over `isVisible`
+     * — `show()` is `makeKeyAndOrderFront:` on macOS and is not idempotent — and
+     * a stub that always said "hidden" would have exercised the wrong branch
+     * every time. */
+    case "plugin:window|is_visible":
+      return F.windowVisible(String(args.label ?? "main"));
+    case "plugin:window|show":
+      F.setWindowVisible(String(args.label ?? "main"), true);
+      return null;
+    case "plugin:window|hide":
+      F.setWindowVisible(String(args.label ?? "main"), false);
+      return null;
+    case "plugin:window|unminimize":
+    case "plugin:window|set_focus":
+    case "plugin:window|destroy":
+    case "plugin:window|close":
+      return null;
+
     default:
-      // Window calls (`plugin:window|…`) and anything else the app asks for that
-      // has no visible answer. Logged rather than thrown: a missing case should
-      // show up while shooting, not stop the page.
+      // Anything else the app asks for that has no visible answer. Logged rather
+      // than thrown: a missing case should show up while shooting, not stop the
+      // page.
       if (!cmd.startsWith("plugin:")) console.debug("[harness] unhandled command", cmd, args);
       return null;
   }
 }
 
-export function installMocks(): void {
+/** Stand the app up on mocked IPC.
+ *
+ *  `label` is which window this page is pretending to be, and it has to be a
+ *  parameter: `getCurrentWindow().label` is what `startApp` reads to decide
+ *  whether it is the whole app or one workspace, so a hardcoded `"main"` made a
+ *  second harness page impossible rather than merely inconvenient. */
+export function installMocks(label = "main"): void {
   // The plugin asks the browser first and only falls back to IPC, so the browser
   // has to answer — otherwise headless Chrome shows a permission prompt nobody
   // can click and the deck never finishes wiring its events.
@@ -214,7 +247,7 @@ export function installMocks(): void {
     configurable: true,
     value: { permission: "denied", requestPermission: async () => "denied" },
   });
-  mockWindows("main");
+  mockWindows(label);
   mockIPC((cmd, args) => handle(cmd, (args ?? {}) as Record<string, unknown>));
   // For harness/record.mjs, which needs to change a session's state mid-take
   // the way the backend would; nothing in the app reads this.

@@ -94,7 +94,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
+  getCurrentWindow: () => ({ label: "main", onCloseRequested: async () => () => {}, destroy: async () => {}, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
 }));
 
 /** Let the promise chain behind a click or a tick settle. */
@@ -114,7 +114,7 @@ describe("pull request polling", () => {
       + '<div id="board" class="hidden"></div></div></div>';
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
 
-    await import("../src/main");
+    await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();
 
     const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];

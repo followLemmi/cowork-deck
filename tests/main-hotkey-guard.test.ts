@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-/** The window hotkey handler's guard, driven through `main.ts` itself — the
+/** The window hotkey handler's guard, driven through `startApp` itself — the
  *  guard is wiring, and no unit test of `commands.ts` can see whether it was
  *  installed. Until this existed, `Cmd+N` spawned a session and `Cmd+W` closed
  *  the tile while the caret sat in a tile's search box or the broadcast bar.
@@ -66,7 +66,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
+  getCurrentWindow: () => ({ label: "main", onCloseRequested: async () => () => {}, destroy: async () => {}, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
 }));
 
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
@@ -78,8 +78,10 @@ const newSessionKey = (target: EventTarget) =>
     code: "KeyN", key: "n", metaKey: true, bubbles: true, cancelable: true,
   }));
 
-// One test file, one import: `main.ts` is a side-effect module and imports once
-// per file, so the cases share a booted app and run in sequence.
+// The cases share one booted app and run in sequence. That used to be forced —
+// `main.ts` was a side-effect module and imports once per file — and is now a
+// choice: `startApp(role)` is a function, and `tests/app-singletons.test.ts`
+// boots it four times in one file.
 describe("the window hotkey handler and text entry", () => {
   it("ignores a hotkey typed into a text field, and fires it inside a terminal", async () => {
     vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
@@ -88,7 +90,7 @@ describe("the window hotkey handler and text entry", () => {
       + '<div id="sidebar"></div><main id="deck"></main><div id="terminals"></div>'
       + '<div id="board" class="hidden"></div></div></div>';
 
-    await import("../src/main");
+    await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();
 
     const deckEl = document.querySelector<HTMLElement>("#deck")!;

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cowork-deck</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <!-- The second kind of window, on the same mocks. A copy of the body for
+         the same reason `index.html` beside it is one, plus one more:
+         `installMocks` has to run before the entry is imported, and the entry
+         begins booting the moment it is evaluated. The label is what `startApp`
+         reads to decide it is one workspace rather than the whole app. Keep all
+         three in step. -->
+    <!-- A copy of the app's own `index.html` body. It has to be a copy rather than
+         a reuse: the mocks must be installed before `main.ts` is imported, and
+         `main.ts` starts booting the moment it is evaluated. Keep the two in step —
+         a screen the harness cannot mount is a screen the README cannot show. -->
+    <div id="app">
+      <header class="topbar">
+        <div class="mark" id="mark" data-od-id="wordmark"></div>
+        <nav id="viewbar" aria-label="Screens"></nav>
+        <span class="topbar-spacer"></span>
+        <div id="topbar-actions"></div>
+      </header>
+      <div id="stage">
+        <aside id="sidebar"></aside>
+        <!-- Mirrors `index.html`: the deck and the terminal drawer are one
+             column inside the stage row. -->
+        <div id="workarea">
+          <main id="deck"></main>
+          <div id="terminals"></div>
+        </div>
+        <div id="board" class="hidden"></div>
+      </div>
+    </div>
+    <script type="module">
+      import { installMocks } from "/harness/mock.ts";
+      installMocks("workspace-ws-harbor");
+      await import("/src/workspace.ts");
+      window.__HARNESS_BOOTED__ = true;
+    </script>
+  </body>
+</html>

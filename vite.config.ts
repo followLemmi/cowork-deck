@@ -20,6 +20,8 @@ export default defineConfig({
   build: {
     target: "es2021",
     outDir: "dist",
-    rollupOptions: { input: { main: "index.html", pill: "pill.html" } },
+    rollupOptions: {
+      input: { main: "index.html", pill: "pill.html", workspace: "workspace.html" },
+    },
   },
 });

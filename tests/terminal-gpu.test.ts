@@ -47,7 +47,7 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 vi.mock("@xterm/addon-search", () => ({ SearchAddon: class { findNext() {} findPrevious() {} } }));
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
 vi.mock("../src/ipc", () => ({
-  startSession: vi.fn(), startCommandSession: vi.fn(), writeSession: vi.fn(), resizeSession: vi.fn(),
+  startSession: vi.fn(), startCommandSession: vi.fn(), writeSession: vi.fn().mockResolvedValue(undefined), resizeSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { TerminalPanel, MAX_GPU_CONTEXTS } from "../src/terminal";

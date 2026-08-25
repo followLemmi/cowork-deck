@@ -442,6 +442,23 @@ pub struct SessionEntry {
     /// a scenario ran twice in one day.
     #[serde(rename = "runId", default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// The window whose deck this tile belongs to, by window label.
+    ///
+    /// Absent means the main window. That is what every file written before this
+    /// field existed says implicitly, and what a single-window app meant by every
+    /// entry in it — so an old layout restores exactly as it did, into the same
+    /// window, with nothing to migrate.
+    ///
+    /// **The frontend never sends this.** `save_layout` stamps it from the label
+    /// the runtime attaches to the invoke, which webview code cannot forge, so a
+    /// window cannot claim another window's tiles by writing the field. It is
+    /// absent from the TypeScript `SessionEntry` for the same reason.
+    ///
+    /// One word, so unlike every field above it needs no `rename` — serde already
+    /// writes the key TS would read. Read the NOTE on `task_id` before adding a
+    /// second word to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// Which of the two kinds of launch name `SessionEntry::name` holds.
@@ -777,7 +794,7 @@ mod tests {
         let entry = SessionEntry {
             session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
             task_id: None, scheduled_skill_id: None, user_name: None, name_kind: None,
-            skill_id: None, run_id: None,
+            skill_id: None, run_id: None, owner: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
@@ -813,7 +830,7 @@ mod tests {
             session_id: "s3".into(), cwd: "/c".into(), name: "session · deck".into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: Some("relay".into()), name_kind: Some(NameKind::Placeholder),
-            skill_id: None, run_id: None,
+            skill_id: None, run_id: None, owner: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""userName":"relay""#), "got {json}");

@@ -116,7 +116,12 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
 
     emitState(panelSessions[0], "done");
 
-    expect(vi.mocked(emit)).toHaveBeenCalledWith("pill://count", { n: 0 });
+    // The deck reports its own sessions and their states; the main window is
+    // what turns that into the pill's number (#243). A finished run is not
+    // waiting for input, and this is where that is checked.
+    expect(vi.mocked(emit)).toHaveBeenCalledWith("session://waiting", expect.objectContaining({
+      sessions: expect.not.arrayContaining([expect.objectContaining({ state: "waitingInput" })]),
+    }));
   });
 
   // Auto-restore brings yesterday's scheduled tile back, but the link from
