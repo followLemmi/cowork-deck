@@ -265,12 +265,35 @@
      against a light-tinted selected row. */
   --focus-ring: 0 0 0 2px var(--accent), 0 0 0 4px var(--bg-void);
 
-  --ease: cubic-bezier(0.2, 0, 0, 1);
+  /* Two durations and one curve, and the rule that picks between them: a duration
+     is chosen by HOW FAR the thing travels, not by how important it is. A ground
+     changing under a cursor travels nothing (`--dur-1`). A chip crossfading
+     travels nothing but has to be noticed (`--dur-2`). The design system carries
+     two more — `--dur-3` for anything that changes position or size, `--dur-4` for
+     a whole entrance sequence — and they arrive with the first rule that needs
+     them rather than sitting here as claims nothing checks.
+
+     `--ease-out` is the name and `cubic-bezier(0.22, 1, 0.36, 1)` is the curve:
+     fast out, long settle, which is what everything that moves uses. What it
+     replaces was `--ease: cubic-bezier(0.2, 0, 0, 1)` — a curve that starts slow
+     and ends abruptly, so a ground change under the cursor arrived late and
+     stopped dead. One curve, one name, and the name says which of three the
+     system has. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --dur-1: 120ms; --dur-2: 220ms;
 }
 
+/* One switch, honoured everywhere. The durations collapse and so do the DELAYS —
+   without that half, a staggered entrance still waits its 26ms per row before
+   arriving instantly, which is the same delay with none of the motion that paid
+   for it. Deliberately not `animation: none`: on a keyframe filled `backwards`
+   that leaves the element at its first frame, which for an entrance means
+   invisible. Collapsed, they resolve to the final frame instead. */
 @media (prefers-reduced-motion: reduce) {
-  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  *, *::before, *::after {
+    animation-duration: 1ms !important; animation-delay: 0ms !important;
+    transition-duration: 1ms !important; transition-delay: 0ms !important;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -432,7 +455,7 @@ html, body, #app { height: 100%; margin: 0; }
   border: 1px solid transparent; border-radius: var(--r-ctl);
   font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-bold);
   cursor: pointer;
-  transition: background var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out);
 }
 .deck-empty-go:hover { background: var(--accent-press); }
 .deck-empty-go:focus-visible { outline: none; box-shadow: var(--focus-ring); }
@@ -454,8 +477,8 @@ html, body, #app { height: 100%; margin: 0; }
   min-height: 32px; padding: 7px var(--sp-3);
   background: none; border: 1px solid var(--line); border-radius: var(--r-ctl);
   color: var(--fg-mid); font: inherit; font-size: var(--fs-sm); cursor: pointer;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
-              border-color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out),
+              border-color var(--dur-1) var(--ease-out);
 }
 .deck-empty-scenario:hover {
   background: var(--bg-hover); border-color: var(--line-strong); color: var(--fg);
@@ -472,7 +495,7 @@ html, body, #app { height: 100%; margin: 0; }
   display: flex; align-items: center; gap: var(--sp-2);
   padding: 7px var(--sp-2) 7px var(--sp-3);
   border-radius: var(--r-ctl);
-  transition: background var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out);
 }
 /* Hover moves the ground. Nothing here touches a foreground — that is the rule the
    old icon buttons broke with `opacity`, and it is the reason this row can carry a
@@ -562,22 +585,28 @@ html, body, #app { height: 100%; margin: 0; }
 .sk-run:hover { color: var(--fg); }
 .sk-row:hover .sk-run { text-decoration: underline; text-underline-offset: 2px; }
 
-/* `color` and `opacity: 0` are gone from both rules below, and they were dead
-   rather than merely redundant: every one of these four buttons is built by
-   `iconButton` (icons.ts), which composes `btn--icon` — a single-class selector
-   of equal specificity, later in this file, setting `--fg-muted` and an opacity
-   that is not 0. The source read as though these controls were invisible at rest
-   and a different colour than they are. They were neither. */
-.sk-del, .ws-del { background: none; border: none; border-radius: var(--r-sm); cursor: pointer; padding: 0 6px; transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
-.sk-row:hover .sk-del, .ws-row:hover .ws-del { opacity: 1; }
+/* What is gone from these four rules, and why nothing replaces it: `opacity: 0`
+   at rest went in the previous pass, because an action that materialises out of
+   nothing puts an invisible Delete in the keyboard path. What went now is the
+   `opacity: 1` on hover and the `transition: opacity` that carried it — with
+   nothing setting a non-1 opacity any more, both were animating a property that
+   never changes. `btn--icon` is where these controls get their colour and their
+   hover plate, one file down. */
+.sk-del, .ws-del { background: none; border: none; border-radius: var(--r-sm); cursor: pointer; padding: 0 6px; transition: color var(--dur-1) var(--ease-out); }
 .sk-del:hover, .ws-del:hover { color: var(--st-error); }
 
-.ws-edit, .sk-edit { background: none; border: none; border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; transition: opacity var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
-.ws-row:hover .ws-edit, .sk-row:hover .sk-edit { opacity: 1; }
+.ws-edit, .sk-edit { background: none; border: none; border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; transition: color var(--dur-1) var(--ease-out); }
 .ws-edit:hover, .sk-edit:hover { color: var(--accent); }
 
-.sk-add, .ws-add { width: 100%; min-height: 32px; padding: 7px; margin-top: var(--sp-2); background: none; color: var(--fg-dim); border: 1px dashed var(--line-strong); border-radius: var(--r-ctl); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-medium); cursor: pointer; transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
-.sk-add:hover, .ws-add:hover { border-style: solid; border-color: var(--line-strong); color: var(--fg); background: var(--bg-hover); }
+/* A row, not a dashed ghost. The dash was doing two jobs at once and neither
+   well: it said "this is a place where something can be added", which the `+` and
+   the word already say, and it said "this control is provisional", which is not
+   true of the only way to add a workspace. What it actually did on screen was put
+   a second, broken-looking rectangle inside an island that already has an edge.
+   Now it is what it is — the last row of the list it appends to — and it discloses
+   its ground on hover like every other row in the app. */
+.sk-add, .ws-add { width: 100%; min-height: 32px; padding: 7px var(--sp-2); margin-top: var(--sp-1); background: none; color: var(--fg-dim); border: 0; border-radius: var(--r-ctl); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-medium); text-align: left; cursor: pointer; transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
+.sk-add:hover, .ws-add:hover { color: var(--fg); background: var(--bg-hover); }
 
 button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
@@ -643,7 +672,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    invisible until the tile is one someone is working with. `:focus-within` is
    what gives it a focus ring everywhere else, and `.is-active` is what leaves it
    permanently visible on the tile about to be renamed. */
-.tile-rename { opacity: 0; transition: opacity var(--dur-1) var(--ease); }
+.tile-rename { opacity: 0; transition: opacity var(--dur-1) var(--ease-out); }
 .tile:hover .tile-rename,
 .tile.is-active .tile-rename,
 .tile-head:focus-within .tile-rename { opacity: 1; }
@@ -658,7 +687,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    equal-specificity rule won the colour. What is left duplicates `.btn--icon`
    rather than contradicting it, so the source no longer describes a 22px subtle
    button that never existed. */
-.tile-close { display: inline-flex; align-items: center; justify-content: center; background: none; border: none; border-radius: var(--r-sm); cursor: pointer; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+.tile-close { display: inline-flex; align-items: center; justify-content: center; background: none; border: none; border-radius: var(--r-sm); cursor: pointer; transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
 .tile-close:hover { background: var(--bg-hover); color: var(--fg); }
 
 .tile-search { display: flex; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--line); }
@@ -713,7 +742,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
      object: 14px reads as a considered corner on a 116px card and as a blob on a
      59px one. */
   border-radius: var(--r-ctl);
-  transition: border-color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+  transition: border-color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 .deck-strip .tile.minimized:hover { border-color: var(--line-strong); transform: translateY(-2px); }
 .deck-strip .tile.minimized .tile-body,
@@ -783,7 +812,10 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .form-sched-hint { font-size: var(--fs-xs); color: var(--fg-mid); line-height: var(--lh-body); }
 .form-sched-defhead { font-size: var(--fs-sm); color: var(--fg); margin-top: 4px; }
 .sk-sched { font-size: var(--fs-xs); color: var(--fg-mid); margin: -2px 0 6px 2px; line-height: var(--lh-body); }
-.sk-sched-off { opacity: 0.7; font-style: italic; }
+/* `opacity: 0.7` here composited the island's ground into the text and put a line
+   a person is meant to read at a ratio no checker reports. The same "quieter" in a
+   colour that is measured: `--fg-dim`, 5.05 on an island. */
+.sk-sched-off { color: var(--fg-dim); font-style: italic; }
 .form-error { font-size: var(--fs-sm); color: var(--st-error); }
 .palette-item { display: flex; justify-content: space-between; gap: var(--sp-3); align-items: baseline; }
 /* A key cap, not a caption: this is a thing you press. */
@@ -811,7 +843,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    this quiet. */
 .state-error        { color: var(--st-error);   background: rgba(251, 129, 122, 0.06); border-color: rgba(251, 129, 122, 0.42); }
 
-.state-waitingInput::before { animation: pulse-dot 1.4s var(--ease) infinite; }
+.state-waitingInput::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
 /* transform + opacity only — GPU-composited, no per-frame repaint. Animating
    box-shadow here forced WebKit to repaint every frame for the whole
    animation's lifetime (a waitingInput session never leaves that state until
@@ -856,10 +888,10 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    margins centre when there is room and collapse to zero when there is not.
    The 16px padding is why the caps below subtract 32px — the box's containing
    block is `100vw - 32px`, so that is the width that means "as wide as it can be". */
-.modal-overlay { position: fixed; inset: 0; background: rgba(8, 7, 6, 0.62); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center; padding: var(--sp-6); overflow: auto; z-index: 1000; animation: modal-fade var(--dur-1) var(--ease); }
+.modal-overlay { position: fixed; inset: 0; background: rgba(8, 7, 6, 0.62); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center; padding: var(--sp-6); overflow: auto; z-index: 1000; animation: modal-fade var(--dur-1) var(--ease-out); }
 /* The floating shadow, not the tile's: a dialog is over everything, and the tile
    shadow it borrowed was tuned for something sitting in a grid. */
-.modal-box { margin: auto; background: var(--bg-island); border: 1px solid var(--line-strong); border-radius: var(--r-island); padding: var(--sp-5); min-width: min(360px, 100vw - 48px); max-width: 90vw; box-shadow: var(--sh-float); display: flex; flex-direction: column; gap: var(--sp-4); animation: modal-rise var(--dur-2) var(--ease); }
+.modal-box { margin: auto; background: var(--bg-island); border: 1px solid var(--line-strong); border-radius: var(--r-island); padding: var(--sp-5); min-width: min(360px, 100vw - 48px); max-width: 90vw; box-shadow: var(--sh-float); display: flex; flex-direction: column; gap: var(--sp-4); animation: modal-rise var(--dur-2) var(--ease-out); }
 @keyframes modal-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 /* The display face on a dialog title, which is the one heading a modal has. */
 .modal-title { color: var(--fg); font-family: var(--font-display); font-size: var(--fs-lg); font-weight: var(--fw-bold); letter-spacing: -0.01em; line-height: var(--lh-tight); }
@@ -868,7 +900,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .modal-input:hover { border-color: var(--fg-dim); }
 .modal-input:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
 .modal-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
-.modal-actions button { padding: 7px var(--sp-4); min-height: 32px; border-radius: var(--r-ctl); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-medium); cursor: pointer; border: 1px solid var(--line); background: var(--bg-inset); color: var(--fg-mid); transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+.modal-actions button { padding: 7px var(--sp-4); min-height: 32px; border-radius: var(--r-ctl); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-medium); cursor: pointer; border: 1px solid var(--line); background: var(--bg-inset); color: var(--fg-mid); transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
 .modal-actions button:hover { background: var(--bg-hover-2); border-color: var(--line-strong); color: var(--fg); }
 .modal-actions .modal-ok { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: var(--fw-bold); }
 .modal-actions .modal-ok:hover { background: var(--accent-press); border-color: var(--accent-press); color: var(--accent-ink); }
@@ -960,7 +992,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .form-sched-error { color: var(--st-error); font-size: var(--fs-sm); }
 /* The "run now" button; it doubles as the schedule indicator, so it is always
    visible, unlike .sk-edit/.sk-del which appear on row hover. */
-.sk-now { background: none; border: none; color: var(--fg-dim); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; font-size: var(--fs-xs); transition: color var(--dur-1) var(--ease); }
+.sk-now { background: none; border: none; color: var(--fg-dim); border-radius: var(--r-sm); cursor: pointer; padding: 0 4px; font-size: var(--fs-xs); transition: color var(--dur-1) var(--ease-out); }
 .sk-now:hover { color: var(--accent); }
 
 /* --- Buttons: one primary, the rest quieter ----------------------------- */
@@ -972,7 +1004,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
   background: var(--accent); color: var(--bg-void);
   border: none; border-radius: var(--r-sm);
   font: inherit; font-size: var(--fs-base); font-weight: var(--fw-medium);
-  cursor: pointer; transition: filter var(--dur-1) var(--ease);
+  cursor: pointer; transition: filter var(--dur-1) var(--ease-out);
 }
 /* The fill steps down and the dark ink stays put — both halves in one rule. The
    `filter: brightness()` this replaces was wrong for a near-white accent in both
@@ -996,7 +1028,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
   background: none; border: none; border-radius: var(--r-ctl);
   color: var(--fg-dim); font-size: var(--fs-base);
   cursor: pointer;
-  transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+  transition: color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out);
 }
 /* Brighten on row hover rather than appear from nothing. `--fg-dim` at rest is
    5.05 on an island, so these are legible while sitting still — which is what the
@@ -1009,11 +1041,6 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .btn--icon:hover { background: var(--bg-hover); color: var(--fg); }
 .btn--icon:active { background: var(--bg-hover-2); }
 .btn--icon--danger:hover { color: var(--st-error); }
-
-/* Buttons hidden until hover still took focus, and opacity: 0 swallowed the
-   outline — Tab landed on an invisible delete button. */
-.sk-row:focus-within .sk-del, .sk-row:focus-within .sk-edit,
-.ws-row:focus-within .ws-del, .ws-row:focus-within .ws-edit { opacity: 1; }
 
 /* Pressing and being disabled had no feedback at all: one :active rule for the
    whole app and not a single :disabled. */
@@ -1073,7 +1100,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .form-icon-swatch { width: 32px; height: 32px; border-radius: var(--r-ctl);
   background: var(--bg-inset); color: var(--fg-dim); display: inline-flex;
   align-items: center; justify-content: center; border: 1px solid var(--line);
-  cursor: pointer; transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+  cursor: pointer; transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
 .form-icon-swatch:hover { background: var(--bg-hover-2); color: var(--fg); }
 .form-icon-swatch.selected { color: var(--fg); border-color: var(--accent); background: var(--sel); }
 .sk-run .icon { display: inline-block; vertical-align: -3px; }
@@ -1097,7 +1124,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   background: var(--bg-inset); border: 1px solid var(--line);
   border-radius: var(--r-ctl); padding: var(--sp-2) var(--sp-3);
   min-height: 32px; cursor: pointer;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 .settings-size:hover { background: var(--bg-hover-2); color: var(--fg); border-color: var(--line-strong); }
 .settings-size.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
@@ -1301,7 +1328,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   grid-template-rows: auto 1fr auto auto;
   min-height: 108px;
   box-sizing: border-box;
-  transition: border-color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+  transition: border-color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 /* The rail, inset like a row's rather than full-bleed like a tile's: a card is a
    small object and sits in a stack of its own kind, so a bar reaching the corners
@@ -1357,7 +1384,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .tk-bot { color: var(--st-ended); }
 /* Pulse via opacity only: animating box-shadow once hung the whole system. */
-.tk-busy { color: var(--st-working); animation: tk-pulse 1.6s var(--ease) infinite; }
+.tk-busy { color: var(--st-working); animation: tk-pulse 1.6s var(--ease-out) infinite; }
 @keyframes tk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .tk-warn-glyph { color: var(--st-error); cursor: help; }
 .tk-stale { color: var(--st-error); }
@@ -1421,7 +1448,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   background: var(--bg-inset); border: 1px solid var(--line);
   border-radius: var(--r-ctl); padding: 5px var(--sp-3);
   min-height: 30px; cursor: pointer;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 .tk-filter:hover { background: var(--bg-hover-2); color: var(--fg); }
 .tk-filter.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
@@ -1452,7 +1479,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   gap: var(--sp-2) var(--sp-3);
   padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
   border-top: 1px solid var(--line);
-  transition: background var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out);
 }
 .tk-row:first-child { border-top: 0; }
 .tk-row:hover { background: var(--bg-hover); }
@@ -1545,7 +1572,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tk-skeleton-row, .pr-skeleton-row {
   height: 44px; border-radius: var(--r-ctl);
   background: var(--bg-inset); border: 1px solid var(--line);
-  animation: tk-pulse 1.6s var(--ease) infinite;
+  animation: tk-pulse 1.6s var(--ease-out) infinite;
 }
 .tk-skeleton-row:nth-child(2), .pr-skeleton-row:nth-child(2) { animation-delay: 120ms; }
 .tk-skeleton-row:nth-child(3), .pr-skeleton-row:nth-child(3) { animation-delay: 240ms; }
@@ -1592,7 +1619,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   font: inherit; font-size: var(--fs-sm); color: var(--fg-mid);
   background: var(--bg-inset); border: 1px solid var(--line);
   border-radius: var(--r-ctl); min-width: 30px; min-height: 30px; cursor: pointer;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 .tk-acts button:hover, .tk-new:hover, .tk-configure:hover, .tk-board-edit:hover {
   background: var(--bg-hover-2); border-color: var(--line-strong); color: var(--fg);
@@ -1712,7 +1739,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   background: none; border: 1px solid transparent; border-radius: var(--r-sm);
   color: var(--fg-mid); font-size: var(--fs-xs); font-weight: var(--fw-medium);
   cursor: pointer;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
 .tk-c-mode:hover { background: var(--bg-hover); color: var(--fg); border-color: var(--line); }
 .tk-c-mode:focus-visible { outline: none; box-shadow: var(--focus-ring); }
@@ -1819,7 +1846,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   font: inherit; font-size: var(--fs-sm); color: var(--fg-mid);
   background: var(--bg-inset); border: 1px solid var(--line);
   border-radius: var(--r-ctl); min-width: 30px; min-height: 30px; cursor: pointer;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
 .tk-e-step-up:hover, .tk-e-step-down:hover, .tk-e-step-remove:hover,
 .tk-e-kind-up:hover, .tk-e-kind-down:hover, .tk-e-kind-remove:hover { background: var(--bg-hover-2); color: var(--fg); }
@@ -1829,14 +1856,17 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 /* A rename's effect, or a pending removal's headcount — informational, not an
    error, so it reads quieter than .form-error. */
 .tk-e-note { flex-basis: 100%; color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body); }
+/* The same correction as `.ws-add`: the dash said "provisional" about the only
+   way to add a step. A quiet button that takes a ground on hover says "a control"
+   without saying anything untrue. */
 .tk-e-add-step, .tk-e-add-kind {
   align-self: flex-start; margin-top: var(--sp-2);
   font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--fg-dim);
-  background: none; border: 1px dashed var(--line-strong); border-radius: var(--r-ctl);
+  background: none; border: 0; border-radius: var(--r-ctl);
   padding: 6px var(--sp-3); min-height: 32px; cursor: pointer;
-  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
-.tk-e-add-step:hover, .tk-e-add-kind:hover { border-style: solid; border-color: var(--line-strong); background: var(--bg-hover); color: var(--fg); }
+.tk-e-add-step:hover, .tk-e-add-kind:hover { background: var(--bg-hover); color: var(--fg); }
 
 /* --- Pull requests ------------------------------------------------------ */
 /* A flex **row** now — the list, then the diff drawer beside it — where it used to be
@@ -1871,7 +1901,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   background: none; border: 0; border-radius: var(--r-ctl);
   color: var(--fg-dim); cursor: pointer;
   min-width: 30px; min-height: 30px;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
 .pr-refresh:hover { background: var(--bg-hover); color: var(--fg); }
 /* An island each, like a board card — and deliberately not the single hairlined list
@@ -1941,7 +1971,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   color: var(--fg-mid); padding: 6px var(--sp-3); cursor: pointer;
   font-size: var(--fs-sm); font-weight: var(--fw-medium);
   min-height: 32px;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 .pr-actions button:hover:not(:disabled) { background: var(--bg-hover-2); border-color: var(--line-strong); color: var(--fg); }
 /* One primary per row, and Merge is it — the action the screen exists for. The other
@@ -2270,7 +2300,7 @@ h6.md-head { font-size: var(--fs-sm); }
      seam would ordinarily take here, is 1.62 and fails. This one is an interactive
      control, so 1.4.11 applies to it for real — unlike the surface seams around it. */
   color: var(--fg-dim);
-  transition: color var(--dur-1) var(--ease);
+  transition: color var(--dur-1) var(--ease-out);
 }
 /* Drawn as a short centred bar rather than a full-height rule: a `--fg-subtle` line
    the height of the drawer would be the loudest edge on the screen, and it would
@@ -2351,7 +2381,7 @@ h6.md-head { font-size: var(--fs-sm); }
   background: var(--bg-inset); border: 1px solid var(--line); border-radius: var(--r-ctl);
   color: var(--fg-mid); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-medium);
   padding: 5px var(--sp-2); min-width: 30px; min-height: 30px; cursor: pointer;
-  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 .pr-drawer-close { margin-left: auto; }
 .pr-drawer-prev:hover:not(:disabled),
@@ -2817,12 +2847,20 @@ h6.md-head { font-size: var(--fs-sm); }
 }
 .term-tab.is-active .term-tab-name { color: var(--fg); }
 .term-tab-name:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* `opacity: 0` at rest, appearing on the tab's hover, was the last of the
+   pattern this system rules out: the glyph stays legible and stays in the tab
+   order, and what arrives on hover is the PLATE. `--fg-dim` on the tab strip's
+   ground is the same 5.05 every other quiet glyph in the app sits at, so this is
+   a control at rest rather than a control in hiding — and a close button nobody
+   can see until they hover the row is one a keyboard reaches before an eye does. */
 .term-tab-x {
-  padding: 0 6px 0 0; background: none; border: none; color: var(--fg-dim);
-  font: inherit; line-height: 1; cursor: pointer; opacity: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-right: 4px; padding: 0;
+  background: none; border: none; border-radius: var(--r-sm); color: var(--fg-dim);
+  font: inherit; line-height: 1; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
-.term-tab:hover .term-tab-x, .term-tab.is-active .term-tab-x, .term-tab-x:focus-visible { opacity: 1; }
-.term-tab-x:hover { color: var(--fg); }
+.term-tab-x:hover { background: var(--bg-hover-2); color: var(--fg); }
 .term-tab-x:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 .term-add, .term-hide {
