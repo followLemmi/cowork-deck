@@ -122,6 +122,15 @@ mod tests {
         fs::write(p, b"x").unwrap();
     }
 
+    /// Prints the ignore file, for previewing what a *real* config directory
+    /// would publish before any repository exists to publish it into.
+    /// `--ignored`, because it asserts nothing.
+    #[test]
+    #[ignore]
+    fn print_the_ignore() {
+        print!("{}", gitignore());
+    }
+
     /// The guarantee, and the reason it is asserted against real git rather than
     /// against a reimplementation of gitignore's rules: what ships is decided by
     /// git, so git is what has to agree.

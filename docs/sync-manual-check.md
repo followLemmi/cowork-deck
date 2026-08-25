@@ -8,6 +8,23 @@ in the pull request description.
 Two machines, one account, one repository. Below, **A** is the machine that sets
 it up and **B** is the one that adopts it.
 
+## Before anything reaches GitHub
+
+The one check that has to come first. Every other failure here is recoverable;
+publishing a credential is not — a private repository is still GitHub's servers,
+and deleting it afterwards does not unsend it.
+
+```bash
+npm run sync:preview
+```
+
+It reads a *copy* of the real config directory, applies the app's own ignore
+rules, and prints two lists.
+
+- [ ] The "would be published" list contains nothing you would not put in a private repository.
+- [ ] `sessions.json`, `terminals.json`, `ui_state.json`, `schedule_state.json`, `accounts.json` and `gh-noauth/` are all in the second list.
+- [ ] On a host with no keyring, the credential fallback file is in the second list.
+
 ## Switching it on
 
 - [ ] With `gh` absent from `PATH` — the offer routes to the existing "Set up gh" path rather than failing.
