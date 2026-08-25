@@ -607,6 +607,29 @@ pub struct GitStatus {
     pub dirty: bool,
 }
 
+/// One of the files the app keeps for itself, and whether it is there yet.
+///
+/// `exists: false` is a fact worth reporting rather than a row to omit: the list
+/// is what this app WILL write, and "no scenarios have ever been saved" is
+/// something a person looking for the file needs told, not hidden.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConfigFile {
+    pub name: String,
+    pub exists: bool,
+}
+
+/// Where the app keeps its own state, for the Settings window.
+///
+/// The directory is the answer to "where is my configuration"; the file list is
+/// the answer to "which of it is mine" — a person who wants to back one up, diff
+/// one, or delete one needs the names, and every one of them is a plain JSON or
+/// JSONL file on purpose.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConfigPaths {
+    pub dir: String,
+    pub files: Vec<ConfigFile>,
+}
+
 /// One changed file in a session's own checkout.
 ///
 /// `mark` is git's own letter — M, A, D, R, ? for untracked, U for a conflict —

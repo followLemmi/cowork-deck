@@ -747,6 +747,15 @@ export const gitChanges = (cwd: string) => invoke<GitChanges>("git_changes", { c
  *  untracked-not-ignored, so the repository's own ignore rules decide what is not
  *  worth showing rather than a list of names kept here. */
 export const worktreeFiles = (cwd: string) => invoke<string[]>("worktree_files", { cwd });
+
+/** One of the files the app keeps for itself. `exists: false` is reported rather
+ *  than omitted: the list is what this app WILL write, and a person looking for a
+ *  file they have never saved needs to be told it is not there. */
+export interface ConfigFile { name: string; exists: boolean }
+export interface ConfigPaths { dir: string; files: ConfigFile[] }
+/** Where the app keeps its own state — for the Settings window, which is the first
+ *  place in this app that answers "where is my configuration" at all. */
+export const configPaths = () => invoke<ConfigPaths>("config_paths");
 /** One invoke per tick for every open session — the title and the token counts
  *  come from the same bytes, so asking per session would read each transcript
  *  twice. Every requested id comes back, including ids with no transcript. */

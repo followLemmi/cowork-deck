@@ -49,8 +49,8 @@
 use crate::gh;
 use crate::hooks::build_settings_json;
 use crate::model::{
-    GitChange, GitChanges, GitStatus, SessionEntry, SessionTokens, Skill, TokenUsage, UiState,
-    UiStatePatch, Workspace, WorkspaceGithub,
+    ConfigFile, ConfigPaths, GitChange, GitChanges, GitStatus, SessionEntry, SessionTokens, Skill,
+    TokenUsage, UiState, UiStatePatch, Workspace, WorkspaceGithub,
 };
 use crate::pty::PtyManager;
 use crate::store::Store;
@@ -2424,6 +2424,47 @@ pub fn git_status(cwd: String) -> GitStatus {
     GitStatus { branch, dirty }
 }
 
+/// Every file this app writes for itself, by name, in the directory it writes them
+/// to.
+///
+/// Named rather than listed off the disk with `read_dir`, and that is the whole
+/// design: `read_dir` answers "what is there", and the question a person opening
+/// Settings has is "what does this app keep about me" — which includes the file
+/// that does not exist yet because they have never saved a scenario. A directory
+/// listing would quietly leave that one out.
+const CONFIG_FILES: [&str; 7] = [
+    "workspaces.json",
+    "skills.json",
+    "sessions.json",
+    "terminals.json",
+    "ui_state.json",
+    "schedule_state.json",
+    "runs.jsonl",
+];
+
+/// Split from the command so it can be tested against a real directory: the rule
+/// with something to get wrong is "a missing file is reported, not dropped".
+fn config_files(dir: &std::path::Path) -> Vec<ConfigFile> {
+    CONFIG_FILES
+        .iter()
+        .map(|name| ConfigFile {
+            name: (*name).to_string(),
+            exists: dir.join(name).exists(),
+        })
+        .collect()
+}
+
+#[tauri::command(async)]
+pub fn config_paths(state: State<AppState>) -> ConfigPaths {
+    // The lock is taken and released around the reads rather than held across
+    // them, which is the rule the note at the top of this file states.
+    let dir = { state.store.lock().unwrap().dir.clone() };
+    ConfigPaths {
+        dir: dir.to_string_lossy().to_string(),
+        files: config_files(&dir),
+    }
+}
+
 /// The files in a session's own checkout, as git sees them.
 ///
 /// `git ls-files` rather than a directory walk, and that is the whole design: the
@@ -2922,6 +2963,42 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
         tokens: Some(SessionTokens { context: last_context(main), spend, subagents: counted }),
         title,
         title_source,
+    }
+}
+
+#[cfg(test)]
+mod config_path_tests {
+    use super::{config_files, CONFIG_FILES};
+
+    /// A file that has never been written is reported as absent rather than left
+    /// out of the list. The list is what this app keeps ABOUT you, and a person
+    /// looking for a file they have not created yet needs to be told it is not
+    /// there — not shown a shorter list.
+    #[test]
+    fn reports_a_missing_file_rather_than_dropping_it() {
+        let dir = std::env::temp_dir().join(format!("cowork-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ui_state.json"), "{}").unwrap();
+
+        let files = config_files(&dir);
+        assert_eq!(files.len(), CONFIG_FILES.len());
+        assert!(files.iter().find(|f| f.name == "ui_state.json").unwrap().exists);
+        assert!(!files.iter().find(|f| f.name == "skills.json").unwrap().exists);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every name is a plain JSON or JSONL file, which is the promise the window
+    /// makes when it lists them: a person can read, diff and back one up without
+    /// this app's help.
+    #[test]
+    fn every_file_is_plain_text() {
+        for name in CONFIG_FILES {
+            assert!(
+                name.ends_with(".json") || name.ends_with(".jsonl"),
+                "{name} is neither JSON nor JSONL",
+            );
+        }
     }
 }
 

@@ -132,15 +132,21 @@ describe("pull request polling", () => {
     await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();
 
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
     // A rail of icons names itself for a reader rather than for the eye, so the
-    // accessible name is what there is to assert. Three of them, and the two that
-    // are absent are absent on purpose: a board and a list of pull requests belong
-    // to one repository, so each is a child of its workspace in the tree rather
-    // than an app-wide switch whose subject changes under it.
+    // accessible name is what there is to assert. Three PAGES, and the two that are
+    // absent are absent on purpose: a board and a list of pull requests belong to
+    // one repository, so each is a child of its workspace in the tree rather than
+    // an app-wide switch whose subject changes under it.
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn[data-page]")];
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
       "Workspaces and sessions", "Journal", "Scenarios",
     ]);
+    // And one control at the foot that is not a page: it opens a window about the
+    // app rather than changing what the panel holds, which is what the gap above it
+    // says. Deliberately without `data-page`, so the two kinds cannot be confused
+    // by a selector either.
+    const foot = document.querySelector<HTMLButtonElement>("#rail .rail-btn:not([data-page])")!;
+    expect(foot.getAttribute("aria-label")).toBe("Settings");
     const [termBtn] = buttons;
     const prBtn = { click: () => treeHooks!.openPage(active!.id, "pr") };
 

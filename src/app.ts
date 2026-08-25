@@ -15,6 +15,7 @@ import {
   revealPath, saveUiState, scheduleAck, schedulerReady, openWorkspaceWindow, onSessionOwner,
   syncSummary,
   hostPlatform,
+  configPaths,
   type HandOffTile,
   type SessionState,
 } from "./ipc";
@@ -36,7 +37,7 @@ import { issuePrompt } from "./tasks";
 import { pollIntervalMs } from "./pr";
 import {
   boardPollMs, CLOSED_PAGE_LIMIT, needsCloseConfirmation, needsTotals, nextPageLimit,
-  repoFromIssueUrl, sourceOf, unavailableFrom,
+  fsRootOf, repoFromIssueUrl, sourceOf, unavailableFrom,
 } from "./issues";
 import { HistoryView } from "./history";
 import { reconcileParams, type RunFilters } from "./runs";
@@ -206,6 +207,17 @@ export function startApp(role: WindowRole): Promise<void> {
     railEl.append(b);
   }
 
+  /* Settings sits at the FOOT of the rail, under a spacer, and the position is the
+     statement: everything above it selects what the panel holds, and this does
+     not — it opens a window about the app itself. In the top bar it was one of two
+     round glyphs beside a search, which said nothing about either being different
+     from the other. */
+  const railFoot = document.createElement("span");
+  railFoot.className = "rail-spacer";
+  const settingsBtn = iconButton("sliders", "Settings", "rail-btn");
+  settingsBtn.onclick = () => void openSettings();
+  railEl.append(railFoot, settingsBtn);
+
   /* --- The panel's head ---------------------------------------------------
      Two lines, and the top one is the load-bearing half: with a rail selecting
      what this column holds, "whose data is this" is the question that breaks the
@@ -298,9 +310,7 @@ export function startApp(role: WindowRole): Promise<void> {
     // clicked, for the majority of moments when nobody is holding the keyboard.
     const paletteBtn = iconButton("search", `Command palette (${hotkeyLabel("K")})`);
     paletteBtn.onclick = () => openPalette(paletteCommands());
-    const settingsBtn = iconButton("sliders", "Text size");
-    settingsBtn.onclick = () => void chooseScale();
-    actionsEl.append(paletteBtn, settingsBtn);
+    actionsEl.append(paletteBtn);
   }
 
   /** The next step for each of the three unavailabilities, shared by both GitHub
@@ -1912,11 +1922,48 @@ export function startApp(role: WindowRole): Promise<void> {
       .catch((e) => console.debug("ui scale save failed", e));
   }
 
-  async function chooseScale(): Promise<void> {
-    // `settingsDialog` previews live and puts the old value back on cancel, so there
-    // is nothing to undo here — only something to persist.
-    const picked = await settingsDialog();
+  /** Open Settings, with the facts it shows gathered here rather than read there:
+   *  the paths come from Rust, the workspace from the panel, and the words for a
+   *  task source from the module that owns that vocabulary. `settings.ts` owns a
+   *  window, not the app's state. */
+  async function openSettings(): Promise<void> {
+    const ws = workspaces.active;
+    const paths = await configPaths().catch((e: unknown) => {
+      // A window that cannot say where the files are is still worth opening for
+      // the rest of it, and saying so beats a blank section.
+      console.debug("config paths unavailable", e);
+      return null;
+    });
+    // `settingsDialog` previews the text size live and puts the old value back on
+    // cancel, so there is nothing to undo here — only something to persist.
+    const picked = await settingsDialog({
+      paths,
+      workspace: ws,
+      taskSource: ws ? describeTaskSource(ws) : null,
+      onReveal: (path) => { revealPath(path).catch((e) => void alertModal(String(e))); },
+      onEditWorkspace: () => { void workspaces.editActive(); },
+    });
     if (picked !== null) setScale(picked);
+  }
+
+  /** Where this workspace's tasks come from, in words.
+   *
+   *  Here rather than in the window, because the vocabulary is the tracker's and
+   *  this is the file that already speaks it. "Nothing configured" is a real answer
+   *  and is returned as null by the caller — a folder that happens to be the
+   *  project's default is not the same fact as a folder somebody chose. */
+  function describeTaskSource(ws: Workspace): string {
+    const provider = ws.tracker?.providers[0] ?? null;
+    if (sourceOf(ws.tracker) === "github") {
+      return ws.github?.login
+        ? `issues in this repository, as ${ws.github.login}`
+        : "issues in this repository";
+    }
+    /* The folder is two rows above, so this does not repeat it: `.cowork/tasks`
+       alone means "in this workspace", and a path here means "somewhere else". */
+    const root = fsRootOf(provider);
+    if (root === null || root.kind === "project") return "cards in .cowork/tasks";
+    return `cards in ${root.path}/.cowork/tasks`;
   }
 
   function paletteCommands(): Command[] {
@@ -1952,7 +1999,7 @@ export function startApp(role: WindowRole): Promise<void> {
       // the palette is not silent about where you already are.
       { id: "text-larger", title: `Text size: larger (now ${scaleLabel(currentScale())})`, run: () => setScale(nextScale(currentScale())) },
       { id: "text-smaller", title: `Text size: smaller (now ${scaleLabel(currentScale())})`, run: () => setScale(prevScale(currentScale())) },
-      { id: "settings", title: "Text size…", run: () => void chooseScale() },
+      { id: "settings", title: "Settings…", run: () => void openSettings() },
       { id: "sync", title: "Memory sync…", run: () => void syncDialog() },
     ];
   }

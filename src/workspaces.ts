@@ -214,6 +214,14 @@ export class WorkspacesPanel {
     this.select(ws.id);
   }
 
+  /** Open the form on the active workspace — for the Settings window, which shows
+   *  what this workspace is bound to and hands the changing of it to the one editor
+   *  that owns those fields. A second editor for them is a second thing to keep in
+   *  step. */
+  async editActive() {
+    if (this.activeId) await this.edit(this.activeId);
+  }
+
   private async edit(id: string) {
     const cur = this.items.find((w) => w.id === id);
     if (!cur) return;

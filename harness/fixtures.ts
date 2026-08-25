@@ -129,6 +129,24 @@ export const gitByCwd: Record<string, { branch: string | null; dirty: boolean }>
   "/home/dev/code/atlas": { branch: "release/3.2", dirty: false },
 };
 
+/** Where the app keeps its own files, as the Settings window asks for it.
+ *
+ *  `skills.json` deliberately absent: a person who has never saved a scenario has
+ *  no such file, and the window has to say so rather than list six names and leave
+ *  them wondering which of them is theirs. */
+export const configPaths = {
+  dir: "/home/dev/.local/share/ca.jvl.coworkdeck",
+  files: [
+    { name: "workspaces.json", exists: true },
+    { name: "skills.json", exists: false },
+    { name: "sessions.json", exists: true },
+    { name: "terminals.json", exists: true },
+    { name: "ui_state.json", exists: true },
+    { name: "schedule_state.json", exists: false },
+    { name: "runs.jsonl", exists: true },
+  ],
+};
+
 /** What the tool panel on a zoomed tile reads: the files git sees in a session's
  *  own checkout, and what that checkout has changed.
  *

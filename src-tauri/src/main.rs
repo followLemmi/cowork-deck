@@ -302,6 +302,7 @@ fn main() {
             commands::git_status,
             commands::git_changes,
             commands::worktree_files,
+            commands::config_paths,
             commands::session_snapshots,
             commands::scheduler_ready,
             commands::schedule_ack,

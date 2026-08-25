@@ -161,6 +161,8 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
       return F.gitByCwd[args.cwd as string] ?? { branch: null, dirty: false };
     // The tool panel's two reads. A folder with no entry answers empty rather than
     // throwing: "not a git checkout" is a real state and the panel says so.
+    case "config_paths":
+      return F.configPaths;
     case "worktree_files":
       return F.filesByCwd[args.cwd as string] ?? [];
     case "git_changes":
