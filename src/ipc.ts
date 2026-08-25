@@ -68,6 +68,10 @@ export interface UiState {
    *  is for. Required for the same reason as `uiScale`: Rust fills it from a
    *  `serde` default, so an optional here would guard a case that cannot happen. */
   prDiffCols: number;
+  /** Whether the offer to switch memory sync on has been waved away. Local to
+   *  this machine — `ui_state.json` is not on the sync allowlist, so declining
+   *  on the laptop says nothing about the desktop. */
+  syncOfferDismissed: boolean;
   /** Whether scenario runs are journalled. Default on; off writes nothing new
    *  and deletes nothing already written, and reads keep working. Required for
    *  the same reason as the two above: Rust fills it from a `serde` default. */
@@ -92,6 +96,7 @@ export interface UiStatePatch {
   activeWorkspaceId?: string;
   uiScale?: number;
   prDiffCols?: number;
+  syncOfferDismissed?: boolean;
   recordScenarioRuns?: boolean;
   terminalRows?: number;
 }

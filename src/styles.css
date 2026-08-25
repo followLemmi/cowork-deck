@@ -2797,3 +2797,14 @@ h6.md-head { font-size: var(--fs-sm); }
   background: color-mix(in srgb, var(--danger, #b3261e) 8%, transparent);
 }
 .sync-fault-text { margin: 0; }
+
+/* The one unprompted mention of memory sync. Sits above the deck rather than
+   over it: it must not cover a tile, and it must be possible to ignore. */
+.sync-offer {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 8px 12px 0; padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--border, #3c4043);
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+}
+.sync-offer-text { margin: 0; flex: 1 1 320px; }
+.sync-offer-actions { display: flex; gap: 8px; }

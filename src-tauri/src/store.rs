@@ -126,6 +126,9 @@ impl Store {
         if let Some(cols) = patch.pr_diff_cols {
             st.pr_diff_cols = cols;
         }
+        if let Some(dismissed) = patch.sync_offer_dismissed {
+            st.sync_offer_dismissed = dismissed;
+        }
         if let Some(on) = patch.record_scenario_runs {
             st.record_scenario_runs = on;
         }
@@ -515,10 +518,13 @@ mod tests {
         // Must match `DEFAULT_TERMINAL_ROWS` in `src/drawer.ts`, which is the
         // height the drawer opens at before a stored value has been read.
         assert_eq!(UiState::default().terminal_rows, 14);
+        // Off: nobody has been asked yet, so nobody has declined.
+        assert!(!UiState::default().sync_offer_dismissed);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
             pr_diff_cols: Some(80),
+            sync_offer_dismissed: Some(true),
             record_scenario_runs: Some(false),
             terminal_rows: Some(20),
         };
@@ -529,6 +535,8 @@ mod tests {
         assert_eq!(reloaded.pr_diff_cols, 80);
         assert!(!reloaded.record_scenario_runs);
         assert_eq!(reloaded.terminal_rows, 20);
+        // An offer that comes back after being waved away is not an offer.
+        assert!(reloaded.sync_offer_dismissed);
     }
 
     /// The drawer's own file, and the reason it is a struct rather than the bare

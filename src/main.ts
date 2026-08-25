@@ -4,6 +4,7 @@ import { Deck } from "./sessions";
 import { applyView, firstFocusable } from "./view";
 import { settingsDialog } from "./settings";
 import { syncDialog } from "./sync-dialog";
+import { offerBanner, shouldOffer } from "./sync-offer";
 import {
   applyScale, broadcastScale, clampScale, currentScale, nextScale, prevScale, scaleLabel,
 } from "./ui-scale";
@@ -11,7 +12,7 @@ import type { ViewName } from "./view";
 import {
   claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
-  revealPath, saveUiState, scheduleAck, schedulerReady,
+  revealPath, saveUiState, scheduleAck, schedulerReady, syncSummary,
 } from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
 import { TerminalDrawer, DEFAULT_TERMINAL_ROWS } from "./drawer";
@@ -1594,6 +1595,36 @@ async function bootWithStoredScale(): Promise<void> {
   }
   applyScale(scale, document.documentElement);
   await boot();
+  // After the deck, never before it: somebody who has just launched the app
+  // wants their sessions back, and a question in front of that is the fastest
+  // way to teach people to dismiss things unread. Failing to offer is not worth
+  // reporting — the palette still has it.
+  void maybeOfferSync().catch((e) => console.debug("sync offer skipped", e));
+}
+
+/** Mention memory sync, once, to somebody who has never been asked.
+ *
+ *  Everything about the decision lives in `sync-offer.ts`; this is the wiring.
+ *  Dismissing writes to `ui_state.json`, which is not on the sync allowlist —
+ *  so declining on the laptop says nothing about the desktop, which is the right
+ *  answer for a question about *this* machine's memory leaving it. */
+async function maybeOfferSync(): Promise<void> {
+  const [summary, ui] = await Promise.all([syncSummary(), loadUiState()]);
+  if (!shouldOffer({ on: summary.on, workspaces: workspaces.all, ui })) return;
+
+  const banner = offerBanner(
+    workspaces.all.length,
+    () => {
+      banner.remove();
+      void syncDialog();
+    },
+    () => {
+      banner.remove();
+      saveUiState({ syncOfferDismissed: true })
+        .catch((e) => console.debug("sync offer dismissal not saved", e));
+    },
+  );
+  document.getElementById("workarea")?.prepend(banner);
 }
 
 void bootWithStoredScale();

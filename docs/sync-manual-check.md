@@ -35,12 +35,16 @@ rules, and prints two lists.
 
 ## Upgrading into it, with workspaces you already have
 
-Sync is off after an update and nothing switches it on. There is **no offer at
-startup** — you have to open **Memory sync…** in the palette. That is a gap
-rather than a decision (#315 asked for an offer, dismissible, once), and it is
-worth deciding on before release.
+Sync is off after an update, and the deck mentions it once — a banner above the
+deck, after the sessions are back, with "Set it up" and "Not now".
 
-- [ ] Update an installation that already has workspaces and scenarios. Nothing prompts, nothing changes, and the deck behaves exactly as before.
+- [ ] Update an installation that already has workspaces. The deck comes up as usual, and the banner appears **after** the sessions, not in front of them.
+- [ ] "Not now" — it goes, and does not return on the next launch.
+- [ ] It does not return on the launch after that either. An offer that comes back is not an offer.
+- [ ] A fresh install with no workspaces is not offered anything at all.
+- [ ] The palette still has **Memory sync…** after declining.
+- [ ] Decline on this machine, then set sync up on the other one. This machine's answer is unchanged — it was a question about this machine.
+- [ ] "Set it up" opens the dialog, and the banner goes whether or not you go through with it.
 - [ ] Switch sync on. Every existing workspace and scenario appears in the repository without anyone filling anything in.
 - [ ] Nothing was asked about workspaces you already had — they are already local, and there is nothing to answer.
 
