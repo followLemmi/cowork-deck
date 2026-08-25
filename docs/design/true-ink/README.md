@@ -135,6 +135,14 @@ and sessions, the board, pull requests, the journal, scenarios — and the deck 
 the row. `#deck.tk-hidden` is gone from the stylesheet, which is the whole change in one
 line.
 
+The top bar carries a **crumb** beside the mark — which workspace this window is
+on, and which account a push from it goes out as. The panel's head says the same
+while the panel is open, and that is the reason the crumb exists: the panel
+closes, zoom closes it, and in that state nothing else on screen named either
+fact. Pressing it goes to the tree and focuses the active row, because switching
+workspace is what the tree is for; a dropdown switcher would be a second way to do
+one thing, and the one that cannot say which workspace is busy.
+
 What replaced the tabs in the top bar is a **ledger**: "1 waiting for a decision", "1
 stopped on an error", each reading opening one of the sessions it counted. Two readings
 only, because those are the two things that want a person; a run that finished while
@@ -171,10 +179,18 @@ active, so being wrong about which one that was meant a session in the wrong fol
 discovered afterwards. Exactly one create row is prominent — the active workspace's — so
 the panel still has one obvious primary action, and pressing any other one creates there.
 
+The active workspace's row carries a chip on its second line — `queue · PRs · journal` —
+because a tint and an accent rail say "this one" and not what follows from it. Only that
+row has it: three rows claiming it would be three claims where there is one fact.
+
 One gesture, one rule: a workspace row that is not active becomes active, and pressing the
 one that already is folds its sessions. Splitting "activate" from "expand" across two
 targets inside one row is how a tree gets two things to press, one of which is always the
-one you miss.
+one you miss — so the chevron in front of the name is an indicator rather than a control:
+it rotates with the state and is `aria-hidden`, and `aria-expanded` on the row's own
+button is what a reader gets. That a row means two things depending on which row it is —
+a workspace changes what three pages show, the create row inside it starts a session
+there — is written under the tree, because neither half is guessable from looking.
 
 ### 7 · A zoomed session gets its own tools
 
@@ -190,8 +206,11 @@ prompt whole — the one thing about a session that cannot be reconstructed from
 else on screen). There is no fourth and no "+ add a tool" strip: this app has no extension
 point yet, and a list of tools that do not exist is a menu of lies.
 
-Only in zoom, because at deck size a tile is 400px wide and the terminal is the whole
-point of it.
+In zoom — and when a session is alone in the deck, which is the same thing by another
+route: it already fills the stage, and `zoomTo` refuses when there is nothing to zoom
+past, so the one case where a person is unambiguously inside a single session would
+otherwise have been the case with no tools at all. At deck size with several tiles there
+are none: a tile is 400px wide and the terminal is the whole point of it.
 
 **The 80-column floor** is the rule the feature turns on. `fit()` follows whatever box the
 terminal sits in, so a panel that narrows the terminal re-wraps the agent's output — and
