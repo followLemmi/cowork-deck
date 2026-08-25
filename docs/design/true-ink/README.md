@@ -264,6 +264,51 @@ design: `read_dir` answers "what is there", and the question is "what does this 
 about me" — which includes the file that does not exist yet because nothing has been
 saved to it.
 
+## The second round, after the shell was used
+
+Three things came back from using it, and each one is a decision rather than a
+tweak.
+
+**The board and the pull requests left the tree.** They had been in the rail
+(app-wide switches over one repository's data — the subject changed in silence
+with the workspace), then two rows under every workspace in the tree. The second
+placement was honest about the subject and charged for it forever: on six
+workspaces, twelve identical navigation rows against eight session rows —
+**measured at 261px of a 300px column, the height of four session rows** — and a
+kanban opened in that column had to take the deck's width every time. They now
+live in `#wspanel` on the right of the deck: head names the repository and the
+account, two tabs (a real `role="tablist"`, which the rail deliberately is not),
+its own grip and two remembered widths, wide only while a diff is open, closed by
+a zoom because a zoomed tile's tool panel takes that same edge. The way in is the
+`board · PRs · journal` chip on the active workspace's row, which until then only
+*stated* that three pages were showing this workspace. The left panel's wide mode
+went with the kanban: `#panel-wide`, `PANEL_WIDE` and `#sidebar.is-wide` are all
+gone.
+
+`⇧⌘B` / `⇧⌘P` were proposed and NOT shipped: `Ctrl+Shift+B` is broadcast on
+Windows and Linux, and a key that works on one platform and collides on another
+is worse than no key. The palette carries both, as it does the rail's three.
+
+**Settings became a rail of sections.** A section is one row in the rail and one
+pane beside it — that is the whole extensibility claim. Appearance, Config
+repository, Files, ordered "often and harmless" to "rarely and with
+consequences". There is no OK: everything applies as it is touched, because
+connecting a repository cannot be undone by a Cancel and one rule for the window
+beats one rule per section. The config section mounts the *real* sync renderer
+(`mountSync`, shared with the first-run dialog) rather than a second copy of five
+states.
+
+**Nineteen hairlines went, and San Francisco arrived.** The dividers that sliced
+the window into strips are gone: this design is islands on a void, an island
+already has an edge, and every line removed sat between two regions that already
+differ in lightness. What may still draw one — stated in `styles.css` so it does
+not creep back — is an island's own **closed** edge, a document's own `---`, and
+forced-colors mode. The type stacks lead with SF Pro Display / SF Pro Text and
+fall through to the two bundled faces, so a Windows build looks the way it did;
+`--ls-ui` went from +0.01em to -0.01em, because the tracking that kept IBM Plex
+from crowding makes SF read sprayed apart. The terminal keeps its own stack — the
+Nerd Font's powerline glyphs are why it is bundled.
+
 ## What is not ported
 
 **The light theme.** `mockups/assets/deck-ui.css` carries a derived light theme — not an
