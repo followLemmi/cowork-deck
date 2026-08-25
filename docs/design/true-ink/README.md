@@ -1,9 +1,8 @@
-# True Ink — the 2026-08-25 palette pass
+# True Ink — the 2026-08-25 pass
 
-The second pass over the visual language `src/styles.css` implements. **Only the palette
-has shipped**, and this record says so where it matters: what is below under "The four
-decisions" is in the app and measured by `npm run contrast`; what is under "Designed, not
-ported" is drawn and argued but is not in the product yet.
+The second pass over the visual language `src/styles.css` implements, and over the
+information architecture around it. Everything under "The four decisions" and "The shell"
+is in the app; "What is not ported" says what is not, and why.
 
 Written in English per `CLAUDE.md`. The working sessions were held in Russian and their
 running narrative stays in the Open Design project; nothing load-bearing lives only
@@ -15,11 +14,22 @@ there.
 tools/palette.mjs --app     the block that stands in src/styles.css
 tools/palette.mjs --base    the same values under the mockups' own token names
 tools/palette.mjs           all five directions, as a table
-mockups/palette-directions.html   the five directions on identical fragments, in a browser
+mockups/index.html               the overview: every decision, with the argument for it
+mockups/workspace-shell.html     the shell as designed — rail, one panel, permanent deck
+mockups/workspace-layouts.html   the four window schemes, with the cost of each
+mockups/palette-directions.html  the five directions on identical fragments
+mockups/overlays.html            dialogs, banners, empty states, both themes
 ```
 
-The mockup opens with no build and loads three webfonts from Google Fonts, which is the
-one way it differs from the app — the app bundles its faces as variable TTFs under
+Open any of them in a browser; there is nothing to build. They are the record of the
+design as authored, which is not the same file as the app — `mockups/assets/deck-ui.css`
+carries the system with its own class names, `src/styles.css` carries it applied to the
+class names the app already had, and where the two disagree `src/styles.css` is what
+ships. The mapping table below covers the palette; the shell's own differences are in
+"The shell" and in "What is not ported".
+
+The mockups load three webfonts from Google Fonts, which is one way they differ from the
+app — the app bundles its faces as variable TTFs under
 `src/assets/fonts/`, because a Tauri window has no network guarantee and a CSP. Its mono
 is JetBrains Mono where the app's is CaskaydiaCove Nerd Font Mono: the app's terminal
 needs Nerd Font glyphs and the mockup has no terminal to feed.
@@ -112,18 +122,102 @@ Three literals in `src/styles.css` are neutral tints of the ink rather than toke
 fill is one palette's grey under another palette's text is the kind of thing that reads
 as dirt on the screen.
 
-## Designed, not ported
+## The shell
 
-The pass also produced an information architecture the app does not have yet: no view
-tabs, a five-icon rail selecting what **one** panel holds, a deck that never yields, a
-ledger of "what requires me" in the title bar, positional session creation inside a
-workspace tree, and a tool panel that belongs to a zoomed tile and is scoped to its
-worktree. `mockups/assets/deck-ui.css` carries the system that shell is built from,
-including a light theme and a motion set the app has neither of.
+### 5 · There are no screens
 
-None of that is in `src/`. It is not recorded here as a proposal either — when a piece of
-it ships, it earns its section in this file, and until then the mockups in the Open Design
-project are where it lives.
+Four view tabs were not a structure but four states of one window, and the app already
+shipped the proof: a floating always-on-top pill counting blocked sessions exists because
+the window could not show the deck and anything else at the same time.
+
+`#stage` is a row of three now. The **rail** selects what the **panel** holds — workspaces
+and sessions, the board, pull requests, the journal, scenarios — and the deck never leaves
+the row. `#deck.tk-hidden` is gone from the stylesheet, which is the whole change in one
+line.
+
+What replaced the tabs in the top bar is a **ledger**: "1 waiting for a decision", "1
+stopped on an error", each reading opening one of the sessions it counted. Two readings
+only, because those are the two things that want a person; a run that finished while
+nobody watched wants nothing. It is written from the deck's own counts rather than typed
+beside them — the two statements of "N waiting" this app used to make came from two places
+and could disagree.
+
+Two pages need width rather than a column: a kanban and a diff. They take it from the
+deck, which falls into its filmstrip — the layout a zoomed tile already produces, and the
+reason the deck *yielding space* is not the same as the deck *disappearing*. The widen
+control is present on those two pages and absent everywhere else.
+
+The rail carries no ⌘1…⌘5, and the mockups have them: in this app those five are already
+"focus session N", which shipped first and is the more frequent act. The palette carries
+every page instead.
+
+### 6 · Workspaces and sessions are one tree
+
+They were two lists — every workspace in one, every workspace again as a group heading in
+the other. The same fact twice, in two shapes, and neither of them said where a new
+session would go.
+
+A workspace appears once now, and its sessions are its children. Two modules render one
+row between them, split by ownership rather than convenience: the workspace row is
+`workspaces.ts`'s, which owns activation, the account, the form and the delete; the
+sessions under it are the deck's, which owns their state. The panel leaves a container
+under each row and `Deck.setTree` asks for it.
+
+So **creation is positional**. The last row inside each group is "New session in <name>",
+at the place the new session will appear, and it says which workspace that is — including
+for a workspace with nothing running in it, which is the case that needs it most. The
+full-width "+ session" button is gone: it created in whichever workspace happened to be
+active, so being wrong about which one that was meant a session in the wrong folder,
+discovered afterwards. Exactly one create row is prominent — the active workspace's — so
+the panel still has one obvious primary action, and pressing any other one creates there.
+
+One gesture, one rule: a workspace row that is not active becomes active, and pressing the
+one that already is folds its sessions. Splitting "activate" from "expand" across two
+targets inside one row is how a tree gets two things to press, one of which is always the
+one you miss.
+
+### 7 · A zoomed session gets its own tools
+
+A session launched on an issue runs in a worktree of its own, so "which files are here" and
+"what have I changed" are per-session questions the app panel cannot answer — it does not
+know which of a dozen sessions is being asked about. The answer lives inside the tile's
+frame, on the opposite edge from the app panel, and states its scope in its own header.
+
+Three tools, each reading something real: **Files** (`git ls-files`, so the repository's
+own ignore rules decide what is not worth showing), **Changes** (`--porcelain` and
+`--numstat` folded into one answer), **Source** (what launched this session, with its
+prompt whole — the one thing about a session that cannot be reconstructed from anything
+else on screen). There is no fourth and no "+ add a tool" strip: this app has no extension
+point yet, and a list of tools that do not exist is a menu of lies.
+
+Only in zoom, because at deck size a tile is 400px wide and the terminal is the whole
+point of it.
+
+**The 80-column floor** is the rule the feature turns on. `fit()` follows whatever box the
+terminal sits in, so a panel that narrows the terminal re-wraps the agent's output — and
+this app has shipped that bug once already, when the filmstrip resized a PTY to roughly 22
+columns by 3 rows. Above the floor the panel takes its room from the terminal; below it,
+it floats over the terminal instead. Floating costs some output being covered. Squeezing
+costs the transcript. `wouldSqueeze` in `src/tile-tools.ts` is the whole rule, and it
+measures from what the terminal is showing rather than from a font metric.
+
+## What is not ported
+
+**The light theme.** `mockups/assets/deck-ui.css` carries a derived light theme — not an
+inversion — and the generator emits its values (`--app` prints the dark set only). The app
+declares `color-scheme: dark` and has no `[data-theme]` anywhere, so this is a pass of its
+own: every component rule that hard-codes a dark assumption has to be found first, and
+`scripts/contrast.mjs` has to grow a second set of grounds to measure it against.
+
+**The rest of the motion set.** The app has `--dur-1`, `--dur-2`, `--dur-3` and one curve,
+which is what its rules use. `--dur-4`, `--stagger`, `--ease-in-out` and `--ease-spring`
+stay in the mockups until a rule needs them: a declared token nothing renders at is a
+claim nobody checks.
+
+**The README's screenshots.** `docs/images/*.png` still show the four tabs. Re-shooting
+them is `npm run dev` and `node harness/shoot.mjs`, which needs ImageMagick on the machine
+doing the shooting — `magick` is what draws the window's rounded corners and resamples the
+2× capture down to the width GitHub lays out at. See `docs/images/README.md`.
 
 ## How to check it
 
@@ -131,6 +225,13 @@ project are where it lives.
 npm run contrast
 ```
 
-55 cases from `src/styles.css` and `src/terminal.ts`, 52 with a threshold and all of them
+58 cases from `src/styles.css` and `src/terminal.ts`, 52 with a threshold and all of them
 clear, 3 documented rejections. The script reads both files rather than restating them, so
-a palette edit moves these numbers instead of silently disagreeing with them.
+a palette edit moves these numbers instead of silently disagreeing with them. Six of the
+cases are this pass's: the ledger's two hues on the chrome and on the ground their own
+hover paints, and the rail's dot in both states.
+
+```
+npm test            # 1138, including the panel's contract and the 80-column floor
+cargo test --manifest-path src-tauri/Cargo.toml   # 645, including the porcelain folding
+```
