@@ -174,6 +174,10 @@ mod tests {
             // travel; inside a shard it is that shard's label and must. Two
             // files, one name, opposite answers — worth asserting both.
             "machine.json",
+            // Nobody excluded this by name — it did not exist when the ignore
+            // was written. That it is untracked anyway is the whole payoff of
+            // deny-by-default.
+            "sync_state.json",
             ".cowork-other.json",
             "gh-noauth/hosts.yml",
             ".index/meta.json",

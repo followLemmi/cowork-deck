@@ -12,6 +12,7 @@
 pub mod activation;
 pub mod adopt;
 pub mod git;
+pub mod job;
 pub mod machine;
 pub mod manifest;
 pub mod projection;
