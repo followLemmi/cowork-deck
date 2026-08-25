@@ -30,6 +30,36 @@ export class WorkspacesPanel {
   private getSkills: () => Skill[] = () => [];
   setSkillsSource(get: () => Skill[]) { this.getSkills = get; }
   private items: Workspace[] = [];
+  /** The `ws-waiting` span in each row of the last render, so the deck's count can
+   *  be written into a row this panel is not re-rendering. */
+  private waitingSlots = new Map<string, HTMLElement>();
+  /** Pressed the row that is already active — fold its sessions. */
+  private onReselect: ((id: string) => void) | null = null;
+  /** Called at the end of every render, because a render replaces the containers
+   *  the deck's session rows were in. */
+  private onRendered: (() => void) | null = null;
+
+  /** Wired after construction, like `setSkillsSource` and for the same reason: the
+   *  deck and this panel are built before either can be given the other. */
+  setTreeHooks(hooks: { reselect: (id: string) => void; rendered: () => void }) {
+    this.onReselect = hooks.reselect;
+    this.onRendered = hooks.rendered;
+    this.render();
+  }
+
+  /** The container this panel left under a workspace's row. */
+  sessionHost(workspaceId: string): HTMLElement | null {
+    return this.mount.querySelector<HTMLElement>(`.ws-kids[data-ws="${workspaceId}"]`);
+  }
+
+  /** The deck's count, written into the row without re-rendering it. */
+  showWaiting(workspaceId: string, n: number) {
+    const slot = this.waitingSlots.get(workspaceId);
+    if (!slot) return;
+    slot.hidden = n === 0;
+    slot.textContent = n > 0 ? `${n} waiting` : "";
+    if (n > 0) slot.title = `${n} of this workspace's sessions are waiting for a decision`;
+  }
   private activeId: string | null = null;
   /** Open tasks per workspace; filled in by main.ts. */
   private counts = new Map<string, number>();
@@ -194,7 +224,8 @@ export class WorkspacesPanel {
   }
 
   private render() {
-    this.mount.innerHTML = "<h3>Workspaces</h3>";
+    this.waitingSlots.clear();
+    this.mount.innerHTML = "<h3>Workspaces and sessions</h3>";
     for (const w of this.items) {
       const row = document.createElement("div");
       const isDetached = this.detached.has(w.id);
@@ -240,6 +271,11 @@ export class WorkspacesPanel {
         // Clicking a detached workspace raises its window instead of switching
         // to it. Switching would show an empty deck: its tiles are elsewhere.
         if (isDetached) { this.onRaise?.(w); return; }
+        // One gesture with a rule: a workspace that is not active becomes active,
+        // and pressing the one that already is folds its sessions. Splitting
+        // "activate" from "expand" across two targets inside one row is how a tree
+        // gets two things to press, one of which is always the one you miss.
+        if (isActive) { this.onReselect?.(w.id); return; }
         this.select(w.id);
       };
       const edit = iconButton("pencil", `Edit workspace: ${w.name}`, "ws-edit");
@@ -268,6 +304,15 @@ export class WorkspacesPanel {
         count.title = openTaskCountLabel(n);
         row.append(count);
       }
+      /* How many of this workspace's sessions are waiting for a decision. Always
+         present, empty when the answer is none: the deck writes into it on its own
+         five-second beat, and a span created on demand would mean the deck asking
+         this panel to render — which rebuilds the containers its rows live in. */
+      const waiting = document.createElement("span");
+      waiting.className = "ws-waiting";
+      waiting.hidden = true;
+      this.waitingSlots.set(w.id, waiting);
+      row.append(waiting);
       if (move) row.append(move);
       row.append(edit, x);
       // Appended last because `.ws-account` now wraps onto the row's second
@@ -282,10 +327,20 @@ export class WorkspacesPanel {
         row.append(acc);
       }
       this.mount.appendChild(row);
+      /* The workspace's sessions go here, and the deck is what fills them: one
+         tree, one row per workspace, its sessions as its children. See
+         `Deck.setTree`. */
+      const kids = document.createElement("div");
+      kids.className = "ws-kids";
+      kids.dataset.ws = w.id;
+      this.mount.appendChild(kids);
     }
     const addBtn = document.createElement("button");
     addBtn.className = "ws-add"; addBtn.textContent = "+ workspace";
     addBtn.onclick = () => this.add();
     this.mount.appendChild(addBtn);
+    /* Last, and it has to be last: the deck's rows live in the containers this
+       render just replaced, so they are gone until it repaints them. */
+    this.onRendered?.();
   }
 }

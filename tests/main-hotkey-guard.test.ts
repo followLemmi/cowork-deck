@@ -36,6 +36,12 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    // The tree's half of the panel: the workspace row is this panel's and the
+    // sessions under it are the deck's, so `startApp` hands each the other.
+    setTreeHooks = vi.fn();
+    sessionHost = vi.fn().mockReturnValue(null);
+    showWaiting = vi.fn();
+    activate = vi.fn().mockReturnValue(true);
   },
 }));
 
@@ -86,8 +92,8 @@ describe("the window hotkey handler and text entry", () => {
   it("ignores a hotkey typed into a text field, and fires it inside a terminal", async () => {
     vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
     document.body.innerHTML =
-      '<div id="app"><nav id="viewbar"></nav><div id="stage">'
-      + '<div id="sidebar"></div><main id="deck"></main><div id="terminals"></div>'
+      '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
       + '<div id="board" class="hidden"></div></div></div>';
 
     await import("../src/app").then((m) => m.startApp({ kind: "main" }));

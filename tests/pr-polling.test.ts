@@ -64,6 +64,12 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    // The tree's half of the panel: the workspace row is this panel's and the
+    // sessions under it are the deck's, so `startApp` hands each the other.
+    setTreeHooks = vi.fn();
+    sessionHost = vi.fn().mockReturnValue(null);
+    showWaiting = vi.fn();
+    activate = vi.fn().mockReturnValue(true);
   },
 }));
 
@@ -106,19 +112,24 @@ describe("pull request polling", () => {
   it("polls only while the view is open and the window focused", async () => {
     vi.useFakeTimers();
     document.body.innerHTML =
-      // Mirrors index.html. `#viewbar` is not optional: `main.ts` mounts the view
+      // Mirrors index.html. `#rail` is not optional: `app.ts` mounts the rail
       // switch into it and asserts it exists, so a harness missing it throws
       // before any of the polling under test here can run.
-      '<div id="app"><nav id="viewbar"></nav><div id="stage">'
-      + '<div id="sidebar"></div><main id="deck"></main><div id="terminals"></div>'
+      '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
       + '<div id="board" class="hidden"></div></div></div>';
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
 
     await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();
 
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
-    expect(buttons.map((b) => b.textContent)).toEqual(["Terminals", "Board", "Pull requests", "History"]);
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
+    // A rail of icons names itself for a reader rather than for the eye, so the
+    // accessible name is what there is to assert — and the fifth entry is the
+    // scenario list, which used to be a sidebar block belonging to one screen.
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Workspaces and sessions", "Board", "Pull requests", "Journal", "Scenarios",
+    ]);
     const [termBtn, , prBtn] = buttons;
 
     // Opening the view reads once, then once per interval. Nothing is running,
@@ -188,7 +199,7 @@ describe("board polling", () => {
     active = WS;
     listTasksMock.mockClear();
 
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
     const [termBtn, boardBtn] = buttons;
 
     // Opening reads once, then once per interval — and exactly once, which a
@@ -235,7 +246,7 @@ describe("board polling", () => {
   it("polls a github board every thirty seconds, not every five", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
     const [termBtn, boardBtn] = buttons;
 
     // Re-entered after the switch, so the interval is chosen from the workspace
@@ -271,7 +282,7 @@ describe("board polling", () => {
   it("re-arms at the new source's interval when the workspace changes", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
     const [termBtn, boardBtn] = buttons;
 
     // Open the board on the GitHub workspace, so a thirty-second tick is armed.
@@ -332,7 +343,7 @@ describe("the last good list", () => {
   it("keeps a github board's cards through a failed tick, and never a file board's", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
     const [termBtn, boardBtn] = buttons;
 
     active = WS_GH;
@@ -376,7 +387,7 @@ describe("the last good list", () => {
   it("draws the unavailable screen when gh is missing, never a board", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
     const [termBtn, boardBtn] = buttons;
 
     active = WS_GH;
@@ -420,7 +431,7 @@ describe("the loading state", () => {
   it("never skeletons over a board that already has rows", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
     const [termBtn, boardBtn] = buttons;
 
     active = WS_GH;
@@ -453,7 +464,7 @@ describe("the loading state", () => {
   it("keeps a failed pull request read on screen instead of skeletoning over it", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn")];
     const [termBtn, , prBtn] = buttons;
 
     active = WS;

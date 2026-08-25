@@ -253,6 +253,47 @@ assertNoRule(css, ".tk-row.done", "its opacity took a closed row's meta to 2.66:
 assertNoRule(css, ".tk-card.done", "its opacity took a closed card's meta to 2.64:1");
 
 const CASES = [
+  /* The ledger, which is text in a state's own hue on the window's chrome — and on
+     the lightened ground its hover paints, because a reading whose hover moves the
+     GROUND is a reading measured twice. Both hues, both grounds: `--st-waiting` was
+     the only state colour ever measured on the top bar, and the bar had no red on
+     it until the ledger arrived. */
+  {
+    what: "a waiting reading in the ledger",
+    where: "the top bar's amber count, at rest on the chrome",
+    fg: "--st-waiting", backdrop: ["--bg-chrome"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "a waiting reading, hovered",
+    where: "the same count once its own hover has raised the ground under it",
+    fg: "--st-waiting", backdrop: ["--bg-hover"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "a stopped reading in the ledger",
+    where: "the top bar's red count, at rest on the chrome",
+    fg: "--st-error", backdrop: ["--bg-chrome"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "a stopped reading, hovered",
+    where: "the same count on the ground its hover paints",
+    fg: "--st-error", backdrop: ["--bg-hover"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the rail's dot",
+    where: "6px of amber on the rail's ground, which is the stage's — a graphic, not text",
+    fg: "--st-waiting", backdrop: ["--bg-void"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the rail's dot, stopped",
+    where: "the same dot when a session has stopped, which outranks waiting",
+    fg: "--st-error", backdrop: ["--bg-void"],
+    threshold: UI, sc: "1.4.11",
+  },
   {
     what: ".btn--icon at rest",
     where: "every icon control in the app, sitting still on a sidebar island",

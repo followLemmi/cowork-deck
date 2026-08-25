@@ -1,14 +1,14 @@
 import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
-import { Deck, nextWaitingAcross } from "./sessions";
-import { applyView, firstFocusable } from "./view";
+import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
+import { applyPanel, firstFocusable, PANEL_TITLE, PANEL_WIDE } from "./view";
 import { settingsDialog } from "./settings";
 import { syncDialog } from "./sync-dialog";
 import { offerBanner, shouldOffer } from "./sync-offer";
 import {
   applyScale, broadcastScale, clampScale, currentScale, nextScale, prevScale, scaleLabel,
 } from "./ui-scale";
-import type { ViewName } from "./view";
+import type { PanelPage } from "./view";
 import {
   claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
@@ -16,6 +16,7 @@ import {
   syncSummary,
   hostPlatform,
   type HandOffTile,
+  type SessionState,
 } from "./ipc";
 import { offerUpdateIfAvailable } from "./updater";
 import { TerminalDrawer, DEFAULT_TERMINAL_ROWS } from "./drawer";
@@ -48,7 +49,7 @@ import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
 import { openPalette } from "./palette";
 import { runBoot } from "./boot";
-import { appMark, iconButton, installSprite } from "./icons";
+import { appMark, iconButton, installSprite, type IconName } from "./icons";
 import { openGithubScreen } from "./github-screen";
 import { fillPlaceholders, resolvePrompt } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
@@ -103,8 +104,15 @@ export function startApp(role: WindowRole): Promise<void> {
   const myLabel = getCurrentWindow().label;
 
   installSprite();
+  /** The panel — still `#sidebar` in the DOM. The element stopped being a sidebar
+   *  the moment the rail arrived beside it: it is one column holding one page out
+   *  of five. The id stays because it is written into some forty selectors and a
+   *  dozen test fixtures, and renaming it is a commit of its own rather than a
+   *  line in this one. */
   const sidebar = document.querySelector<HTMLElement>("#sidebar")!;
   const deckEl = document.querySelector<HTMLElement>("#deck")!;
+  const panelHead = document.querySelector<HTMLElement>("#panel-head")!;
+  const panelStack = document.querySelector<HTMLElement>("#panel-stack")!;
   // Each list is a raised surface of its own. The sidebar used to be one
   // undifferentiated scroll — heading, rows, heading, rows — so a workspace, a
   // scenario and a session all read as the same kind of thing. The class is all this
@@ -116,36 +124,98 @@ export function startApp(role: WindowRole): Promise<void> {
   skMount.className = "island";
   const listMount = document.createElement("div");
   listMount.className = "island";
-  const newBtn = document.createElement("button");
-  newBtn.textContent = "+ session"; newBtn.className = "btn-primary";
-  // Between the scenarios and the sessions, and outside both islands: it is the app's
-  // one primary action, not a row in a list.
-  sidebar.append(wsMount, skMount, newBtn, listMount);
+
+  /* --- The panel's pages --------------------------------------------------
+     Two of them are built here out of the three mounts the sidebar used to stack
+     in one scroll; the other three are the screens that used to replace the deck.
+     `#board` is in the markup inside `#panel-stack`, and `#pr` and `#history` are
+     appended after it further down, so all five end up in the stack. */
+  const sessionsPage = document.createElement("div");
+  sessionsPage.id = "ws-page";
+  sessionsPage.className = "panel-page";
+  /* The tree, and under it the one line the tree does not carry: the bill. There
+     was a full-width primary "+ session" button between them, and it is gone —
+     creation is a row inside the workspace it creates in. See `Deck.setTree`. */
+  sessionsPage.append(wsMount, listMount);
+  const scenariosPage = document.createElement("div");
+  scenariosPage.id = "sk-page";
+  scenariosPage.className = "panel-page hidden";
+  scenariosPage.append(skMount);
 
   const boardEl = document.querySelector<HTMLElement>("#board")!;
+  panelStack.prepend(sessionsPage);
+  panelStack.append(scenariosPage);
 
-  // The "Terminals | Board | Pull requests" switch. Each screen takes the full
-  // width because GitHub and Jira boards land here later, and those need room
-  // rather than a strip.
-  //
-  // It mounts into `#viewbar` above the row of screens, not into `#sidebar`. In the
-  // sidebar it was a flex-column child, so it stretched to whatever width the
-  // workspace names left it and its buttons had nowhere to grow — which capped the
-  // type scale at a 17px base before the app's primary navigation started
-  // horizontally scrolling. Above the row it is content-sized and independent.
-  const viewbar = document.querySelector<HTMLElement>("#viewbar")!;
-  const views = document.createElement("div");
-  views.className = "tk-views";
-  const termBtn = document.createElement("button");
-  termBtn.textContent = "Terminals"; termBtn.className = "active";
-  const boardBtn = document.createElement("button");
-  boardBtn.textContent = "Board";
-  const prBtn = document.createElement("button");
-  prBtn.textContent = "Pull requests";
-  const historyBtn = document.createElement("button");
-  historyBtn.textContent = "History";
-  views.append(termBtn, boardBtn, prBtn, historyBtn);
-  viewbar.append(views);
+  /* --- The rail -----------------------------------------------------------
+     Five icons, and pressing one changes what the PANEL holds. It does not change
+     what the window holds — the deck stays where it is, and that is the whole
+     difference between this and the tab bar it replaces.
+
+     The tab bar was answering "which of four states is this window in", which is
+     not a question anybody has. The question people do have is "does anything need
+     me", and the app already shipped an answer to it: a floating always-on-top pill
+     counting blocked sessions, which exists because the window could not show the
+     deck and anything else at the same time. Now it can, and the ledger in the top
+     bar says the number where the eye already is.
+
+     Vertical, and 44px wide, because the panel beside it is a column: a horizontal
+     switch over a column has to be as wide as the column, which is how the old one
+     came to be sized by the longest workspace name.
+
+     No ⌘1…⌘5 on these, deliberately, and the mockups have them: in this app those
+     five are already "focus session N", which shipped first and is the more
+     frequent act. The palette carries every page instead. */
+  const railEl = document.querySelector<HTMLElement>("#rail")!;
+  const RAIL: { page: PanelPage; icon: IconName }[] = [
+    { page: "sessions", icon: "terminal" },
+    { page: "board", icon: "list" },
+    { page: "pr", icon: "git-merge" },
+    { page: "history", icon: "clock" },
+    { page: "scenarios", icon: "bolt" },
+  ];
+  /* The mark that travels between the icons. What makes a column of five read as
+     one control with a position is that the mark MOVES — five icons one of which is
+     lit reads as five things, and the eye has to find the lit one each time. */
+  const railInk = document.createElement("span");
+  railInk.className = "rail-ink";
+  railInk.setAttribute("aria-hidden", "true");
+  const railBtns = {} as Record<PanelPage, HTMLButtonElement>;
+  railEl.append(railInk);
+  for (const { page, icon } of RAIL) {
+    const b = iconButton(icon, PANEL_TITLE[page], "rail-btn", 17);
+    b.dataset.page = page;
+    b.onclick = () => setPanel(page);
+    railBtns[page] = b;
+    railEl.append(b);
+  }
+
+  /* --- The panel's head ---------------------------------------------------
+     Two lines, and the top one is the load-bearing half: with a rail selecting
+     what this column holds, "whose data is this" is the question that breaks the
+     idea, and it is answered here before it is asked. The workspace's name, the
+     folder a session in it runs in, and the account it pushes as — which is the
+     one fact the old sidebar answered only if you scrolled to it. */
+  const panelScope = document.createElement("span");
+  panelScope.className = "panel-scope";
+  const panelTitle = document.createElement("span");
+  panelTitle.className = "panel-title";
+  const panelTitles = document.createElement("div");
+  panelTitles.className = "panel-titles";
+  panelTitles.append(panelScope, panelTitle);
+  /* Only on the two pages that need width. A control that is present and does
+     nothing is worse than one that is absent: `applyPanel` hides it everywhere
+     else, and the same rule governs the key. */
+  const wideBtn = iconButton("columns", "Give the panel the deck's width");
+  wideBtn.id = "panel-wide";
+  wideBtn.onclick = () => setWide(!sidebar.classList.contains("is-wide"));
+  panelHead.append(panelTitles, wideBtn);
+
+  /* --- The ledger ---------------------------------------------------------
+     What replaced four tab labels: not where to go, but what wants me. Written
+     from the deck's own counts rather than typed beside them — the two numbers
+     that used to be stated in the app (a sidebar heading and the pill) came from
+     two different places and could disagree. */
+  const ledgerEl = document.querySelector<HTMLElement>("#ledger")!;
 
   // The rest of the top bar: the wordmark on the left, the global actions on the
   // right. Both are optional-chained on purpose — three test files import this module
@@ -311,7 +381,7 @@ export function startApp(role: WindowRole): Promise<void> {
         void alertModal("That session is no longer open.");
         return;
       }
-      setView("deck");
+      setPanel("sessions");
       // The tile may live in another workspace — an unpinned scenario runs
       // wherever it was launched — so this goes through the same path the pill
       // and a notification click take, which switches workspace first.
@@ -393,7 +463,7 @@ export function startApp(role: WindowRole): Promise<void> {
       (names) => placeholderForm(names, reconcileParams(names, rec.params)),
     );
     if (resolved === null) return;
-    setView("deck");
+    setPanel("sessions");
     await deck.launch(ws, { ...skill, prompt: resolved.prompt }, resolved.params);
   }
 
@@ -421,7 +491,12 @@ export function startApp(role: WindowRole): Promise<void> {
 
   let boardVisible = false;
   let boardTimer: ReturnType<typeof setTimeout> | null = null;
-  let currentView: ViewName = "deck";
+  let currentPage: PanelPage = "sessions";
+  /** Whether the panel took the deck's width, and whether taking it is what
+   *  zoomed the deck. Both halves matter: leaving the page has to give back
+   *  exactly what was taken, and a tile a person zoomed themselves must not be
+   *  un-zoomed by a panel narrowing under them. */
+  let wideZoomed = false;
 
   function stopBoardPolling() {
     if (boardTimer !== null) { clearTimeout(boardTimer); boardTimer = null; }
@@ -438,7 +513,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  processes. The interval is the source's, from `boardPollMs`. */
   function scheduleBoardPoll() {
     stopBoardPolling();
-    if (currentView !== "board" || !document.hasFocus()) return;
+    if (currentPage !== "board" || !document.hasFocus()) return;
     const source = sourceOf(workspaces.active?.tracker ?? null);
     boardTimer = setTimeout(() => void boardTick(), boardPollMs(source));
   }
@@ -462,40 +537,67 @@ export function startApp(role: WindowRole): Promise<void> {
     scheduleBoardPoll();
   }
 
-  function setView(view: ViewName) {
-    currentView = view;
-    boardVisible = view === "board";
-    applyView({ deck: deckEl, board: boardEl, pr: prEl, history: historyEl,
-                termBtn, boardBtn, prBtn, historyBtn,
-                // The terminal drawer joins the sidebar blocks here rather than
-                // getting a rule of its own: it belongs to the terminals screen,
-                // so it hides with it. The shells keep running — hiding a surface
-                // is not closing what is on it.
-                terminalsOnly: [skMount, newBtn, listMount, terminalsEl] },
-               view);
-    if (view === "board") {
-      // The read is unconditional — opening the screen is a deliberate act — and
-      // the chain is armed separately, so an unfocused window reads once and then
+  /** Give the panel the deck's width, or give it back.
+   *
+   *  The deck yields by falling into its filmstrip — the layout a zoom already
+   *  produces — rather than by disappearing, which is the distinction the whole
+   *  shell rests on. A kanban and a diff are the two things in this app that
+   *  genuinely need width; everything else in the panel is a list of names. */
+  function setWide(on: boolean) {
+    sidebar.classList.toggle("is-wide", on);
+    if (on) {
+      if (!deck.isZoomed()) wideZoomed = deck.zoomActive();
+    } else if (wideZoomed) {
+      deck.exitZoom();
+      wideZoomed = false;
+    }
+  }
+
+  function setPanel(page: PanelPage) {
+    currentPage = page;
+    boardVisible = page === "board";
+    applyPanel({
+      pages: {
+        sessions: sessionsPage, board: boardEl, pr: prEl,
+        history: historyEl, scenarios: scenariosPage,
+      },
+      buttons: railBtns,
+    }, page);
+    panelTitle.textContent = PANEL_TITLE[page];
+    // The button is only on the pages that can use it, and the width follows the
+    // page rather than being remembered per page: a panel that opens wide because
+    // it was wide last time is a panel that took the deck's width for a list of
+    // names.
+    wideBtn.hidden = !PANEL_WIDE[page];
+    setWide(PANEL_WIDE[page]);
+    moveRailInk();
+    if (page === "board") {
+      // The read is unconditional — opening the page is a deliberate act — and the
+      // chain is armed separately, so an unfocused window reads once and then
       // waits (see `scheduleBoardPoll`).
       void refreshBoard();
       scheduleBoardPoll();
     } else {
       stopBoardPolling();
     }
-    // Leaving the screen stops its polling in the same breath as hiding it: a
-    // timer that outlives the view keeps talking to GitHub about a screen nobody
-    // is looking at.
-    if (view === "pr") void refreshPrs();
+    // Leaving a page stops its polling in the same breath as hiding it: a timer
+    // that outlives the page keeps talking to GitHub about something nobody is
+    // looking at.
+    if (page === "pr") void refreshPrs();
     else stopPrPolling();
-    // Always on entering, and only then: the screen re-reads on `runs://changed`
+    // Always on entering, and only then: the page re-reads on `runs://changed`
     // while it is visible and does not poll at all. Opening it is a deliberate
     // act, so the read is unconditional.
-    if (view === "history") void refreshHistory();
+    if (page === "history") void refreshHistory();
   }
-  termBtn.onclick = () => setView("deck");
-  boardBtn.onclick = () => setView("board");
-  prBtn.onclick = () => setView("pr");
-  historyBtn.onclick = () => setView("history");
+  /** The mark travels to the button that is current. Read from the DOM rather
+   *  than computed from an index, so a rail that grows a sixth entry needs no
+   *  arithmetic here. */
+  function moveRailInk() {
+    const on = railEl.querySelector<HTMLElement>('.rail-btn[aria-current="page"]');
+    if (!on) return;
+    railInk.style.setProperty("--y", `${on.offsetTop}px`);
+  }
 
   /** Open the history filtered to one scenario — what the sidebar's state dot
    *  does, and the only thing it does.
@@ -513,7 +615,7 @@ export function startApp(role: WindowRole): Promise<void> {
       workspaces.activate(last.workspaceId);
     }
     runFilters = { skillId: skill.id, trigger: null };
-    setView("history");
+    setPanel("history");
   }
 
   const deck = new Deck(deckEl, listMount, () => workspaces.all);
@@ -535,6 +637,20 @@ export function startApp(role: WindowRole): Promise<void> {
   function activateWorkspace(id: string | null): void {
     deck.setActiveWorkspace(id);
     terminals.setWorkspace(id);
+    drawPanelScope();
+  }
+
+  /** Whose data the panel is holding, written where it is read: above the page,
+   *  not inside it. Three facts and no more — the workspace's name, the folder a
+   *  session in it runs in, and the account it pushes as. The third one is the
+   *  reason this line exists at all: it was answerable before only by scrolling
+   *  the sidebar to the row and reading its second line. */
+  function drawPanelScope(): void {
+    const ws = workspaces.active;
+    if (!ws) { panelScope.textContent = "No workspace"; return; }
+    const account = ws.github?.login ? `as ${ws.github.login}` : "no account bound";
+    panelScope.textContent = `${ws.name} · ${ws.path} · ${account}`;
+    panelScope.title = panelScope.textContent;
   }
 
   /** How the drawer was left last time, read once with the rest of the stored ui
@@ -611,7 +727,7 @@ export function startApp(role: WindowRole): Promise<void> {
       // is on screen; nothing here runs on a timer.
       () => onRunsChanged(() => {
         void skills.refreshRuns();
-        if (currentView === "history") void refreshHistory();
+        if (currentPage === "history") void refreshHistory();
       }).then(() => {}),
       () => workspaces.load(),
       () => skills.load(),
@@ -698,7 +814,7 @@ export function startApp(role: WindowRole): Promise<void> {
       // hand, a locked index — any of those and the person was told the worktree
       // could not be prepared while a session on that very issue was running two
       // tiles away, with the guard that would have focused it never reached.
-      if (deck.focusTaskSession(t.id, target.id)) { setView("deck"); return; }
+      if (deck.focusTaskSession(t.id, target.id)) { setPanel("sessions"); return; }
       // A worktree of its own, on a new branch off the repository's default branch,
       // and the session linked to the issue so a second ▶ focuses it rather than
       // starting a rival session in the same directory.
@@ -711,7 +827,7 @@ export function startApp(role: WindowRole): Promise<void> {
       // the URL cannot be read.
       await deck.launchOnWorktree(
         cwd, target.id, `☑ #${t.id}`, issuePrompt(t, repoFromIssueUrl(t.path)), t.id);
-      setView("deck");
+      setPanel("sessions");
       return;
     }
     // The *target* workspace's configuration, not the active board's: on a shared
@@ -728,7 +844,7 @@ export function startApp(role: WindowRole): Promise<void> {
     await deck.launchFromTask(target, t, cfg);
     // Both "launched" and "focused" leave a session worth looking at — staying on
     // the board would look like the button did nothing.
-    setView("deck");
+    setPanel("sessions");
   }
 
   /** The last good list per GitHub workspace, so a failed tick keeps the screen
@@ -801,7 +917,7 @@ export function startApp(role: WindowRole): Promise<void> {
     let caps = null;
     try { caps = await taskCapabilities(wsId); } catch (e) { console.debug("caps failed", e); }
 
-    // Until now this window drew nothing at all: `setView("board")` called this, and
+    // Until now this window drew nothing at all: `setPanel("board")` called this, and
     // the first render came after every await below — so opening a GitHub board left an
     // empty pane for as long as a repository lookup plus a page per state takes.
     //
@@ -1113,7 +1229,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  the two conditions are checked and one place that owns the handle. */
   function schedulePrPoll() {
     stopPrPolling();
-    if (currentView !== "pr" || !document.hasFocus()) return;
+    if (currentPage !== "pr" || !document.hasFocus()) return;
     prTimer = setTimeout(() => void refreshPrs(), pollIntervalMs(prState.prs));
   }
 
@@ -1199,11 +1315,11 @@ export function startApp(role: WindowRole): Promise<void> {
   // window polls nothing, and coming back refreshes at once rather than at the
   // next tick.
   window.addEventListener("focus", () => {
-    if (currentView === "pr") void refreshPrs();
+    if (currentPage === "pr") void refreshPrs();
     // Coming back refreshes at once rather than at the next tick, which is the
     // whole point of pausing on blur — and `boardTick` re-arms the chain the blur
     // cleared.
-    if (currentView === "board") void boardTick();
+    if (currentPage === "board") void boardTick();
   });
   window.addEventListener("blur", () => { stopPrPolling(); stopBoardPolling(); });
 
@@ -1229,7 +1345,7 @@ export function startApp(role: WindowRole): Promise<void> {
             + ` already committed there is part of this pull request.`
           : ""),
       );
-      setView("deck");
+      setPanel("sessions");
     } catch (e) {
       await alertModal(`Could not prepare a worktree for #${pr.number}: ${String(e)}`);
     }
@@ -1478,12 +1594,12 @@ export function startApp(role: WindowRole): Promise<void> {
     // row has to be cleared from here. Two repositories both have a #7, and a
     // stale mark would land on whichever row happens to share the number.
     prView.setOpenDiff(null, null);
-    if (currentView === "pr") void refreshPrs();
+    if (currentPage === "pr") void refreshPrs();
     // The records on screen belong to the workspace that was active a moment ago.
     // A run belongs to the workspace it actually happened in, so switching
     // workspace switches what is listed — the same rule the other three screens
     // already follow.
-    if (currentView === "history") void refreshHistory();
+    if (currentPage === "history") void refreshHistory();
   }, () => {
     // A workspace was added, edited or deleted: its tracker root may have moved,
     // so re-point the watcher and re-read the sidebar counts.
@@ -1550,11 +1666,95 @@ export function startApp(role: WindowRole): Promise<void> {
   // Deleting a workspace strands the scenarios pinned to it — the confirmation
   // says how many before it happens.
   workspaces.setSkillsSource(() => skills.all);
+  /** Create a session in a NAMED workspace. The row that was pressed says which
+   *  one, and it is not necessarily the active one — which is the whole of
+   *  "creation is positional".
+   *
+   *  It activates that workspace first, deliberately: a session lands in a deck,
+   *  and the deck shows one workspace at a time, so creating in a workspace whose
+   *  tiles are not on screen would be the same defect from the other end — a
+   *  session somewhere you cannot see. */
+  const newSessionIn = async (workspaceId: string) => {
+    const ws = workspaces.all.find((w) => w.id === workspaceId);
+    if (!ws) return;
+    if (workspaces.active?.id !== ws.id) workspaces.activate(ws.id);
+    setPanel("sessions");
+    await deck.launch(ws, null);
+  };
+  /** The keyboard's and the palette's way in, and the empty deck's: no row was
+   *  pressed, so the active workspace is the answer — and saying so beats a
+   *  control that looks broken when there is no workspace at all. */
   const newSession = async () => {
     const ws = await requireWorkspace();
-    if (ws) await deck.launch(ws, null);
+    if (ws) await newSessionIn(ws.id);
   };
-  newBtn.onclick = () => { void newSession(); };
+
+  /* The two halves of the tree, wired once each object exists. The panel owns the
+     workspace row; the deck owns the sessions under it. */
+  deck.setTree({
+    host: (id) => workspaces.sessionHost(id),
+    waiting: (id, n) => workspaces.showWaiting(id, n),
+    newSession: (id) => { void newSessionIn(id); },
+  });
+  workspaces.setTreeHooks({
+    reselect: (id) => deck.toggleGroup(id),
+    rendered: () => deck.repaintList(),
+  });
+
+  /** The top bar's readings, and the rail's dot, from the deck's own counts.
+   *
+   *  Two readings, and they are the two things that want a person: a session
+   *  waiting for a decision and a session that stopped. A run that finished while
+   *  nobody watched is not one of them, which is why "N done" is absent — the
+   *  ledger is not a dashboard of the app's state, it is the list of what is
+   *  blocked on me.
+   *
+   *  Each reading goes to one of the sessions it counted rather than to a list of
+   *  everything: the label says "waiting for a decision", and what it opens is a
+   *  session waiting for one. */
+  function drawLedger(c: SessionCounts): void {
+    ledgerEl.replaceChildren();
+    const read = (n: number, kind: string, words: string, state: SessionState) => {
+      if (n === 0) return;
+      const b = document.createElement("button");
+      b.className = `led led--${kind}`;
+      const num = document.createElement("b");
+      num.textContent = String(n);
+      b.append(num, document.createTextNode(` ${words}`));
+      b.onclick = () => { setPanel("sessions"); deck.focusFirst(state); };
+      ledgerEl.append(b);
+    };
+    read(c.waiting, "wait", "waiting for a decision", "waitingInput");
+    read(c.error, "err", "stopped on an error", "error");
+
+    /* A dot, not a digit. Digits on a 32px icon overlap the glyph and are the
+       ledger's number said twice; how much is in the button's accessible name,
+       where a screen reader gets it without the clutter. Red outranks amber: a
+       workspace with one of each has one thing to say first. */
+    const btn = railBtns.sessions;
+    let dot = btn.querySelector<HTMLElement>(".rail-dot");
+    if (!dot) {
+      dot = document.createElement("span");
+      dot.className = "rail-dot";
+      dot.setAttribute("aria-hidden", "true");
+      btn.append(dot);
+    }
+    dot.hidden = c.waiting === 0 && c.error === 0;
+    dot.classList.toggle("rail-dot--error", c.error > 0);
+    const note = [
+      c.waiting > 0 ? `${c.waiting} waiting for a decision` : "",
+      c.error > 0 ? `${c.error} stopped on an error` : "",
+    ].filter(Boolean).join(", ");
+    const name = note ? `${PANEL_TITLE.sessions} — ${note}` : PANEL_TITLE.sessions;
+    btn.setAttribute("aria-label", name);
+    btn.title = name;
+  }
+  deck.setCounts(drawLedger);
+  drawPanelScope();
+  // The rail's first selection, which also writes the panel's title and puts the
+  // travelling mark somewhere. It was markup before — a button with `class="active"`
+  // — and markup cannot say which page is showing to a reader.
+  setPanel("sessions");
   // What an empty deck can offer. Wired here rather than in the constructor because the
   // deck is built long before these exist — the same reason `setSkillsSource` is a setter.
   deck.setEmptyActions({
@@ -1612,9 +1812,9 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
       { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
       { id: "scenarios", title: "Scenarios: focus the sidebar list", run: () => focusRegion("sidebar") },
-      { id: "board", title: "Open the task board", run: () => setView("board") },
-      { id: "prs", title: "Open pull requests", run: () => setView("pr") },
-      { id: "history", title: "Open the scenario run history", run: () => setView("history") },
+      { id: "board", title: "Open the task board", run: () => setPanel("board") },
+      { id: "prs", title: "Open pull requests", run: () => setPanel("pr") },
+      { id: "history", title: "Open the scenario run history", run: () => setPanel("history") },
       { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
       { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
       // The two steps are direct commands because stepping is what a person wants
@@ -1634,7 +1834,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  (they go to the PTY), so once focus landed in a tile — which happens
    *  automatically on launch — the sidebar, the scenario buttons and the
    *  run-now button were unreachable by keyboard entirely. */
-  type Region = "sidebar" | "screen" | "drawer" | "terminals";
+  type Region = "sidebar" | "deck" | "drawer" | "terminals";
   /** The cycle, which is not fixed: the diff drawer is a region only while it is
    *  open, because a region you cannot see is a stop that does nothing.
    *
@@ -1642,7 +1842,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  so without this focus inside the drawer reads as `"screen"` and F6 from a diff
    *  sends you to the sidebar, with no key at all going the other way. */
   function regions(): Region[] {
-    const cycle: Region[] = ["sidebar", "screen"];
+    const cycle: Region[] = ["sidebar", "deck"];
     // Only while it is up, for the same reason as the diff drawer: a region you
     // cannot see is a stop that appears to do nothing.
     if (terminals.isOpen()) cycle.push("terminals");
@@ -1650,17 +1850,15 @@ export function startApp(role: WindowRole): Promise<void> {
     return cycle;
   }
 
-  /** Focus on a `#viewbar` tab reads as "screen" here, so F6 from a tab goes to the
-   *  sidebar in both directions. The tabs are deliberately outside the cycle rather
-   *  than a third region: they are the first thing in the DOM, so plain Tab reaches
-   *  them from the top, which the sidebar's own blocks never could — they sat behind
-   *  the tabs when the switch lived there. */
+  /** The rail is deliberately outside the cycle rather than a third region: it is
+   *  the first thing in `#stage`, so plain Tab reaches it, and F6 from it goes to
+   *  the panel in both directions — which is where its own selection landed. */
   function currentRegion(): Region {
     // The drawer first, because it is inside the screen: asked in the other order
     // every answer would be "screen".
     if (diffDrawer.contains(document.activeElement)) return "drawer";
     if (terminals.hasFocus()) return "terminals";
-    return sidebar.contains(document.activeElement) ? "sidebar" : "screen";
+    return sidebar.contains(document.activeElement) ? "sidebar" : "deck";
   }
 
   function focusRegion(r: Region): void {
@@ -1674,21 +1872,16 @@ export function startApp(role: WindowRole): Promise<void> {
       focusRegion("sidebar");
       return;
     }
-    if (r === "screen") {
-      // Whichever screen is showing, not the deck unconditionally. It was the deck:
-      // from a board row, F6 called `focus()` on an xterm inside a `display: none`
-      // `#deck`, which does nothing at all, so focus stayed put and the key looked
-      // broken. Plain Tab still worked, which is what made this a degraded shortcut
-      // rather than a trap — but "the second region" has meant three different
-      // things since the board and the pull request screen arrived.
-      if (currentView === "deck") {
-        if (deck.focusActiveTerminal()) return;
-      } else {
-        const target = firstFocusable(currentView === "board" ? boardEl : prEl);
-        if (target) { target.focus(); return; }
-      }
-      // Nothing to go to — no session yet, or a board still loading. Stay somewhere
-      // focusable rather than dropping focus on the floor.
+    if (r === "deck") {
+      // The deck, unconditionally, and it is the change that made this simple
+      // again: "the second region" meant three different things while the board
+      // and the pull request screen could replace the deck, and F6 from a board
+      // row called `focus()` on an xterm inside a `display: none` `#deck` — which
+      // does nothing at all. The board is a page of the panel now, so the panel's
+      // own region reaches it and this one is only ever the deck.
+      if (deck.focusActiveTerminal()) return;
+      // No session yet. Stay somewhere focusable rather than dropping focus on the
+      // floor.
       focusRegion("sidebar");
       return;
     }
@@ -1839,9 +2032,9 @@ export function startApp(role: WindowRole): Promise<void> {
     "zoom": () => deck.toggleZoomActive(),
     "next-region": () => cycleRegion(1),
     "prev-region": () => cycleRegion(-1),
-    "board": () => setView("board"),
-    "prs": () => setView("pr"),
-    "history": () => setView("history"),
+    "board": () => setPanel("board"),
+    "prs": () => setPanel("pr"),
+    "history": () => setPanel("history"),
     "new-task": () => { void captureTask(); },
     "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
   };

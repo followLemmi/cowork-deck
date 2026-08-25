@@ -8,24 +8,37 @@
   </head>
   <body>
     <div id="app">
-      <!-- The three screens are siblings in a row, and the switch between them
-           sits above that row rather than inside the sidebar: it is navigation
-           for the whole window, not a sidebar block, and in the sidebar its
-           width was set by however long the workspace names were. `#stage` is
-           the row; `#app` is now the column holding the bar and the row. The
-           pull request screen joins the row from `main.ts`. -->
-      <!-- The bar is a `header`, not the `nav` it used to be: it holds the app's
-           mark and its global actions as well as the screen switch, and only the
-           switch is navigation. `#viewbar` keeps its id and its `nav` — `main.ts`
-           mounts the switch into it, and the test fixtures mirror it. -->
+      <!-- There are no screens any more. `#stage` is a row of three: the rail
+           that selects what the panel holds, the panel, and the deck — and the
+           deck never leaves it. What used to be four tab labels was not a
+           structure but four states of one window, and the floating pill exists
+           because that window could not show the deck and anything else at once.
+           `#board` is a page of the panel now; `#pr` and `#history` join it there
+           from `app.ts`, which is also what fills `#rail`, `#panel-head` and
+           `#ledger`. -->
       <header class="topbar">
         <div class="mark" id="mark" data-od-id="wordmark"></div>
-        <nav id="viewbar" aria-label="Screens"></nav>
         <span class="topbar-spacer"></span>
+        <!-- What replaced four tab labels. Not "where to go" but "what wants me",
+             and every reading in it is a jump into the panel rather than a
+             destination. Empty here on purpose: `app.ts` writes it from the deck's
+             own counts, so no number in this markup can go stale. -->
+        <div id="ledger" data-od-id="ledger"></div>
         <div id="topbar-actions"></div>
       </header>
       <div id="stage">
-        <aside id="sidebar"></aside>
+        <!-- The rail selects what the panel holds. It never changes what the
+             window holds, and that is the whole difference from a tab bar. -->
+        <nav id="rail" aria-label="Panels"></nav>
+        <aside id="sidebar">
+          <div id="panel-head"></div>
+          <!-- One page shows at a time; `#board`, `#pr` and `#history` are three
+               of the five, which is why the two that were full-width screens can
+               ask the panel for the deck's width instead of the deck's place. -->
+          <div id="panel-stack">
+            <div id="board" class="panel-page hidden"></div>
+          </div>
+        </aside>
         <!-- The deck and the terminal drawer are one column: the drawer is a
              strip under the deck, not a fourth screen and not a floating panel.
              `#workarea` exists only to stack them, so `#deck` keeps its id, its
@@ -34,7 +47,6 @@
           <main id="deck"></main>
           <div id="terminals"></div>
         </div>
-        <div id="board" class="hidden"></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

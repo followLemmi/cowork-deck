@@ -14,19 +14,28 @@
     <div id="app">
       <header class="topbar">
         <div class="mark" id="mark" data-od-id="wordmark"></div>
-        <nav id="viewbar" aria-label="Screens"></nav>
         <span class="topbar-spacer"></span>
+        <!-- What replaced four tab labels. Not "where to go" but "what wants me",
+             and every reading in it is a jump into the panel rather than a
+             destination. Empty here on purpose: `app.ts` writes it from the deck's
+             own counts, so no number in this markup can go stale. -->
+        <div id="ledger" data-od-id="ledger"></div>
         <div id="topbar-actions"></div>
       </header>
       <div id="stage">
-        <aside id="sidebar"></aside>
-        <!-- Mirrors `index.html`: the deck and the terminal drawer are one
-             column inside the stage row. -->
+        <!-- Mirrors `index.html`: a rail, one panel, and the deck that never
+             yields its place in the row. -->
+        <nav id="rail" aria-label="Panels"></nav>
+        <aside id="sidebar">
+          <div id="panel-head"></div>
+          <div id="panel-stack">
+            <div id="board" class="panel-page hidden"></div>
+          </div>
+        </aside>
         <div id="workarea">
           <main id="deck"></main>
           <div id="terminals"></div>
         </div>
-        <div id="board" class="hidden"></div>
       </div>
     </div>
     <script type="module">

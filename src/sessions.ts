@@ -232,6 +232,51 @@ export class Deck {
     this.renderEmpty();
   }
 
+  /** The tree this deck's session rows live in, when something else is drawing
+   *  the workspaces.
+   *
+   *  Workspaces and sessions are one tree, and a workspace appears in it once.
+   *  That was not true before: the panel listed every workspace, and the session
+   *  list listed every workspace again as a group heading — the same fact stated
+   *  twice, in two shapes, and neither of them said where a new session would go.
+   *
+   *  Two modules render one row between them, and the split follows ownership
+   *  rather than convenience: the workspace row is the workspaces panel's, which
+   *  owns activation, the account, the form and the delete; the sessions under it
+   *  are this deck's. So the panel leaves a container under each row and this asks
+   *  for it, rather than either half moving into the other.
+   *
+   *  With no tree the deck draws its own headings — not a fallback kept for tests:
+   *  the "Other" group is sessions whose workspace was deleted from under them, and
+   *  it has no workspace row to hang under and never will. */
+  setTree(t: DeckTree) { this.tree = t; this.renderList(); }
+  private tree: DeckTree | null = null;
+
+  /** Fold a group by its workspace id — for the panel's row, which activates on
+   *  the first press and folds on the second. One gesture with a rule, rather than
+   *  two targets inside one row, one of which is always the one you miss. */
+  toggleGroup(workspaceId: string) {
+    if (this.collapsed.has(workspaceId)) this.collapsed.delete(workspaceId);
+    else this.collapsed.add(workspaceId);
+    this.renderList();
+  }
+
+  /** Repaint the tree's rows. The panel rebuilds its own list from `innerHTML`,
+   *  which throws away the containers these rows were in — so the render that
+   *  replaces them has to be followed by this. */
+  repaintList() { this.renderList(); }
+
+  /** Told after every list render, because that is where the app already counts
+   *  what its sessions are doing. The ledger in the top bar reads these rather
+   *  than counting again: the two statements of "N waiting" this app used to make
+   *  — a sidebar heading and the floating pill — came from two different places,
+   *  and with two windows open they disagreed. */
+  setCounts(fn: (counts: SessionCounts) => void) {
+    this.onCounts = fn;
+    this.renderList();
+  }
+  private onCounts: ((counts: SessionCounts) => void) | null = null;
+
   /** The deck with nothing on it. "Nothing" means nothing VISIBLE: tiles belonging to
    *  another workspace stay in the DOM behind `ws-hidden`, so counting the map would
    *  call a deck full while the screen is blank. */
@@ -1304,6 +1349,35 @@ export class Deck {
     if (id) this.toggleZoom(id);
   }
 
+  isZoomed(): boolean { return this.zoomedSession !== null; }
+
+  /** Zoom the active tile and say whether that is what happened.
+   *
+   *  For the panel taking the deck's width: the deck yields by falling into its
+   *  filmstrip, which is the layout a zoom already produces. The return value is
+   *  what lets the panel give back exactly what it took — a tile somebody zoomed
+   *  themselves must not be un-zoomed by a panel narrowing. */
+  zoomActive(): boolean {
+    if (this.zoomedSession !== null) return false;
+    const id = this.activeSession;
+    if (!id) return false;
+    this.zoomTo(id);
+    return this.zoomedSession !== null;
+  }
+
+  /** Focus the first session in a state, for the ledger's readings: pressing "2
+   *  waiting for a decision" goes to one of the two rather than to a list of
+   *  everything. Insertion order, which is the order the deck lays tiles out in,
+   *  so "first" means the same thing to the eye. */
+  focusFirst(state: SessionState): boolean {
+    for (const t of this.tiles.values()) {
+      if (t.state === state && !t.el.classList.contains("ws-hidden")) {
+        return this.focusSession(t.session);
+      }
+    }
+    return false;
+  }
+
   /** Move keyboard focus into the active terminal. Half of region cycling: the
    *  terminal swallows Tab, so getting back in needs an explicit route too. */
   focusActiveTerminal(): boolean {
@@ -1430,6 +1504,23 @@ export class Deck {
       .catch((e) => console.debug("saveLayout failed", e));
   }
 
+  /** The row that creates a session where it stands.
+   *
+   *  Exactly one of them is prominent — the active workspace's — so the panel still
+   *  has one obvious primary action after the full-width "+ session" button that
+   *  used to be it. The difference from that button is the whole point: this one is
+   *  inside the thing it acts on and names it, so being wrong about which workspace
+   *  is active costs nothing. Pressing any of the others creates there. */
+  private createRow(workspaceId: string, name: string): HTMLElement {
+    const add = document.createElement("button");
+    add.className = "sess-add" + (workspaceId === this.activeWorkspaceId ? " sess-add--primary" : "");
+    add.dataset.focusKey = `add:${workspaceId}`;
+    add.append(icon("plus", 13), document.createTextNode(`New session in ${name}`));
+    add.title = `New session in ${name}`;
+    add.onclick = () => this.tree?.newSession(workspaceId);
+    return add;
+  }
+
   private renderList() {
     // The whole list is rebuilt via innerHTML, and the poll rebuilds it every
     // five seconds. That was harmless only while nothing in it could hold
@@ -1441,6 +1532,14 @@ export class Deck {
       : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
+    this.onCounts?.({
+      waiting,
+      error: tiles.filter((t) => t.state === "error").length,
+      // Not for a reading of its own — the ledger is only the things that want a
+      // person — but the rail's dot needs to know whether there is anything here
+      // at all, which is a different question from whether anything is wrong.
+      total: tiles.length,
+    });
     // What this window has, not what the app has — and said as a list rather
     // than a number.
     //
@@ -1462,8 +1561,11 @@ export class Deck {
         state: t.state, workspaceId: t.workspaceId,
       })),
     });
-    const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
-    this.listEl.innerHTML = `<h3>${header}</h3>`;
+    /* No heading of its own any more, and that is the tree arriving: the row above
+       these sessions is the workspace's, stated once, and how many are waiting is
+       the ledger's reading in the top bar. This element used to say both again. What
+       is left in it is the bill, which nothing else states. */
+    this.listEl.replaceChildren();
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
     // The bill across every session, subagents included. Context does not
     // aggregate — each session has its own window and adding them describes
@@ -1501,6 +1603,20 @@ export class Deck {
       const collapsed = this.collapsed.has(wsId);
       const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
 
+      /* Where this group's rows go, and whether this deck draws its heading at
+         all. See `setTree`. The count goes out either way: with a tree it is the
+         workspace row that carries the badge, and that row is repainted on its own
+         schedule, so it has to be told rather than asked. */
+      const host = g.workspace ? this.tree?.host(g.workspace.id) ?? null : null;
+      if (g.workspace) this.tree?.waiting(g.workspace.id, groupWaiting);
+      let into: HTMLElement = this.listEl;
+      if (host) {
+        host.replaceChildren();
+        host.hidden = collapsed;
+        into = host;
+        if (collapsed) continue;
+      }
+
       const head = document.createElement("button");
       head.dataset.focusKey = `group:${wsId}`;
       head.setAttribute("aria-expanded", String(!collapsed));
@@ -1529,8 +1645,10 @@ export class Deck {
         if (collapsed) this.collapsed.delete(wsId); else this.collapsed.add(wsId);
         this.renderList();
       };
-      this.listEl.appendChild(head);
-      if (collapsed) continue;
+      if (!host) {
+        this.listEl.appendChild(head);
+        if (collapsed) continue;
+      }
 
       for (const t of g.tiles) {
         const live = this.tiles.get(t.session);
@@ -1574,7 +1692,29 @@ export class Deck {
         const nameSpan = document.createElement("span");
         nameSpan.textContent = t.name;
         row.append(stateSpan, " ", nameSpan);
-        this.listEl.appendChild(row);
+        into.appendChild(row);
+      }
+
+      /* Creation is positional: the last row inside the group, at the place the
+         new session will appear, and it says which workspace that is. What it
+         replaces was one button outside every list which created in whichever
+         workspace happened to be active — so being wrong about which workspace was
+         active was a session in the wrong folder, discovered afterwards. */
+      if (host && g.workspace) into.appendChild(this.createRow(g.workspace.id, g.workspace.name));
+    }
+
+    /* A workspace with no sessions at all still gets its create row, and this is
+       where it comes from: `groupTilesByWorkspace` groups TILES, so a workspace
+       nothing is running in produces no group. It is also the case that needs the
+       row most — an empty workspace's only useful sentence is "start something
+       here" — and without this it was the one row in the tree that could not be
+       created into. */
+    if (this.tree) {
+      for (const w of this.workspaces()) {
+        const host = this.tree.host(w.id);
+        if (!host || host.childElementCount > 0) continue;
+        host.hidden = false;
+        host.appendChild(this.createRow(w.id, w.name));
       }
     }
     if (focusKey) {
@@ -1613,6 +1753,25 @@ function scenarioLaunch(
     continuesRunId: continuesRunId ?? previous,
   };
 }
+
+/** What a deck needs from the tree its rows live in. Three functions and no
+ *  more: where to put the rows, what to tell the row above them, and what the
+ *  create row at the end of them does. */
+export interface DeckTree {
+  /** The container the panel leaves under a workspace's row. Null when that
+   *  workspace has no row — which is not the same as having no sessions. */
+  host(workspaceId: string): HTMLElement | null;
+  /** How many of this workspace's sessions are waiting, including the ones in
+   *  another window: the badge answers for the workspace, not for the window. */
+  waiting(workspaceId: string, n: number): void;
+  /** Create a session in this workspace, from the row that names it. */
+  newSession(workspaceId: string): void;
+}
+
+/** What the top bar's ledger is written from. Deliberately not "everything the
+ *  deck knows": three numbers, and each one has a reading in the bar or a dot on
+ *  the rail. A count nothing renders is a count nobody checks. */
+export interface SessionCounts { waiting: number; error: number; total: number }
 
 export function waitingCount(states: SessionState[]): number {
   return states.filter((s) => s === "waitingInput").length;

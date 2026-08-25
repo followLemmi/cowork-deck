@@ -269,9 +269,12 @@
      is chosen by HOW FAR the thing travels, not by how important it is. A ground
      changing under a cursor travels nothing (`--dur-1`). A chip crossfading
      travels nothing but has to be noticed (`--dur-2`). The design system carries
-     two more — `--dur-3` for anything that changes position or size, `--dur-4` for
-     a whole entrance sequence — and they arrive with the first rule that needs
-     them rather than sitting here as claims nothing checks.
+     one more — `--dur-4`, the budget for a whole entrance sequence — and it
+     arrives with the first rule that needs it rather than sitting here as a claim
+     nothing checks. `--dur-3` is here because two rules now need it: the mark
+     travelling between the rail's icons, and the panel's width when it takes the
+     deck's room. Both change POSITION or SIZE, and a person has to be able to
+     follow them.
 
      `--ease-out` is the name and `cubic-bezier(0.22, 1, 0.36, 1)` is the curve:
      fast out, long settle, which is what everything that moves uses. What it
@@ -280,7 +283,7 @@
      stopped dead. One curve, one name, and the name says which of three the
      system has. */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-  --dur-1: 120ms; --dur-2: 220ms;
+  --dur-1: 120ms; --dur-2: 220ms; --dur-3: 340ms;
 }
 
 /* One switch, honoured everywhere. The durations collapse and so do the DELAYS —
@@ -321,17 +324,17 @@ html, body, #app { height: 100%; margin: 0; }
 #stage { display: flex; flex: 1; min-height: 0; }
 
 /* --- The top bar ---------------------------------------------------------
-   Was a 4px-padded strip holding one segmented control adrift at its left edge,
-   with the other 90% of the width empty — a measurable part of the "too much empty
-   space" complaint. It is the window's chrome now: wordmark, screen switch, global
-   actions. `--bg-chrome` is the one surface lighter than the stage, which is what
-   gives the window a top edge instead of bleeding into the desktop.
-   52px because the segmented control is 36px and needs its own breathing room; the
-   height is asserted rather than derived so the bar does not grow with the text
-   scale and eat the deck. */
+   The window's chrome: the wordmark, the ledger, the global actions. `--bg-chrome`
+   is the one surface lighter than the stage, which is what gives the window a top
+   edge instead of bleeding into the desktop.
+   44px, down from the 52 the segmented control needed for its own breathing room.
+   The control is gone — the rail selects what the panel holds and nothing in this
+   bar is a switch any more — so the 8px goes back to the deck. The height is
+   asserted rather than derived, so the bar does not grow with the text scale and
+   eat the deck instead. */
 .topbar {
   flex: none; display: flex; align-items: center; gap: var(--sp-4);
-  height: 52px; padding: 0 var(--sp-4);
+  height: 44px; padding: 0 var(--sp-4);
   background: var(--bg-chrome); border-bottom: 1px solid var(--line);
 }
 .topbar-spacer { flex: 1; }
@@ -370,11 +373,78 @@ html, body, #app { height: 100%; margin: 0; }
   .topbar { gap: var(--sp-3); }
 }
 
-/* Full width, and the app's first tab stop because it is first in the DOM. */
-#viewbar { flex: none; display: flex; align-items: center; }
+/* --- The ledger ----------------------------------------------------------
+   What replaced four tab labels, and it answers a different question. The tabs
+   said which of four states the window was in; this says what wants a person, and
+   each reading opens one of the sessions it counted.
+   Two readings only. A run that finished while nobody was watching does not want
+   anything, so there is no third: this is not a dashboard of the app's state, it
+   is the list of what is blocked on me. */
+#ledger { flex: none; display: flex; align-items: center; gap: var(--sp-1); }
+.led {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px var(--sp-2); border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--fg-mid);
+  font: inherit; font-size: var(--fs-xs); cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.led::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.led b { font-variant-numeric: tabular-nums; font-weight: var(--fw-bold); }
+/* Hover moves the GROUND and nothing else. The colour here is the state's, and a
+   hover that brightened it to `--fg` would be a hover that changes what the
+   reading means — measured on the lightened ground by `npm run contrast`. */
+.led:hover { background: var(--bg-hover); }
+.led:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.led--wait { color: var(--st-waiting); }
+.led--err { color: var(--st-error); }
+/* The one ambient loop in the bar, and it is on the reading that means somebody is
+   being kept waiting. `--st-error` deliberately does not pulse: a stopped session
+   is not going to become un-stopped while the eye is elsewhere. */
+.led--wait::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
 
-/* --- The sidebar --------------------------------------------------------- */
+/* --- The rail ------------------------------------------------------------
+   Five icons and a mark that travels between them. What makes a column of five
+   read as one control with a position is the mark MOVING: five icons one of which
+   is lit reads as five things, and the eye has to find the lit one every time.
+   44px wide because a vertical switch beside a column does not have to be as wide
+   as the column — which is exactly what went wrong with the horizontal one, whose
+   width was set by however long the workspace names were. */
+#rail {
+  position: relative; flex: none;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  width: 44px; padding: var(--sp-2) 0;
+  background: var(--bg-void); border-right: 1px solid var(--line);
+}
+.rail-btn { position: relative; width: 32px; height: 32px; min-width: 32px; min-height: 32px; }
+.rail-btn[aria-current="page"] { background: var(--sel); color: var(--fg); }
+.rail-ink {
+  position: absolute; left: 0; top: 0; width: 2px; height: 32px;
+  background: var(--accent); border-radius: 0 2px 2px 0;
+  transform: translate3d(0, var(--y, 0), 0);
+  transition: transform var(--dur-3) var(--ease-out);
+}
+/* A dot, not a digit: digits on a 32px icon overlap the glyph, and the number is
+   already in the bar above and in the button's accessible name. */
+.rail-dot {
+  position: absolute; top: 5px; right: 5px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--st-waiting);
+}
+.rail-dot--error { background: var(--st-error); }
+.rail-dot[hidden] { display: none; }
+
+/* --- The panel -----------------------------------------------------------
+   Still `#sidebar`, and the id is the only thing about it that is still a
+   sidebar: it holds one page out of five now, and which one is the rail's to say.
+   Renaming the id would touch some forty selectors here and a dozen test
+   fixtures, which is a commit of its own rather than a line in this one.
+
+   A head and a stack, as two grid rows, because the head must not scroll with the
+   page under it: the head is what says whose data the page holds, and a scope line
+   that scrolls away is a scope line you have to scroll back for. */
 #sidebar {
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  transition: width var(--dur-3) var(--ease-out);
   /* In `rem` rather than px, because this column exists to hold text and the text
      size is the person's to choose: at a fixed pixel width, raising the scale made
      the names *longer* inside a box that stayed the same, which is how the
@@ -385,9 +455,45 @@ html, body, #app { height: 100%; margin: 0; }
      16px out of the content width that the flat list did not. */
   width: clamp(17.5rem, 19vw, 24rem);
   background: var(--bg-void); border-right: 1px solid var(--line);
-  color: var(--fg); padding: var(--sp-3); overflow: auto;
-  display: flex; flex-direction: column; gap: var(--sp-3);
+  color: var(--fg); overflow: hidden;
 }
+/* The two pages that need width take it from the deck, which falls into its
+   filmstrip rather than out of the window — the same layout a zoomed tile
+   produces, and the reason yielding space is not the same as disappearing. A
+   kanban and a diff are the only two things here that are not a list of names. */
+#sidebar.is-wide { width: min(46rem, 58vw); }
+
+#panel-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.panel-titles { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+/* The load-bearing half of the head. With a rail selecting what this column holds,
+   "whose data is this" is the question that breaks the idea, and it is answered
+   here before it is asked — including the one fact the old sidebar answered only
+   if you scrolled to the row and read its second line: which account a push
+   from this workspace goes out as. */
+.panel-scope {
+  color: var(--fg-dim); font-size: var(--fs-xs);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-title { color: var(--fg); font-size: var(--fs-sm); font-weight: var(--fw-bold); }
+#panel-wide[hidden] { display: none; }
+
+/* One page shows at a time. `overflow: auto` is per page rather than on the stack,
+   so the head stays put and each page keeps its own scroll position. */
+#panel-stack { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); }
+.panel-page { min-height: 0; min-width: 0; overflow: auto; }
+.panel-page.hidden { display: none; }
+/* The two pages built out of the old sidebar's islands keep its column: three
+   raised surfaces with air between them. Their own `display` is declared with an
+   id, which is why the `hidden` beside it has to be as well — grouping it with the
+   class rule above would leave `display: flex` winning and the page on screen. */
+#ws-page, #sk-page {
+  display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3);
+}
+#ws-page.hidden, #sk-page.hidden { display: none; }
 
 /* --- Islands -------------------------------------------------------------
    The sidebar was one undifferentiated scroll: `h3`, rows, `h3`, rows, with
@@ -859,6 +965,48 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    used to be re-declared at this point and silently outranked the shared rule by
    source order — three of the four `.sess-row` blocks this file carried were
    fighting each other. */
+/* --- The tree ------------------------------------------------------------
+   A workspace's sessions, indented under its row. The indent is 14px and it is
+   doing real work: it is what makes the row above them read as their parent
+   rather than as a sibling with a different shape — which is what two lists, one
+   of workspaces and one of sessions grouped by workspace, could never say. */
+.ws-kids { display: flex; flex-direction: column; padding-left: 14px; }
+.ws-kids[hidden] { display: none; }
+
+/* How many of this workspace's sessions are waiting, on the workspace's own row.
+   Written by the deck between this panel's renders, so it is always in the DOM and
+   empty rather than created when the answer stops being none. */
+.ws-waiting { flex: none; font-size: var(--fs-xs); color: var(--st-waiting); white-space: nowrap; }
+.ws-waiting[hidden] { display: none; }
+
+/* Creation, positional: the last row of the group, where the new session will
+   appear, naming the workspace it belongs to. Quiet at rest — it is not the
+   window's primary action, it is the end of a list — and it discloses its ground
+   on hover like every other row here. What it replaces was a full-width primary
+   button outside every list, which created in whichever workspace happened to be
+   active. */
+.sess-add {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; min-height: 28px; padding: 4px 6px; margin: 2px 0;
+  background: none; border: 0; border-radius: var(--r-sm);
+  color: var(--fg-dim); font: inherit; font-size: var(--fs-xs);
+  text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.sess-add:hover { background: var(--bg-hover); color: var(--fg); }
+/* One of them is the panel's primary action — the active workspace's, which is the
+   one a person is nine times out of ten about to press. An accent ring rather than
+   an accent fill: a filled button here would be the "+ session" slab back, and this
+   is a row in a list that happens to be the likely one. */
+.sess-add--primary {
+  background: var(--sel); color: var(--fg); font-weight: var(--fw-medium);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.sess-add--primary:hover { background: var(--sel-hover); }
+.sess-add--primary svg { color: var(--fg); }
+.sess-add svg { flex: none; color: var(--fg-dim); }
+.sess-add:hover svg { color: var(--fg); }
+
 .sess-row { margin: 2px 0; cursor: pointer; }
 .sess-row:hover { background: var(--bg-inset); }
 .sess-row.active { background: var(--sel); }
@@ -1214,7 +1362,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    taking the full width like #deck does. min-width: 0 lets it shrink below its
    content's intrinsic width so overflow:auto (and the 1fr 1fr columns below)
    can actually do their job inside the flex row. */
-#board { flex: 1; min-width: 0; overflow: auto; padding: var(--sp-4); background: var(--bg-void); }
+/* A page of the panel, not a screen beside the deck. What changes with that: the
+   width is the panel's (narrow by default, the deck's when the page asks for it)
+   and `flex: 1` is gone, because a grid item in `#panel-stack` already fills its
+   only track. */
+#board { min-width: 0; overflow: auto; padding: var(--sp-3); background: var(--bg-void); }
 /* Deliberately two rules, not one grouped selector list. jsdom's
    getComputedStyle applies a group's highest specificity to every selector in
    it, so grouping `.tk-hidden` with `#board.hidden` would give it that weight in
@@ -1231,42 +1383,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    selector's weight in tests that never see the deck. */
 #history.hidden { display: none; }
 .tk-hidden { display: none; }
-/* `#deck` sets `display: grid` with an id selector, which outweighs a class.
-   Without this rule `tk-hidden` never hid the deck, and the board opened beside
-   the terminals instead of replacing them. */
-#deck.tk-hidden { display: none; }
+/* `#deck.tk-hidden` stood here, and its going is the point of the shell: nothing
+   hides the deck any more. It existed because `#deck { display: grid }` is an id
+   selector and outweighed the class — a fight that only had to be had while a
+   screen could take the deck's place. */
 
-/* In `#viewbar` this is content-sized, which is the point of the move: as a
-   `flex-direction: column` child of `#sidebar` it stretched to the sidebar's
-   width whatever its `inline-flex` said, so the space it had was whatever the
-   workspace names left. Its buttons had 25px of slack at a 248px sidebar and
-   overflowed at an 18px base — measured, against the audit's claim of 15px. */
-/* The segmented control, now the top bar's centre of gravity rather than a strip
-   adrift at its left edge. Sunk into the bar (`--bg-void` is darker than
-   `--bg-chrome`) so the selected segment can be the thing that rises out of it. */
-.tk-views {
-  display: inline-flex; gap: 2px; padding: 3px;
-  background: var(--bg-void); border: 1px solid var(--line);
-  border-radius: var(--r-ctl);
-}
-/* A step up from the sidebar's caption size, with the padding to match: at 12px
-   and 4px these were 23px tall, which is under the 24px target minimum for the
-   app's primary navigation. 13px × 1.25 leading + 16px is 32px, so the target is
-   cleared by the type and the padding rather than by a `min-height` asserting it. */
-.tk-views button {
-  font: inherit; font-size: var(--fs-base); color: var(--fg-mid);
-  background: transparent; border: 0; border-radius: var(--r-sm);
-  padding: var(--sp-2) var(--sp-3); cursor: pointer;
-}
-/* Raised, not tinted. The accent is spent on the primary action and on selection
-   in the lists; a third use here would break the two-per-screen cap, and "where I
-   am" reads better as elevation anyway — it is the same idea as the islands. */
-.tk-views button.active {
-  background: var(--bg-island); color: var(--fg);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 3px rgba(0, 0, 0, 0.5);
-}
-.tk-views button:hover:not(.active) { background: var(--bg-hover); color: var(--fg-mid); }
-.tk-views button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The segmented "Terminals | Board | Pull requests | History" control stood here,
+   with three rules explaining how it had been sized and re-sized. It is gone with
+   the screens it switched between: what the app has instead is a rail that says
+   what the panel holds, and a ledger that says what wants a person. */
 
 .tk-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-3); margin-bottom: var(--sp-4); }
 /* The display face's first two uses in the app: the one screen title per view.

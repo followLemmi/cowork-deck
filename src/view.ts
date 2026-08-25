@@ -1,40 +1,59 @@
-/** The four screens: terminals, the task board, pull requests, and the history
- *  of what the scenarios did. Which sidebar blocks belong to the terminals
- *  screen is the caller's business — this module only hides them. */
-export type ViewName = "deck" | "board" | "pr" | "history";
+/** The one panel, and what it is holding.
+ *
+ *  What this replaces was a switch between four SCREENS: picking "Board" hid the
+ *  deck, and the deck is the reason the app exists. Two things followed from
+ *  that, and both were shipped rather than argued about — a floating pill that
+ *  counts blocked sessions, because the window could not show the deck and
+ *  anything else at once, and four tab labels that were not a structure but four
+ *  states of one window.
+ *
+ *  So: the rail on the left selects what the PANEL beside it holds, and the deck
+ *  never moves. `applyPanel` is the whole of that — DOM only, no IPC and no
+ *  timers, so it can be tested against the real stylesheet, which is where the
+ *  bug its predecessor existed for lived (`#board` declares `display: flex` with
+ *  an id selector, so a page needs a rule that outweighs a class).
+ *
+ *  Gone with the screens: the `terminalsOnly` list. The scenario list, the
+ *  session list and the terminal drawer used to hide when the deck did, because
+ *  they belonged to one screen out of four. There is one stage now and it is
+ *  always the deck, so the drawer under it always belongs.
+ */
+export type PanelPage = "sessions" | "board" | "pr" | "history" | "scenarios";
 
-export interface ViewElements {
-  deck: HTMLElement;
-  board: HTMLElement;
-  pr: HTMLElement;
-  history: HTMLElement;
-  termBtn: HTMLElement;
-  boardBtn: HTMLElement;
-  prBtn: HTMLElement;
-  historyBtn: HTMLElement;
-  /** Sidebar blocks that lead nowhere off the terminals screen: the scenario
-   *  list, "+ session", and the session list. Workspaces stay — every screen
-   *  shows one workspace at a time and switching between them is the point,
-   *  and the history screen is scoped by the same selector for the same reason:
-   *  a screen that ignored it would be the sole exception to a rule people have
-   *  already learned three times. */
-  terminalsOnly: HTMLElement[];
+export const PANEL_PAGES: PanelPage[] = ["sessions", "board", "pr", "history", "scenarios"];
+
+/** What each page is called in the panel's own head. The rail says it in an
+ *  accessible name; the head says it in words, because a rail of five icons
+ *  cannot. */
+export const PANEL_TITLE: Record<PanelPage, string> = {
+  sessions: "Workspaces and sessions",
+  board: "Board",
+  pr: "Pull requests",
+  history: "Journal",
+  scenarios: "Scenarios",
+};
+
+/** The two pages that need width rather than a column: a kanban and a diff. They
+ *  take it from the deck, which falls into its filmstrip — the same mechanism a
+ *  zoomed tile already uses, and the reason the deck yielding space is not the
+ *  same thing as the deck disappearing. */
+export const PANEL_WIDE: Record<PanelPage, boolean> = {
+  sessions: false, board: true, pr: true, history: false, scenarios: false,
+};
+
+export interface PanelElements {
+  /** The page each rail button shows. */
+  pages: Record<PanelPage, HTMLElement>;
+  /** The rail's buttons, which carry which page is current. */
+  buttons: Record<PanelPage, HTMLElement>;
 }
 
-/** Show one screen. DOM only: no IPC and no timers, so it can be tested against
- *  the real stylesheet, which is where the bug this replaces lived — `#deck`
- *  is an id selector and outweighs a class, so the deck needs `tk-hidden`
- *  rather than the plain `hidden` the others use. */
-export function applyView(el: ViewElements, view: ViewName): void {
-  el.deck.classList.toggle("tk-hidden", view !== "deck");
-  el.board.classList.toggle("hidden", view !== "board");
-  el.pr.classList.toggle("hidden", view !== "pr");
-  el.history.classList.toggle("hidden", view !== "history");
-  mark(el.termBtn, view === "deck");
-  mark(el.boardBtn, view === "board");
-  mark(el.prBtn, view === "pr");
-  mark(el.historyBtn, view === "history");
-  for (const node of el.terminalsOnly) node.classList.toggle("tk-hidden", view !== "deck");
+/** Show one page in the panel. */
+export function applyPanel(el: PanelElements, page: PanelPage): void {
+  for (const name of PANEL_PAGES) {
+    el.pages[name]?.classList.toggle("hidden", name !== page);
+    mark(el.buttons[name], name === page);
+  }
 }
 
 const FOCUSABLE = [
@@ -51,9 +70,8 @@ const FOCUSABLE = [
  *  The hidden check is by class rather than by layout on purpose. jsdom computes
  *  no layout, so `offsetParent` is null for every element and a visibility test
  *  written that way would reject every candidate in the tests covering this. The
- *  two classes are the only two ways this app hides a subtree — `hidden` for the
- *  board, the pull request screen and the history, `tk-hidden` for the deck and
- *  the sidebar blocks that belong to it. */
+ *  two classes are the only two ways this app hides a subtree — `hidden` for a
+ *  panel page, `tk-hidden` for a form row that does not apply. */
 export function firstFocusable(root: HTMLElement): HTMLElement | null {
   for (const el of root.querySelectorAll<HTMLElement>(FOCUSABLE)) {
     if (!el.closest(".tk-hidden, .hidden")) return el;
@@ -61,22 +79,20 @@ export function firstFocusable(root: HTMLElement): HTMLElement | null {
   return null;
 }
 
-/** Which screen is showing, for a reader as well as for the eye.
+/** Which page the panel is holding, for a reader as well as for the eye.
  *
- *  `aria-current="page"` rather than the `role="tablist"`/`aria-selected` the plan
- *  asked for, and the reason is what these three things are. `role="tab"` promises
- *  a tab widget: arrow-key traversal, a roving tabindex, and panels — and the panel
- *  for the terminals screen is `<main id="deck">`. Putting `role="tabpanel"` on it
- *  overwrites the document's only `main` landmark, which is a worse trade than any
- *  gain from the role; leaving the panels out makes the `tab` roles a promise the
- *  markup does not keep. These are the app's primary screens, reached from a `nav`,
- *  and `aria-current` is what navigation uses. It is also the same reading the
- *  workspace list and the session list now give, which is worth more than three
- *  patterns for one idea.
+ *  `aria-current="page"` rather than `role="tab"`/`aria-selected`, and the reason
+ *  survives the change from tabs to a rail unchanged: `role="tab"` promises a tab
+ *  widget — arrow-key traversal, a roving tabindex, and panels — and this rail
+ *  does not implement one. It is navigation inside a `nav`, and `aria-current` is
+ *  what navigation uses. It is also the reading the workspace list and the session
+ *  list already give, which is worth more than three patterns for one idea.
  *
  *  Removed rather than set to "false": `aria-current="false"` is announced by some
- *  readers, and the absent state here is simply "not this one". */
-function mark(btn: HTMLElement, selected: boolean): void {
+ *  readers, and the absent state here is simply "not this one".
+ */
+function mark(btn: HTMLElement | undefined, selected: boolean): void {
+  if (!btn) return;
   btn.classList.toggle("active", selected);
   if (selected) btn.setAttribute("aria-current", "page");
   else btn.removeAttribute("aria-current");

@@ -47,6 +47,12 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    // The tree's half of the panel: the workspace row is this panel's and the
+    // sessions under it are the deck's, so `startApp` hands each the other.
+    setTreeHooks = vi.fn();
+    sessionHost = vi.fn().mockReturnValue(null);
+    showWaiting = vi.fn();
+    activate = vi.fn().mockReturnValue(true);
   },
 }));
 
@@ -95,8 +101,8 @@ const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve()
  *  and a side-effect module imports once per file. */
 async function boot(role: WindowRole) {
   document.body.innerHTML =
-    '<div id="app"><nav id="viewbar"></nav><div id="stage">'
-    + '<div id="sidebar"></div><main id="deck"></main><div id="terminals"></div>'
+    '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
+    + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
     + '<div id="board" class="hidden"></div></div></div>';
   const { startApp } = await import("../src/app");
   startApp(role);
