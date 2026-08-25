@@ -256,6 +256,12 @@ export class Deck {
   setTree(t: DeckTree) { this.tree = t; this.renderList(); }
   private tree: DeckTree | null = null;
 
+  /** Told when the tool panel inside a tile is dragged. Wired by the app, which
+   *  owns the file the width is remembered in — a tile does not persist anything
+   *  and this deck does not know what `ui_state.json` is. */
+  setToolWidth(fn: (px: number) => void) { this.onToolWidth = fn; }
+  private onToolWidth: ((px: number) => void) | null = null;
+
   /** Fold a group by its workspace id — for the panel's row, which activates on
    *  the first press and folds on the second. One gesture with a rule, rather than
    *  two targets inside one row, one of which is always the one you miss. */
@@ -890,6 +896,7 @@ export class Deck {
       cols: () => tile.panel.cols,
       termWidth: () => mount.getBoundingClientRect().width,
       source: () => this.sourceOfTile(tile),
+      onWidth: (px) => this.onToolWidth?.(px),
     });
     work.append(mount, tools.panel, tools.rail);
     el.append(head, searchBar, work);
@@ -1420,6 +1427,21 @@ export class Deck {
   }
 
   isZoomed(): boolean { return this.zoomedSession !== null; }
+
+  /** Refit every visible terminal, and re-check the tool panel's column floor.
+   *
+   *  For whatever moves a box these live in without resizing the window: the
+   *  panel's grip, the drawer's, the panel collapsing. `fit()` is debounced inside
+   *  the terminal, so calling this on every frame of a drag costs one resize at the
+   *  end of it — which is the behaviour the PTY needs and the reason the debounce
+   *  is there. */
+  refit() {
+    for (const t of this.tiles.values()) {
+      if (t.el.classList.contains("ws-hidden")) continue;
+      t.panel.fit();
+      t.tools.refit();
+    }
+  }
 
   /** Told whenever the deck enters or leaves zoom.
    *

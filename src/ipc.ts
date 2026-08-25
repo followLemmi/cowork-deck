@@ -84,6 +84,22 @@ export interface UiState {
    *  the height is how much of this window to give a terminal, and that does not
    *  change with the project. */
   terminalRows: number;
+  /** How wide the panel is in px, and how wide it is once it has taken the deck's
+   *  width. Optional, and this is where the pattern above genuinely stops: the two
+   *  above are filled from `serde` defaults, and these are not — until a person
+   *  drags an edge the width belongs to the stylesheet, whose `clamp(17.5rem,
+   *  19vw, 24rem)` tracks the window and the text size. A pixel default here would
+   *  freeze both, and `undefined` is what says "not asked for".
+   *
+   *  Px and not `ch`, unlike the diff drawer's width and the drawer's rows: what
+   *  is being sized is a column of names, not a grid of characters. */
+  panelPx?: number;
+  panelWidePx?: number;
+  /** And the tool panel inside a zoomed tile. One width for the app, not one per
+   *  tile: sizing it is sizing the tool, and every session's tools are the same
+   *  tool. Its floor is the 80-column rule, which is enforced where the panel is
+   *  drawn — a stored number cannot know what the terminal is doing. */
+  toolPx?: number;
 }
 
 /** A change to the stored state, which is what `save_ui_state` takes.
@@ -99,6 +115,9 @@ export interface UiStatePatch {
   syncOfferDismissed?: boolean;
   recordScenarioRuns?: boolean;
   terminalRows?: number;
+  panelPx?: number;
+  panelWidePx?: number;
+  toolPx?: number;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when

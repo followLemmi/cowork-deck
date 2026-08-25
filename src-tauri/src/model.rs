@@ -526,6 +526,25 @@ pub struct UiState {
     /// text size, not however many fit in 260 pixels after the next change.
     #[serde(rename = "terminalRows", default = "default_terminal_rows")]
     pub terminal_rows: u32,
+    /// How wide the panel is, in px, and how wide it is when it has taken the
+    /// deck's width. Two numbers because they answer two questions: a column of
+    /// names and a kanban do not want the same width, and a person who sizes one
+    /// has not said anything about the other.
+    ///
+    /// `Option` rather than a default, and this is the one place in this struct
+    /// where that is the right shape: "never dragged" has to be distinguishable
+    /// from a number, because until it is dragged the width belongs to the
+    /// stylesheet — `clamp(17.5rem, 19vw, 24rem)` tracks the window and the text
+    /// size, and baking a pixel default here would freeze both.
+    #[serde(rename = "panelPx", default)]
+    pub panel_px: Option<u32>,
+    #[serde(rename = "panelWidePx", default)]
+    pub panel_wide_px: Option<u32>,
+    /// And how wide the tool panel inside a zoomed tile is. Same reasoning; its
+    /// floor is the 80-column rule, which is enforced where the panel is drawn
+    /// rather than here — a stored number cannot know what the terminal is doing.
+    #[serde(rename = "toolPx", default)]
+    pub tool_px: Option<u32>,
 }
 
 /// On. A journal nobody switched on records nothing, and the first thing anyone
@@ -571,6 +590,11 @@ impl Default for UiState {
             sync_offer_dismissed: false,
             record_scenario_runs: default_record_runs(),
             terminal_rows: default_terminal_rows(),
+            // None, and not a pixel figure: until a person drags one, the width
+            // belongs to the stylesheet, which tracks the window and the text size.
+            panel_px: None,
+            panel_wide_px: None,
+            tool_px: None,
         }
     }
 }
@@ -599,6 +623,12 @@ pub struct UiStatePatch {
     pub record_scenario_runs: Option<bool>,
     #[serde(rename = "terminalRows")]
     pub terminal_rows: Option<u32>,
+    #[serde(rename = "panelPx")]
+    pub panel_px: Option<u32>,
+    #[serde(rename = "panelWidePx")]
+    pub panel_wide_px: Option<u32>,
+    #[serde(rename = "toolPx")]
+    pub tool_px: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

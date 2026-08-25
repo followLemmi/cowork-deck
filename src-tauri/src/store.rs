@@ -220,6 +220,18 @@ impl Store {
         if let Some(dismissed) = patch.sync_offer_dismissed {
             st.sync_offer_dismissed = dismissed;
         }
+        // Each of the three is set only when the person has dragged that thing, and
+        // a patch that omits one must not clear it — the same rule every field above
+        // follows.
+        if let Some(px) = patch.panel_px {
+            st.panel_px = Some(px);
+        }
+        if let Some(px) = patch.panel_wide_px {
+            st.panel_wide_px = Some(px);
+        }
+        if let Some(px) = patch.tool_px {
+            st.tool_px = Some(px);
+        }
         if let Some(on) = patch.record_scenario_runs {
             st.record_scenario_runs = on;
         }
@@ -720,12 +732,20 @@ mod tests {
             sync_offer_dismissed: Some(true),
             record_scenario_runs: Some(false),
             terminal_rows: Some(20),
+            panel_px: Some(340),
+            panel_wide_px: None,
+            tool_px: Some(360),
         };
         s.save_ui_state(&patch).unwrap();
         let reloaded = Store::new(s.dir.clone()).ui_state();
         assert_eq!(reloaded.active_workspace_id, Some("w-1".into()));
         assert_eq!(reloaded.ui_scale, 1.3);
         assert_eq!(reloaded.pr_diff_cols, 80);
+        // The two that were set come back; the one the patch left out stays unset
+        // rather than being cleared to a number nobody chose.
+        assert_eq!(reloaded.panel_px, Some(340));
+        assert_eq!(reloaded.tool_px, Some(360));
+        assert_eq!(reloaded.panel_wide_px, None);
         assert!(!reloaded.record_scenario_runs);
         assert_eq!(reloaded.terminal_rows, 20);
         // An offer that comes back after being waved away is not an offer.

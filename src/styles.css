@@ -540,10 +540,26 @@ html, body, #app { height: 100%; margin: 0; }
      17.5rem is 280px at the 16px base, up from the 248px this held: the rows now
      carry a 14px name over a 13px second line, and the island's own padding takes
      16px out of the content width that the flat list did not. */
-  width: clamp(17.5rem, 19vw, 24rem);
+  /* The person's width if they have dragged one, and the stylesheet's otherwise.
+     A custom property rather than an inline width for exactly that reason: the
+     fallback here tracks the window and the text size, and an inline pixel value
+     would freeze both the moment anything was dragged. */
+  width: var(--panel-w, clamp(17.5rem, 19vw, 24rem));
   background: var(--bg-void); border-right: 1px solid var(--line);
   color: var(--fg); overflow: hidden;
+  position: relative;
 }
+/* The edge, and it is 5px of hit area sitting half outside the panel — a 1px
+   border is not a target, and a wider strip inside the panel would eat the rows'
+   own right-hand end. `col-resize` is the cursor the platform uses for this. */
+.panel-grip {
+  position: absolute; top: 0; right: -2px; bottom: 0; width: 5px;
+  cursor: col-resize; z-index: 4;
+  background: none; transition: background var(--dur-1) var(--ease-out);
+}
+.panel-grip:hover, .panel-grip.is-dragging { background: var(--accent); }
+.panel-grip:focus-visible { outline: none; background: var(--accent); box-shadow: var(--focus-ring); }
+#sidebar.is-collapsed .panel-grip { display: none; }
 /* The two pages that need width take it from the deck, which falls into its
    filmstrip rather than out of the window — the same layout a zoomed tile
    produces, and the reason yielding space is not the same as disappearing. A
@@ -554,7 +570,7 @@ html, body, #app { height: 100%; margin: 0; }
    and a clipped fourth is a worse kanban than the full-width screen this replaced.
    At 58rem the deck still keeps about 700px, which is 80-odd columns for the
    zoomed tile, so the panel taking its room does not re-wrap a transcript. */
-#sidebar.is-wide { width: min(58rem, 62vw); }
+#sidebar.is-wide { width: var(--panel-wide-w, min(58rem, 62vw)); }
 /* Collapsed to nothing, with the rail left standing: the panel goes and the way
    back stays. `border-right-color` goes with the width, or a 1px line hangs in the
    window with nothing on either side of it. The width is animated, which is what
@@ -990,9 +1006,18 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
      width of its longest path and the panel, at `overflow: hidden`, simply clipped
      the counts off the right of every row. */
   grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr);
-  width: 19rem; min-width: 0; flex: none; overflow: hidden;
+  width: var(--tool-w, 19rem); min-width: 0; flex: none; overflow: hidden;
   background: var(--bg-island); border-left: 1px solid var(--line);
+  position: relative;
 }
+/* Its own edge, on the left, where the terminal it takes room from is. */
+.tool-grip {
+  position: absolute; top: 0; left: -2px; bottom: 0; width: 5px;
+  cursor: col-resize; z-index: 4;
+  background: none; transition: background var(--dur-1) var(--ease-out);
+}
+.tool-grip:hover, .tool-grip.is-dragging { background: var(--accent); }
+.tool-grip:focus-visible { outline: none; background: var(--accent); box-shadow: var(--focus-ring); }
 /* Under the 80-column floor the panel FLOATS instead of squeezing, and the reason
    is not aesthetic: `fit()` follows whatever box the terminal sits in, so a panel
    that narrows the terminal re-wraps the agent's output. This app has shipped that
@@ -1001,7 +1026,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    `tile-tools.ts` decides it, and `wouldSqueeze` is the rule. */
 .tile-panel.is-floating {
   position: absolute; z-index: 3; right: 40px; top: 0; bottom: 0;
-  width: min(19rem, 62%);
+  width: min(var(--tool-w, 19rem), 62%);
   box-shadow: var(--sh-float);
 }
 .tool-head {

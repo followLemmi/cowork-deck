@@ -20,6 +20,7 @@
  *  costs the transcript.
  */
 import { icon, iconButton, type IconName } from "./icons";
+import { wireResizer } from "./resize";
 import { gitChanges, revealPath, worktreeFiles, type GitChange } from "./ipc";
 
 /** What the panel needs to know about the session it belongs to. */
@@ -34,6 +35,10 @@ export interface TileToolsHost {
   /** What launched this session. Three real answers and no fourth: a scenario, a
    *  card or an issue, or a person. */
   source(): { kind: string; detail: string | null; prompt: string | null };
+  /** Remember how wide this panel was dragged. One width for the app, not one per
+   *  tile: a person sizing this panel is sizing the tool, and every session's
+   *  tools are the same tool. */
+  onWidth(px: number): void;
 }
 
 /** One tool: a glyph on the strip, a name in the header, and a scope line that
@@ -142,7 +147,26 @@ export class TileTools {
     shut.onclick = () => this.close();
     head.append(titles, shut);
     this.body.className = "tool-body";
-    this.panel.append(head, this.body);
+    /* The panel's own edge, draggable. Its floor is the 80-column rule and not a
+       number: dragging it wider is allowed right up to the point where the
+       terminal would drop under 80 columns, and past that the panel floats instead
+       — which `refit` decides on every frame. */
+    const grip = document.createElement("div");
+    grip.className = "tool-grip";
+    wireResizer({
+      grip,
+      grow: "left",
+      label: "Tool panel width",
+      min: 240,
+      max: () => Math.max(240, Math.round(this.host.termWidth() * 0.8)),
+      read: () => this.widthPx(),
+      write: (px) => {
+        this.panel.style.setProperty("--tool-w", `${px}px`);
+        this.refit();
+      },
+      commit: (px) => this.host.onWidth(Math.round(px)),
+    });
+    this.panel.append(grip, head, this.body);
 
     for (const t of TOOLS) {
       const b = iconButton(t.icon, t.name, "tool-btn");
@@ -158,6 +182,29 @@ export class TileTools {
    *  taking a third of its width is a tile whose terminal silently re-wrapped. */
   setZoomed(on: boolean) {
     if (!on) this.close();
+  }
+
+  /** Re-check the column floor without re-reading anything.
+   *
+   *  Called when something else moved the terminal's box — the app panel's grip,
+   *  the drawer, a window resize. The floor is not a one-time decision: a panel
+   *  that squeezed politely at 1680px is a panel that re-wraps a transcript at
+   *  1100px, and nothing about the open tool changed in between. */
+  refit() {
+    if (this.open === null) return;
+    this.panel.classList.toggle(
+      "is-floating",
+      wouldSqueeze(this.host.termWidth(), this.host.cols(), this.widthPx()),
+    );
+  }
+
+  /** How wide the panel is asking to be right now: the person's width if they have
+   *  dragged one, and the stylesheet's otherwise. Read from the box rather than
+   *  from the stored number, because the stored number is not the whole story —
+   *  `min()` in the rule can be the thing that wins. */
+  private widthPx(): number {
+    const w = this.panel.getBoundingClientRect().width;
+    return w > 0 ? w : PANEL_PX;
   }
 
   /** Re-read whatever is open. Called when the tile's own state changes: a session
@@ -196,7 +243,7 @@ export class TileTools {
        anything else. `is-floating` is what the stylesheet reads. */
     this.panel.classList.toggle(
       "is-floating",
-      wouldSqueeze(this.host.termWidth(), this.host.cols()),
+      wouldSqueeze(this.host.termWidth(), this.host.cols(), this.widthPx()),
     );
     if (t.id === "source") { this.drawSource(); return; }
     /* A read of a checkout is a process. Saying so beats an empty panel that

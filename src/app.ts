@@ -2,6 +2,7 @@ import { WorkspacesPanel } from "./workspaces";
 import { SkillsPanel } from "./skills";
 import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
 import { applyPanel, firstFocusable, PANEL_TITLE, PANEL_WIDE } from "./view";
+import { wireResizer } from "./resize";
 import { settingsDialog } from "./settings";
 import { syncDialog } from "./sync-dialog";
 import { offerBanner, shouldOffer } from "./sync-offer";
@@ -244,6 +245,36 @@ export function startApp(role: WindowRole): Promise<void> {
   shutBtn.id = "panel-shut";
   shutBtn.onclick = () => setCollapsed(!sidebar.classList.contains("is-collapsed"));
   panelHead.append(panelTitles, wideBtn, shutBtn);
+
+  /* --- The panel's width is the person's ---------------------------------
+     Two widths, because they answer two questions: a column of names and a kanban
+     do not want the same one, and sizing one says nothing about the other. Written
+     as a custom property rather than an inline `width`, so the stylesheet keeps
+     the default — `clamp(17.5rem, 19vw, 24rem)` tracks the window and the text
+     size, and an inline pixel width would freeze both the moment anything was
+     dragged. */
+  const panelGrip = document.createElement("div");
+  panelGrip.className = "panel-grip";
+  sidebar.append(panelGrip);
+  const panelWide = () => sidebar.classList.contains("is-wide");
+  wireResizer({
+    grip: panelGrip,
+    grow: "right",
+    label: "Panel width",
+    min: 240,
+    max: () => Math.round(window.innerWidth * 0.7),
+    read: () => sidebar.getBoundingClientRect().width,
+    write: (px) => {
+      sidebar.style.setProperty(panelWide() ? "--panel-wide-w" : "--panel-w", `${px}px`);
+      // The terminals have to be refitted, and the tool panel's 80-column floor
+      // re-checked: both follow a box this drag is moving.
+      deck.refit();
+    },
+    commit: (px) => {
+      const patch = panelWide() ? { panelWidePx: Math.round(px) } : { panelPx: Math.round(px) };
+      saveUiState(patch).catch((e) => console.debug("panel width save failed", e));
+    },
+  });
 
   /* --- The ledger ---------------------------------------------------------
      What replaced four tab labels: not where to go, but what wants me. Written
@@ -1880,6 +1911,13 @@ export function startApp(role: WindowRole): Promise<void> {
     if (zoomed) setCollapsed(true, false);
     else if (!collapsedByHand) setCollapsed(false, false);
   });
+  /* One width for the tool panel, remembered for the app: every session's tools
+     are the same tool, so sizing it once is sizing it. Written on the root, which
+     is where a tile that does not exist yet will read it from. */
+  deck.setToolWidth((px) => {
+    document.documentElement.style.setProperty("--tool-w", `${px}px`);
+    saveUiState({ toolPx: px }).catch((e) => console.debug("tool width save failed", e));
+  });
   deck.setCounts(drawLedger);
   drawPanelScope();
   // The rail's first selection, which also writes the panel's title and puts the
@@ -2290,6 +2328,12 @@ export function startApp(role: WindowRole): Promise<void> {
       // height lands on a window that is already laid out. *Whether* it is up is
       // not here — that is per workspace and comes with the tabs.
       storedDrawer = { rows: ui.terminalRows };
+      /* The widths somebody dragged, applied as properties rather than as inline
+         widths so that a value nobody has set leaves the stylesheet's own — which
+         tracks the window and the text size — in charge. */
+      if (ui.panelPx) sidebar.style.setProperty("--panel-w", `${ui.panelPx}px`);
+      if (ui.panelWidePx) sidebar.style.setProperty("--panel-wide-w", `${ui.panelWidePx}px`);
+      if (ui.toolPx) document.documentElement.style.setProperty("--tool-w", `${ui.toolPx}px`);
     } catch (e) {
       console.debug("ui state read failed, using the defaults", e);
     }
