@@ -2779,3 +2779,21 @@ h6.md-head { font-size: var(--fs-sm); }
 .term-bodies { flex: 1; min-height: 0; position: relative; background: var(--bg-terminal); }
 .term-body { position: absolute; inset: 0; padding: 4px var(--sp-2); }
 .term-body.hidden { display: none; }
+
+/* Memory sync dialog.
+   Borrows the modal's own type and spacing; only the arrangement is new. */
+.sync-body { display: flex; flex-direction: column; gap: 12px; }
+.sync-row { display: flex; gap: 8px; flex-wrap: wrap; }
+/* The age of the last push, given its own line rather than folded into the
+   paragraph above: it is the one number that says whether sync is working, and
+   a sync broken for three weeks reads exactly like a working one until someone
+   goes looking. */
+.sync-when { margin: 0; font-variant-numeric: tabular-nums; opacity: 0.85; }
+.sync-status { margin: 0; min-height: 1.2em; opacity: 0.85; }
+.sync-fault {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--danger, #b3261e);
+  background: color-mix(in srgb, var(--danger, #b3261e) 8%, transparent);
+}
+.sync-fault-text { margin: 0; }

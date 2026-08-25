@@ -3,6 +3,7 @@ import { SkillsPanel } from "./skills";
 import { Deck } from "./sessions";
 import { applyView, firstFocusable } from "./view";
 import { settingsDialog } from "./settings";
+import { syncDialog } from "./sync-dialog";
 import {
   applyScale, broadcastScale, clampScale, currentScale, nextScale, prevScale, scaleLabel,
 } from "./ui-scale";
@@ -1419,6 +1420,7 @@ function paletteCommands(): Command[] {
     { id: "text-larger", title: `Text size: larger (now ${scaleLabel(currentScale())})`, run: () => setScale(nextScale(currentScale())) },
     { id: "text-smaller", title: `Text size: smaller (now ${scaleLabel(currentScale())})`, run: () => setScale(prevScale(currentScale())) },
     { id: "settings", title: "Text size…", run: () => void chooseScale() },
+    { id: "sync", title: "Memory sync…", run: () => void syncDialog() },
   ];
 }
 

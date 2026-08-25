@@ -19,7 +19,7 @@ use std::path::Path;
 /// Something the person has to decide, carried out of a pull rather than
 /// decided for them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
 pub enum Question {
     /// A workspace with no folder on this machine. `clone_from` is set when the
     /// record names a repository, which is what makes "clone it" offerable.

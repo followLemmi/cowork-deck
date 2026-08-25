@@ -57,6 +57,7 @@ pub enum Fault {
 /// What a person sees. Local only — `sync_state.json` sits in the sync root and
 /// the deny-by-default ignore keeps it there without anyone naming it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncState {
     pub last_pull: Option<i64>,
     pub last_push: Option<i64>,
@@ -441,5 +442,63 @@ mod tests {
             .arg("-C").arg(repo).args(["rev-list", "--count", "HEAD"])
             .output().unwrap();
         String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0)
+    }
+}
+
+/// The JSON the frontend reads, pinned.
+///
+/// Its own module because the shapes here cross a language boundary that no
+/// compiler checks: a field renamed on this side becomes `undefined` on the
+/// other, silently, and a panel showing "never synced" forever looks exactly
+/// like a sync that has never run.
+#[cfg(test)]
+mod wire {
+    use super::*;
+
+    #[test]
+    fn sync_state_is_camel_case_like_everything_else_on_the_wire() {
+        let s = SyncState { last_pull: Some(1), last_push: Some(2), fault: None };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert!(v.get("lastPull").is_some(), "got {v}");
+        assert!(v.get("lastPush").is_some(), "got {v}");
+        assert!(v.get("last_pull").is_none(), "snake_case must not survive: {v}");
+    }
+
+    #[test]
+    fn every_fault_carries_its_kind_and_its_own_fields() {
+        for (fault, kind, field) in [
+            (Fault::Offline { since: 1 }, "offline", "since"),
+            (Fault::Conflict { files: vec!["a".into()] }, "conflict", "files"),
+            (Fault::PushRejected { message: "m".into() }, "push-rejected", "message"),
+            (Fault::AuthGone { message: "m".into() }, "auth-gone", "message"),
+            (Fault::FormatNewer { found: 2, supported: 1 }, "format-newer", "found"),
+        ] {
+            let v: serde_json::Value =
+                serde_json::from_str(&serde_json::to_string(&fault).unwrap()).unwrap();
+            assert_eq!(v["kind"], kind, "got {v}");
+            assert!(v.get(field).is_some(), "{kind} must carry {field}: {v}");
+        }
+    }
+
+    #[test]
+    fn a_question_names_its_fields_the_way_the_frontend_reads_them() {
+        use crate::sync::adopt::Question;
+        let q = Question::NeedsPath {
+            workspace_id: "ws-1".into(),
+            name: "deck".into(),
+            clone_from: Some("me/deck".into()),
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&q).unwrap()).unwrap();
+        assert_eq!(v["kind"], "needs-path");
+        assert!(v.get("workspaceId").is_some(), "got {v}");
+        assert!(v.get("cloneFrom").is_some(), "got {v}");
+
+        let q = Question::Duplicate {
+            arriving_id: "a".into(),
+            local_id: "b".into(),
+            name: "deck".into(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&q).unwrap()).unwrap();
+        assert!(v.get("arrivingId").is_some() && v.get("localId").is_some(), "got {v}");
     }
 }
