@@ -39,7 +39,7 @@ export const workspaces: Workspace[] = [
     tracker: { providers: [{ type: "github" }] },
   },
   {
-    id: WS_ATLAS, name: "atlas", path: "/home/dev/code/atlas", color: "#d5eaf3",
+    id: WS_ATLAS, name: "atlas", path: "/home/dev/code/atlas", color: "#f6f7f9",
     github: null, tracker: null,
   },
 ];

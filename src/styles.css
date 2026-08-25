@@ -41,73 +41,100 @@
 :root {
   color-scheme: dark; /* native selects, checkboxes, spinners and scrollbars */
 
-  /* --- Surfaces: "Slate & Ember" ----------------------------------------
+  /* --- Surfaces: "True Ink" ---------------------------------------------
    *
-   * Warm-cast graphite, OKLch hue ~70, rather than the blue-violet cast every
-   * default dark theme carries — One Dark included. Authored in OKLch and
-   * resolved to sRGB by a script; hex here rather than `oklch()` because
-   * `scripts/contrast.mjs` parses `#rgb`, `#rrggbb` and `rgba()` and nothing
-   * else, and a colour that script cannot read is a colour nobody can check.
+   * The second pass changes one thing about colour, and it is the cast. OKLch
+   * hue 265 at chroma 0.003 — a near-black stage with a trace of cool in it —
+   * instead of the warm graphite of "Slate & Ember", which reads as brown often
+   * enough to be a problem and which, beside `--st-working`, gave a deck of
+   * twelve tiles an earthy tint the app has no use for. Five directions were
+   * authored and measured together and this is the one that shipped, so the
+   * choice is reversible by re-running the generator rather than by argument.
    *
-   * The ladder is spaced by what has to be DISTINGUISHABLE, not by even steps.
-   * `--bg-inset` sits 0.065 above `--bg-island` on L because a field is
-   * recognised by its fill and not by its border; at an even 0.04 that pair
-   * measured 1.12 and the claim was false.
+   * Authored in OKLch and resolved to sRGB by
+   * `docs/design/true-ink/tools/palette.mjs --app`; hex here rather than
+   * `oklch()` because `scripts/contrast.mjs` parses `#rgb`, `#rrggbb` and
+   * `rgba()` and nothing else, and a colour that script cannot read is a colour
+   * nobody can check. Setting one of these by hand is the one thing not to do:
+   * the generator is the source, and a hand-written hex is a claim nothing
+   * re-derives.
    *
-   * Three names carry the elevation the old palette had no word for: `--bg-void`
-   * is what things float on, `--bg-island` is a raised surface, `--bg-inset` is
-   * sunk into one. The old `--border` measured 1.28:1 against its own panel,
-   * which is why nothing on the previous screen grouped: the borders were not
-   * visible, so the only hierarchy left was type size. */
-  --bg-void: #0f0d0b;      /* the stage and the sidebar: what islands float on */
-  --bg-chrome: #171412;    /* the top bar, which gives the window a top edge */
-  --bg-island: #201e1b;    /* a raised content surface */
-  --bg-inset: #302d2a;     /* fields and controls sunk into an island */
-  --bg-terminal: #13110f;  /* a terminal body, and the diff's ground */
+   * ELEVATION IS LIGHTNESS, NOT SHADOW — the decision this pass turns on.
+   * `--bg-void` resolves to #040405, so four units of brightness remain below it
+   * and no amount of black can reach them: on this stage a drop shadow is a
+   * declaration that does nothing. The step from the stage to a raised surface
+   * does that work instead — 0.097 in L, twice what the warm ladder spent — and
+   * the edge is paid for by a lit hairline along its top. `--sh-island` below is
+   * where this stops being an argument and becomes two declarations.
+   *
+   * The three names carry the elevation itself: `--bg-void` is what things float
+   * on, `--bg-island` is a raised surface, `--bg-inset` is sunk into one. The
+   * ladder is spaced by what has to be DISTINGUISHABLE rather than by even
+   * steps — `--bg-inset` sits 0.073 above `--bg-island` because a field is
+   * recognised by its fill and not by its border. */
+  --bg-void: #040405;      /* the stage and the sidebar: what islands float on */
+  --bg-chrome: #0b0c0d;    /* the top bar, which gives the window a top edge */
+  --bg-island: #161719;    /* a raised content surface */
+  --bg-inset: #28282a;     /* fields and controls sunk into an island */
+  /* The terminal does not follow the palette — it is a window onto another
+     program and its ANSI colours are Claude Code's, not ours. This one value is
+     the part of it that IS the app's: the ground the tile paints under xterm,
+     which has to equal `background` in `src/terminal.ts` or a frame of one
+     colour shows around a terminal of another. */
+  --bg-terminal: #090a0b;  /* a terminal body, and the diff's ground */
 
-  /* Hover moves the GROUND, never the ink. Each is +0.065 on L from the surface
-     it covers — inside the 0.06–0.12 band that reads as a change without reading
-     as a different component. This is the replacement for muting a control with
-     `opacity`, which composites its ancestor's ground into the glyph and is how
-     every icon button in this app came to sit at 2.67:1 while doing nothing. */
-  --bg-hover: #302d2a;
-  --bg-hover-2: #413e3a;   /* a control already sitting on --bg-inset */
+  /* Hover moves the GROUND, never the ink: +0.073 on L over an island, +0.067
+     over an inset — both inside the 0.06–0.12 band that reads as a change without
+     reading as a different component. This is the replacement for muting a
+     control with `opacity`, which composites its ancestor's ground into the glyph
+     and is how every icon button in this app came to sit at 2.67:1 while doing
+     nothing. */
+  --bg-hover: #28282a;
+  --bg-hover-2: #38393b;   /* a control already sitting on --bg-inset */
 
-  --line: #393632;
-  --line-strong: #55504b;
+  --line: #2d2e30;
+  --line-strong: #4a4b4d;
 
-  --fg: #efece8;
-  --fg-mid: #bab7b2;
+  --fg: #f6f7f9;
+  --fg-mid: #b9babd;
   /* The quietest legible step, 5.05 on an island. What it replaces measured 3.44
      and carried nine different meanings, from section headings to the schedule
      indicator, so one token was failing AA across most of the sidebar. Raising it
      is also the largest single part of the answer to "the type feels small": most
      of what reads as small is quiet rather than short. */
-  --fg-dim: #9a9690;
+  --fg-dim: #9a9c9f;
 
   /* The accent is deliberately near-achromatic light. In an app whose whole job is
      telling you what N concurrent sessions are doing, hue is a scarce resource and
      it belongs to state — a coloured brand accent competes with the three signals
      that actually matter. Selection, focus and the primary action get LIGHT. */
-  --accent: #d5eaf3;
-  --accent-press: #bed5df; /* a light fill steps DOWN on hover; its dark ink stays */
-  --accent-ink: #0f0d0b;   /* what sits on an accent fill */
-  /* 0.10, not the 0.14 this replaces. The accent is nearly white, so every point
+  /* In this direction the accent resolves to the same value as `--fg`, and that
+     is not a collision waiting to be fixed: hue is spent on state, so "the app's
+     one colour" is light itself. The visible consequence is worth knowing before
+     it is mistaken for a bug — a primary button is the ground and the ink
+     inverted, so it reads as a switch that has been thrown rather than as a
+     coloured call to action. For the actions this app has, that is the right
+     reading. */
+  --accent: #f6f7f9;
+  --accent-press: #dddee1; /* a light fill steps DOWN on hover; its dark ink stays */
+  --accent-ink: #040405;   /* what sits on an accent fill */
+  /* 0.07, not the 0.10 this replaces. The accent is light itself now, so every point
      of alpha drags a selected row's ground towards it and takes contrast off every
      caption sitting there; at 0.14 `--fg-dim` measured 3.44 on it. The other half
      is a rule rather than a token — a selected row raises its captions one step —
      and `scripts/contrast.mjs` holds both ends of that bargain. */
-  --sel: rgba(213, 234, 243, 0.10);
+  --sel: rgba(246, 247, 249, 0.07);
   /* The selected ground under the cursor. It exists because of a control that had no
      hover state at all: `.tk-f-kind.selected` and `.tk-f-kind:hover` carry the same
      specificity, so the selected rule won this cascade by being written later and
      swallowed the hover it never replaced — on the one filter whose only way back is
      pressing the active chip (`board.ts`, the label filter has no "all").
-     0.18 puts the step inside the same 0.06–0.12 OKLab-L band as the rest of the
-     hover set: +0.071 over `--bg-void`, +0.064 over `--bg-island`. Translucent for the
+     0.126 puts the step inside the same 0.06–0.12 OKLab-L band as the rest of the
+     hover set, and sits under the 0.18 it replaces for the reason `--sel` sits
+     under 0.10: a purer light drags the ground further per point. Translucent for the
      same reason `--sel` is — a filter bar sits on the screen's ground here and on an
      island in the specimen sheet, and both composites are measured. */
-  --sel-hover: rgba(213, 234, 243, 0.18);
+  --sel-hover: rgba(246, 247, 249, 0.126);
 
   /* Hue, therefore, means exactly one thing: what a session is doing. */
   --st-working: #7bd77f;
@@ -129,7 +156,7 @@
      colour. At `--fg-mid` the same chip is 5.26. Ended is told apart from idle by a
      border rather than by being darker; states differ by shape, not by colour
      alone, which is the rule the rest of this set already follows. */
-  --st-ended: #bab7b2;
+  --st-ended: #b9babd;
 
   /* The diff drawer's two bands. Same hues as `.pr-detail-plus` / `.pr-detail-minus`
      in the same screen, so added is not one green in the file list and another in
@@ -220,13 +247,18 @@
      two places that must agree. */
   --dot-size: 9px;
 
-  /* An island reads as raised by three things at once: a hairline, an inner top
-     highlight, and a soft drop shadow. Any one of the three alone is a flat box,
-     which is what every surface in this app currently is. Declared with the
-     palette so the colour and the elevation it implies arrive together; the
-     component rules start using them when each screen is ported. */
-  --sh-island: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 30px -14px rgba(0, 0, 0, 0.75);
-  --sh-float: 0 28px 70px -22px rgba(0, 0, 0, 0.9), 0 2px 10px rgba(0, 0, 0, 0.45);
+  /* What "elevation is lightness" costs these two, in declarations rather than in
+     prose. `--sh-island` was a 30px drop shadow on a ground with no room to cast
+     one; it is now the lit top hairline that pays for the edge — 0.075, where a
+     lighter ground could get away with 0.04 — plus a 2px CONTACT shadow, the one
+     part of a shadow that still reads on near-black, because it is the line where
+     an object meets what it lies on.
+     `--sh-float` keeps a large cast shadow, and it is the only thing that does:
+     what lies under a modal is the scrim, which is dark enough to take one.
+     Neither is animated anywhere — a box-shadow transition repaints every frame,
+     and the two properties that move in this app are transform and opacity. */
+  --sh-island: inset 0 1px 0 rgba(255, 255, 255, 0.075), 0 1px 2px rgba(0, 0, 0, 0.55);
+  --sh-float: 0 1px 3px rgba(0, 0, 0, 0.6), 0 26px 64px -20px rgba(0, 0, 0, 0.95);
 
   /* 2px of accent with 4px of the app background outside it. The outer ring is
      what separates the inner one from whatever it sits on, which a glow cannot do
@@ -290,10 +322,10 @@ html, body, #app { height: 100%; margin: 0; }
    icon brings its own. A light plate under it would read as a sticker with the icon
    stuck on top. */
 .mark-glyph { width: 22px; height: 22px; flex: none; display: grid; place-items: center; }
-/* The icon's plate is `#1d1f21` against a `--bg-chrome` of `#171412` — 1.06:1, which is
-   not a border by any measure. Its own 9%-white hairline is what gives it an edge, and
-   this is the one element in the app whose colours come from outside the palette: it is
-   a logo, not a component. */
+/* The icon's plate is `#1d1f21`, and it is the one element in the app whose colours
+   come from outside the palette: a logo, not a component, so a palette change does not
+   move it. Against `--bg-chrome` it stays under 1.2:1 on either palette — not a border
+   by any measure. Its own 9%-white hairline is what gives it an edge. */
 .mark-icon { display: block; width: 22px; height: 22px; }
 .mark-text {
   font-family: var(--font-display); font-size: var(--fs-base);
@@ -737,7 +769,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    the palette: a fill left on the old hue would tint the chip towards a green the
    text no longer is. `npm run contrast` reads these declarations rather than a copy
    of them, so the two cannot drift. */
-.state-idle         { color: var(--fg-mid);   background: rgba(154, 150, 144, 0.12); }
+.state-idle         { color: var(--fg-mid);   background: rgba(154, 156, 159, 0.12); }
 .state-working      { color: var(--st-working); background: rgba(123, 215, 127, 0.14); }
 .state-waitingInput { color: var(--st-waiting); background: rgba(239, 200, 69, 0.16); border-color: rgba(239, 200, 69, 0.42); }
 /* The same green as working, but without the breathing: the work is done and
@@ -770,7 +802,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    gave up its cyan: ended is the absence of a signal, not a signal. It stays a
    separate rule rather than being merged with idle — the two mean different things
    and a future palette may want to say so again. */
-.state-ended        { color: var(--st-ended);   background: rgba(186, 183, 178, 0.10); border-color: rgba(186, 183, 178, 0.32); }
+.state-ended        { color: var(--st-ended);   background: rgba(185, 186, 189, 0.10); border-color: rgba(185, 186, 189, 0.32); }
 /* 0.06 and not the 0.12 this was first ported at, which measured 4.31 on the
    selected row — the same failure, in the same place, that moved `--st-error` in the
    first place. The fill's hue IS the text's hue here, so alpha is contrast spent
@@ -2328,15 +2360,13 @@ h6.md-head { font-size: var(--fs-sm); }
 .pr-drawer-prev:focus-visible, .pr-drawer-next:focus-visible,
 .pr-drawer-close:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
-/* The code surface is `--bg-app`, not the drawer's `--bg-panel`, and that is not
-   decoration: every measurement here is taken against that ground, and the tints
-   below are translucent, so the ground is part of every one of those numbers. On the
-   Slate & Ember palette it resolves to `#0f0d0b`, and the numbers are 9.70 for
-   context, 13.10 and 13.76 for the two bands, and 6.59 for the line numbers — all of
-   them reported by `npm run contrast` rather than restated here, which is why this
-   comment no longer quotes a literal that a palette edit can falsify.
-   `.pr-detail-body` sets its own `--bg-app` inside a `--bg-raised` row for the same
-   reason: code gets the app's ground, chrome gets the panel's.
+/* The code surface is `--bg-terminal`, not the drawer's island, and that is not
+   decoration: every measurement here is taken against that ground, and the tints below
+   are translucent, so the ground is part of every one of those numbers. What they are
+   is `npm run contrast`'s to report — this comment quoted four of them and the palette
+   move falsified all four, which is the argument for not quoting them at all.
+   `.pr-detail-body` takes the same ground inside an island row for the same reason:
+   code gets the terminal's ground, chrome gets the island's.
    `overflow-x: hidden` is a guard rather than a style. Horizontal scroll belongs to
    `.dv-file` and to nothing else; if a stray wide child ever escapes it, it must be
    clipped here rather than handed up to the page. No horizontal padding: a file
@@ -2626,7 +2656,7 @@ h6.md-head { font-size: var(--fs-sm); }
   background: currentColor; flex: none;
 }
 .run-running     { color: var(--st-working); background: rgba(123, 215, 127, 0.14); }
-.run-ended       { color: var(--st-ended);   background: rgba(186, 183, 178, 0.10); border-color: rgba(186, 183, 178, 0.32); }
+.run-ended       { color: var(--st-ended);   background: rgba(185, 186, 189, 0.10); border-color: rgba(185, 186, 189, 0.32); }
 .run-error       { color: var(--st-error);   background: rgba(251, 129, 122, 0.06); border-color: rgba(251, 129, 122, 0.42); }
 .run-interrupted { color: var(--st-waiting); background: rgba(239, 200, 69, 0.16); border-color: rgba(239, 200, 69, 0.42); }
 .run-failed-to-launch {

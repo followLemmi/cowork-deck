@@ -7,10 +7,13 @@ html, body {
 
 /* Literal colours, not tokens, and not by preference: this is a second Tauri window
    with its own entry point, so it never loads `styles.css` and has no `:root` to read
-   from. The values below are `--bg-chrome`, `--fg` and `--line-strong` of the Slate &
-   Ember palette, copied by hand. **They must be updated with it** — the old ones were
-   `#23262b` and `#e6e6e6`, a cool grey from the previous palette, and against a warm
-   graphite app the pill read as belonging to a different program.
+   from. The values below are `--bg-chrome`, `--fg` and `--line-strong` of the True Ink
+   palette, copied by hand. **They must be updated with it** — this window has now been
+   left behind by two palettes in a row, and each time the pill came to look like it
+   belonged to a different program than the one whose sessions it counts.
+   The shadow moves with the palette for the reason `--sh-island` did: on a near-black
+   app a 30px drop shadow is a declaration that does nothing, and what is left is the
+   contact line where the pill meets whatever it floats over.
    The typeface is deliberately still the platform's: bundling the UI face here means a
    second `@font-face` block and a second copy of a 537 kB file in this window's
    bundle, which is the pill's own port to weigh up rather than this one's. */
@@ -21,11 +24,11 @@ html, body {
   margin: 6px;
   padding: 8px 14px;
   border-radius: 999px;
-  background: #171412;
-  color: #efece8;
-  border: 1px solid #55504b;
+  background: #0b0c0d;
+  color: #f6f7f9;
+  border: 1px solid #4a4b4d;
   font: 14px/1 ui-sans-serif, system-ui, sans-serif;
-  box-shadow: 0 10px 30px -14px rgba(0, 0, 0, 0.75);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.075), 0 1px 2px rgba(0, 0, 0, 0.55);
   cursor: pointer;
   -webkit-user-select: none;
   user-select: none;

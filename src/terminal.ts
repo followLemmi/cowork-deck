@@ -145,8 +145,8 @@ export class TerminalPanel {
       // The FRAME colours — background, foreground, cursor, black — are the app's and
       // must track `styles.css`. `background` in particular: the tile body is painted
       // `--bg-terminal` and xterm paints inside it, so a mismatch draws a visible
-      // frame of one colour around a terminal of another. These are the Slate & Ember
-      // values.
+      // frame of one colour around a terminal of another. These are the True Ink
+      // values, from `docs/design/true-ink/tools/palette.mjs --app`.
       //
       // The six ANSI hues are the CONTENT's, not the chrome's. They are what Claude
       // Code's own output asks for, and they stay One Dark deliberately: a person
@@ -155,20 +155,24 @@ export class TerminalPanel {
       // look wrong for no gain. That they no longer equal `--st-working` and friends
       // is correct — terminal ANSI is a different namespace from session state.
       theme: {
-        background: "#13110f", foreground: "#efece8", cursor: "#d5eaf3",
-        cursorAccent: "#13110f", selectionBackground: "rgba(213,234,243,0.26)",
-        black: "#13110f", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
+        // The caret is the FOREGROUND, not the accent. It stopped being a choice
+        // when the accent became light itself: an accent-coloured caret and an
+        // ink-coloured one are now the same colour, and of the two names only one
+        // is true of a terminal cursor.
+        background: "#090a0b", foreground: "#f6f7f9", cursor: "#f6f7f9",
+        cursorAccent: "#090a0b", selectionBackground: "rgba(246,247,249,0.26)",
+        black: "#090a0b", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
         blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#dcdfe4",
         // #5c6370 measured 2.73:1 on the old background — and this is the colour
         // Claude Code uses for most of its secondary output: hints, timestamps,
         // "esc to interrupt", diff context. It is the worst-placed failure in the
         // app, on the surface the person actually reads, and already at 14px,
         // which is the proof that size is not the lever.
-        // Now `--fg-dim`'s warm neutral rather than the cool #8a919e: this is the
-        // terminal's equivalent of that token's job, and on the darker ground it
-        // measures better than the 5.09 the cool grey managed.
+        // `--fg-dim`, whatever palette that token currently resolves to: this is
+        // the terminal's equivalent of its job, and it moves with it. On True Ink's
+        // darker ground it measures higher again than it did on the warm one.
         // Measured by `npm run contrast`, which reads this line.
-        brightBlack: "#9a9690", brightRed: "#e06c75", brightGreen: "#98c379",
+        brightBlack: "#9a9c9f", brightRed: "#e06c75", brightGreen: "#98c379",
         brightYellow: "#e5c07b", brightBlue: "#61afef", brightMagenta: "#c678dd",
         brightCyan: "#56b6c2", brightWhite: "#ffffff",
       },

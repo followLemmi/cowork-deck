@@ -19,20 +19,21 @@ import { icon, SCENARIO_ICONS, type IconName } from "./icons";
  *  button" — colour was the only carrier and there was no text alternative
  *  anywhere, which is 1.4.1 and 4.1.2, both Level A. The name lives beside the
  *  value so the two cannot drift; `#e06c75` is not a name a person can act on. */
-/* Moved onto the Slate & Ember palette: a workspace dot sits two pixels from a state
- * chip on the same row, so a dot in the old blue-cyan family read as a sixth signal
- * competing with the four that mean something. Three of these ARE the state hues,
- * which is deliberate — a dot is a 9px circle with no text and no border, and nothing
- * in the app treats it as a state, so reusing the hues keeps the screen to one set of
- * colours instead of two. `ice` and `stone` replace `purple` and `cyan`, both of which
- * the new palette does not contain. */
+/* On the app's own palette, because a workspace dot sits two pixels from a state chip
+ * on the same row: a dot in a family the palette does not contain reads as a sixth
+ * signal competing with the four that mean something. Three of these ARE the state
+ * hues, which is deliberate — a dot is a 9px circle with no text and no border, and
+ * nothing in the app treats it as a state, so reusing the hues keeps the screen to one
+ * set of colours instead of two. The other three are the ink steps and they move with
+ * the palette: `ice` was the old accent's icy blue, True Ink has no blue to give it,
+ * and a name is worth less than nothing over a colour that is no longer icy. */
 const COLORS = [
   { value: "#7bd77f", name: "green" },
   { value: "#efc845", name: "amber" },
   { value: "#fb817a", name: "red" },
-  { value: "#d5eaf3", name: "ice" },
-  { value: "#bab7b2", name: "stone" },
-  { value: "#9a9690", name: "slate" },
+  { value: "#f6f7f9", name: "chalk" },
+  { value: "#b9babd", name: "stone" },
+  { value: "#9a9c9f", name: "slate" },
 ];
 
 /** Shows a validation message where the user is looking, instead of the OK
