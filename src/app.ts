@@ -1799,6 +1799,7 @@ export function startApp(role: WindowRole): Promise<void> {
     waiting: (id, n) => workspaces.showWaiting(id, n),
     expanded: (id, on) => workspaces.showExpanded(id, on),
     newSession: (id) => { void newSessionIn(id); },
+    activate: (id) => { workspaces.activate(id); },
   });
   workspaces.setTreeHooks({
     reselect: (id) => deck.toggleGroup(id),

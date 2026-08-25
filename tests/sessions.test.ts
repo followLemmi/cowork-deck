@@ -699,3 +699,36 @@ describe("a session alone in the deck has the stage", () => {
     expect(first.classList.contains("solo")).toBe(false);
   });
 });
+
+/** Going to a session that lives in another workspace has to take the whole app
+ *  with it. `setActiveWorkspace` moves this deck's filter and nothing else, so a
+ *  jump used to leave the panel's tint, the crumb, the board and the pull requests
+ *  pointing at the workspace you had just left. */
+describe("going to a session in another workspace", () => {
+  const A = { id: "a", name: "A", path: "/a", color: "#fff" };
+  const B = { id: "b", name: "B", path: "/b", color: "#fff" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.innerHTML = "";
+    startMock.mockResolvedValue(undefined);
+  });
+
+  it("asks the tree to activate it, rather than moving the deck alone", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [A, B] as never);
+    const activate = vi.fn();
+    deck.setTree({
+      host: () => null, waiting: () => {}, expanded: () => {},
+      newSession: () => {}, activate,
+    });
+    await deck.launch(A as never, null);
+    const session = deck.liveSessions()[0];
+    // Standing in B, pressing a row that belongs to A.
+    deck.setActiveWorkspace(B.id);
+    deck.focusSession(session);
+    expect(activate).toHaveBeenCalledWith(A.id);
+  });
+});

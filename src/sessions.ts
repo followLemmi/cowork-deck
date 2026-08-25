@@ -1244,7 +1244,13 @@ export class Deck {
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
     const rid = resolveWorkspaceId(tile.workspaceId, tile.workspacePath, ws);
     if (rid !== null && rid !== this.activeWorkspaceId) {
-      this.setActiveWorkspace(rid);
+      /* Through the tree rather than `setActiveWorkspace`, and that is the fix:
+         this deck's filter was the only thing that moved, so going to a session in
+         another workspace left the panel's tint, the crumb, the board and the pull
+         requests pointing at the workspace you had just left. One notion of
+         "active", owned by the thing that also persists it. */
+      if (this.tree) this.tree.activate(rid);
+      else this.setActiveWorkspace(rid);
     } else if (tile.el.classList.contains("ws-hidden")) {
       // Orphan (or otherwise stale-hidden) target: unhide so focus lands on a visible tile.
       tile.el.classList.remove("ws-hidden");
@@ -1848,6 +1854,11 @@ export interface DeckTree {
   expanded(workspaceId: string, on: boolean): void;
   /** Create a session in this workspace, from the row that names it. */
   newSession(workspaceId: string): void;
+  /** Make this workspace the active one — the whole app's notion of active, not
+   *  this deck's filter. Going to a session in another workspace has to go through
+   *  here: `setActiveWorkspace` moves the deck and nothing else, so the panel, the
+   *  crumb, the board and the pull requests stayed on the workspace you left. */
+  activate(workspaceId: string): void;
 }
 
 /** What the top bar's ledger is written from. Deliberately not "everything the
