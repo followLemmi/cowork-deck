@@ -33,12 +33,17 @@ export const PANEL_TITLE: Record<PanelPage, string> = {
   scenarios: "Scenarios",
 };
 
-/** The two pages that need width rather than a column: a kanban and a diff. They
- *  take it from the deck, which falls into its filmstrip — the same mechanism a
- *  zoomed tile already uses, and the reason the deck yielding space is not the
- *  same thing as the deck disappearing. */
+/** Which pages may take the deck's width — the deck falling into its filmstrip,
+ *  the same mechanism a zoomed tile already uses, which is why the deck YIELDING
+ *  space is not the deck disappearing.
+ *
+ *  Two of them may, and only one takes it on arrival. A kanban is columns and
+ *  needs all of them on screen at once; a list of pull requests is a list of
+ *  names, and it is the DIFF that needs room — so the pull request page opens
+ *  narrow and widens when a diff is opened in it. A panel that took the deck's
+ *  width to show four rows of text would be the screens back under a new name. */
 export const PANEL_WIDE: Record<PanelPage, boolean> = {
-  sessions: false, board: true, pr: true, history: false, scenarios: false,
+  sessions: false, board: true, pr: false, history: false, scenarios: false,
 };
 
 export interface PanelElements {

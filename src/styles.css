@@ -460,8 +460,14 @@ html, body, #app { height: 100%; margin: 0; }
 /* The two pages that need width take it from the deck, which falls into its
    filmstrip rather than out of the window — the same layout a zoomed tile
    produces, and the reason yielding space is not the same as disappearing. A
-   kanban and a diff are the only two things here that are not a list of names. */
-#sidebar.is-wide { width: min(46rem, 58vw); }
+   kanban and a diff are the only two things here that are not a list of names.
+
+   58rem, and the number is the board's rather than a round one: its columns are
+   `minmax(240px, 1fr)` and a board of four steps needs all four on screen — three
+   and a clipped fourth is a worse kanban than the full-width screen this replaced.
+   At 58rem the deck still keeps about 700px, which is 80-odd columns for the
+   zoomed tile, so the panel taking its room does not re-wrap a transcript. */
+#sidebar.is-wide { width: min(58rem, 62vw); }
 
 #panel-head {
   display: flex; align-items: center; gap: var(--sp-2);
@@ -484,7 +490,11 @@ html, body, #app { height: 100%; margin: 0; }
 /* One page shows at a time. `overflow: auto` is per page rather than on the stack,
    so the head stays put and each page keeps its own scroll position. */
 #panel-stack { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); }
-.panel-page { min-height: 0; min-width: 0; overflow: auto; }
+/* No `overflow` here on purpose: each page already declares its own, and three of
+   the five need something other than `auto` — the pull request page is a flex row
+   whose LIST scrolls, so a scroller on the page itself would put a second bar
+   around the drawer. */
+.panel-page { min-height: 0; min-width: 0; }
 .panel-page.hidden { display: none; }
 /* The two pages built out of the old sidebar's islands keep its column: three
    raised surfaces with air between them. Their own `display` is declared with an
@@ -492,6 +502,7 @@ html, body, #app { height: 100%; margin: 0; }
    class rule above would leave `display: flex` winning and the page on screen. */
 #ws-page, #sk-page {
   display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3);
+  overflow: auto;
 }
 #ws-page.hidden, #sk-page.hidden { display: none; }
 
@@ -1266,20 +1277,12 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 
 /* --- Buttons: one primary, the rest quieter ----------------------------- */
 
-/* "+ session" is the app's main action, yet it looked exactly like the two
-   setup buttons beside it: one dashed ghost style across all three. */
-.btn-primary {
-  width: 100%; padding: var(--sp-2); margin-top: var(--sp-1);
-  background: var(--accent); color: var(--bg-void);
-  border: none; border-radius: var(--r-sm);
-  font: inherit; font-size: var(--fs-base); font-weight: var(--fw-medium);
-  cursor: pointer; transition: filter var(--dur-1) var(--ease-out);
-}
-/* The fill steps down and the dark ink stays put — both halves in one rule. The
-   `filter: brightness()` this replaces was wrong for a near-white accent in both
-   directions: 1.08 clipped it to flat white, and 0.92 was the only visible half. */
-.btn-primary:hover { background: var(--accent-press); }
-.btn-primary:active { background: var(--accent-press); transform: translateY(1px); }
+/* `.btn-primary` stood here — a full-width filled button, and the app's one primary
+   action. Both it and the rule are gone: creation is a row inside the workspace it
+   creates in, and the row that is likely takes an accent ring rather than a fill
+   (see `.sess-add--primary`). A filled button in that position was the same slab
+   under a new name, and this rule outliving its only user would be a style waiting
+   to be reached for. */
 
 /* One reading of "icon button" instead of four, and **no `opacity`** — that is the
    whole change here. Opacity on an ancestor renders its subtree to a buffer and
@@ -1362,6 +1365,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 .icon--up .icon { transform: rotate(-90deg); }
 .icon--down .icon { transform: rotate(90deg); }
+/* One chevron, four directions — the same glyph turned rather than four drawings
+   that can drift in weight. */
+.icon--left .icon { transform: rotate(180deg); }
 .sess-group-toggle .icon { width: 12px; height: 12px; }
 .tile-git .icon, .sk-sched .icon { width: 12px; height: 12px; display: inline-block;
   vertical-align: -2px; }
@@ -1861,7 +1867,31 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 }
 
 .tk-acts { grid-row: 4; display: flex; gap: var(--sp-1); margin-top: var(--sp-2); }
-.tk-acts button, .tk-new, .tk-configure, .tk-board-edit {
+.tk-acts button { display: inline-flex; align-items: center; justify-content: center; }
+/* A CARD's actions disclose their ground, not their glyph — the rule the rest of
+   this app already follows, arriving late here because the board is where it was
+   most expensive to ignore. Every card carried three or four bordered plates at
+   rest: five cards was twenty plates, and a list of tasks read as a control panel
+   with some text in it.
+   The glyph stays visible at `--fg-dim` (5.05 on a card) and stays in the tab
+   order, because an action that materialises out of nothing puts an invisible
+   control in the keyboard path. What appears on hover is the PLATE. */
+.tk-acts button {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg-dim);
+  background: none; border: 1px solid transparent;
+  border-radius: var(--r-ctl); min-width: 30px; min-height: 30px; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+/* The plate arrives with the pointer on the card, and with focus anywhere in it —
+   the keyboard's half of the same disclosure. */
+.tk-card:hover .tk-acts button, .tk-card:focus-within .tk-acts button,
+.tk-row:hover .tk-acts button, .tk-row:focus-within .tk-acts button {
+  background: var(--bg-inset); border-color: var(--line); color: var(--fg-mid);
+}
+/* The board's own toolbar keeps its plates at rest: three standalone controls in a
+   head are not a wall of twenty inside a list, and a toolbar button with no ground
+   reads as a caption. */
+.tk-new, .tk-configure, .tk-board-edit {
   font: inherit; font-size: var(--fs-sm); color: var(--fg-mid);
   background: var(--bg-inset); border: 1px solid var(--line);
   border-radius: var(--r-ctl); min-width: 30px; min-height: 30px; cursor: pointer;
@@ -2851,13 +2881,28 @@ h6.md-head { font-size: var(--fs-sm); }
 
 .hist { display: flex; flex-direction: column; gap: var(--sp-3); max-width: 96ch; }
 .hist-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); }
+/* Clipped rather than deleted, and only inside the panel: the head above this page
+   already says "Journal" and names the workspace, so a 19px "Scenario runs · relay"
+   under it is the same two facts in a bigger type size. The `h2` stays in the tree
+   because a reader navigating by heading would otherwise lose the page's name
+   entirely; `.hist-where` goes with it, being the other half of the same sentence. */
+.panel-page .hist-where,
+.panel-page .hist-title {
+  position: absolute; width: 1px; height: 1px; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
 .hist-title { font-size: var(--fs-lg); font-weight: var(--fw-medium); color: var(--fg); margin: 0; }
 /* Which workspace this is the history of. The selector above says it too, but a
    screen scoped to one workspace has to say so on its own face — this is the
    fourth place that rule applies and the first where the records outlive the
    thing they are scoped by. */
 .hist-where { font-size: var(--fs-sm); color: var(--fg-dim); }
-.hist-filters { display: flex; align-items: center; gap: var(--sp-2); margin-left: auto; }
+/* `flex-wrap` and no `margin-left: auto` inside the panel: two selects side by side
+   need about 380px, and this column is 280. Pushed right they overflowed it; wrapped
+   they stack, which is what a narrow column is for. */
+.hist-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); margin-left: auto; }
+.panel-page .hist-filters { margin-left: 0; }
+.panel-page .hist-filter { flex: 1 1 12rem; min-width: 0; }
 .hist-filter {
   font-family: var(--font-ui); font-size: var(--fs-sm); color: var(--fg);
   background: var(--bg-void); border: 1px solid var(--line); border-radius: var(--r-sm);

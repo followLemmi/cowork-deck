@@ -111,12 +111,13 @@ describe("applyPanel", () => {
     for (const page of PANEL_PAGES) expect(PANEL_TITLE[page]).toBeTruthy();
   });
 
-  /** Which pages may take the deck's width, stated once and read by both the key
-   *  and the button. A kanban and a diff need room; a list of names does not, and a
-   *  panel that took the deck's width for one would be the screens back again under
-   *  another name. */
-  it("lets only the kanban and the diff take the deck's width", () => {
-    expect(PANEL_PAGES.filter((p) => PANEL_WIDE[p])).toEqual(["board", "pr"]);
+  /** Which page takes the deck's width ON ARRIVAL — one, and it is the kanban,
+   *  whose columns all have to be on screen at once. The pull request page can take
+   *  it too but does not ask until a diff is opened in it: the list beside the diff
+   *  is four rows of text, and a panel that took the deck's width for those would be
+   *  the full-width screens back under another name. */
+  it("gives the deck's width to the kanban and to nothing else on arrival", () => {
+    expect(PANEL_PAGES.filter((p) => PANEL_WIDE[p])).toEqual(["board"]);
   });
 });
 

@@ -292,6 +292,11 @@ export function startApp(role: WindowRole): Promise<void> {
     onOpenDiff: (pr, fileIndex, path) => {
       diffDrawer.open(pr, fileIndex, path);
       prView.setOpenDiff(pr.number, fileIndex);
+      /* The diff is the thing on this page that needs room, so this is where the
+         panel asks for it — not on arrival. The list beside it is four rows of
+         text, and a panel that took the deck's width to show those would be the
+         full-width screens back under another name. */
+      setWide(true);
     },
   });
 
@@ -322,6 +327,9 @@ export function startApp(role: WindowRole): Promise<void> {
     onClosed: (pr, fileIndex) => {
       prView.setOpenDiff(null, null);
       prView.focusFile(pr.number, fileIndex);
+      // And gives it back with the diff, which is what makes the widening read as
+      // the diff's doing rather than the page's.
+      setWide(false);
     },
     // Resolved at call time and guarded the same way `onFetch` is, for the same
     // reason: this can be pressed moments before a workspace switch.
@@ -342,7 +350,7 @@ export function startApp(role: WindowRole): Promise<void> {
   // This used to *be* `prView.mount`, which is why that element is now `.pr-list`:
   // a drawer inside the mount would be destroyed on every poll — see above.
   const prEl = document.createElement("div");
-  prEl.className = "pr-view";
+  prEl.className = "pr-view panel-page";
   prEl.id = "pr";
   prEl.classList.add("hidden");
   prEl.append(prView.mount, diffDrawer.live);
@@ -397,7 +405,7 @@ export function startApp(role: WindowRole): Promise<void> {
   });
   const historyEl = document.createElement("div");
   historyEl.id = "history";
-  historyEl.classList.add("hidden");
+  historyEl.classList.add("panel-page", "hidden");
   historyEl.append(historyView.mount);
   prEl.after(historyEl);
 
@@ -568,7 +576,9 @@ export function startApp(role: WindowRole): Promise<void> {
     // page rather than being remembered per page: a panel that opens wide because
     // it was wide last time is a panel that took the deck's width for a list of
     // names.
-    wideBtn.hidden = !PANEL_WIDE[page];
+    /* The button is offered on the two pages that CAN use the width; only the
+       kanban takes it on arrival. */
+    wideBtn.hidden = !(page === "board" || page === "pr");
     setWide(PANEL_WIDE[page]);
     moveRailInk();
     if (page === "board") {
@@ -1811,10 +1821,15 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "new-terminal", title: "New terminal", run: () => { void terminals.newTerminal(); } },
       { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
       { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
-      { id: "scenarios", title: "Scenarios: focus the sidebar list", run: () => focusRegion("sidebar") },
-      { id: "board", title: "Open the task board", run: () => setPanel("board") },
-      { id: "prs", title: "Open pull requests", run: () => setPanel("pr") },
-      { id: "history", title: "Open the scenario run history", run: () => setPanel("history") },
+      /* One entry per page the rail can select, and the wording says what they are
+         now: pages of one panel rather than screens that replace the deck. The rail
+         has no digits of its own — ⌘1…⌘5 are "focus session N" in this app — so this
+         list is the only keyboard route to four of the five. */
+      { id: "sessions", title: "Panel: workspaces and sessions", run: () => setPanel("sessions") },
+      { id: "board", title: "Panel: the task board", run: () => setPanel("board") },
+      { id: "prs", title: "Panel: pull requests", run: () => setPanel("pr") },
+      { id: "history", title: "Panel: the journal", run: () => setPanel("history") },
+      { id: "scenarios", title: "Panel: scenarios", run: () => setPanel("scenarios") },
       { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
       { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
       // The two steps are direct commands because stepping is what a person wants
@@ -2032,9 +2047,11 @@ export function startApp(role: WindowRole): Promise<void> {
     "zoom": () => deck.toggleZoomActive(),
     "next-region": () => cycleRegion(1),
     "prev-region": () => cycleRegion(-1),
+    "sessions": () => setPanel("sessions"),
     "board": () => setPanel("board"),
     "prs": () => setPanel("pr"),
     "history": () => setPanel("history"),
+    "scenarios": () => setPanel("scenarios"),
     "new-task": () => { void captureTask(); },
     "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
   };
