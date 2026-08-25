@@ -1300,6 +1300,7 @@ export class Deck {
         this.deckEl.appendChild(t.el);
       }
       if (this.strip) { this.strip.remove(); this.strip = null; }
+      this.onZoom?.(false);
       // Last, so the panel is appended after the tiles it replaces have been moved —
       // and here rather than in each caller, because this is the one function every
       // path that changes what the deck holds already goes through.
@@ -1314,6 +1315,7 @@ export class Deck {
       this.strip = document.createElement("div");
       this.strip.className = "deck-strip";
     }
+    this.onZoom?.(true);
     const z = this.tiles.get(parts.zoomed)!;
     z.el.classList.add("zoomed");
     z.el.classList.remove("minimized");
@@ -1389,6 +1391,16 @@ export class Deck {
   }
 
   isZoomed(): boolean { return this.zoomedSession !== null; }
+
+  /** Told whenever the deck enters or leaves zoom.
+   *
+   *  For the panel beside it, which collapses to the rail while one session is
+   *  filling the stage: inside a session, the queue is not what a person is
+   *  looking at, and the tile's own tools want the width more. One listener
+   *  rather than a call at every site that can zoom — there are five, and a
+   *  behaviour wired at five call sites is a behaviour with four bugs in it. */
+  setZoomListener(fn: (zoomed: boolean) => void) { this.onZoom = fn; }
+  private onZoom: ((zoomed: boolean) => void) | null = null;
 
   /** Zoom the active tile and say whether that is what happened.
    *

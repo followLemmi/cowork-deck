@@ -468,6 +468,11 @@ html, body, #app { height: 100%; margin: 0; }
    At 58rem the deck still keeps about 700px, which is 80-odd columns for the
    zoomed tile, so the panel taking its room does not re-wrap a transcript. */
 #sidebar.is-wide { width: min(58rem, 62vw); }
+/* Collapsed to nothing, with the rail left standing: the panel goes and the way
+   back stays. `border-right-color` goes with the width, or a 1px line hangs in the
+   window with nothing on either side of it. The width is animated, which is what
+   makes the deck's growth read as the panel's doing. */
+#sidebar.is-collapsed { width: 0; border-right-color: transparent; }
 
 #panel-head {
   display: flex; align-items: center; gap: var(--sp-2);

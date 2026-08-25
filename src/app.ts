@@ -208,7 +208,13 @@ export function startApp(role: WindowRole): Promise<void> {
   const wideBtn = iconButton("columns", "Give the panel the deck's width");
   wideBtn.id = "panel-wide";
   wideBtn.onclick = () => setWide(!sidebar.classList.contains("is-wide"));
-  panelHead.append(panelTitles, wideBtn);
+  /* Collapsing leaves the rail, which is the point: the panel goes and the way
+     back stays. A control that hid its own way back would be a control nobody
+     presses twice. */
+  const shutBtn = iconButton("chevron", "Collapse the panel", "icon--left");
+  shutBtn.id = "panel-shut";
+  shutBtn.onclick = () => setCollapsed(!sidebar.classList.contains("is-collapsed"));
+  panelHead.append(panelTitles, wideBtn, shutBtn);
 
   /* --- The ledger ---------------------------------------------------------
      What replaced four tab labels: not where to go, but what wants me. Written
@@ -561,8 +567,24 @@ export function startApp(role: WindowRole): Promise<void> {
     }
   }
 
+  /** Collapse the panel to the rail, or bring it back.
+   *
+   *  `byHand` is what keeps the automatic version honest: zooming a session
+   *  collapses the panel, and leaving zoom brings it back — unless the person had
+   *  collapsed it themselves, in which case it was not the zoom's to restore. */
+  function setCollapsed(on: boolean, byHand = true) {
+    sidebar.classList.toggle("is-collapsed", on);
+    if (byHand) collapsedByHand = on;
+    shutBtn.setAttribute("aria-label", on ? "Show the panel" : "Collapse the panel");
+    shutBtn.title = shutBtn.getAttribute("aria-label")!;
+    shutBtn.classList.toggle("icon--left", !on);
+  }
+  let collapsedByHand = false;
+
   function setPanel(page: PanelPage) {
     currentPage = page;
+    // Choosing a page is asking to see it.
+    if (sidebar.classList.contains("is-collapsed")) setCollapsed(false);
     boardVisible = page === "board";
     applyPanel({
       pages: {
@@ -1759,6 +1781,13 @@ export function startApp(role: WindowRole): Promise<void> {
     btn.setAttribute("aria-label", name);
     btn.title = name;
   }
+  /* Zoom takes the panel's room, and gives it back. The tool panel inside a zoomed
+     tile is the thing that wants the width — and it has its own floor to keep, so
+     the fewer boxes competing for the same pixels the better. */
+  deck.setZoomListener((zoomed) => {
+    if (zoomed) setCollapsed(true, false);
+    else if (!collapsedByHand) setCollapsed(false, false);
+  });
   deck.setCounts(drawLedger);
   drawPanelScope();
   // The rail's first selection, which also writes the panel's title and puts the
@@ -1825,6 +1854,9 @@ export function startApp(role: WindowRole): Promise<void> {
          now: pages of one panel rather than screens that replace the deck. The rail
          has no digits of its own — ⌘1…⌘5 are "focus session N" in this app — so this
          list is the only keyboard route to four of the five. */
+      /* No ⌘B: in this app that is broadcast, which shipped first. The palette is
+         the keyboard route, as it is for the pages themselves. */
+      { id: "panel", title: "Panel: collapse or show", run: () => setCollapsed(!sidebar.classList.contains("is-collapsed")) },
       { id: "sessions", title: "Panel: workspaces and sessions", run: () => setPanel("sessions") },
       { id: "board", title: "Panel: the task board", run: () => setPanel("board") },
       { id: "prs", title: "Panel: pull requests", run: () => setPanel("pr") },
@@ -2047,6 +2079,7 @@ export function startApp(role: WindowRole): Promise<void> {
     "zoom": () => deck.toggleZoomActive(),
     "next-region": () => cycleRegion(1),
     "prev-region": () => cycleRegion(-1),
+    "panel": () => setCollapsed(!sidebar.classList.contains("is-collapsed")),
     "sessions": () => setPanel("sessions"),
     "board": () => setPanel("board"),
     "prs": () => setPanel("pr"),
