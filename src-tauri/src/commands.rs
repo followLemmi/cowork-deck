@@ -741,8 +741,10 @@ fn session_auth(
 /// that `start_session` — which stays synchronous because ordering with
 /// `write_session` is the feature — finds its environment already resolved
 /// instead of shelling out to `gh` and to the login shell while the window is
-/// frozen. Both halves are warmed: the account binding, and `claude`'s own
-/// discovery, which probes install directories and may run the login shell.
+/// frozen. Everything that can block is warmed here: the account binding,
+/// `claude`'s own discovery, which probes install directories and may run the
+/// login shell, and the login shell's PATH, which the session needs whatever
+/// that discovery found.
 ///
 /// Returns what the binding resolved to, so a caller that wants to show the
 /// account badge before the session exists can.
@@ -751,6 +753,11 @@ pub fn prepare_workspace(state: State<AppState>, workspace_id: String) -> Sessio
     // Warms `CLAUDE_CACHE`; the result is read again, from the cache, by the
     // launch itself.
     let _ = which_claude();
+    // And the session's PATH, which the launch now asks for on every route
+    // rather than only after a login-shell discovery — so without this the
+    // first launch pays up to five seconds for a login shell on a path
+    // somebody is watching.
+    let _ = which::login_path();
     let github = {
         let store = match state.store.lock() {
             Ok(s) => s,
@@ -1766,10 +1773,21 @@ pub fn start_session(
         session_auth(&state, workspace_id.as_deref(), ws.and_then(|w| w.github).as_ref());
     env.extend(outcome.env.clone());
 
-    // If discovery went through the login shell, hand the session that shell's
-    // PATH: a claude that is really an `env node` script dies instantly under
-    // the app's launchd-minimal environment otherwise.
-    if let Some(path_env) = resolved.path_env {
+    // Hand the session the login shell's PATH. Not only for a claude that is
+    // really an `env node` script — which dies instantly under the app's
+    // launchd-minimal environment — but for everything claude then spawns:
+    // stdio MCP servers (`npx ...`, `#!/usr/bin/env node` shims), hooks, the
+    // Bash tool. All of them resolve through PATH, and under launchd's
+    // `/usr/bin:/bin:/usr/sbin:/sbin` none of them is found (#332).
+    //
+    // The resolution's own PATH wins where there is one, so a claude found
+    // *through* the login shell keeps the exact environment it was validated
+    // under. `login_path` covers every other route, which is all the routes
+    // that captured nothing: a natively installed claude (a self-contained
+    // binary, so it passes `--version` under launchd's PATH and never reaches
+    // the login-shell stage) and `COWORK_CLAUDE_PATH`. That last one is a
+    // deliberate change — the override names a binary, not an environment.
+    if let Some(path_env) = resolved.path_env.or_else(which::login_path) {
         env.push(("PATH".to_string(), path_env));
     }
 
