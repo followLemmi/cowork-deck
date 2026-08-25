@@ -130,9 +130,15 @@ Four view tabs were not a structure but four states of one window, and the app a
 shipped the proof: a floating always-on-top pill counting blocked sessions exists because
 the window could not show the deck and anything else at the same time.
 
-`#stage` is a row of three now. The **rail** selects what the **panel** holds — workspaces
-and sessions, the board, pull requests, the journal, scenarios — and the deck never leaves
-the row. `#deck.tk-hidden` is gone from the stylesheet, which is the whole change in one
+`#stage` is a row of three now. The **rail** selects what the **panel** holds, and the deck
+never leaves the row. Three icons, not five: a board and a list of pull requests belong to
+one repository, and in a column beside the journal and the scenarios they read as the
+app's — so switching workspace silently changed what they were about, which is the tab
+bar's defect wearing a new shape. They are children of their workspace in the tree
+instead, indented with its sessions, and pressing either makes that workspace active on
+the way in. What stays in the rail is what is genuinely app-wide: the tree, the journal of
+every run, and the scenarios. At its foot, under a spacer, is Settings — which changes
+nothing about what the panel holds, and the gap is what says so. `#deck.tk-hidden` is gone from the stylesheet, which is the whole change in one
 line.
 
 The top bar carries a **crumb** beside the mark — which workspace this window is
@@ -219,6 +225,44 @@ columns by 3 rows. Above the floor the panel takes its room from the terminal; b
 it floats over the terminal instead. Floating costs some output being covered. Squeezing
 costs the transcript. `wouldSqueeze` in `src/tile-tools.ts` is the whole rule, and it
 measures from what the terminal is showing rather than from a font metric.
+
+### 8 · Every panel takes a width from the person using it
+
+Four of them: the panel, the panel once it has taken the deck's width, the tool panel
+inside a zoomed tile, and the terminal drawer's height. The first two are stored
+separately, because a column of names and a kanban do not want the same width and sizing
+one says nothing about the other; the tool panel's is one number for the app, since every
+session's tools are the same tool.
+
+The widths are custom properties rather than inline widths, and that is the decision:
+until somebody drags an edge the width belongs to the stylesheet, whose `clamp(17.5rem,
+19vw, 24rem)` tracks both the window and the text size. So the stored fields are
+`Option` — the one place in `UiState` where "never set" has to be distinguishable from a
+number.
+
+`src/resize.ts` is one handle written once: keys as well as a pointer, because a drag is
+the only gesture in this app with no keyboard equivalent unless one is written;
+`role="separator"` with `aria-valuenow`, because a focusable separator is a window
+splitter and the value is what tells a reader what the keys just did; and a commit
+separate from the write, because a save per frame is a file write per frame.
+
+### 9 · Settings says where things are, not only how to change them
+
+Two sections. The text size, with a live preview — a chooser that only takes effect on OK
+asks a person to imagine each option, which is what they opened it to stop doing. And
+**where things are kept**: the directory the app writes its own state in, every file it
+writes by name — including the ones not written yet, which say so — then the active
+workspace's folder, the account a push from it goes out as, and where its tasks come from.
+
+That second section is not a preference at all; it is an answer. Every fact in it was
+already true and none of it was visible: the paths were in nobody's documentation and the
+bindings only inside the form that changes them. Editing is handed to that form, because
+it owns those fields and a second editor for them is a second thing to keep in step.
+
+`config_paths` names the files rather than listing the directory, and that is the whole
+design: `read_dir` answers "what is there", and the question is "what does this app keep
+about me" — which includes the file that does not exist yet because nothing has been
+saved to it.
 
 ## What is not ported
 
