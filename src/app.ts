@@ -178,10 +178,15 @@ export function startApp(role: WindowRole): Promise<void> {
      five are already "focus session N", which shipped first and is the more
      frequent act. The palette carries every page instead. */
   const railEl = document.querySelector<HTMLElement>("#rail")!;
+  /* Three, not five. The board and the pull requests left this rail because they
+     are not the app's: each belongs to one repository, and a global switch that
+     silently changed what it was about every time the workspace changed was the
+     old tab bar's defect wearing a new shape. They are children of their workspace
+     in the tree now — see `WorkspacesPanel.render`. What stays here is what is
+     genuinely app-wide: the tree itself, the journal of every run, and the
+     scenarios, which belong to a workspace but are listed across all of them. */
   const RAIL: { page: PanelPage; icon: IconName }[] = [
     { page: "sessions", icon: "terminal" },
-    { page: "board", icon: "list" },
-    { page: "pr", icon: "git-merge" },
     { page: "history", icon: "clock" },
     { page: "scenarios", icon: "bolt" },
   ];
@@ -1804,6 +1809,10 @@ export function startApp(role: WindowRole): Promise<void> {
   workspaces.setTreeHooks({
     reselect: (id) => deck.toggleGroup(id),
     rendered: () => deck.repaintList(),
+    /* Activating on the way in is the whole point of these two living in the tree:
+       the page that opens is about the workspace whose row you pressed, and it says
+       so in the panel's head before it is asked. */
+    openPage: (id, page) => { workspaces.activate(id); setPanel(page); },
   });
 
   /** The top bar's readings, and the rail's dot, from the deck's own counts.

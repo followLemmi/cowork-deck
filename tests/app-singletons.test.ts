@@ -40,6 +40,10 @@ vi.mock("../src/ipc", async (orig) => ({
 
 vi.mock("../src/updater", () => ({ offerUpdateIfAvailable: vi.fn().mockResolvedValue(undefined) }));
 
+/** The tree hooks `startApp` hands the workspaces panel — the app's only route
+ *  to a workspace's own board and pull requests now that neither is in the rail. */
+let treeHooks: { openPage: (id: string, page: "board" | "pr") => void } | null = null;
+
 vi.mock("../src/workspaces", () => ({
   WorkspacesPanel: class {
     get active() { return WS; }
@@ -49,7 +53,10 @@ vi.mock("../src/workspaces", () => ({
     setSkillsSource = vi.fn();
     // The tree's half of the panel: the workspace row is this panel's and the
     // sessions under it are the deck's, so `startApp` hands each the other.
-    setTreeHooks = vi.fn();
+    /* Captured, because the board and the pull requests are opened through this
+       seam now: they left the rail for the tree, where each is a child of the
+       workspace it belongs to, so there is no app-wide button to click. */
+    setTreeHooks = vi.fn((h: never) => { treeHooks = h; });
     sessionHost = vi.fn().mockReturnValue(null);
     showWaiting = vi.fn();
     showExpanded = vi.fn();

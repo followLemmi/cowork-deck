@@ -93,12 +93,16 @@ describe("a workspace that is open in its own window", () => {
   });
 
   /** The workspace is still being worked on, just not here — so the open-task
-   *  badge is not blanked. */
+   *  badge is not blanked.
+   *
+   *  It is on the workspace's BOARD row rather than on the workspace's own: the
+   *  count is the board's, and beside the waiting count on the row above it was a
+   *  number next to a number with neither saying what it counted. */
   it("keeps its open-task count", async () => {
     const { mount, panel } = await panelWith(["b"]);
     panel.setCounts({ b: 3 });
-    const rows = mount.querySelectorAll(".ws-row");
-    expect(rows[1].querySelector(".ws-count")?.textContent).toBe("3");
+    const nav = mount.querySelector('.ws-nav[data-ws="b"]');
+    expect(nav?.querySelector(".ws-page-count")?.textContent).toBe("3");
   });
 
   /** It cannot also be this window's active workspace: the deck would filter to

@@ -1180,6 +1180,28 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 /* How many of this workspace's sessions are waiting, on the workspace's own row.
    Written by the deck between this panel's renders, so it is always in the DOM and
    empty rather than created when the answer stops being none. */
+/* The workspace's own pages, as rows under it. Indented to the same 14px its
+   sessions are, because they are the same kind of child: things that belong to this
+   repository and to no other. A row rather than a chip — it navigates, and every
+   other thing in this panel that navigates is a row. */
+.ws-nav { display: flex; flex-direction: column; padding-left: 14px; }
+.ws-nav[hidden] { display: none; }
+.ws-page {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; min-height: 26px; padding: 3px 6px; margin: 1px 0;
+  background: none; border: 0; border-radius: var(--r-sm);
+  color: var(--fg-mid); font: inherit; font-size: var(--fs-xs);
+  text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.ws-page:hover { background: var(--bg-hover); color: var(--fg); }
+.ws-page .icon { flex: none; color: var(--fg-dim); }
+.ws-page:hover .icon { color: var(--fg); }
+.ws-page-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The board's open count, on the board's own row. On the workspace's row it was a
+   number beside another number and neither said what it counted. */
+.ws-page-count { flex: none; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+
 /* Everything that trails the name, in one group that does not wrap: the row wraps
    so the account can have its own line, and without this the three buttons wrapped
    instead — a bin on a line of its own under the workspace it deletes. */
