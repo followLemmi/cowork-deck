@@ -742,15 +742,17 @@ html, body, #app { height: 100%; margin: 0; }
   display: grid; grid-template-rows: auto auto minmax(0, 1fr);
   grid-template-columns: minmax(0, 1fr);
   background: var(--bg-void);
-  transition: width var(--dur-2) var(--ease-out);
 }
 #wspanel[hidden] { display: none; }
 /* Wide is the DIFF's, not the page's. A list of pull requests is a list of names;
    what needs room is the patch, so the width is asked for when a diff opens and
    given back when it closes. A panel that opened wide because it was wide last
    time would be the full-width screens back under another name. */
+/* Not animated, and that is deliberate: behind this edge is a grid of terminals,
+   each with its own `ResizeObserver`, and animating the width makes every one of
+   them recompute for the length of the transition. `#sidebar` does not animate its
+   width either — one rule rather than two. */
 #wspanel.is-wide { width: var(--wsp-wide-w, min(64rem, 62vw)); }
-@media (prefers-reduced-motion: reduce) { #wspanel { transition: none; } }
 
 #wsp-head {
   display: flex; align-items: center; gap: var(--sp-2);
@@ -778,6 +780,7 @@ html, body, #app { height: 100%; margin: 0; }
 }
 .wsp-tab:hover { background: var(--bg-hover); color: var(--fg); }
 .wsp-tab[aria-selected="true"] { background: var(--sel); color: var(--fg); }
+.wsp-tab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .wsp-tab-count {
   color: var(--fg-dim); font-variant-numeric: tabular-nums; font-size: var(--fs-xs);
 }
@@ -956,6 +959,7 @@ html, body, #app { height: 100%; margin: 0; }
 /* At the width where the account already had to go, this goes with it: the row
    says which workspace is active with its rail and its tint either way. */
 .ws-scope:hover { background: var(--bg-hover-2); color: var(--fg); }
+.ws-scope:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 /* At the width where the account already had to go this stays, because it is a
    control now rather than a caption: hiding the only pointer route to the board
    would leave the palette and the keys as the only ones. It loses its words
