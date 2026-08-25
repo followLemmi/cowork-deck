@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 pub mod activation;
+pub mod adopt;
 pub mod git;
 pub mod machine;
 pub mod manifest;

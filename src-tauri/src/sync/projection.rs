@@ -87,6 +87,19 @@ pub struct WireWorkspace {
     /// folder. Both are relative to a path that is resolved locally.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tracker: Vec<WireTracker>,
+    /// The repository this workspace's folder is, as `owner/name`.
+    ///
+    /// The local store deliberately does not keep this — `TrackerProvider::GitHub`
+    /// carries no fields because `owner/name` comes from `gh` and "storing it
+    /// here would be a second source of truth" (`model.rs`). That reasoning
+    /// holds where there is a folder to ask about. On the wire there is not: a
+    /// machine that has never seen this project has nothing to resolve it from,
+    /// and without it two records for one project cannot be recognised as one.
+    ///
+    /// So it travels, and it stays absent from the local store. Derived on the
+    /// way out, discarded on the way in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     /// A folder-based board pointed somewhere only this machine knows about.
     ///
     /// The path itself cannot travel, so what travels is the fact that there was
@@ -109,7 +122,7 @@ pub enum WireTracker {
 /// path to a key on a machine that does not have it is worse than nothing: it
 /// makes `GIT_SSH_COMMAND` name a file that is not there. `previous_location`
 /// records where cards used to be *here*, which is meaningless anywhere else.
-pub fn project_workspace(ws: &Workspace) -> WireWorkspace {
+pub fn project_workspace(ws: &Workspace, repo: Option<&str>) -> WireWorkspace {
     // Exhaustive on purpose. A new field must not compile until it is decided.
     let Workspace { id, name, path: _this_machines_disk, color, github, tracker } = ws;
 
@@ -146,6 +159,7 @@ pub fn project_workspace(ws: &Workspace) -> WireWorkspace {
         name: name.clone(),
         color: color.clone(),
         github,
+        repo: repo.map(|r| r.to_string()),
         tracker: wire_tracker,
         tracker_needs_path: needs_path,
     }
@@ -357,7 +371,7 @@ mod tests {
 
     #[test]
     fn no_absolute_path_survives_the_projection() {
-        let json = serde_json::to_string(&project_workspace(&ws())).unwrap();
+        let json = serde_json::to_string(&project_workspace(&ws(), Some("followLemmi/cowork-deck"))).unwrap();
         for leak in [
             "/Users/someone/code/cowork-deck",
             "/Users/someone/.ssh/id_ed25519",
@@ -372,7 +386,7 @@ mod tests {
     #[test]
     fn a_workspace_round_trips_apart_from_what_is_local() {
         let original = ws();
-        let back = merge_workspace(&project_workspace(&original), Some(&original));
+        let back = merge_workspace(&project_workspace(&original, None), Some(&original));
         assert_eq!(back.id, original.id);
         assert_eq!(back.name, original.name);
         assert_eq!(back.color, original.color);
@@ -388,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_workspace_arriving_for_the_first_time_has_no_path() {
-        let arrived = merge_workspace(&project_workspace(&ws()), None);
+        let arrived = merge_workspace(&project_workspace(&ws(), Some("followLemmi/cowork-deck")), None);
         assert!(arrived.path.is_empty(), "there is no local path to invent");
         assert!(arrived.github.unwrap().ssh_key.is_none(), "nor a local key");
         assert!(arrived.tracker.unwrap().previous_location.is_none());
@@ -399,7 +413,7 @@ mod tests {
     #[test]
     fn a_pull_never_blanks_a_resolved_path() {
         let local = ws();
-        let mut wire = project_workspace(&local);
+        let mut wire = project_workspace(&local, None);
         wire.name = "renamed elsewhere".into();
         let merged = merge_workspace(&wire, Some(&local));
         assert_eq!(merged.name, "renamed elsewhere", "shared fields do arrive");
@@ -411,7 +425,7 @@ mod tests {
         let mut w = ws();
         w.tracker.as_mut().unwrap().providers =
             vec![TrackerProvider::Fs { root: TrackerRoot::Path { path: "/Users/someone/vault".into() } }];
-        let wire = project_workspace(&w);
+        let wire = project_workspace(&w, None);
         assert!(wire.tracker.is_empty(), "the path cannot travel");
         assert!(wire.tracker_needs_path, "but the fact that there was one must");
         assert!(!serde_json::to_string(&wire).unwrap().contains("/Users/"));
@@ -426,7 +440,7 @@ mod tests {
         w.tracker.as_mut().unwrap().providers = vec![TrackerProvider::Unknown(
             serde_json::json!({"type": "jira", "token": "s3cret", "root": "/Users/someone/x"}),
         )];
-        let json = serde_json::to_string(&project_workspace(&w)).unwrap();
+        let json = serde_json::to_string(&project_workspace(&w, None)).unwrap();
         assert!(!json.contains("s3cret"), "a secret in a provider we cannot read: {json}");
         assert!(!json.contains("jira"), "{json}");
     }
