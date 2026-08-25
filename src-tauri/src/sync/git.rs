@@ -82,6 +82,25 @@ fn credential_args() -> [String; 4] {
     ]
 }
 
+/// Whether `git` can be spawned at all, asked once.
+///
+/// Without this a missing git is indistinguishable from a hung one:
+/// `output_with_deadline` collapses a spawn failure into the same `None` a
+/// deadline produces, and "you appear to be offline" is the wrong thing to tell
+/// someone who needs to install git.
+fn git_present() -> bool {
+    static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PRESENT.get_or_init(|| {
+        std::process::Command::new("git")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
 fn run(
     repo: &Path,
     step: &'static str,
@@ -89,6 +108,9 @@ fn run(
     auth: &Auth,
     deadline: Duration,
 ) -> Result<String, GitError> {
+    if !git_present() {
+        return Err(GitError::NotFound);
+    }
     let mut cmd = std::process::Command::new("git");
     cmd.arg("-C").arg(repo);
     if auth.token.is_some() {
@@ -168,6 +190,9 @@ fn run_outside(
     auth: &Auth,
     deadline: Duration,
 ) -> Result<String, GitError> {
+    if !git_present() {
+        return Err(GitError::NotFound);
+    }
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(cwd);
     if auth.token.is_some() {
@@ -192,6 +217,10 @@ fn run_outside(
 }
 
 /// Clone into `dest`, which must not exist yet.
+///
+/// Used by the tests here, and by "clone it" when a pulled workspace has no
+/// folder on this machine — the offer #316's surface makes.
+#[allow(dead_code)]
 pub fn clone(url: &str, dest: &Path, auth: &Auth) -> Result<(), GitError> {
     let parent = dest.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(parent).map_err(|e| GitError::Failed {

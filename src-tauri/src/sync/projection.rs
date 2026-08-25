@@ -300,6 +300,7 @@ pub fn merge_skill(wire: &WireSkill, local: Option<&Skill>) -> Skill {
 /// Shards are read in id order and concatenated, not interleaved by timestamp:
 /// the journal's own folding already keys on run id, and two machines' clocks
 /// are not comparable closely enough to justify pretending otherwise.
+#[allow(dead_code)] // Read by the history screen once it shows every machine's runs, not only this one's.
 pub fn read_run_shards(root: &Path) -> Vec<String> {
     let dir = root.join("runs");
     let mut shards: Vec<PathBuf> = match std::fs::read_dir(&dir) {

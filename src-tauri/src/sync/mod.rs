@@ -7,7 +7,6 @@
 //! (#313) starts reading the manifest and the sync job (#317) starts asking
 //! which machine this is — a build that warns on every compile is a build whose
 //! warnings nobody reads.
-#![allow(dead_code)]
 
 pub mod activation;
 pub mod adopt;
@@ -16,3 +15,4 @@ pub mod job;
 pub mod machine;
 pub mod manifest;
 pub mod projection;
+pub mod publish;
