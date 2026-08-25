@@ -533,6 +533,14 @@ html, body, #app { height: 100%; margin: 0; }
    raised surfaces with air between them. Their own `display` is declared with an
    id, which is why the `hidden` beside it has to be as well — grouping it with the
    class rule above would leave `display: flex` winning and the page on screen. */
+/* A rule a person cannot see being obeyed, written where it applies. Not a
+   tooltip: a tooltip is for a thing you already suspect, and nobody suspects that
+   one row in a list means something other than the row above it. */
+.panel-hint {
+  margin: 0 var(--sp-1); color: var(--fg-dim);
+  font-size: var(--fs-xs); line-height: var(--lh-body);
+}
+
 #ws-page, #sk-page {
   display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3);
   overflow: auto;
@@ -689,6 +697,18 @@ html, body, #app { height: 100%; margin: 0; }
    inside a row — a `.sess-row.active .sess-group-badge` selector would never match
    anything. */
 .ws-row.active .ws-account { color: var(--fg-mid); }
+/* The chip that says what being the active workspace is FOR. `--sel` and not a
+   state hue: it is not a state, it is which of three panels' subject this is —
+   and hue in this app belongs to what a session is doing. */
+.ws-scope {
+  display: inline-flex; align-items: center; flex: none; margin-left: var(--sp-2);
+  padding: 1px 7px; border-radius: var(--r-pill);
+  background: var(--sel); color: var(--fg-mid);
+  font-size: var(--fs-xs); white-space: nowrap;
+}
+/* At the width where the account already had to go, this goes with it: the row
+   says which workspace is active with its rail and its tint either way. */
+@media (max-width: 1180px) { .ws-scope { display: none; } }
 
 /* --- The state rail -----------------------------------------------------
    The redesign's one flourish, and the thing that makes a dozen sessions readable
@@ -1536,7 +1556,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    No `max-width` any more: with the row to itself the login needs no cap, and
    the ellipsis stays as the fallback for one longer than a sidebar. */
 .ws-account {
-  flex-basis: 100%; padding-left: calc(var(--dot-size) + var(--sp-2));
+  /* `flex-basis: 100%` no longer, or the chip beside it starts a third line: the
+     account and the scope chip share the row's second line, and `flex-basis: auto`
+     with the wrap already in place is what puts them there together. */
+  flex-basis: auto; min-width: 0; padding-left: calc(var(--dot-size) + var(--sp-2));
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--fg-dim); font-size: var(--fs-xs);
 }

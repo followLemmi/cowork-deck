@@ -133,10 +133,22 @@ export function startApp(role: WindowRole): Promise<void> {
   const sessionsPage = document.createElement("div");
   sessionsPage.id = "ws-page";
   sessionsPage.className = "panel-page";
-  /* The tree, and under it the one line the tree does not carry: the bill. There
-     was a full-width primary "+ session" button between them, and it is gone —
-     creation is a row inside the workspace it creates in. See `Deck.setTree`. */
-  sessionsPage.append(wsMount, listMount);
+  /* A row in this tree does two things depending on which row it is, and that is
+     the one thing about it a person cannot see: pressing a workspace makes it the
+     subject of three of the panel's pages, and pressing the create row inside it
+     starts a session THERE. Both are deliberate and neither is guessable, so the
+     rule is written under the tree once rather than discovered by being wrong. */
+  const treeHint = document.createElement("p");
+  treeHint.className = "panel-hint";
+  treeHint.textContent =
+    "Pressing a workspace makes it the one the queue, pull requests and journal show. "
+    + "It does not decide where a new session goes — the row you press does.";
+
+  /* The tree, the rule under it, and the one line the tree does not carry: the
+     bill. There was a full-width primary "+ session" button in here, and it is
+     gone — creation is a row inside the workspace it creates in. See
+     `Deck.setTree`. */
+  sessionsPage.append(wsMount, treeHint, listMount);
   const scenariosPage = document.createElement("div");
   scenariosPage.id = "sk-page";
   scenariosPage.className = "panel-page hidden";

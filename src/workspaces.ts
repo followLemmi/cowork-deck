@@ -365,6 +365,22 @@ export class WorkspacesPanel {
         acc.title = `GitHub: ${w.github.login}`;
         row.append(acc);
       }
+      /* What "active" actually MEANS, written out on the one row it is true of.
+         The tint and the accent rail say "this one" and not what follows from it:
+         three of the panel's five pages — the queue, the pull requests, the
+         journal — live inside one repository, so one of them has to be chosen, and
+         this says which choice is in force. It is deliberately NOT on the other
+         rows: three of them claiming it would be three claims where there is one
+         fact.
+         On the second line, beside the account, because the first line is already
+         a name, two counts and three controls in a 280px column. */
+      if (isActive) {
+        const scope = document.createElement("span");
+        scope.className = "ws-scope";
+        scope.textContent = "queue · PRs · journal";
+        scope.title = "The queue, the pull requests and the journal are showing this workspace";
+        row.append(scope);
+      }
       this.mount.appendChild(row);
       /* The workspace's sessions go here, and the deck is what fills them: one
          tree, one row per workspace, its sessions as its children. See
