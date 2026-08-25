@@ -13,7 +13,8 @@
     "tauri": "tauri",
     "stage:reporter": "bash scripts/stage-reporter.sh",
     "stage:task": "bash scripts/stage-sidecar.sh cowork_task",
-    "stage:memory": "bash scripts/stage-memory.sh"
+    "stage:memory": "bash scripts/stage-memory.sh",
+    "sync:preview": "bash scripts/sync-preview.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

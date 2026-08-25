@@ -447,6 +447,42 @@ keyring can make that slow — account tokens are held in memory while the app
 runs, keyed by host and login, and dropped whenever a workspace's binding
 changes. They are never written to disk or into a log.
 
+## Memory sync
+
+Your workspaces, scenarios and the memory of past sessions can live in a private GitHub
+repository of your own, so a second machine has them without anyone copying files by
+hand. It is off until you switch it on, from **Memory sync…** in the command palette.
+
+Switching it on needs `gh` and a connected account. The dialog offers two things and
+both matter: create a new private repository, or connect one you already have — the
+second is what every machine after the first one does.
+
+**What travels.** Workspaces, their GitHub bindings, scenarios, the memory corpus
+(session summaries, project facts and the global diaries), and the scenario run journal,
+kept in a separate file per machine so two of them never collide.
+
+**What does not.** Session layout, window state, terminal drawers and connected
+accounts — including the credential fallback file used on hosts with no keyring. The
+repository is defined by an allowlist: anything in the config directory that is not on
+it stays untracked by default, and a test asserts that the tracked set equals the list
+exactly.
+
+Absolute paths never travel either. A workspace arriving from another machine has no
+folder here until you point it at one, which the deck asks the first time you open it —
+it is usable as a record in the meantime, and its memory is searchable, but it cannot
+start a session. A scenario's schedule arrives switched off, so a job that fires at
+03:00 does not start firing at 03:00 on both machines.
+
+**Conflicts are not resolved for you.** If two machines change the same lines, sync
+stops and names the files. Notes are prose, and an automatic merge produces a plausible
+paragraph nobody wrote. The dialog shows how long ago it last sent, which is the number
+worth glancing at: a sync broken for three weeks looks exactly like a working one until
+a disk dies.
+
+The repository is private, and worth keeping that way: it holds your session summaries
+and project facts. See [ADR-0006](docs/adr/0006-the-config-directory-is-the-sync-repository.md)
+for why the config directory *is* the repository, and how the boundary is enforced.
+
 ## Graceful degradation
 
 State tracking (the `working`/`done`/`needs input`/`exited`/`error` labels and notifications) depends on Claude

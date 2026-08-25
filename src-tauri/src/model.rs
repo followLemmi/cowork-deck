@@ -494,6 +494,17 @@ pub struct UiState {
     /// on disk predates it.
     #[serde(rename = "prDiffCols", default = "default_pr_diff_cols")]
     pub pr_diff_cols: u32,
+    /// Whether the offer to switch memory sync on has been waved away.
+    ///
+    /// Local by nature, and this is the file for it: `ui_state.json` is not on
+    /// the sync allowlist, so the answer stays with the machine that gave it. A
+    /// person who declines on the laptop has said nothing about the desktop.
+    ///
+    /// `#[serde(default)]` for the reason spelled out above `ui_scale` — every
+    /// `ui_state.json` on disk predates this field, and a missing key on a
+    /// non-`Option` fails the whole parse.
+    #[serde(rename = "syncOfferDismissed", default)]
+    pub sync_offer_dismissed: bool,
     /// Whether scenario runs are journalled at all. **Default on.**
     ///
     /// Off means: write nothing new, delete nothing already written. Reads keep
@@ -557,6 +568,7 @@ impl Default for UiState {
             active_workspace_id: None,
             ui_scale: default_ui_scale(),
             pr_diff_cols: default_pr_diff_cols(),
+            sync_offer_dismissed: false,
             record_scenario_runs: default_record_runs(),
             terminal_rows: default_terminal_rows(),
         }
@@ -581,6 +593,8 @@ pub struct UiStatePatch {
     pub ui_scale: Option<f32>,
     #[serde(rename = "prDiffCols")]
     pub pr_diff_cols: Option<u32>,
+    #[serde(rename = "syncOfferDismissed")]
+    pub sync_offer_dismissed: Option<bool>,
     #[serde(rename = "recordScenarioRuns")]
     pub record_scenario_runs: Option<bool>,
     #[serde(rename = "terminalRows")]

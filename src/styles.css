@@ -2807,3 +2807,32 @@ h6.md-head { font-size: var(--fs-sm); }
 .term-bodies { flex: 1; min-height: 0; position: relative; background: var(--bg-terminal); }
 .term-body { position: absolute; inset: 0; padding: 4px var(--sp-2); }
 .term-body.hidden { display: none; }
+
+/* Memory sync dialog.
+   Borrows the modal's own type and spacing; only the arrangement is new. */
+.sync-body { display: flex; flex-direction: column; gap: 12px; }
+.sync-row { display: flex; gap: 8px; flex-wrap: wrap; }
+/* The age of the last push, given its own line rather than folded into the
+   paragraph above: it is the one number that says whether sync is working, and
+   a sync broken for three weeks reads exactly like a working one until someone
+   goes looking. */
+.sync-when { margin: 0; font-variant-numeric: tabular-nums; opacity: 0.85; }
+.sync-status { margin: 0; min-height: 1.2em; opacity: 0.85; }
+.sync-fault {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--danger, #b3261e);
+  background: color-mix(in srgb, var(--danger, #b3261e) 8%, transparent);
+}
+.sync-fault-text { margin: 0; }
+
+/* The one unprompted mention of memory sync. Sits above the deck rather than
+   over it: it must not cover a tile, and it must be possible to ignore. */
+.sync-offer {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 8px 12px 0; padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--border, #3c4043);
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+}
+.sync-offer-text { margin: 0; flex: 1 1 320px; }
+.sync-offer-actions { display: flex; gap: 8px; }

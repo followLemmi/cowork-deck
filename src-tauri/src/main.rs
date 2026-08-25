@@ -2,6 +2,8 @@
 
 mod model;
 mod store;
+mod sync;
+mod sync_cmd;
 mod gh;
 mod gh_pr;
 mod hooks;
@@ -172,6 +174,12 @@ fn main() {
                 scheduler::run(sched_handle, dir, scheduler_ready).await;
             });
 
+            // Memory and configuration sync, if it has been switched on. A
+            // detached thread and never awaited: the window opens and sessions
+            // restore whether or not the network answers, which is the same rule
+            // #35 set for memory generally — it stays off the launch path.
+            sync_cmd::spawn(handle.clone());
+
             // Floating "N waiting" status pill: a second, hidden-by-default
             // window shown/hidden via the `pill://count` event (see src/pill.ts).
             // Transparent + always-on-top confirmed working on macOS with
@@ -299,6 +307,16 @@ fn main() {
             commands::list_runs,
             commands::delete_skill_history,
             commands::reveal_path,
+            sync_cmd::sync_summary,
+            sync_cmd::sync_preflight,
+            sync_cmd::sync_probe,
+            sync_cmd::sync_create,
+            sync_cmd::sync_connect,
+            sync_cmd::sync_disconnect,
+            sync_cmd::sync_now,
+            sync_cmd::sync_questions,
+            sync_cmd::sync_blocked_kinds,
+            sync_cmd::sync_fault,
             commands::start_command_session,
             commands::gh_status,
             commands::pr_list,

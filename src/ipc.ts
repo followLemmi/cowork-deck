@@ -68,6 +68,10 @@ export interface UiState {
    *  is for. Required for the same reason as `uiScale`: Rust fills it from a
    *  `serde` default, so an optional here would guard a case that cannot happen. */
   prDiffCols: number;
+  /** Whether the offer to switch memory sync on has been waved away. Local to
+   *  this machine — `ui_state.json` is not on the sync allowlist, so declining
+   *  on the laptop says nothing about the desktop. */
+  syncOfferDismissed: boolean;
   /** Whether scenario runs are journalled. Default on; off writes nothing new
    *  and deletes nothing already written, and reads keep working. Required for
    *  the same reason as the two above: Rust fills it from a `serde` default. */
@@ -92,6 +96,7 @@ export interface UiStatePatch {
   activeWorkspaceId?: string;
   uiScale?: number;
   prDiffCols?: number;
+  syncOfferDismissed?: boolean;
   recordScenarioRuns?: boolean;
   terminalRows?: number;
 }
@@ -128,6 +133,65 @@ export interface HostPlatform {
 }
 
 export const ghStatus = () => invoke<GhStatus>("gh_status");
+
+// ---------------------------------------------------------------- sync
+
+/** Why sync cannot be switched on yet. Two of the three reasons
+ *  `ghUnavailable` already words — the third, `no-repo`, is about a
+ *  workspace's own folder and does not apply here. */
+export type SyncBlocked = "no-gh" | "no-account";
+export interface SyncPreflight {
+  blocked: SyncBlocked | null;
+  accounts: GhAccount[];
+  /** The account listing itself failed. Not the same as having none. */
+  error: string | null;
+}
+export type SyncRepoState =
+  | { kind: "empty" }
+  | { kind: "ours"; format: number }
+  | { kind: "ours-newer"; format: number }
+  | { kind: "foreign" }
+  | { kind: "missing" }
+  | { kind: "unknown"; why: string };
+export type SyncFault =
+  | { kind: "offline"; since: number }
+  | { kind: "conflict"; files: string[] }
+  | { kind: "push-rejected"; message: string }
+  | { kind: "auth-gone"; message: string }
+  | { kind: "format-newer"; found: number; supported: number };
+export interface SyncState {
+  lastPull: number | null;
+  lastPush: number | null;
+  fault: SyncFault | null;
+}
+export interface SyncMachine { id: string; label: string; }
+export interface SyncSummary {
+  on: boolean;
+  remote: string | null;
+  state: SyncState;
+  machine: SyncMachine;
+}
+export type SyncQuestion =
+  | { kind: "needs-path"; workspaceId: string; name: string; cloneFrom: string | null }
+  | { kind: "duplicate"; arrivingId: string; localId: string; name: string }
+  | { kind: "needs-board-path"; workspaceId: string; name: string };
+
+export const syncSummary = () => invoke<SyncSummary>("sync_summary");
+export const syncPreflight = () => invoke<SyncPreflight>("sync_preflight");
+export const syncProbe = (host: string, login: string, repo: string) =>
+  invoke<SyncRepoState>("sync_probe", { host, login, repo });
+export const syncCreate = (host: string, login: string, name: string) =>
+  invoke<string>("sync_create", { host, login, name });
+export const syncConnect = (host: string, login: string, repo: string, url: string) =>
+  invoke<void>("sync_connect", { host, login, repo, url });
+export const syncDisconnect = () => invoke<void>("sync_disconnect");
+export const syncNow = () => invoke<SyncState>("sync_now");
+export const syncQuestions = () => invoke<SyncQuestion[]>("sync_questions");
+
+/** The loop pushes state after every cycle, so a panel left open does not have
+ *  to poll to stay honest. */
+export const onSyncState = (fn: (s: SyncState) => void): Promise<UnlistenFn> =>
+  listen<SyncState>("sync://state", (e) => fn(e.payload));
 export const hostPlatform = () => invoke<HostPlatform>("host_platform");
 
 /** Four distinct check states. `none` is not `passed`: nothing has built this.
