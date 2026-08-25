@@ -41,6 +41,8 @@ vi.mock("../src/workspaces", () => ({
     setTreeHooks = vi.fn();
     sessionHost = vi.fn().mockReturnValue(null);
     showWaiting = vi.fn();
+    showExpanded = vi.fn();
+    focusActive = vi.fn();
     activate = vi.fn().mockReturnValue(true);
   },
 }));

@@ -653,3 +653,49 @@ describe("Deck.launchOnWorktree", () => {
     expect(deck.hasSessionIn("/p-pr/8-other")).toBe(false);
   });
 });
+
+/** The tools inside a tile belong to a session that has the stage — and until now
+ *  the only way to have it was to zoom, which `zoomTo` refuses when there is
+ *  nothing to zoom past. So the one case where a person is unambiguously inside a
+ *  single session was the case with no Files, no Changes and no Source. */
+describe("a session alone in the deck has the stage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.innerHTML = "";
+    startMock.mockResolvedValue(undefined);
+  });
+
+  async function deckWith(n: number) {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS as never]);
+    for (let i = 0; i < n; i++) await deck.launch(WS as never, null);
+    return { deck, deckEl };
+  }
+
+  it("marks the only tile, so its tools show without a zoom", async () => {
+    const { deckEl } = await deckWith(1);
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+    expect(deckEl.querySelector(".tile")!.classList.contains("solo")).toBe(true);
+    // And the rail is in the DOM to be shown — the stylesheet is what reveals it.
+    expect(deckEl.querySelector(".tile .tile-tools")).not.toBeNull();
+  });
+
+  it("takes the mark away as soon as there is a second session", async () => {
+    const { deckEl } = await deckWith(2);
+    const tiles = [...deckEl.querySelectorAll(".tile")];
+    expect(tiles.length).toBe(2);
+    expect(tiles.some((t) => t.classList.contains("solo"))).toBe(false);
+  });
+
+  /** Zoom is the other way to have the stage, and the two must not both claim it:
+   *  `.solo` is for a deck that has NOT been zoomed. */
+  it("does not mark a zoomed tile solo as well", async () => {
+    const { deck, deckEl } = await deckWith(2);
+    const first = deckEl.querySelector(".tile")!;
+    deck.zoomTo(deck.liveSessions()[0]);
+    expect(first.classList.contains("zoomed")).toBe(true);
+    expect(first.classList.contains("solo")).toBe(false);
+  });
+});

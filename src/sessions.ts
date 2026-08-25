@@ -284,7 +284,31 @@ export class Deck {
   /** The deck with nothing on it. "Nothing" means nothing VISIBLE: tiles belonging to
    *  another workspace stay in the DOM behind `ws-hidden`, so counting the map would
    *  call a deck full while the screen is blank. */
+  /** Which tile, if any, has the stage to itself — and therefore the tools that
+   *  belong to a session filling it.
+   *
+   *  One visible tile already HAS the stage. The condition for the tools was "the
+   *  deck is zoomed", and `zoomTo` refuses when there is nothing to zoom past — so
+   *  the one case where a person is unambiguously inside a single session was the
+   *  case with no Files, no Changes and no Source. How a session came to fill the
+   *  stage is not the question the tools answer.
+   *
+   *  Called from `renderEmpty` because that is the one function every path that
+   *  changes what the deck holds already goes through: a launch, a close, a
+   *  workspace switch, a tile arriving from another window. Marking it in
+   *  `applyLayout` instead covered three of those and missed the launch. */
+  private markStage() {
+    const visible = [...this.tiles.values()].filter((t) => !t.el.classList.contains("ws-hidden"));
+    const alone = visible.length === 1 && this.zoomedSession === null ? visible[0] : null;
+    for (const t of this.tiles.values()) {
+      const solo = t === alone;
+      t.el.classList.toggle("solo", solo);
+      t.tools.setZoomed(solo || t.el.classList.contains("zoomed"));
+    }
+  }
+
   private renderEmpty() {
+    this.markStage();
     const visible = [...this.tiles.values()]
       .some((t) => !t.el.classList.contains("ws-hidden"));
     if (visible) {
@@ -1296,7 +1320,6 @@ export class Deck {
       this.deckEl.classList.remove("is-zoomed");
       for (const t of this.tiles.values()) {
         t.el.classList.remove("minimized", "zoomed");
-        t.tools.setZoomed(false);
         this.deckEl.appendChild(t.el);
       }
       if (this.strip) { this.strip.remove(); this.strip = null; }
@@ -1318,14 +1341,14 @@ export class Deck {
     this.onZoom?.(true);
     const z = this.tiles.get(parts.zoomed)!;
     z.el.classList.add("zoomed");
-    z.el.classList.remove("minimized");
+    z.el.classList.remove("minimized", "solo");
     z.tools.setZoomed(true);
     this.deckEl.appendChild(z.el);
     this.deckEl.appendChild(this.strip);
     for (const s of parts.minimized) {
       const t = this.tiles.get(s)!;
       t.el.classList.add("minimized");
-      t.el.classList.remove("zoomed");
+      t.el.classList.remove("zoomed", "solo");
       t.tools.setZoomed(false);
       this.strip.appendChild(t.el);
     }
@@ -1659,7 +1682,10 @@ export class Deck {
          workspace row that carries the badge, and that row is repainted on its own
          schedule, so it has to be told rather than asked. */
       const host = g.workspace ? this.tree?.host(g.workspace.id) ?? null : null;
-      if (g.workspace) this.tree?.waiting(g.workspace.id, groupWaiting);
+      if (g.workspace) {
+        this.tree?.waiting(g.workspace.id, groupWaiting);
+        this.tree?.expanded(g.workspace.id, !collapsed);
+      }
       let into: HTMLElement = this.listEl;
       if (host) {
         host.replaceChildren();
@@ -1764,8 +1790,10 @@ export class Deck {
       for (const w of this.workspaces()) {
         const host = this.tree.host(w.id);
         if (!host || host.childElementCount > 0) continue;
-        host.hidden = false;
-        host.appendChild(this.createRow(w.id, w.name));
+        const folded = this.collapsed.has(w.id);
+        host.hidden = folded;
+        this.tree.expanded(w.id, !folded);
+        if (!folded) host.appendChild(this.createRow(w.id, w.name));
       }
     }
     if (focusKey) {
@@ -1815,6 +1843,9 @@ export interface DeckTree {
   /** How many of this workspace's sessions are waiting, including the ones in
    *  another window: the badge answers for the workspace, not for the window. */
   waiting(workspaceId: string, n: number): void;
+  /** Whether this workspace's sessions are showing. The deck owns the folding, so
+   *  the row above them cannot know it without being told. */
+  expanded(workspaceId: string, on: boolean): void;
   /** Create a session in this workspace, from the row that names it. */
   newSession(workspaceId: string): void;
 }

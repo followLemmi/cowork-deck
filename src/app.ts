@@ -242,6 +242,39 @@ export function startApp(role: WindowRole): Promise<void> {
     markEl.append(glyph, text);
   }
 
+  /* --- The crumb ---------------------------------------------------------
+     Which workspace this window is on, and which account a push from it goes out
+     as. The panel's head says the same while the panel is open — and that is
+     exactly the reason this exists: the panel CLOSES. Zoom collapses it, which is
+     the state a person spends most of their time in, and in that state nothing
+     else on screen named the folder a session is running in or the account it
+     pushes as. It was answerable before only by leaving the session.
+
+     Pressing it goes to the tree rather than opening a menu of its own: switching
+     workspace is what the tree is for, and it is the one that can also say what
+     is running in each. A second switcher would be two ways to do one thing, and
+     the one in a dropdown would be the one that cannot answer "which of these is
+     busy".
+
+     Built here rather than in the four pages that mount the app: it has no
+     content of its own until a workspace is active, and four copies of an empty
+     button are four more things to keep in step. */
+  const crumbEl = document.createElement("button");
+  crumbEl.id = "crumb";
+  crumbEl.className = "crumb";
+  crumbEl.onclick = () => { setPanel("sessions"); workspaces.focusActive(); };
+  const crumbDot = document.createElement("span");
+  crumbDot.className = "dot";
+  const crumbName = document.createElement("span");
+  crumbName.className = "crumb-name";
+  const crumbSep = document.createElement("span");
+  crumbSep.className = "crumb-sep";
+  crumbSep.textContent = "/";
+  const crumbLogin = document.createElement("span");
+  crumbLogin.className = "crumb-login";
+  crumbEl.append(crumbDot, crumbName, crumbSep, crumbLogin);
+  markEl?.after(crumbEl);
+
   const actionsEl = document.querySelector<HTMLElement>("#topbar-actions");
   if (actionsEl) {
     // Both already exist as commands; these are the same actions with a place to be
@@ -683,6 +716,32 @@ export function startApp(role: WindowRole): Promise<void> {
     const account = ws.github?.login ? `as ${ws.github.login}` : "no account bound";
     panelScope.textContent = `${ws.name} · ${ws.path} · ${account}`;
     panelScope.title = panelScope.textContent;
+    drawCrumb();
+  }
+
+  /** The same two facts in the top bar, where they survive the panel closing.
+   *
+   *  The workspace's own colour rather than its state: state is the ledger's
+   *  subject two inches to the right, and the colour is what identifies this
+   *  workspace everywhere else in the app — the dot on its row, the dot on its
+   *  sessions' groups. A second state reading here would be a fifth hue on a bar
+   *  that already carries two. */
+  function drawCrumb(): void {
+    const ws = workspaces.active;
+    crumbEl.hidden = !ws;
+    if (!ws) return;
+    crumbDot.style.background = ws.color;
+    crumbName.textContent = ws.name;
+    const login = ws.github?.login ?? null;
+    crumbLogin.textContent = login ?? "no account";
+    crumbLogin.classList.toggle("crumb-login--none", login === null);
+    crumbEl.setAttribute(
+      "aria-label",
+      login
+        ? `Workspace ${ws.name}, pushing as ${login} — go to the tree`
+        : `Workspace ${ws.name}, no account bound — go to the tree`,
+    );
+    crumbEl.title = `${ws.path}${login ? ` · as ${login}` : " · no account bound"}`;
   }
 
   /** How the drawer was left last time, read once with the rest of the stored ui
@@ -1726,6 +1785,7 @@ export function startApp(role: WindowRole): Promise<void> {
   deck.setTree({
     host: (id) => workspaces.sessionHost(id),
     waiting: (id, n) => workspaces.showWaiting(id, n),
+    expanded: (id, on) => workspaces.showExpanded(id, on),
     newSession: (id) => { void newSessionIn(id); },
   });
   workspaces.setTreeHooks({

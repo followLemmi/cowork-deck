@@ -1,7 +1,7 @@
 import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiState, type Workspace, type UiState, type Skill } from "./ipc";
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
-import { iconButton, type IconName } from "./icons";
+import { icon, iconButton, type IconName } from "./icons";
 
 /** Confirmation text for deleting a workspace. Deleting one strands every
  *  scenario pinned to it — they stop being runnable, and any schedule on them
@@ -47,9 +47,30 @@ export class WorkspacesPanel {
     this.render();
   }
 
+  /** Put keyboard focus on the active workspace's row. What the top bar's crumb
+   *  presses: it names the workspace and takes you to the one row that can do
+   *  anything about it. */
+  focusActive() {
+    this.mount.querySelector<HTMLElement>(".ws-row.active .ws-label")?.focus();
+  }
+
   /** The container this panel left under a workspace's row. */
   sessionHost(workspaceId: string): HTMLElement | null {
     return this.mount.querySelector<HTMLElement>(`.ws-kids[data-ws="${workspaceId}"]`);
+  }
+
+  /** Whether this workspace's sessions are showing, written into the row without
+   *  re-rendering it — the deck owns which groups are folded, and it folds them on
+   *  its own beat.
+   *
+   *  The row could be folded and unfolded from the day the tree arrived, and
+   *  nothing said so: the gesture was there and the affordance was not, which is
+   *  the same as not having it. A chevron, in the position every other disclosure
+   *  in this app puts one, rotated by the state it reports. */
+  showExpanded(workspaceId: string, on: boolean) {
+    const row = this.mount.querySelector<HTMLElement>(`.ws-row[data-ws="${workspaceId}"]`);
+    row?.querySelector(".ws-label")?.setAttribute("aria-expanded", String(on));
+    row?.classList.toggle("is-open", on);
   }
 
   /** The deck's count, written into the row without re-rendering it. */
@@ -234,6 +255,16 @@ export class WorkspacesPanel {
       // somewhere else.
       const isActive = w.id === this.activeId && !isDetached;
       row.className = "ws-row" + (isActive ? " active" : "") + (isDetached ? " detached" : "");
+      row.dataset.ws = w.id;
+      /* The disclosure, first in the row, where every other one in this app is.
+         Not a control of its own: pressing anywhere in the row is what folds or
+         activates it — two targets inside one row is how a tree gets something to
+         miss — so this is an indicator and is `aria-hidden`, with the state itself
+         on the button in `aria-expanded`. */
+      const caret = document.createElement("span");
+      caret.className = "ws-caret";
+      caret.setAttribute("aria-hidden", "true");
+      caret.append(icon("chevron", 12));
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = w.color;
       const label = document.createElement("button");
@@ -295,14 +326,21 @@ export class WorkspacesPanel {
         ? iconButton(this.moveAction.icon, this.moveAction.label(w.name), "ws-detach")
         : null;
       if (move) move.onclick = () => this.moveAction!.run(w);
-      row.append(dot, label);
+      row.append(caret, dot, label);
+      /* One group for everything that trails the name, and it does not wrap. The
+         row wraps — that is how the account gets its own line — and with the
+         caret added the three buttons started wrapping instead, leaving a lone
+         bin under the name. Grouped, the NAME is what gives up width, which it
+         can: it truncates and keeps its tooltip. */
+      const acts = document.createElement("span");
+      acts.className = "ws-acts";
       const n = this.counts.get(w.id) ?? 0;
       if (n > 0) {
         const count = document.createElement("span");
         count.className = "ws-count";
         count.textContent = String(n);
         count.title = openTaskCountLabel(n);
-        row.append(count);
+        acts.append(count);
       }
       /* How many of this workspace's sessions are waiting for a decision. Always
          present, empty when the answer is none: the deck writes into it on its own
@@ -312,9 +350,10 @@ export class WorkspacesPanel {
       waiting.className = "ws-waiting";
       waiting.hidden = true;
       this.waitingSlots.set(w.id, waiting);
-      row.append(waiting);
-      if (move) row.append(move);
-      row.append(edit, x);
+      acts.append(waiting);
+      if (move) acts.append(move);
+      acts.append(edit, x);
+      row.append(acts);
       // Appended last because `.ws-account` now wraps onto the row's second
       // line, and the DOM order is what a screen reader follows: `order: 1`
       // would put it last visually while it still read between the name and

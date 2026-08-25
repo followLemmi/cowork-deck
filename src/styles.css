@@ -373,6 +373,34 @@ html, body, #app { height: 100%; margin: 0; }
   .topbar { gap: var(--sp-3); }
 }
 
+/* --- The crumb -----------------------------------------------------------
+   Which workspace this window is on, and which account a push from it goes out
+   as. It is in the bar rather than only in the panel's head because the panel
+   closes — zoom closes it — and in that state nothing else on screen named either
+   fact.
+   `--fg-mid` at rest and `--fg` on hover: it is a control, but it is a control
+   whose job is mostly to be READ, and the bar already has two coloured readings
+   competing for the same eye. */
+#crumb {
+  display: inline-flex; align-items: center; gap: 7px; flex: none; min-width: 0;
+  padding: 4px var(--sp-2); border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--fg-mid);
+  font: inherit; font-size: var(--fs-sm); white-space: nowrap; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+#crumb:hover { background: var(--bg-hover); color: var(--fg); }
+#crumb:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+#crumb[hidden] { display: none; }
+.crumb-sep { color: var(--fg-dim); }
+/* Mono, because it is an identifier — the same reason a branch name is mono two
+   panels away. */
+.crumb-login { color: var(--fg-dim); font-family: var(--font-mono); font-size: var(--fs-xs); }
+/* "no account" is not an account name, so it does not get the typeface of one. */
+.crumb-login--none { font-family: var(--font-ui); font-style: italic; }
+/* The account goes before the workspace does: the name is which project this is,
+   and at 1100px the bar has the ledger and three controls to fit as well. */
+@media (max-width: 1100px) { .crumb-sep, .crumb-login { display: none; } }
+
 /* --- The ledger ----------------------------------------------------------
    What replaced four tab labels, and it answers a different question. The tabs
    said which of four states the window was in; this says what wants a person, and
@@ -691,12 +719,20 @@ html, body, #app { height: 100%; margin: 0; }
 /* The whole row switches workspace, so the whole row says so. `.ws-label` keeps
    its own pointer for the same reason a link inside a clickable card does. */
 .ws-row { flex-wrap: wrap; row-gap: 2px; cursor: pointer; }
+/* The disclosure this row never had. The gesture existed from the day the tree
+   arrived — press the workspace you are on and its sessions fold — and nothing
+   said so, which is the same as not having it. One chevron, rotated by the state,
+   at the angle every other disclosure in this app opens at. */
+.ws-caret { display: inline-flex; align-items: center; flex: none; color: var(--fg-dim); }
+.ws-caret .icon { transition: transform var(--dur-2) var(--ease-out); }
+.ws-row.is-open .ws-caret .icon { transform: rotate(90deg); }
+.ws-row:hover .ws-caret { color: var(--fg-mid); }
 /* `min-width` is what stops the row's own badges from eating the name. `flex: 1`
    shrinks to zero before a `flex: none` sibling gives up a pixel, so at a narrow
    window the count and the waiting badge left "r.." where `relay` had been — and
    the name is the reason the row exists. With a floor here the row wraps instead,
    which it is already built to do. */
-.ws-label { flex: 1; min-width: 7ch; text-align: left; background: none; border: none; color: var(--fg); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-medium); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-label { flex: 1; min-width: 6ch; text-align: left; background: none; border: none; color: var(--fg); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-medium); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Not the accent. Selection is already carried by the ground and the rail, and
    recolouring the name as well spends the accent budget on a third channel saying
    the same thing — while making the one piece of text the row exists for a
@@ -852,8 +888,14 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .tile-work { flex: 1; min-height: 0; display: flex; position: relative; }
 .tile-work > .tile-body { flex: 1; min-width: 0; }
 .tile-tools, .tile-panel { display: none; }
-.tile.zoomed > .tile-work > .tile-tools { display: flex; }
-.tile.zoomed > .tile-work > .tile-panel:not(.is-shut) { display: grid; }
+/* `.solo` is one visible tile in a deck that has not been zoomed — it already
+   fills the stage, so it gets the stage's tools. Without it the one case where a
+   person is unambiguously inside a single session was the case with no tools at
+   all, because `zoomTo` refuses when there is nothing to zoom past. */
+.tile.zoomed > .tile-work > .tile-tools,
+.tile.solo > .tile-work > .tile-tools { display: flex; }
+.tile.zoomed > .tile-work > .tile-panel:not(.is-shut),
+.tile.solo > .tile-work > .tile-panel:not(.is-shut) { display: grid; }
 
 .tile-tools {
   flex-direction: column; align-items: center; gap: 2px; flex: none;
@@ -1113,7 +1155,21 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 /* How many of this workspace's sessions are waiting, on the workspace's own row.
    Written by the deck between this panel's renders, so it is always in the DOM and
    empty rather than created when the answer stops being none. */
-.ws-waiting { flex: none; font-size: var(--fs-xs); color: var(--st-waiting); white-space: nowrap; }
+/* Everything that trails the name, in one group that does not wrap: the row wraps
+   so the account can have its own line, and without this the three buttons wrapped
+   instead — a bin on a line of its own under the workspace it deletes. */
+.ws-acts { display: flex; align-items: center; gap: 5px; flex: none; margin-left: auto; }
+/* And two off the gaps. Measured, not guessed: at 8px between six children the row
+   came to 257px of content in a 256px box, so it wrapped its controls onto a second
+   line — one pixel, and the bin ended up under the workspace it deletes. */
+#ws-page .ws-row { gap: 6px; }
+/* Two pixels off each button, which is what pays for the row fitting on one line
+   at all: a workspace row in this column carries a caret, a dot, a name, an open
+   count, a waiting count and three controls, and at the app's default 24px they
+   came to two pixels more than the column has. The target stays above the 24px
+   minimum because the glyph inside is 16 and the padding is what shrinks. */
+#ws-page .ws-acts .btn--icon { min-width: 22px; min-height: 22px; }
+.ws-waiting { flex: none; font-size: var(--fs-xs); color: var(--st-waiting); white-space: nowrap; margin-right: 2px; }
 .ws-waiting[hidden] { display: none; }
 
 /* Creation, positional: the last row of the group, where the new session will

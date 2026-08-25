@@ -140,7 +140,11 @@ export class BoardView {
     // kind is not a choice.
     if (caps?.boardEditable) {
       const edit = el("button", "tk-board-edit");
-      edit.append(icon("sliders", 15));
+      /* A wrench, not the sliders the top bar's Settings wears: two identical
+         glyphs on one screen meaning two different things is worse than either of
+         them being slightly less obvious. This one configures THIS board — its
+         steps and its kinds — and the app's own settings are elsewhere. */
+      edit.append(icon("wrench", 15));
       edit.setAttribute("aria-label", "Configure the board");
       edit.onclick = () => this.h.onEditBoard();
       head.append(edit);
