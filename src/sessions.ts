@@ -1,10 +1,12 @@
 import { TerminalPanel } from "./terminal";
 import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionSnapshots, type NameKind, type SessionTokens } from "./ipc";
+import { gitStatus, sessionSnapshots, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
 import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
+import { notifyIdSeed } from "./cross-window";
+import { workspaceIdOf } from "./window-role";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
@@ -144,6 +146,63 @@ export class Deck {
   /** skillId -> session of that scenario's most recent scheduled run. */
   private scheduledSessions = new Map<string, string>();
   private notifyOk = false;
+  /** Set by `app.ts` before anything is announced. The default keeps a Deck
+   *  built in a test working without one. */
+  private windowLabel = "main";
+  /** Sessions held by other windows, as they last reported them.
+   *
+   *  Only the main window fills this. They are drawn in the sidebar exactly
+   *  where they would be if they were here — under their workspace's heading,
+   *  counted by its waiting badge — so a workspace pulled into a window of its
+   *  own does not disappear into the void. Clicking one raises the window that
+   *  has it. */
+  private remote: { session: string; name: string; state: SessionState; workspaceId?: string; label: string }[] = [];
+  /** What the other windows hold, as they last reported it.
+   *
+   *  **The comparison is load-bearing, not an optimisation.** `renderList` emits
+   *  `session://waiting` so the other windows know what is here, and a Tauri emit
+   *  is global — the sender hears itself. So the main window's own report comes
+   *  straight back to its own listener, which recomputes the proxies and calls
+   *  this. Rendering unconditionally closed that circle: render, emit, hear,
+   *  render, at whatever rate the machine could manage.
+   *
+   *  What it looked like is worth writing down, because it does not look like a
+   *  loop. The sidebar is rebuilt from `innerHTML`, so `:hover` was dropped and
+   *  reapplied continuously — a row strobing under the cursor — and a click never
+   *  landed, because the element it went down on was gone before it came up.
+   *
+   *  Comparing serialised is the same idiom `persistLayout` uses below, and for a
+   *  list this size it costs nothing worth measuring. A real change still
+   *  re-renders, once: the second pass finds the proxies unchanged and stops. */
+  setRemoteSessions(
+    list: { session: string; name: string; state: SessionState; workspaceId?: string; label: string }[],
+  ) {
+    const serialized = JSON.stringify(list);
+    if (serialized === this.remoteSerialized) return;
+    this.remoteSerialized = serialized;
+    this.remote = list;
+    this.renderList();
+  }
+  private remoteSerialized = "[]";
+  /** Ask the window holding a session to raise itself and focus it. Set by
+   *  `app.ts`; absent in a window that has no proxies. */
+  private onRemoteFocus: (label: string, session: string) => void = () => {};
+  setRemoteFocus(fn: (label: string, session: string) => void) { this.onRemoteFocus = fn; }
+  setWindowLabel(label: string) {
+    this.windowLabel = label;
+    this.adoptsOrphans = workspaceIdOf(label) === null;
+    this.notify = new NotifyRouter(notifyIdSeed(label));
+  }
+  /** Whether a session whose workspace no longer exists belongs here.
+   *
+   *  An orphan is deliberately visible in every workspace filter, so a session
+   *  whose workspace was deleted stays reachable. Under a per-window layout that
+   *  rule has no home — "everywhere" would mean every window showing it, which
+   *  is the same session drawn twice. So: **orphans belong to the main window.**
+   *  Its filter is "my workspace, plus orphans"; a window pinned to a workspace
+   *  shows that workspace only. The same rule as before, with one owner instead
+   *  of N. */
+  private adoptsOrphans = true;
   private notify = new NotifyRouter();
   private broadcasting = false;
   private bcastPanel: HTMLElement | null = null;
@@ -571,9 +630,9 @@ export class Deck {
     let firstVisible: string | null = null;
     for (const t of this.tiles.values()) {
       const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
-      // Orphan tiles (rid === null) stay visible everywhere so a session whose
-      // workspace was deleted remains reachable.
-      const visible = rid === null || rid === id;
+      // An orphan stays reachable, in the window that owns orphans. See
+      // `adoptsOrphans`.
+      const visible = (rid === null && this.adoptsOrphans) || rid === id;
       t.el.classList.toggle("ws-hidden", !visible);
       if (visible) {
         t.panel.fit();
@@ -618,6 +677,12 @@ export class Deck {
     grabAttention?: boolean;
     /** "command" — разовый запуск `command` вместо сессии claude. */
     kind?: TileKind;
+    /** Take over a session that is already running instead of starting one, and
+     *  put this scrollback back on screen first.
+     *
+     *  The third path `TerminalPanel.attach` describes. Set only by `receive`,
+     *  when a workspace arrives from another window. */
+    attach?: { scrollback: string };
     command?: string;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
@@ -744,7 +809,9 @@ export class Deck {
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
-    const panel = new TerminalPanel(session, mount, isCommand);
+    // A panel taking over a live session is born without resize authority: it
+    // must not tell the PTY its geometry before it owns the session.
+    const panel = new TerminalPanel(session, mount, isCommand, opts.attach !== undefined);
     const names: TileNames = {
       // The placeholder slot always holds the launch string. On a context-named
       // tile it is the same string as `context`, which the resolver never reaches
@@ -771,7 +838,17 @@ export class Deck {
     this.startPolling();
     this.renderList();
     try {
-      if (isCommand) {
+      if (opts.attach) {
+        // The order is the design, and it is why this is not a branch of the
+        // launch path. Listeners and the claim first, so nothing arrives at a
+        // panel that is not reading; then the history, into a grid that has
+        // finished settling; then authority, which sends one resize and makes
+        // the process redraw. See `TerminalPanel.attach`, `replay`, `activate`.
+        await panel.attach();
+        panel.replay(opts.attach.scrollback);
+        panel.activate();
+        void this.persistLayout();
+      } else if (isCommand) {
         await panel.startCommand(cwd, opts.command ?? "");
         // Командный тайл в layout не попадает — persistLayout не зовём.
       } else {
@@ -893,8 +970,8 @@ export class Deck {
     if (!t) return;
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
     const rid = resolveWorkspaceId(t.workspaceId, t.workspacePath, ws);
-    // Orphans stay visible everywhere, as in setActiveWorkspace.
-    const visible = rid === null || rid === this.activeWorkspaceId;
+    // Orphans belong to the window that adopts them, as in setActiveWorkspace.
+    const visible = (rid === null && this.adoptsOrphans) || rid === this.activeWorkspaceId;
     t.el.classList.toggle("ws-hidden", !visible);
     this.applyLayout();
   }
@@ -1246,6 +1323,71 @@ export class Deck {
     return true;
   }
 
+  /** Give a tile up because another window has taken its session over.
+   *
+   *  Everything `remove` does except ending the session — the PTY, the process
+   *  and the conversation carry on in the window that claimed them. Called from
+   *  the `session://owner` event rather than from the hand-off itself, so losing
+   *  the race costs nothing: this window's writes have been refused since the
+   *  claim (#240), and the tile is only a picture by then. */
+  releaseTile(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    tile.panel.dispose();
+    tile.el.remove();
+    this.tiles.delete(session);
+    if (tile.scheduledSkillId && this.scheduledSessions.get(tile.scheduledSkillId) === session) {
+      this.scheduledSessions.delete(tile.scheduledSkillId);
+    }
+    this.applyLayout();
+    this.usage.delete(session);
+    if (this.tiles.size === 0) this.stopPolling();
+    this.renderList();
+    void this.persistLayout();
+  }
+
+  /** Whether any tile here belongs to this workspace — what a pull-out asks
+   *  before opening a window for it. */
+  hasWorkspace(workspaceId: string): boolean {
+    return [...this.tiles.values()].some((t) => t.workspaceId === workspaceId);
+  }
+
+  /** Everything the window taking this workspace over needs to rebuild its
+   *  tiles, including what the person was looking at in each.
+   *
+   *  Read here, while this window is still alive and still rendering them. That
+   *  is the whole reason the scrollback needs no home in Rust. */
+  handOffPayload(workspaceId: string): HandOffTile[] {
+    return [...this.tiles.values()]
+      .filter((t) => t.workspaceId === workspaceId && t.kind !== "command")
+      .map((t) => ({
+        ...serializeTiles([{
+          session: t.session, workspacePath: t.workspacePath,
+          name: t.names.context ?? t.names.placeholder, workspaceId: t.workspaceId,
+          kind: t.kind, scheduledSkillId: t.scheduledSkillId, taskId: t.taskId,
+          userName: t.names.user,
+          nameKind: t.names.context === null ? "placeholder" : "context",
+          skillId: t.skillId, runId: t.runId,
+        }])[0],
+        scrollback: t.panel.serialize(),
+      }));
+  }
+
+  /** Build tiles for sessions this window is taking over from another one. */
+  async receive(tiles: HandOffTile[]) {
+    for (const e of tiles) {
+      if (this.tiles.has(e.sessionId)) continue;
+      await this.spawnTile({
+        session: e.sessionId, cwd: e.cwd, workspaceId: e.workspaceId,
+        titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
+        prompt: null, resume: false,
+        scheduledSkillId: e.scheduledSkillId, taskId: e.taskId, skillId: e.skillId,
+        attach: { scrollback: e.scrollback },
+        grabAttention: false,
+      });
+    }
+  }
+
   private remove(session: string) {
     const tile = this.tiles.get(session);
     if (!tile) return;
@@ -1299,13 +1441,27 @@ export class Deck {
       : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
-    // Sent on every render, unchanged count included. The pill window registers
-    // its listener asynchronously, and an event that arrives before it is ready
-    // is dropped rather than queued — re-sending is the only way back from that,
-    // and from a send that failed. Repeating is free now that the pill asks the
-    // window before showing itself (src/pill.ts); it was the unconditional
-    // `show()` at the other end, not this line, that stole the keyboard.
-    void emit("pill://count", { n: waiting });
+    // What this window has, not what the app has — and said as a list rather
+    // than a number.
+    //
+    // It used to send `pill://count` with its own partial total, which the pill
+    // trusted absolutely: with two windows open the pill flapped between two
+    // partial counts every five seconds, whichever arrived last winning. The
+    // main window now does the adding, because it is the only participant that
+    // sees everybody. The same message also says *where* each session is, which
+    // is what lets "who is blocked on me" reach the other monitor.
+    //
+    // Sent on every render, unchanged included. A listener registers
+    // asynchronously, and an event arriving before it is ready is dropped rather
+    // than queued — re-sending is the only way back from that, and from a send
+    // that failed.
+    void emit("session://waiting", {
+      label: this.windowLabel,
+      sessions: tiles.map((t) => ({
+        session: t.session, name: resolveTileName(t.names),
+        state: t.state, workspaceId: t.workspaceId,
+      })),
+    });
     const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
     this.listEl.innerHTML = `<h3>${header}</h3>`;
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
@@ -1321,10 +1477,20 @@ export class Deck {
       this.listEl.appendChild(sum);
     }
     const groups = groupTilesByWorkspace(
-      tiles.map((t) => ({
-        session: t.session, name: resolveTileName(t.names), state: t.state,
-        workspaceId: t.workspaceId, workspacePath: t.workspacePath,
-      })),
+      [
+        ...tiles.map((t) => ({
+          session: t.session, name: resolveTileName(t.names), state: t.state,
+          workspaceId: t.workspaceId, workspacePath: t.workspacePath,
+        })),
+        // Proxies, mixed in rather than listed apart: a session is under its
+        // workspace wherever it is being rendered, and a separate "elsewhere"
+        // section would make the person answer "which list is this in?" before
+        // they could answer "who is waiting for me?".
+        ...this.remote.map((r) => ({
+          session: r.session, name: r.name, state: r.state,
+          workspaceId: r.workspaceId, workspacePath: "", remote: r.label,
+        })),
+      ],
       this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path })),
     );
     const ORPHAN_KEY = "__orphan__";
@@ -1370,9 +1536,19 @@ export class Deck {
         const live = this.tiles.get(t.session);
         const row = document.createElement("button");
         row.dataset.focusKey = `session:${t.session}`;
-        row.setAttribute("aria-label", `${t.name} — ${LABEL[t.state]}`);
+        // A proxy says where it is, in its accessible name, because that is the
+        // one thing about it a sighted reader gets from the dimmed row and a
+        // screen reader would otherwise get from nothing at all. Not
+        // `aria-disabled`: the row is not disabled, it does something different.
+        row.setAttribute(
+          "aria-label",
+          t.remote
+            ? `${t.name} — ${LABEL[t.state]} — in another window`
+            : `${t.name} — ${LABEL[t.state]}`,
+        );
         const isActive = !!live?.el.classList.contains("is-active");
-        row.className = "sess-row" + (isActive ? " active" : "");
+        row.className = "sess-row" + (isActive ? " active" : "")
+          + (t.remote ? " remote" : "");
         // The `active` class was the only carrier: a background tint and a left
         // border, both invisible to a screen reader, on the row telling the person
         // which of a dozen sessions they are looking at. `aria-current` rather than
@@ -1389,7 +1565,9 @@ export class Deck {
         // this fill and this text colour", and putting one of those names on the row
         // would paint a chip's background across the whole line.
         row.dataset.state = t.state;
-        row.onclick = () => this.focusSessionAnywhere(t.session);
+        row.onclick = t.remote
+          ? () => this.onRemoteFocus(t.remote!, t.session)
+          : () => this.focusSessionAnywhere(t.session);
         const stateSpan = document.createElement("span");
         stateSpan.className = `tile-state state-${t.state}`;
         stateSpan.textContent = LABEL[t.state];

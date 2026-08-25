@@ -447,6 +447,34 @@ html, body, #app { height: 100%; margin: 0; }
    caption at `--fg-dim` and stay above 4.5:1 in every state. */
 .ws-row:hover, .sess-row:hover, .sk-row:hover { background: var(--bg-hover); }
 .ws-row.active, .sess-row.active { background: var(--sel); }
+/* A workspace or a session that lives in another window.
+   An outline, not a fill, and the first attempt got this wrong in a way worth
+   recording: it painted the row `--bg-terminal` on a sidebar whose ground is
+   `--bg-void` — four values apart per channel, which is invisible. There is
+   nothing dimmer than this ground to dim towards, because the sidebar already is
+   the darkest surface in the app, so the mark has to be added rather than taken
+   away.
+   Outlined rather than filled also because a fill is what `.active` uses, and the
+   two must not read as versions of each other: one means "this is the workspace
+   you are in", the other means "this one is somewhere else". The name keeps its
+   full contrast and the row keeps its hover and focus ring — it is not
+   unavailable, it does something different.
+   No `opacity`: that would take the foreground down with the ground and put the
+   captions under AA, which is the rule the old icon buttons broke. */
+.ws-row.detached, .sess-row.remote {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+/* The state rail is this window's answer about this window's tiles, and it has
+   nothing to say about a session it is not rendering. */
+.sess-row.remote { border-left-color: transparent; }
+/* The mark that says "elsewhere" at a glance, in the corner the state rail is not
+   using. Content rather than an icon element: the row is rebuilt from `innerHTML`
+   every five seconds, and a pseudo-element costs nothing to redraw. */
+.ws-row.detached .ws-label::after, .sess-row.remote::after {
+  content: "⧉";
+  margin-inline-start: var(--sp-1);
+  color: var(--fg-dim);
+}
 /* A selected row's ground is lighter, and `--fg-dim` measures 4.36 on it — under
    AA. Raising the row's own captions one step is the documented other half of the
    selection alpha; `scripts/contrast.mjs` holds both ends.

@@ -139,3 +139,48 @@ it("re-notifies onSelect with the still-active workspace when a non-active works
   expect(panel.active?.id).toBe("a");
   expect(selected).toContain("a");
 });
+
+/** `ui_state.json` holds one startup workspace for the app, and it is the main
+ *  window's answer. A window pinned to one workspace selects that workspace as it
+ *  boots — persisting it would rewrite what the main window opens with, so
+ *  pulling a workspace out would silently change which project the app starts on
+ *  next time. Part of #242. */
+describe("remembering the startup workspace", () => {
+  const items = [
+    { id: "a", name: "A", path: "/a", color: "#111" },
+    { id: "b", name: "B", path: "/b", color: "#222" },
+  ];
+
+  beforeEach(() => {
+    listWorkspacesMock.mockResolvedValue(items);
+    loadUiStateMock.mockResolvedValue({ activeWorkspaceId: "a" });
+    saveUiStateMock.mockClear();
+    saveUiStateMock.mockResolvedValue(undefined);
+  });
+
+  it("records the selection in the main window", async () => {
+    const panel = new WorkspacesPanel(document.createElement("div"), () => {});
+    await panel.load();
+    expect(saveUiStateMock).toHaveBeenCalledWith({ activeWorkspaceId: "a" });
+  });
+
+  it("records nothing in a window pinned to one workspace", async () => {
+    const panel = new WorkspacesPanel(
+      document.createElement("div"), () => {}, undefined, () => {}, false,
+    );
+    await panel.load();
+    expect(saveUiStateMock).not.toHaveBeenCalled();
+  });
+
+  /** The selection still happens — only the *writing down* of it stops. A pinned
+   *  window that had no active workspace would have nothing to show. */
+  it("still selects the workspace it did not record", async () => {
+    const selected: string[] = [];
+    const panel = new WorkspacesPanel(
+      document.createElement("div"), (ws) => selected.push(ws.id), undefined, () => {}, false,
+    );
+    await panel.load();
+    expect(panel.active?.id).toBe("a");
+    expect(selected).toContain("a");
+  });
+});

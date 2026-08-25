@@ -96,7 +96,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
+  getCurrentWindow: () => ({ label: "main", onCloseRequested: async () => () => {}, destroy: async () => {}, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
 }));
 
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
@@ -118,7 +118,7 @@ describe("▶ on a github issue", () => {
     listTasksMock.mockResolvedValue([issue("42")]);
     issueWorktreeAddMock.mockResolvedValue("/p-wt/42-issue");
 
-    await import("../src/main");
+    await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();
 
     const [, boardBtn] = [...document.querySelectorAll<HTMLButtonElement>(".tk-views button")];

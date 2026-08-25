@@ -117,7 +117,15 @@ export const claudeAvailable = () => invoke<boolean>("claude_available");
 
 export interface GhAccount { host: string; login: string; active: boolean; scopes: string[]; state: string; }
 export interface GhStatus { path: string | null; version: string | null; accounts: GhAccount[]; error: string | null; }
-export interface HostPlatform { os: "macos" | "windows" | "linux"; distro: string | null; }
+export interface HostPlatform {
+  os: "macos" | "windows" | "linux";
+  distro: string | null;
+  /** Whether the app may say where a window goes. False on Wayland, where
+   *  `set_position` returns success and silently does nothing — so the tear-out
+   *  gesture, which is built on placing a window under the cursor, is not
+   *  offered there. The plain trigger does the same job everywhere. */
+  placesWindows: boolean;
+}
 
 export const ghStatus = () => invoke<GhStatus>("gh_status");
 export const hostPlatform = () => invoke<HostPlatform>("host_platform");
@@ -424,6 +432,61 @@ export const writeSession = (session: string, data: string) => invoke<void>("wri
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
 export const closeSession = (session: string) => invoke<void>("close_session", { session });
+/** One tile as it crosses between windows: everything `sessions.json` records
+ *  about it, plus what was on its screen.
+ *
+ *  The scrollback rides with the tile rather than being fetched afterwards
+ *  because the window that has it is the window that is giving it up — a moment
+ *  later there is nobody left to ask. */
+export interface HandOffTile extends SessionEntry {
+  scrollback: string;
+}
+
+/** Take over a running session: point its output here and record this window as
+ *  its owner. Spawns nothing — see `TerminalPanel.attach`. */
+export const claimSession = (session: string, sink: Channel<ArrayBuffer>) =>
+  invoke<void>("claim_session", { session, sink });
+/** A session changed hands. Every window hears it; the one whose label is
+ *  `owner` asked for it, and the rest give the session up. */
+export const onSessionOwner = (cb: (session: string, owner: string) => void) =>
+  listen<{ session: string; owner: string }>("session://owner", (e) =>
+    cb(e.payload.session, e.payload.owner));
+/** Open the window pinned to `workspaceId`, or raise it if it is already up.
+ *
+ *  Windows are built in Rust rather than here. `core:webview:default` does not
+ *  grant `allow-create-webview-window`, and granting it to a webview that renders
+ *  untrusted agent output is not worth what it buys — the label scheme and the
+ *  window cap belong on that side anyway.
+ *
+ *  Resolves with the new window's label once that window has attached its
+ *  listeners, and rejects if it never does. So a caller that gets a label back
+ *  may address the window immediately; one that gets an error has a window that
+ *  failed to boot, reported rather than left on screen and inert. */
+export const openWorkspaceWindow = (
+  workspaceId: string,
+  /** Physical screen coordinates to place it at — the tear-out gesture's cursor.
+   *  Absent for the plain trigger, which lets the window state plugin put the
+   *  window back where it was last left. */
+  at?: [number, number],
+  /** Hand the new window to the OS's own move, so a torn-out workspace keeps
+   *  following the cursor as an ordinary window. Only meaningful with `at`. */
+  drag?: boolean,
+) => invoke<string>("open_workspace_window", { workspaceId, at, drag });
+/** "My listeners are attached; you may send me things."
+ *
+ *  Called last in a window's bootstrap, and only there. An emit to a webview
+ *  holding no listener for that event is a silent no-op at both ends, so the
+ *  backend routes nothing to a window until this arrives. The label is taken
+ *  from the runtime, not passed, so no window can answer for another. */
+export const windowReady = () => invoke<void>("window_ready");
+/** The tiles **this window** should restore — not every tile on disk.
+ *
+ *  The filtering happens in Rust, against the window label the runtime attaches
+ *  to the invoke, so there is nothing to pass and no way for a window to ask for
+ *  another one's tiles. Saving stamps the same label. That is why `SessionEntry`
+ *  above has no `owner` field although `sessions.json` records one: the frontend
+ *  neither sets it nor needs to read it, and a field it cannot write is a field
+ *  it cannot forge. */
 export const loadLayout = () => invoke<SessionEntry[]>("load_layout");
 export const saveLayout = (sessions: SessionEntry[]) => invoke<void>("save_layout", { sessions });
 

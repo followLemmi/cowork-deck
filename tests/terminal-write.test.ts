@@ -43,7 +43,7 @@ vi.mock("@xterm/addon-search", () => ({ SearchAddon: class { findNext() {} findP
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
 vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }));
 vi.mock("../src/ipc", () => ({
-  startSession: vi.fn(), startCommandSession: vi.fn(), writeSession: vi.fn(), resizeSession: vi.fn(),
+  startSession: vi.fn(), startCommandSession: vi.fn(), writeSession: vi.fn().mockResolvedValue(undefined), resizeSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { TerminalPanel } from "../src/terminal";
