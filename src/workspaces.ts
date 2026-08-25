@@ -358,12 +358,18 @@ export class WorkspacesPanel {
       // line, and the DOM order is what a screen reader follows: `order: 1`
       // would put it last visually while it still read between the name and
       // the count (1.3.2, meaningful sequence).
+      /* The row's second line, as one box rather than two loose children: the row
+         wraps, and two `flex` items after the controls wrap independently — which at
+         a narrow window put the account beside the buttons and pushed it out of the
+         column. One line, one container, one wrap. */
+      const sub = document.createElement("span");
+      sub.className = "ws-sub";
       if (w.github) {
         const acc = document.createElement("span");
         acc.className = "ws-account";
         acc.textContent = w.github.login;
         acc.title = `GitHub: ${w.github.login}`;
-        row.append(acc);
+        sub.append(acc);
       }
       /* What "active" actually MEANS, written out on the one row it is true of.
          The tint and the accent rail say "this one" and not what follows from it:
@@ -379,8 +385,9 @@ export class WorkspacesPanel {
         scope.className = "ws-scope";
         scope.textContent = "queue · PRs · journal";
         scope.title = "The queue, the pull requests and the journal are showing this workspace";
-        row.append(scope);
+        sub.append(scope);
       }
+      if (sub.childElementCount > 0) row.append(sub);
       this.mount.appendChild(row);
       /* The workspace's sessions go here, and the deck is what fills them: one
          tree, one row per workspace, its sessions as its children. See

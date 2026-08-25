@@ -471,7 +471,12 @@ html, body, #app { height: 100%; margin: 0; }
    page under it: the head is what says whose data the page holds, and a scope line
    that scrolls away is a scope line you have to scroll back for. */
 #sidebar {
-  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  /* Both tracks constrained, and the column is the one that bites: a grid's
+     implicit column is `auto`, which is max-content — so the stack inside grew to
+     the widest thing a page could not shrink (a workspace row's controls) and the
+     panel, at `overflow: hidden`, clipped the difference. At 1180px that was 31px
+     of every row's right-hand end, including the button that deletes it. */
+  display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr);
   transition: width var(--dur-3) var(--ease-out);
   /* In `rem` rather than px, because this column exists to hold text and the text
      size is the person's to choose: at a fixed pixel width, raising the scale made
@@ -701,7 +706,7 @@ html, body, #app { height: 100%; margin: 0; }
    state hue: it is not a state, it is which of three panels' subject this is —
    and hue in this app belongs to what a session is doing. */
 .ws-scope {
-  display: inline-flex; align-items: center; flex: none; margin-left: var(--sp-2);
+  display: inline-flex; align-items: center; flex: none;
   padding: 1px 7px; border-radius: var(--r-pill);
   background: var(--sel); color: var(--fg-mid);
   font-size: var(--fs-xs); white-space: nowrap;
@@ -1555,12 +1560,17 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    top of a 100% basis would push the ellipsis past the row's padding edge.
    No `max-width` any more: with the row to itself the login needs no cap, and
    the ellipsis stays as the fallback for one longer than a sidebar. */
+/* The row's second line. `flex-basis: 100%` is on the CONTAINER, not on the two
+   things inside it: as two loose flex children the account and the scope chip
+   wrapped independently, and at a narrow window the account landed beside the
+   controls and hung out of the column. */
+.ws-sub {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-basis: 100%; min-width: 0;
+  padding-left: calc(var(--dot-size) + var(--sp-2) + 18px);
+}
 .ws-account {
-  /* `flex-basis: 100%` no longer, or the chip beside it starts a third line: the
-     account and the scope chip share the row's second line, and `flex-basis: auto`
-     with the wrap already in place is what puts them there together. */
-  flex-basis: auto; min-width: 0; padding-left: calc(var(--dot-size) + var(--sp-2));
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--fg-dim); font-size: var(--fs-xs);
 }
 .tile-auth { color: var(--st-error); font-size: var(--fs-xs); white-space: nowrap; }
