@@ -456,7 +456,71 @@ html, body, #app { height: 100%; margin: 0; }
    you work in, and settings is a thing you visit. Wider than the ordinary dialog
    because half of it is paths, and a path that wraps three times is a path nobody
    reads. */
-.modal-box--settings { width: min(600px, 94vw); }
+/* No padding and no gap of its own: the section rail reaches the box's edges,
+   which is what makes it read as part of the window rather than as a list inside
+   it. The height is fixed so switching sections does not resize the window under
+   the pointer — the pane scrolls instead. */
+.modal-box--settings {
+  width: min(860px, 94vw); padding: 0; gap: 0;
+  height: min(560px, 88vh); overflow: hidden;
+}
+/* Rail of sections and one pane. A SECTION IS ONE ROW HERE AND ONE PANE THERE —
+   that is the whole extensibility claim, and it is why this is a rail instead of
+   the scroll it replaces: with the config repository added, three groups of fields
+   in one column stopped being a window and became a page. */
+.set-win {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: 12.5rem minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+/* Words, not icons. There will be more than three of these, and seven icons in a
+   column is seven guesses. */
+.set-rail {
+  grid-row: 1 / 3; min-height: 0; overflow: auto;
+  display: flex; flex-direction: column;
+  padding: var(--sp-3) var(--sp-2);
+  background: var(--bg-void);
+}
+.set-rail-head { padding: 0 var(--sp-2) var(--sp-3); color: var(--fg-dim); font-size: var(--fs-xs); font-weight: var(--fw-bold); text-transform: uppercase; letter-spacing: var(--ls-caps); }
+.set-nav { display: flex; flex-direction: column; gap: 1px; }
+.set-nav-item {
+  display: flex; align-items: center; gap: var(--sp-2);
+  width: 100%; padding: 7px var(--sp-2);
+  border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--fg-mid);
+  font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.set-nav-item:hover { background: var(--bg-hover); color: var(--fg); }
+.set-nav-item[aria-current="page"] { background: var(--sel); color: var(--fg); }
+.set-nav-item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The one thing a section says about itself from outside. Not a count: a number in
+   a list of settings turns the window into a dashboard. */
+.set-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--fg-dim); }
+.set-dot--wait { background: var(--st-waiting); }
+.set-dot--error { background: var(--st-error); }
+.set-pane { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.set-pane-head { padding: var(--sp-4) var(--sp-5) var(--sp-3); }
+.set-pane-title { color: var(--fg); font-family: var(--font-display); font-size: var(--fs-lg); font-weight: var(--fw-bold); letter-spacing: -0.01em; }
+.set-pane-sub { margin: 3px 0 0; color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-body); max-width: 62ch; }
+.set-body {
+  min-height: 0; overflow: auto;
+  padding: 0 var(--sp-5) var(--sp-5);
+  display: flex; flex-direction: column; gap: var(--sp-3);
+}
+.set-body[hidden] { display: none; }
+/* One quiet way out, and no OK. Every section here applies as it is touched —
+   connecting a repository cannot be un-done by a Cancel, and a button that
+   promised it would be lying. */
+.set-foot { display: flex; justify-content: flex-end; padding: var(--sp-3) var(--sp-5); }
+@media (max-width: 700px) {
+  .modal-box--settings { height: min(620px, 92vh); }
+  .set-win { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
+  .set-rail { grid-row: 1; }
+  .set-nav { flex-direction: row; flex-wrap: wrap; }
+  .set-nav-item { width: auto; }
+  .set-dot { margin-left: 0; }
+}
 /* A section heading with a rule that reaches the box's edges, which is what makes
    two groups read as two rather than as one list with a bold row in it. */
 .set-head {

@@ -7,6 +7,7 @@ import {
 } from "./view";
 import { wireResizer } from "./resize";
 import { settingsDialog } from "./settings";
+import type { SettingsSection } from "./settings";
 import { syncDialog } from "./sync-dialog";
 import { offerBanner, shouldOffer } from "./sync-offer";
 import {
@@ -2141,7 +2142,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  the paths come from Rust, the workspace from the panel, and the words for a
    *  task source from the module that owns that vocabulary. `settings.ts` owns a
    *  window, not the app's state. */
-  async function openSettings(): Promise<void> {
+  async function openSettings(section?: SettingsSection): Promise<void> {
     const ws = workspaces.active;
     const paths = await configPaths().catch((e: unknown) => {
       // A window that cannot say where the files are is still worth opening for
@@ -2149,16 +2150,19 @@ export function startApp(role: WindowRole): Promise<void> {
       console.debug("config paths unavailable", e);
       return null;
     });
-    // `settingsDialog` previews the text size live and puts the old value back on
-    // cancel, so there is nothing to undo here — only something to persist.
-    const picked = await settingsDialog({
+    /* Every section applies as it is touched, so there is nothing to do on the way
+       out — only something to persist on the way through. `setScale` is the app's
+       own path for that: it writes `ui_state.json` and refits every terminal, and
+       the window has no business doing either. */
+    await settingsDialog({
       paths,
       workspace: ws,
+      section,
       taskSource: ws ? describeTaskSource(ws) : null,
       onReveal: (path) => { revealPath(path).catch((e) => void alertModal(String(e))); },
       onEditWorkspace: () => { void workspaces.editActive(); },
+      onScale: (scale) => setScale(scale),
     });
-    if (picked !== null) setScale(picked);
   }
 
   /** Where this workspace's tasks come from, in words.
@@ -2218,7 +2222,10 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "text-larger", title: `Text size: larger (now ${scaleLabel(currentScale())})`, run: () => setScale(nextScale(currentScale())) },
       { id: "text-smaller", title: `Text size: smaller (now ${scaleLabel(currentScale())})`, run: () => setScale(prevScale(currentScale())) },
       { id: "settings", title: "Settings…", run: () => void openSettings() },
-      { id: "sync", title: "Memory sync…", run: () => void syncDialog() },
+      /* The window's own section rather than the standalone dialog: two doors to
+         one set of facts is how they drift. The dialog stays for the first-run
+         offer, which is a flow of its own with its own copy. */
+      { id: "sync", title: "Memory sync…", run: () => void openSettings("config") },
     ];
   }
 
