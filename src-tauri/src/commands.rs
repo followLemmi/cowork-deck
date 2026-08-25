@@ -2035,6 +2035,19 @@ pub fn resize_session(
     state.pty.resize(&session, cols, rows).map_err(session_io_error)
 }
 
+/// What `window://gone` carries: the window that has just been destroyed.
+///
+/// The main window keeps a picture of what every other window holds, and draws a
+/// detached workspace's row and its sessions from it. Nothing told it when a
+/// window went away, so that picture outlived the window: the row stayed marked
+/// as being elsewhere, could not be selected, and clicking it emitted into a
+/// label nothing answers to — a workspace that had been brought back was
+/// unreachable until the app restarted.
+#[derive(Clone, Serialize)]
+pub struct WindowGonePayload {
+    pub label: String,
+}
+
 /// What `session://owner` carries: a session and the window that now holds it.
 #[derive(Clone, Serialize)]
 pub struct OwnerPayload {

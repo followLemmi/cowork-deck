@@ -234,6 +234,16 @@ fn main() {
                     // refused from this moment, which is the point.
                     state.session_owners.release_window(window.label());
                 }
+                // And tell the other windows, because none of them can see this
+                // happen. `Destroyed` rather than `CloseRequested` for the same
+                // reason the two clears above use it: the latter is preventable
+                // and also fires while the runtime tears everything down at quit,
+                // so a window that refused to close would be announced as gone
+                // while it is still on screen and still listening.
+                let _ = window.app_handle().emit(
+                    "window://gone",
+                    commands::WindowGonePayload { label: window.label().to_string() },
+                );
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // The label check is load-bearing and its absence is invisible

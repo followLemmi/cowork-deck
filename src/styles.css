@@ -448,14 +448,24 @@ html, body, #app { height: 100%; margin: 0; }
 .ws-row:hover, .sess-row:hover, .sk-row:hover { background: var(--bg-hover); }
 .ws-row.active, .sess-row.active { background: var(--sel); }
 /* A workspace or a session that lives in another window.
-   Dimmed rather than greyed out, and the distinction is the whole design: the row
-   is not unavailable, it does something different — it raises the window that has
-   it. So it keeps its hover, its focus ring and its full contrast on the name; what
-   drops is the state rail, which is this window's answer about this window's tiles
-   and has nothing to say about a session it is not rendering.
+   An outline, not a fill, and the first attempt got this wrong in a way worth
+   recording: it painted the row `--bg-terminal` on a sidebar whose ground is
+   `--bg-void` — four values apart per channel, which is invisible. There is
+   nothing dimmer than this ground to dim towards, because the sidebar already is
+   the darkest surface in the app, so the mark has to be added rather than taken
+   away.
+   Outlined rather than filled also because a fill is what `.active` uses, and the
+   two must not read as versions of each other: one means "this is the workspace
+   you are in", the other means "this one is somewhere else". The name keeps its
+   full contrast and the row keeps its hover and focus ring — it is not
+   unavailable, it does something different.
    No `opacity`: that would take the foreground down with the ground and put the
    captions under AA, which is the rule the old icon buttons broke. */
-.ws-row.detached, .sess-row.remote { background: var(--bg-terminal); }
+.ws-row.detached, .sess-row.remote {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+/* The state rail is this window's answer about this window's tiles, and it has
+   nothing to say about a session it is not rendering. */
 .sess-row.remote { border-left-color: transparent; }
 /* The mark that says "elsewhere" at a glance, in the corner the state rail is not
    using. Content rather than an icon element: the row is rebuilt from `innerHTML`

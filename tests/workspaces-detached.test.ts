@@ -109,4 +109,41 @@ describe("a workspace that is open in its own window", () => {
     expect(rows[0].classList.contains("active")).toBe(false);
     expect(rows[0].classList.contains("detached")).toBe(true);
   });
+
+  /** The bug this test exists for. Nothing removed a window's label when it was
+   *  destroyed, so a workspace brought back by closing its window stayed marked
+   *  as being elsewhere: the row could not be selected, and clicking it emitted
+   *  into a label nothing answers to — the workspace was unreachable until the
+   *  app restarted. Rust announces `window://gone` now, and the marker has to
+   *  come off when it does. */
+  it("becomes an ordinary row again once its window has gone", async () => {
+    const { mount, panel, onSelect, onRaise } = await panelWith(["b"]);
+    expect(mount.querySelectorAll(".ws-row")[1].classList.contains("detached")).toBe(true);
+
+    panel.setDetached(new Set());
+
+    const row = mount.querySelectorAll<HTMLElement>(".ws-row")[1];
+    expect(row.classList.contains("detached")).toBe(false);
+    onSelect.mockClear();
+    row.click();
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "b" }));
+    expect(onRaise).not.toHaveBeenCalled();
+  });
+
+  /** And the pull-out control comes back with it, or a workspace could be
+   *  returned once and never sent out again. */
+  it("gets its pull-out control back", async () => {
+    const mount = document.createElement("div");
+    const panel = new WorkspacesPanel(
+      mount, vi.fn(), undefined, () => {}, true,
+      { icon: "detach", label: (n: string) => `Open ${n}`, run: vi.fn() },
+      vi.fn(),
+    );
+    await panel.load();
+    panel.setDetached(new Set(["b"]));
+    expect(mount.querySelectorAll(".ws-row")[1].querySelector(".ws-detach")).toBeNull();
+
+    panel.setDetached(new Set());
+    expect(mount.querySelectorAll(".ws-row")[1].querySelector(".ws-detach")).not.toBeNull();
+  });
 });

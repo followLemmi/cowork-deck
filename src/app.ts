@@ -1379,11 +1379,6 @@ export function startApp(role: WindowRole): Promise<void> {
     deck.focusSession(e.payload.session);
   });
 
-  /** Come to the front, because somebody clicked this window's row in another
-   *  one. Raising is done here rather than by the asker so the permission and
-   *  the Spaces caution stay with the window they are about. */
-  const raiseListener = listen("window://raise", () => { void raiseThisWindow(); });
-
   /** The workspace this window is pinned to has been deleted.
    *
    *  Its sessions are not lost — they go back to the main window and live on
@@ -1414,6 +1409,21 @@ export function startApp(role: WindowRole): Promise<void> {
     sessionsByWindow.set(e.payload.label, e.payload.sessions);
     // The pill's payload stays a bare number: it has one addressee and one job,
     // and the adding is done here, where the whole picture is.
+    void emit("pill://count", { n: sumWaiting(sessionsByWindow) });
+    showElsewhere();
+  });
+
+  /** A window has been destroyed, so stop drawing what it used to hold.
+   *
+   *  Without this the picture outlived the window: a workspace brought back by
+   *  closing its window stayed marked as being elsewhere, could not be selected,
+   *  and clicking its row emitted into a label nothing answers to — so it was
+   *  unreachable until the app restarted. Nothing in a webview can see another
+   *  window go, which is why this comes from Rust rather than being noticed here.
+   */
+  const windowGoneListener = listen<{ label: string }>("window://gone", (e) => {
+    if (!isMain) return;
+    if (!sessionsByWindow.delete(e.payload.label)) return;
     void emit("pill://count", { n: sumWaiting(sessionsByWindow) });
     showElsewhere();
   });
@@ -1495,7 +1505,15 @@ export function startApp(role: WindowRole): Promise<void> {
     // Clicking a detached workspace's row raises its window rather than
     // switching to it — switching would show an empty deck, since its tiles are
     // somewhere else.
-    (ws) => { void emitTo(workspaceLabel(ws.id), "window://raise", {}); },
+    //
+    // Through `openWorkspaceWindow` rather than an event aimed at the window,
+    // and that is the load-bearing choice: an emit to a window that is not there
+    // is a silent no-op at both ends, so a row whose window had gone was a dead
+    // control that answered a click with nothing at all. This raises the window
+    // when it exists and opens one when it does not, so the click always does
+    // what it says — including in the case this cannot otherwise recover from,
+    // a window that died without announcing it.
+    (ws) => { void openWorkspaceWindow(ws.id).catch((e) => console.debug("raise failed", e)); },
     (workspaceId) => { void emitTo(workspaceLabel(workspaceId), "workspace://gone", {}); });
   /** Every launch path needs an active workspace. Saying so beats a button that
    *  looks broken — the old behaviour was a bare `return`. */
@@ -1953,8 +1971,8 @@ export function startApp(role: WindowRole): Promise<void> {
   const handOffListeners = Promise.all([
     closeListener,
     goneListener,
+    windowGoneListener,
     focusListener,
-    raiseListener,
     waitingListener,
     scaleListener,
     // A workspace arriving from another window.

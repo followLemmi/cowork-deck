@@ -146,6 +146,15 @@ describe("the singletons a second window must not run", () => {
     expect(vi.mocked(listen).mock.calls.map(([e]) => e)).not.toContain("pill://focus-next");
   });
 
+  /** A window going away is invisible from inside another one, so Rust says it.
+   *  Without the main window listening, its picture of what the other windows
+   *  hold outlives them — and a workspace brought back by closing its window
+   *  stays marked as elsewhere, unselectable, answering a click with nothing. */
+  it("listens for a window going away, in the main window", async () => {
+    await boot({ kind: "main" });
+    expect(vi.mocked(listen).mock.calls.map(([e]) => e)).toContain("window://gone");
+  });
+
   /** Deliberately **not** a singleton, and the one entry on the issue's list
    *  that changed. Restoring the layout used to fork a second `claude --resume`
    *  onto every live conversation in a second window — but `load_layout` now
