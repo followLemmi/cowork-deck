@@ -1,6 +1,6 @@
 # The README's screenshots
 
-Eight shots and one recording, each in the root `README.md` because it proves something the
+Seven shots and one recording, each in the root `README.md` because it proves something the
 prose has to spend a paragraph on. Capture them from the **running app**, not from the mockups
 in `docs/design/true-ink/mockups/`: the point of a repository's front page is that the
 thing exists, and a render of a design file is not evidence of that.
@@ -32,7 +32,7 @@ that the plumbing behind it does — that is what the tests are for.
 
 ```bash
 npm run dev                       # serves /harness/
-node harness/shoot.mjs            # all eight, into docs/images/
+node harness/shoot.mjs            # all seven, into docs/images/
 node harness/shoot.mjs deck zoom  # or just the ones you are redoing
 ```
 
@@ -58,7 +58,7 @@ than 2000 — there is no quantizer to bring a 2000px file back under the size r
 Vite does not watch this worktree (`vite.config.ts` ignores `.claude/worktrees/**`), so
 restart the dev server after editing a fixture or the shot will be of the old data.
 
-## Rules for all eight
+## Rules for all seven
 
 | | |
 |---|---|
@@ -69,7 +69,7 @@ restart the dev server after editing a fixture or the shot will be of the old da
 | **Content** | Fixtures, from the harness below — the sidebar shows the bound `gh` account and the tiles show absolute paths, and neither belongs on a repository's front page. Shooting a live window instead is allowed, but then every path, branch name and line of scrollback in frame is published with it. |
 | **What not to shoot** | A scrollback carrying a token, a customer name, or a path under someone else's project. Start a fresh session for the shot if the live one is not publishable. |
 
-## The eight, and the take
+## The seven, and the take
 
 ### `deck.png` — the hero
 
@@ -126,6 +126,13 @@ of this one: one workspace in the panel, no rail at all, and the board and pull 
 still there. What it has to show is the absence — nothing app-wide in a window that is one
 project's.
 
+### `pill.png` — no longer on the front page
+
+`harness/shoot.mjs` still takes it, and `docs/images/pill.png` is still here, because the
+floating pill is still in the app. It left the README ahead of itself: the pill is on its
+way out, and a front page arguing for a feature about to be removed is a page that has to
+be edited twice. When the pill goes, the shot and `harness/pill.html` go with it.
+
 ### `demo.gif` — the take
 
 Half a minute of one continuous take, driven the same way the stills are and by the same
@@ -152,8 +159,3 @@ rm docs/images/demo.webm                      # the intermediate is not committe
 flat, so there is nothing for a dither to smooth and every pixel it changes is a pixel that
 cannot be run-length encoded. It is most of the difference between 5 MB and 9.
 
-### `pill.png` — the floating pill
-
-Just the pill, on its own, cropped tight — 600 px wide is plenty. It is a separate
-always-on-top window, so it cannot appear in any of the shots above, and it is the feature
-people ask about.

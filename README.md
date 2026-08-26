@@ -86,8 +86,6 @@ four things worth knowing about a session you are not watching.*
   with it rather than outliving the app.
 - **Restart resumes the conversation** (`claude --resume`), and yesterday's tiles come back on launch.
 - **Broadcast** types one thing into several sessions at once.
-- **A floating pill** counts the sessions blocked on a decision, so you can step away from the window
-  and still know when one needs you.<br /><img src="docs/images/pill.png" alt="A small floating pill reading “3 waiting for input”." width="240" />
 
 Sessions are children of the app: there is no detached mode, and the scheduler only fires while the
 window is open. Missed runs are not lost — each scheduled scenario catches up once on the next launch.
@@ -268,7 +266,7 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 | | |
 |---|---|
 | **Activity** [#323](https://github.com/followLemmi/cowork-deck/issues/323) | A tile says what a session **costs**. It says nothing about what it **did**. A panel that answers which tools ran, which subagents ran them and how many times — read from the agent CLI's own session log, Claude Code [#325](https://github.com/followLemmi/cowork-deck/issues/325) first. |
-| **Limits** [#301](https://github.com/followLemmi/cowork-deck/issues/301) | Many sessions draw on one budget, and when it runs out they stall together. What each connected AI has left, where that number came from, and a pill that says "nothing moves until 19:00" instead of "3 waiting" [#305](https://github.com/followLemmi/cowork-deck/issues/305). |
+| **Limits** [#301](https://github.com/followLemmi/cowork-deck/issues/301) | Many sessions draw on one budget, and when it runs out they stall together. What each connected AI has left, where that number came from, and a reading that says "nothing moves until 19:00" rather than "3 waiting" [#305](https://github.com/followLemmi/cowork-deck/issues/305). |
 | **Frame rate** [#261](https://github.com/followLemmi/cowork-deck/issues/261) | Dragging a grip or resizing the window gives up three quarters of the display's frame rate. Measured, with the work that follows from the measurements. |
 
 ### Later
