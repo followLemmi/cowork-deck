@@ -93,8 +93,13 @@ drags is contrast taken off the captions sitting on it.
 It is a window onto another program. The six ANSI hues are Claude Code's and stay One
 Dark; what moved is the frame — `background`, `foreground`, `cursor`, `black` — which is
 the app's, plus `brightBlack`, which is the terminal's equivalent of `--fg-dim` and is
-most of what Claude Code's secondary output is drawn in. On the new ground it measures
-7.20:1, up from 6.40.
+most of what Claude Code's secondary output is drawn in.
+
+**The ground moved once more in the third round, and the sentence above is still
+true.** `term` went from L 0.145 to 0.180 — see *the terminal was a hole* below. The
+hues did not move; the surface they are read on did, so `brightBlack` measures 6.81
+rather than 7.20 and One Dark's `red`, the floor of the set, measures 5.87. Both are
+asserted in `scripts/contrast.mjs`, which reads the theme rather than quoting it.
 
 The caret is now the foreground rather than the accent. It stopped being a choice when
 the accent became light itself: of two names for the same value, only one is true of a
@@ -108,7 +113,7 @@ happens in one place rather than by hand:
 
 | mockup | app | why |
 |---|---|---|
-| `--term-bg`, `--bg-code` | `--bg-terminal` | a terminal body and the diff's ground are one surface in the app; the mockup splits them one unit of L apart |
+| `--term-bg`, `--bg-code` | `--bg-terminal`, `--bg-code` | one token carried both while the two resolved close together; with `term` at the island's own lightness they answer different questions, so the app takes both names — see *a tile is one surface* below |
 | `--diff-add`, `--diff-del` | `--diff-add-weak`, `--diff-del-weak` | named for being weak tints under code rather than for the hues themselves |
 | `--edge-lit` + `--sh-1` | `--sh-island` | composed: on this ground a raised surface IS a lit hairline plus a contact shadow |
 | `--sh-2` | `--sh-float` | — |
@@ -288,6 +293,214 @@ gone.
 `⇧⌘B` / `⇧⌘P` were proposed and NOT shipped: `Ctrl+Shift+B` is broadcast on
 Windows and Linux, and a key that works on one platform and collides on another
 is worse than no key. The palette carries both, as it does the rail's three.
+
+## The third round: the panel was a strip, and its door did not open
+
+Three findings from using the second round, all about the same panel, and two of
+them are defects rather than decisions.
+
+**The panel is an island now.** It shipped as a flat `--bg-void` column: head,
+tabs and page lying straight on the void, no edge, no radius, no contact shadow,
+flush against the window's own frame. That is the one region of this shell that
+contradicted the pass it came from — a deck of islands on a void to its left, a
+sidebar whose every list is one, and between them a strip, which is exactly what
+"the dividers that sliced the window into strips are gone" was about. So:
+`--bg-island`, a hairline, `--r-island`, `--sh-island`, and a margin so the void
+shows on three sides. Nothing on the left, because the deck's own padding is
+already a gap of that size and two of them read as a mistake.
+
+The ladder has two rungs and no third, so every surface that was an island *on the
+void* keeps its edge inside the panel and gives up its shadow — `.tk-card`,
+`.tk-rows`, `.tk-migrate`, `.pr-row`. Enumerated rather than
+`#wspanel * { box-shadow: none }`, because in this stylesheet a focus ring IS a
+box-shadow and that rule would take the keyboard's only feedback with it. The clip
+that rounds the page is on `#wsp-body` and not on the island: the grip hangs off
+the island's left edge, and an `overflow: hidden` there halves its hit area.
+
+`scripts/contrast.mjs` moved four declarations with it, and one group of them was
+already wrong: the diff bands are a 0.13 tint over `--bg-terminal` — which
+`.pr-drawer-body` states outright, *code gets the terminal's ground and chrome gets
+the island's* — and the file said `--bg-void`, which is neither. A translucent tint
+measured over the wrong base is a measurement of a screen nobody sees. They move by
+little, because `--bg-terminal` and `--bg-void` are five units of brightness apart,
+and that is exactly why nobody caught it. All of them clear the threshold on the
+real ground, so this is a corrected declaration and not a fixed failure. 60 cases
+now, including both states of the new chip below.
+
+**A zoom left no pointer route to the board at all.** The chip on the workspace's
+row was the only one, and it lives in the panel a zoom collapses — so from the
+state a person spends most of their day in, the board was reachable by palette and
+by nothing else. The second door is on the **crumb**: it already names the
+workspace these two pages are about, and it is the one thing on screen the zoom
+leaves. A toggle rather than an opener, with `aria-expanded` and `aria-controls`,
+because unlike the chip it is visible in both states — and the state has three
+writers (the door, the chip's route in, the panel's own ✕), so `drawCrumbPages`
+answers to all three.
+
+**A tile is one surface, and the terminal has no ground of its own.** Everything
+around it was a raised grey island; inside the tile was near-black with square
+corners butted against the head, so the frame read as the object and the body as a
+hole cut in it.
+
+*It took two goes, and the middle one is the useful part of the record.* `term`
+began at L 0.145 — 0.060 under the island, 0.037 over the void, nearer to the stage
+than to its own card. Raising it to 0.180 halved that and left 0.025, which turned
+out to be the worst of the range: too small to read as a surface, too large to
+disappear, so what a person saw was a **seam** under the tile's head. A step between
+a title and the thing it titles has nothing to say. So `term` is the island's own
+0.205: head and body are one ground, and the deck is islands on a void with nothing
+drawn inside them.
+
+*`code` did not follow it, and that is the second half.* A patch is read rather than
+watched, and the boundary between the list of pull requests and the patch beside it
+is carried by that step alone — `.pr-drawer` draws no border, so on one ground the
+two regions merge. The mockups always had two names for these two surfaces; it was
+the app that collapsed them into `--bg-terminal` while the two resolved close
+together. That collapse is undone: `--bg-code` at L 0.173 for the diff and for
+`.tool-source-prompt`, which is a box inside an island and would otherwise be a box
+nobody can see. The mapping table above records the split.
+
+*What went with the step, and what came back because of it.* `.tile-body` and
+`.term-bodies` were briefly inset 8px with a radius — the frame a darker body needs
+to stop reading as a hole. On one ground an inset is invisible and costs a column of
+width, so both went back to full bleed when the step they justified went. The
+drawer's active tab loses the shared fill that said "this one" and keeps its
+`--line-strong` edge and its brighter name: one channel of three, which is what the
+change costs there.
+
+The zoomed tile's tool panel cost more than that, and it is where **THE RULE gained
+its converse**. `.tile-panel` and `.tile-tools` are chrome on the island's ground,
+beside a terminal that is now also on the island's ground — so they simply vanished
+into it. The nineteen-hairline pass removed lines "between two regions that already
+differ in lightness"; these two regions no longer do, and there is no step left to
+carry the boundary, so a line is the answer rather than a relapse. Both take
+`border-left: 1px solid var(--line)`, which is what the mockups drew from the start
+and the port dropped as two of the nineteen — right to go then, right to come back
+now. `--line` and not `--line-strong`, for the reason `contrast.mjs` already gives
+where it rejects the brighter one for the diff's seam: a seam is not a control.
+
+All of it changed in `tools/palette.mjs` for the `ink` direction and re-emitted,
+because that generator is the source. The app's `--bg-terminal` and `--bg-code`,
+xterm's three frame colours in `src/terminal.ts` and the mockups' `--term-bg` /
+`--bg-code` are all statements OF it, and a hand-edit to any one of them is how a
+palette starts disagreeing with itself.
+
+**Every dialog in the app was rendering in Times.** `font-family: var(--font-ui)`
+was declared on `#app`, and `openDialog` appends its overlay to `document.body` — so
+not one dialog inherited it: the settings window, the workspace form, the launch
+parameters, the card, the palette, every confirmation. They came out in the UA's
+default serif at the UA's default leading. Anything that set its own family escaped,
+which is why the odd title looked right and made the rest look deliberate. The type,
+the ink and the leading are on `body` now; `#app` keeps its layout and its ground.
+
+**The settings window had never rendered as its own stylesheet describes it.**
+`.modal-box--settings` sets `padding: 0` so the rail can reach the frame — and
+`.modal-box`, declared a thousand lines below it with `padding: var(--sp-5)`, won on
+source order. What drew instead was a rail inset 20px inside a rounded card, square
+corners against round ones. Every other `.modal-box--*` variant happens to be
+declared after the base and never noticed. Fixed by specificity rather than by moving
+the rule, because the block belongs beside the `.set-*` rules it governs.
+
+And the window's one button was the platform's: `.modal-ok`'s treatment is written as
+`.modal-actions .modal-ok`, the foot was a `.set-foot`, and what a person got in the
+window whose subject is how the app looks was a grey OS control with a 2px outset
+border in Arial. The foot is a `.modal-actions` now — the class IS the styling — and
+`.set-foot` adds only this window's padding.
+
+**Settings grew a Scenarios section, and the journal's switch moved into it.**
+Second in the rail, which is where "often and harmless" puts it. The section is the
+whole extensibility claim being cashed: one entry in `SECTIONS`, one row, one pane,
+nothing else touched. `labeledCheck` is exported from `forms.ts` rather than copied,
+so "a box, its label and the line under it" stays one shape. The journal keeps the
+SENTENCE that says recording is off — an empty page whose emptiness is a setting has
+to say so where the emptiness is — and the switch that changes it now lives with the
+other things you set once and leave.
+
+**Three islands, three heads, and the heads above them are gone.** The tree and the
+scenarios were each a raised surface with a head of its own; the journal was loose
+rows on the column's own ground with its title *clipped to a pixel*, because the
+panel's head above the page said the name instead. So the column stated every page's
+name twice — `.panel-title` in `Sentence case` twelve pixels above the island's
+`CAPS` — and one of the three had no head at all.
+
+The name now lives where it is attached to the thing it names: `.panel-title` is
+gone, the journal's mount takes `.island` like the other two, and its title is a bare
+visible `h3` reading **Journal** — the word the rail and the palette already use,
+rather than "Scenario runs". What is left in the panel's head is the half that was
+always load-bearing: which workspace, which folder, which account. The workspace's
+name inside the journal stays clipped, because that head still states it.
+
+Two things left the journal's head with it. The **"Record scenario runs" switch** —
+a setting living inside the page it governs, which is a fair argument in a full-width
+screen and a bad one in a 280px column where it sat above the records looking like a
+third filter. It goes to the settings window; until it gets there `recordScenarioRuns`
+is read-only, still gating recording and still defaulting to on, and the empty state
+still says so when it is off. And the **⏰** in the empty state's copy, which was the
+only emoji in this page's prose.
+
+That copy is now the page's own description, because the `!anyRuns` branch is the one
+state a person can reach before they have ever seen a record — the other three
+describe a situation, this one describes the page: what a run is, what is written
+down, why that matters at 09:00 for something that ran at 03:00, and which sessions
+are deliberately not recorded. `#sidebar h3` became `#sidebar .island > h3` in the
+same pass: it was catching the empty state's own `h3` and rendering "No scenario runs
+yet" — a sentence — in the dim caps of a section head. One treatment per kind of
+heading.
+
+`scripts/contrast.mjs` moved twelve declarations onto `--bg-island`, which is what the
+journal's rows now sit on. Seven change nothing but the honesty of the record — their
+group's base is the row's own opaque fill — and five were measuring ink against the
+stage that has sat on an island since this page became one: the erase control, the
+chain note, the workspace label, and the two chips on a continued row. All clear.
+
+**And the journal was in the wrong panel.** Not "styled differently" — in the wrong
+box. It was inserted as `prEl.after(historyEl)`, which was correct while all five
+pages shared `#panel-stack`, and silently wrong from the moment the board moved to
+`#wspanel` and took `#pr` with it. The rail's Journal button was un-hiding a page
+inside a panel that is hidden by default: the journal rendered at 0×0, and with the
+workspace panel open it rendered on the wrong side of the window. It is appended to
+the stack explicitly now, between the tree and the scenarios — the order the rail
+lists them, which for overlapping pages in one grid cell is the order the keyboard
+walks them. `tests/panel-stack.test.ts` asserts the parentage of all five, because
+nothing did: the app.ts comment describing the old arrangement was still there,
+still saying all five ended up in the stack.
+
+**The third island in the left column is gone, and so is the running bill.** After
+the tree arrived, the deck's own list mount held exactly one line — `Total spend ·
+N out · N in` — and an island around it. A running total is not something a person
+acts on: it does not say which session spent it, and there is nothing to do about it
+from here. It is stated nowhere now; each session's own spend is still on its tile's
+token badge, in the tooltip `tokenTooltip` writes. The mount stays, because with no
+tree — or with sessions whose workspace was deleted from under them — the groups
+still render into it, and it is `hidden` when a render leaves it empty. An island
+with nothing in it is a box the eye has to dismiss.
+
+**A caption and its title were 1px apart.** `.panel-titles`, `.wsp-titles` and
+`.tool-titles` are the same two-line head in three places, and at `gap: 1px` the
+title read as a second line of the caption above it rather than as the heading under
+it. All three take `--sp-1`: the same shape spaced differently in three places is
+three shapes.
+
+**Every control on a workspace row was dead on macOS, Windows and X11.** Not the
+chip alone: ✎, 🗑 and the pull-out control with it. The tear-out gesture takes
+`setPointerCapture` on the ROW at `pointerdown`, and a captured pointer retargets
+the compatibility mouse events along with the pointer ones — `click` included. So
+every press on a control arrived at the row, the control's handler never ran, and
+the row's ran instead with `e.target` pointing at itself, where its
+`closest(".ws-edit, .ws-del, .ws-detach")` guard could not see what had been
+pressed. What a person got was the sessions folding.
+
+It was invisible three ways over, which is the part worth keeping written down. It
+is behind `placesWindows`, so a Wayland desktop never saw it. The harness's
+`host_platform` answered without that field at all — and a missing boolean reads as
+false, which is the one value that switches the gesture off, so 1161 tests and every
+screenshot ran the branch almost nobody runs. And the pure functions the gesture's
+own test file covers are the two that decide *whether* a drag has begun, which is
+not where this lives. The fix is one guard, `pressStartsOnControl`: any button in
+the row except the name, so a control added next year is protected by having been
+added. The mock now sends the field the Rust struct always sends, and
+`tests/ws-row-controls.test.ts` reads the panel's real render rather than a fixture,
+because the thing that rots here is the class names.
 
 **Settings became a rail of sections.** A section is one row in the rail and one
 pane beside it — that is the whole extensibility claim. Appearance, Config

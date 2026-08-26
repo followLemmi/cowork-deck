@@ -136,6 +136,26 @@ export class WorkspacesPanel {
     private onDeleted: ((workspaceId: string) => void) | null = null,
   ) {}
 
+  /** The one workspace this panel may show, or null for all of them.
+   *
+   *  Set by a window pinned to one workspace, and it decides two things that used
+   *  to disagree with each other. The list is that workspace and nothing else —
+   *  a window pulled out to hold `relay` listing `harbor` and `atlas` beside it
+   *  offers to switch to a workspace whose sessions are in the other window, and
+   *  answers with an empty deck. And `load()` no longer reads `ui_state.json` for
+   *  which one to open: that file holds the MAIN window's answer, so a pinned
+   *  window could and did open showing a different workspace from the one its own
+   *  label names.
+   *
+   *  A method rather than a ninth constructor argument, and the same shape as
+   *  `setSkillsSource` and `setTreeHooks`: this panel is built before the window
+   *  hands it anything. */
+  private pinnedTo: string | null = null;
+  pinTo(workspaceId: string) {
+    this.pinnedTo = workspaceId;
+    this.render();
+  }
+
   /** Which workspaces are open in a window of their own.
    *
    *  The owner's requirement, verbatim: *"we need to show this pulled-out
@@ -160,9 +180,15 @@ export class WorkspacesPanel {
   get all(): Workspace[] { return this.items; }
 
   async load() {
-    this.items = await listWorkspaces();
+    const all = await listWorkspaces();
+    // Filtered here rather than at every reader: `all`, `active`, `activate` and
+    // the deck's grouping all ask this panel what workspaces there are, and in a
+    // pinned window there is one true answer to that.
+    this.items = this.pinnedTo === null ? all : all.filter((w) => w.id === this.pinnedTo);
     if (!this.activeId && this.items.length) {
-      const saved = (await loadUiState()).activeWorkspaceId;
+      // `ui_state.json` is the main window's answer and is not consulted by a
+      // window that already knows which workspace it is for — see `pinnedTo`.
+      const saved = this.pinnedTo === null ? (await loadUiState()).activeWorkspaceId : null;
       const pick = saved && this.items.some((w) => w.id === saved) ? saved : this.items[0].id;
       this.select(pick);
     }
@@ -254,7 +280,12 @@ export class WorkspacesPanel {
 
   private render() {
     this.waitingSlots.clear();
-    this.mount.innerHTML = "<h3>Workspaces and sessions</h3>";
+    /* The heading names what the list is, and in a pinned window the list is one
+       workspace's sessions — "Workspaces" there is a plural with one member and a
+       promise of a choice that is not on offer. */
+    this.mount.innerHTML = this.pinnedTo === null
+      ? "<h3>Workspaces and sessions</h3>"
+      : "<h3>Sessions</h3>";
     for (const w of this.items) {
       const row = document.createElement("div");
       const isDetached = this.detached.has(w.id);
@@ -412,10 +443,14 @@ export class WorkspacesPanel {
       kids.dataset.ws = w.id;
       this.mount.appendChild(kids);
     }
-    const addBtn = document.createElement("button");
-    addBtn.className = "ws-add"; addBtn.textContent = "+ workspace";
-    addBtn.onclick = () => this.add();
-    this.mount.appendChild(addBtn);
+    /* Adding a workspace is the app's act, not this workspace's: the new one
+       would appear in the main window's tree and in no list this window keeps. */
+    if (this.pinnedTo === null) {
+      const addBtn = document.createElement("button");
+      addBtn.className = "ws-add"; addBtn.textContent = "+ workspace";
+      addBtn.onclick = () => this.add();
+      this.mount.appendChild(addBtn);
+    }
     /* Last, and it has to be last: the deck's rows live in the containers this
        render just replaced, so they are gone until it repaints them. */
     this.onRendered?.();

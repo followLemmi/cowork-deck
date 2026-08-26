@@ -32,7 +32,7 @@ function state(o: Partial<HistoryState> = {}): HistoryState {
 
 function mount(o: Partial<HistoryState> = {}, handlers = {}) {
   const view = new HistoryView({
-    onFilter: () => {}, onRecording: () => {}, onJump: () => {}, onRerun: () => {},
+    onFilter: () => {}, onJump: () => {}, onRerun: () => {},
     onReveal: () => {}, onDeleteHistory: () => {}, onRefused: () => {}, ...handlers,
   });
   document.body.replaceChildren(view.mount);
@@ -147,24 +147,16 @@ describe("the history screen", () => {
     expect(document.querySelector<HTMLSelectElement>('[data-fk="filter-skill"]')!.value).toBe("s1");
   });
 
-  it("offers the recording switch and reports it", () => {
-    const onRecording = vi.fn();
-    mount({ runs: [rec({ runId: "r" })], recording: true }, { onRecording });
-    const box = document.querySelector<HTMLInputElement>('[data-fk="record-toggle"]')!;
-    expect(box.checked).toBe(true);
-    box.checked = false;
-    box.onchange!(new Event("change"));
-    expect(onRecording).toHaveBeenCalledWith(false);
-  });
-
-  // An empty history with recording silently disabled is a bug report waiting
-  // to happen.
+  /** An empty journal with recording silently off is a bug report waiting to happen,
+   *  so the page says which of the two it is. The switch itself is no longer here —
+   *  a setting living above the records it governs looked like a third filter in a
+   *  280px column, and it is going to the settings window. The sentence stays,
+   *  because it is the only thing that explains an empty page that is not empty for
+   *  the ordinary reason. */
   it("states that recording is off rather than leaving an unexplained void", () => {
     mount({ runs: [], recording: false });
     expect(text()).toContain("not being recorded");
-    // The switch is still there to turn back on — the sentence and the control
-    // in one place is the reason this lives here and not in a text-size dialog.
-    expect(document.querySelector('[data-fk="record-toggle"]')).not.toBeNull();
+    expect(document.querySelector('[data-fk="record-toggle"]')).toBeNull();
   });
 
   it("tells a new journal from a workspace with nothing in it", () => {

@@ -26,6 +26,7 @@
 
 import { openDialog } from "./dialog-shell";
 import { syncQuestions, syncSummary } from "./ipc";
+import { labeledCheck } from "./forms";
 import { mountSync } from "./sync-dialog";
 import { applyScale, currentScale, scaleLabel, SCALE_STEPS } from "./ui-scale";
 import type { ConfigPaths, Workspace } from "./ipc";
@@ -33,7 +34,7 @@ import type { ConfigPaths, Workspace } from "./ipc";
 /** Which pane is showing. A union rather than a string so a caller cannot open a
  *  section that does not exist — the palette opens this window straight at the
  *  config repository, and a typo there would land on a blank pane. */
-export type SettingsSection = "appearance" | "config" | "files";
+export type SettingsSection = "appearance" | "scenarios" | "config" | "files";
 
 /** Everything the window shows that it does not own.
  *
@@ -53,6 +54,11 @@ export interface SettingsInput {
   onEditWorkspace: () => void;
   /** Applied and persisted the moment it is picked. There is no OK to wait for. */
   onScale: (scale: number) => void;
+  /** Whether a scenario's runs are written to the journal. Read here and written
+   *  back through `onRecording`; the value itself lives in `ui_state`. */
+  recording: boolean;
+  /** Same contract as `onScale`: applied and persisted on the spot. */
+  onRecording: (on: boolean) => void;
   /** Which section to land on. Defaults to the first. */
   section?: SettingsSection;
 }
@@ -121,8 +127,14 @@ export function settingsDialog(input: SettingsInput): Promise<void> {
     paneHead.append(paneTitle, paneSub);
     pane.append(paneHead);
 
+    /* `modal-actions` and not only `set-foot`: the app's button styling — the
+       inverted primary fill, the size, `font: inherit` — is written as
+       `.modal-actions button` and `.modal-actions .modal-ok`. Without that class the
+       one button in this window was the platform's own grey control in Arial with a
+       2px outset border, inside a window whose whole subject is how the app looks.
+       The class is the styling; `.set-foot` adds this window's padding to it. */
     const foot = document.createElement("div");
-    foot.className = "set-foot";
+    foot.className = "modal-actions set-foot";
     const done = document.createElement("button");
     done.className = "modal-ok";
     done.textContent = "Done";
@@ -255,6 +267,38 @@ const SECTIONS: Section[] = [
       const hint = document.createElement("p");
       hint.className = "form-hint";
       hint.textContent = "Hit targets keep their pixel size, so they do not shrink with the text.";
+      body.append(hint);
+    },
+  },
+  {
+    id: "scenarios",
+    label: "Scenarios",
+    title: "Scenarios",
+    blurb:
+      "A scenario is a prompt you keep, and the journal is what one leaves behind. "
+      + "This is where you decide whether that record is kept at all.",
+    /* The switch was in the journal's own head, where a setting sat above the records
+       it governs and read as a third filter in a 280px column. A setting is a thing
+       you set once and leave; this window is where those live. The journal keeps the
+       SENTENCE — an empty page whose emptiness is a setting has to say so where the
+       emptiness is. */
+    fill: (body, input) => {
+      body.append(sectionHead("The journal"));
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = input.recording;
+      box.dataset.fk = "record-runs";
+      box.onchange = () => input.onRecording(box.checked);
+      body.append(labeledCheck("Record scenario runs", box,
+        "Every run a scenario starts is written down: how it started, how long it took "
+        + "and what it reported. Sessions you start yourself are never recorded."));
+      const hint = document.createElement("p");
+      hint.className = "form-hint";
+      /* The one thing a person needs to know before switching it off, and the one
+         thing they need to know before switching it back on. Both, because this
+         control has no undo and no confirmation — it applies as it is touched. */
+      hint.textContent = "Switching this off stops new records. Everything already "
+        + "written stays where it is and stays readable — nothing is erased.";
       body.append(hint);
     },
   },

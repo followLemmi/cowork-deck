@@ -8,6 +8,7 @@ import {
 import { ago } from "./pr";
 import { icon } from "./icons";
 import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
+import { skeleton } from "./skeleton";
 
 export interface BoardState {
   project: string;
@@ -377,19 +378,10 @@ export class BoardView {
     };
   }
 
-  /** Grey rows standing in for a list that has not arrived.
-   *
-   *  `aria-hidden`, with one live sentence beside them: to a screen reader six
-   *  empty boxes are six pieces of nothing, and "Loading…" is the whole of what
-   *  they say to anybody else either. */
+  /** Rows standing in for a list that has not arrived — see `skeleton.ts`, which
+   *  draws the same shape for the pull requests. */
   private skeleton(): HTMLElement {
-    const wrap = el("div", "tk-skeleton");
-    wrap.append(el("p", "tk-skeleton-text", "Loading…"));
-    const rows = el("div", "tk-skeleton-rows");
-    rows.setAttribute("aria-hidden", "true");
-    for (let i = 0; i < SKELETON_ROWS; i++) rows.append(el("div", "tk-skeleton-row"));
-    wrap.append(rows);
-    return wrap;
+    return skeleton("tk", SKELETON_ROWS);
   }
 
   /** One list, one state at a time, the way the repository's own issues page

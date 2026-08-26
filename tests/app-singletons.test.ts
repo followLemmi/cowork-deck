@@ -43,6 +43,10 @@ vi.mock("../src/updater", () => ({ offerUpdateIfAvailable: vi.fn().mockResolvedV
 /** The tree hooks `startApp` hands the workspaces panel — the app's only route
  *  to a workspace's own board and pull requests now that neither is in the rail. */
 let treeHooks: { openPage: (id: string, page: "board" | "pr") => void } | null = null;
+/** Which workspace the panel was pinned to, per boot — see the pinned-window
+ *  describe at the foot of this file. Reset by `boot`, not by `clearAllMocks`:
+ *  the panel is a fresh class instance every time and its `vi.fn` goes with it. */
+const pinnedCalls: string[] = [];
 
 vi.mock("../src/workspaces", () => ({
   WorkspacesPanel: class {
@@ -57,6 +61,10 @@ vi.mock("../src/workspaces", () => ({
        seam now: they left the rail for the tree, where each is a child of the
        workspace it belongs to, so there is no app-wide button to click. */
     setTreeHooks = vi.fn((h: never) => { treeHooks = h; });
+    // A window pinned to a workspace narrows this panel to it — the mock only
+    // has to accept the call and record it; the narrowing itself is asserted in
+    // `tests/workspaces.test.ts`, against the real panel.
+    pinTo = vi.fn((id: string) => { pinnedCalls.push(id); });
     sessionHost = vi.fn().mockReturnValue(null);
     showWaiting = vi.fn();
     showExpanded = vi.fn();
@@ -115,6 +123,7 @@ async function boot(role: WindowRole) {
     + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';
+  pinnedCalls.length = 0;
   const { startApp } = await import("../src/app");
   startApp(role);
   await flush();
@@ -186,5 +195,67 @@ describe("the singletons a second window must not run", () => {
     vi.clearAllMocks();
     await boot({ kind: "workspace", workspaceId: "w" });
     expect(loadLayout).toHaveBeenCalled();
+  });
+});
+
+/** The other half of the role, and a different class from the one above: not
+ *  "what may this window do once" but "what is this window ABOUT".
+ *
+ *  A window pulled out to hold one workspace is that workspace's, so the app's own
+ *  navigation is not built in it — the rail carries the journal, the scenarios and
+ *  the settings, and all three are about the app. The confusion this ends is a
+ *  concrete one: the settings opened from inside a project window read as that
+ *  project's settings, and they are not.
+ */
+describe("the shape of a window pinned to one workspace", () => {
+  const rail = () => document.querySelector<HTMLElement>("#rail")!;
+
+  it("builds the rail in the main window", async () => {
+    await boot({ kind: "main" });
+    expect(rail().hidden).toBe(false);
+    expect([...rail().querySelectorAll(".rail-btn")].map((b) => b.getAttribute("title")))
+      .toEqual(["Workspaces and sessions", "Journal", "Scenarios", "Settings"]);
+  });
+
+  /* Not built rather than hidden: a control that exists is one the palette can
+     still reach and the keyboard can still land on. The element itself stays —
+     one body, four windows, `page-bodies.test.ts` — so what is asserted is that
+     it is empty AND out of the layout. */
+  it("builds none of it in a pinned window", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" });
+    expect(rail().hidden).toBe(true);
+    expect(rail().querySelectorAll("button")).toHaveLength(0);
+  });
+
+  /* Collapsing takes the panel to zero width, its head and this button with it.
+     In the main window the rail is what you press to bring it back; here there is
+     no rail, so the control that could strand the window is not offered. */
+  it("keeps the panel: no collapse control where there is no rail", async () => {
+    await boot({ kind: "main" });
+    expect(document.querySelector<HTMLElement>("#panel-shut")!.hidden).toBe(false);
+
+    await boot({ kind: "workspace", workspaceId: "w" });
+    expect(document.querySelector<HTMLElement>("#panel-shut")!.hidden).toBe(true);
+  });
+
+  /* The rule under the tree is about choosing between workspaces, over a choice a
+     pinned window does not offer. */
+  it("drops the tree's rule about choosing a workspace", async () => {
+    await boot({ kind: "main" });
+    expect(document.querySelector<HTMLElement>(".panel-hint")!.hidden).toBe(false);
+
+    await boot({ kind: "workspace", workspaceId: "w" });
+    expect(document.querySelector<HTMLElement>(".panel-hint")!.hidden).toBe(true);
+  });
+
+  /** The panel is narrowed to this window's workspace by the panel itself — this
+   *  is the call that tells it which, and without it the window lists every
+   *  workspace and opens on whichever one `ui_state.json` names. */
+  it("pins the workspaces panel, and only in a pinned window", async () => {
+    await boot({ kind: "main" });
+    expect(pinnedCalls).toEqual([]);
+
+    await boot({ kind: "workspace", workspaceId: "w" });
+    expect(pinnedCalls).toEqual(["w"]);
   });
 });

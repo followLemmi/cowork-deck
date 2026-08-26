@@ -57,12 +57,15 @@ const WS = {
 let revealed: string[] = [];
 let edited = 0;
 let scaled: number[] = [];
+let recorded: boolean[] = [];
 const open = (over: Partial<Parameters<typeof settingsDialog>[0]> = {}) =>
   settingsDialog({
     paths: PATHS, workspace: WS as never, taskSource: "cards in .cowork/tasks",
     onReveal: (p) => revealed.push(p),
     onEditWorkspace: () => { edited += 1; },
     onScale: (s) => scaled.push(s),
+    recording: true,
+    onRecording: (on) => recorded.push(on),
     ...over,
   });
 
@@ -70,11 +73,47 @@ beforeEach(() => {
   revealed = [];
   edited = 0;
   scaled = [];
+  recorded = [];
   mounted = 0;
   disposed = 0;
   document.body.innerHTML = "";
   document.documentElement.removeAttribute("style");
   applyScale(DEFAULT_SCALE, document.documentElement);
+});
+
+/** The scenarios section, which is where the journal's recording switch went. It was
+ *  in the journal's own head — a setting above the records it governs, reading as a
+ *  third filter in a 280px column. A setting is set once and left; this is the window
+ *  those live in. */
+describe("the scenarios section", () => {
+  const toggle = () => document.querySelector<HTMLInputElement>('[data-fk="record-runs"]')!;
+
+  it("shows the value in force when it opened", () => {
+    void open({ recording: false });
+    go("scenarios");
+    expect(toggle().checked).toBe(false);
+  });
+
+  /** As it is touched, like every other section here: there is no OK to wait for, and
+   *  a switch that only took effect on Done would be the one control in this window
+   *  that lies about when it applies. */
+  it("reports a change as it happens, once", () => {
+    void open({ recording: true });
+    go("scenarios");
+    const box = toggle();
+    box.checked = false;
+    box.onchange!(new Event("change"));
+    expect(recorded).toEqual([false]);
+  });
+
+  /** The sentence that has to travel with the switch: the reason a person hesitates
+   *  over it is whether it throws away what is already written. */
+  it("says that switching it off erases nothing", () => {
+    void open();
+    go("scenarios");
+    const pane = document.querySelector<HTMLElement>('.set-body:not([hidden])')!;
+    expect(pane.textContent).toMatch(/nothing is erased|stays readable/i);
+  });
 });
 
 /** The shape of the window, which is the part that has to survive sections being
@@ -91,7 +130,7 @@ describe("the settings window's sections", () => {
 
   it("marks the row whose pane is showing, and only that one", () => {
     void open();
-    for (const id of ["appearance", "config", "files"] as SettingsSection[]) {
+    for (const id of ["appearance", "scenarios", "config", "files"] as SettingsSection[]) {
       go(id);
       const current = [...document.querySelectorAll(".set-nav-item")]
         .filter((b) => b.getAttribute("aria-current") === "page");

@@ -11,6 +11,15 @@ export interface GroupTile {
    *  raises the window that has it. That is what keeps "who is blocked on me"
    *  reaching the other monitor. Absent for a session this window renders. */
   remote?: string;
+  /** The git branch of the directory this session runs in, when it is known.
+   *
+   *  Polled per unique cwd rather than per session, so every session in one
+   *  repository reports the same branch — and a session launched on a worktree
+   *  reports that worktree's, which is the case this exists for: two sessions in
+   *  one workspace, on two branches, are otherwise two rows saying the same
+   *  thing. Absent until the first poll answers, and for a proxy row, whose
+   *  directory this window cannot read. */
+  branch?: string | null;
 }
 export interface TileGroup { workspace: WorkspaceMeta | null; tiles: GroupTile[]; }
 

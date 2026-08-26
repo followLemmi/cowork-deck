@@ -54,7 +54,13 @@
     </div>
     <script type="module">
       import { installMocks } from "/harness/mock.ts";
-      installMocks("workspace-ws-harbor");
+      // `ws-relay`, and it has to be: every session in `harness/fixtures.ts`
+      // belongs to relay, and a window pinned to a workspace now lists that
+      // workspace and no other. Pinned to harbor, this page showed an empty
+      // deck above five sessions filed under "Other" — a state the real window
+      // cannot reach, since a detached window is handed its own workspace's
+      // sessions and nobody else's.
+      installMocks("workspace-ws-relay");
       await import("/src/workspace.ts");
       window.__HARNESS_BOOTED__ = true;
     </script>

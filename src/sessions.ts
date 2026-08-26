@@ -1,7 +1,7 @@
 import { TerminalPanel } from "./terminal";
 import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
 import { gitStatus, sessionSnapshots, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
-import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
+import { formatContext, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
@@ -30,6 +30,10 @@ interface Tile {
   panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  /** The branch the poll last read for this tile's directory, kept beside the
+   *  badge that renders it because the sidebar row needs the same answer and
+   *  reading it back out of the badge's text would be parsing our own markup. */
+  branch: string | null;
   /** The tools that belong to this session, inside its frame and only while it is
    *  zoomed. See `tile-tools.ts` for why they are not in the app's panel. */
   tools: TileTools;
@@ -404,6 +408,7 @@ export class Deck {
       for (const t of tiles) {
         if (!this.tiles.has(t.session)) continue;
         const g = gitByCwd.get(t.workspacePath);
+        t.branch = g?.branch ?? null;
         if (g && g.branch) {
           t.gitBadge.replaceChildren(
             icon("git-branch", 12),
@@ -510,19 +515,20 @@ export class Deck {
     });
   }
 
-  /** Бейдж рисуется ТОЛЬКО когда что-то не так: аккаунт не подключился или
-   *  окружение устарело после смены привязки. В норме шапка тайла чистая. */
+  /** The badge is drawn ONLY when something is wrong: the account did not
+   *  connect, or the environment went stale when the binding changed. In the
+   *  ordinary case a tile head carries nothing here. */
   private renderAuthBadge(tile: Tile) {
     const { authBadge: b } = tile;
     if (tile.authStale) {
       b.textContent = "GitHub ⟳";
-      b.title = "Привязка воркспейса изменилась — окружение подхватится после перезапуска сессии";
+      b.title = "The workspace binding changed — the environment follows when the session restarts";
       b.className = "tile-auth stale";
       return;
     }
     if (tile.auth?.degraded) {
       b.textContent = "GitHub ✕";
-      b.title = `Аккаунт ${tile.auth.account ?? "?"} не подключён: ${tile.auth.degraded}`;
+      b.title = `Account ${tile.auth.account ?? "?"} did not connect: ${tile.auth.degraded}`;
       b.className = "tile-auth";
       return;
     }
@@ -918,7 +924,7 @@ export class Deck {
     const tile: Tile = {
       session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label, tools,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
+      gitBadge, authBadge, tokenBadge, branch: null, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
       skillId: opts.skillId, params: opts.params,
     };
@@ -1663,28 +1669,25 @@ export class Deck {
         state: t.state, workspaceId: t.workspaceId,
       })),
     });
-    /* No heading of its own any more, and that is the tree arriving: the row above
-       these sessions is the workspace's, stated once, and how many are waiting is
-       the ledger's reading in the top bar. This element used to say both again. What
-       is left in it is the bill, which nothing else states. */
+    /* Nothing of its own any more, and that is the tree arriving in two steps. The
+       heading went first — the row above these sessions is the workspace's, stated
+       once, and how many are waiting is the ledger's reading in the top bar. The
+       total spend went second, by request: a running bill is not something a person
+       acts on, and it was the one line keeping a third island in this column. Each
+       session's own spend is still on its tile's token badge, in the tooltip
+       `tokenTooltip` writes.
+
+       So on the tree's own path this mount ends up EMPTY, and an empty island is a
+       small painted box with nothing in it — hidden at the end of this function.
+       It is not dead: with no tree, or with sessions whose workspace was deleted from
+       under them, the groups below still render into it. */
     this.listEl.replaceChildren();
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
-    // The bill across every session, subagents included. Context does not
-    // aggregate — each session has its own window and adding them describes
-    // nothing — so the footer carries spend and the tiles carry context.
-    const total = sumUsage([...this.usage.values()].map((t) => t.spend));
-    if (this.usage.size > 0) {
-      const sum = document.createElement("div");
-      sum.className = "sess-tokens-sum";
-      sum.textContent =
-        `Total spend · ${formatTokens(total.output)} out · ${formatTokens(spendIn(total))} in`;
-      this.listEl.appendChild(sum);
-    }
     const groups = groupTilesByWorkspace(
       [
         ...tiles.map((t) => ({
           session: t.session, name: resolveTileName(t.names), state: t.state,
-          workspaceId: t.workspaceId, workspacePath: t.workspacePath,
+          workspaceId: t.workspaceId, workspacePath: t.workspacePath, branch: t.branch,
         })),
         // Proxies, mixed in rather than listed apart: a session is under its
         // workspace wherever it is being rendered, and a separate "elsewhere"
@@ -1763,12 +1766,12 @@ export class Deck {
         // one thing about it a sighted reader gets from the dimmed row and a
         // screen reader would otherwise get from nothing at all. Not
         // `aria-disabled`: the row is not disabled, it does something different.
-        row.setAttribute(
-          "aria-label",
-          t.remote
-            ? `${t.name} — ${LABEL[t.state]} — in another window`
-            : `${t.name} — ${LABEL[t.state]}`,
-        );
+        // The branch is on the row for the eye, so it is in the accessible name
+        // too: a list where two rows differ only by which worktree they run in
+        // must differ by that for a reader who never sees the second line.
+        const meta = [LABEL[t.state], ...(t.branch ? [t.branch] : []),
+          ...(t.remote ? ["in another window"] : [])];
+        row.setAttribute("aria-label", [t.name, ...meta].join(" — "));
         const isActive = !!live?.el.classList.contains("is-active");
         row.className = "sess-row" + (isActive ? " active" : "")
           + (t.remote ? " remote" : "");
@@ -1791,12 +1794,39 @@ export class Deck {
         row.onclick = t.remote
           ? () => this.onRemoteFocus(t.remote!, t.session)
           : () => this.focusSessionAnywhere(t.session);
-        const stateSpan = document.createElement("span");
-        stateSpan.className = `tile-state state-${t.state}`;
-        stateSpan.textContent = LABEL[t.state];
+        /* Two lines, and which one is which is the whole point: the name is what
+           tells one session from another, so it takes the row's full width on a
+           line of its own, and everything that is true of every row — the state,
+           the branch — goes under it, quieter and smaller.
+           What this replaces put the state chip FIRST, which made a column of a
+           dozen sessions read as a column of pills: the chips are the widest and
+           brightest thing in the row, they are a different width per state, and
+           so the names started at a different x on every line. There was no column
+           for the eye to run down. */
         const nameSpan = document.createElement("span");
+        nameSpan.className = "sess-name";
         nameSpan.textContent = t.name;
-        row.append(stateSpan, " ", nameSpan);
+        // The row truncates now rather than wrapping to four lines, so the full
+        // name has to be reachable. The accessible name already carries it; this
+        // is for the sighted reader looking at "Port the settings rail to t…".
+        nameSpan.title = t.name;
+        const metaLine = document.createElement("span");
+        metaLine.className = "sess-meta";
+        const stateSpan = document.createElement("span");
+        // `--bare` and not a chip: the fill was contrast spent rather than earned
+        // (see the note over `.state-ended`), and a pill per row is what made the
+        // list unreadable. The dot the chip already carries stays, and so does the
+        // rail — two channels for the state, which is one more than the name gets.
+        stateSpan.className = `tile-state tile-state--bare state-${t.state}`;
+        stateSpan.textContent = LABEL[t.state];
+        metaLine.append(stateSpan);
+        if (t.branch) {
+          const branchSpan = document.createElement("span");
+          branchSpan.className = "sess-branch";
+          branchSpan.append(icon("git-branch", 12), document.createTextNode(` ${t.branch}`));
+          metaLine.append(branchSpan);
+        }
+        row.append(nameSpan, metaLine);
         into.appendChild(row);
       }
 
@@ -1824,6 +1854,11 @@ export class Deck {
         if (!folded) host.appendChild(this.createRow(w.id, w.name));
       }
     }
+    /* An island with nothing in it is a box the eye has to dismiss. `hidden` rather
+       than a class, because `#sidebar .island` sets no `display` of its own and the
+       attribute's is enough — and it has to be re-evaluated on every render, since
+       an orphan group appearing is what fills this again. */
+    this.listEl.hidden = this.listEl.childElementCount === 0;
     if (focusKey) {
       this.listEl.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
     }

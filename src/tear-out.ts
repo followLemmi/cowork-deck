@@ -49,3 +49,32 @@ export function startsTearOut(e: {
 }): boolean {
   return e.button === 0 && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
 }
+
+/** Whether a press inside a workspace row belongs to a control rather than to the
+ *  row itself.
+ *
+ *  This is what keeps the gesture from eating the row's own buttons, and the
+ *  reason is not obvious enough to leave unwritten. `beginTearOut` captures the
+ *  pointer on the ROW, and a captured pointer retargets not only the pointer
+ *  events but the compatibility mouse events with them — `click` included. So
+ *  every press on ✎, on 🗑, on the pull-out control or on the
+ *  `board · PRs · journal` chip was delivered to the row: the control's own
+ *  handler never ran, and the row's ran instead with `e.target` pointing at
+ *  itself, where its `closest(".ws-edit, .ws-del, .ws-detach")` guard could not
+ *  see which control had been pressed. Four dead controls, and a press that
+ *  folded the sessions instead of doing what it said.
+ *
+ *  It bit only where windows can be placed — `placesWindows`, so macOS, Windows
+ *  and X11 but not Wayland — because that is the flag the capture is behind. The
+ *  harness could not see it either: its `host_platform` answered without the
+ *  field at all, which reads as false.
+ *
+ *  Any button EXCEPT the name, rather than a list of the four: a control added to
+ *  the row next year is protected by having been added. The name is deliberately
+ *  not a control here — dragging a workspace by the thing that names it is the
+ *  gesture, and the label's own click bubbles to the row on purpose. */
+export function pressStartsOnControl(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const control = target.closest("button");
+  return control !== null && !control.classList.contains("ws-label");
+}

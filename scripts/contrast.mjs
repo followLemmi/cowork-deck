@@ -209,11 +209,16 @@ const EXEMPT = 0;   // measured and reported, but disabled controls are exempt
  *  board filter, which is where a user is most likely to be looking. */
 const ACTIVE_ROW = ["--bg-island", "--sel"];
 
-/** The two diff bands: a tint at 0.13 painted straight onto the list's own ground.
- *  The tint sits *under* code, so every point of alpha is contrast taken off `--fg`
- *  — which is why the cases below are worth keeping rather than assuming. */
-const ADDED_BAND = ["--bg-void", "--diff-add-weak"];
-const REMOVED_BAND = ["--bg-void", "--diff-del-weak"];
+/** The two diff bands: a tint at 0.13 painted straight onto the code surface's own
+ *  ground. The tint sits *under* code, so every point of alpha is contrast taken off
+ *  `--fg` — which is why the cases below are worth keeping rather than assuming.
+ *
+ *  That ground is `--bg-code`, the token the diff got when the terminal's ground rose
+ *  to the island's and the two surfaces stopped being one. It read `--bg-void` here
+ *  for a while, which was neither of them, and a translucent tint measured over the
+ *  wrong base is a measurement of a screen nobody sees. */
+const ADDED_BAND = ["--bg-code", "--diff-add-weak"];
+const REMOVED_BAND = ["--bg-code", "--diff-del-weak"];
 
 // Values read out of the rules they belong to, so this table cannot drift from
 // the stylesheet it describes.
@@ -282,6 +287,24 @@ const CASES = [
     fg: "--st-error", backdrop: ["--bg-hover"],
     threshold: TEXT, sc: "1.4.3",
   },
+  /* The crumb's door to the workspace's two pages — a chip on the window's chrome
+     rather than on a panel's ground, which is a pair nothing in this bar had until
+     it arrived. Both states, because the resting one is `--fg-mid` under a 7% fill
+     and the open one moves both the fill and the ink: a chip measured in one state
+     says nothing about the other, which is how `.state-error` went unnoticed at
+     3.34 on a selected row. */
+  {
+    what: "the crumb's board · PRs chip",
+    where: "at rest: `--sel` over the top bar's chrome, with the quieter ink",
+    fg: "--fg-mid", backdrop: ["--bg-chrome"], group: ["--sel"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the same chip, open or hovered",
+    where: "the panel is showing, or the pointer is on it: a step of fill and the ink goes up",
+    fg: "--fg", backdrop: ["--bg-chrome"], group: ["--sel-hover"],
+    threshold: TEXT, sc: "1.4.3",
+  },
   {
     what: "the rail's dot",
     where: "6px of amber on the rail's ground, which is the stage's — a graphic, not text",
@@ -327,13 +350,25 @@ const CASES = [
   {
     what: "closed card meta",
     where: "a closed card on the board, no longer dimmed",
-    fg: "--fg-dim", backdrop: ["--bg-void"], group: ["--bg-island"],
+    fg: "--fg-dim", backdrop: ["--bg-island"], group: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "terminal brightBlack",
     where: "most of Claude Code's secondary output — hints, timestamps, diff context",
     fg: termColor("brightBlack"), backdrop: [termColor("background")],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  /* The floor of the ANSI set, now that the ground under it has moved. The six hues
+     are Claude Code's and not ours to relight — but the surface they are read on is
+     ours, so what they measure on it is ours to check. One Dark's `red` is the
+     darkest of them and therefore the whole set's floor: clear it and the other five
+     are clear by arithmetic. It is here rather than in a comment because the ground
+     moved once already, and a number written by hand would have stayed where it was. */
+  {
+    what: "terminal red, the ANSI floor",
+    where: "One Dark's darkest hue on the app's terminal ground — the set's worst case",
+    fg: termColor("red"), backdrop: [termColor("background")],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -461,49 +496,49 @@ const CASES = [
   {
     what: ".run-running on a history row",
     where: "a run still in flight, on the row's island ground",
-    fg: "--st-working", backdrop: ["--bg-void"], group: ["--bg-island", RUN_RUNNING_FILL],
+    fg: "--st-working", backdrop: ["--bg-island"], group: ["--bg-island", RUN_RUNNING_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".run-ended on a history row",
     where: "the ordinary outcome, and the most common row on the screen",
-    fg: "--st-ended", backdrop: ["--bg-void"], group: ["--bg-island", RUN_ENDED_FILL],
+    fg: "--st-ended", backdrop: ["--bg-island"], group: ["--bg-island", RUN_ENDED_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".run-error on a history row",
     where: "a non-zero exit",
-    fg: "--st-error", backdrop: ["--bg-void"], group: ["--bg-island", RUN_ERROR_FILL],
+    fg: "--st-error", backdrop: ["--bg-island"], group: ["--bg-island", RUN_ERROR_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".run-interrupted on a history row",
     where: "a run a crash or a closed lid cut short",
-    fg: "--st-waiting", backdrop: ["--bg-void"], group: ["--bg-island", RUN_INTERRUPTED_FILL],
+    fg: "--st-waiting", backdrop: ["--bg-island"], group: ["--bg-island", RUN_INTERRUPTED_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".run-failed-to-launch on a history row",
     where: "a schedule that started nothing — the error hue, told apart by a dashed border",
-    fg: "--st-error", backdrop: ["--bg-void"], group: ["--bg-island", RUN_NOLAUNCH_FILL],
+    fg: "--st-error", backdrop: ["--bg-island"], group: ["--bg-island", RUN_NOLAUNCH_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".run-interrupted on a continued row",
     where: "the lighter ground an earlier link of a chain sits on — the worst of the two",
-    fg: "--st-waiting", backdrop: ["--bg-void"], group: ["--bg-inset", RUN_INTERRUPTED_FILL],
+    fg: "--st-waiting", backdrop: ["--bg-island"], group: ["--bg-inset", RUN_INTERRUPTED_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: ".run-ended on a continued row",
     where: "the neutral chip on the same lighter ground",
-    fg: "--st-ended", backdrop: ["--bg-void"], group: ["--bg-inset", RUN_ENDED_FILL],
+    fg: "--st-ended", backdrop: ["--bg-island"], group: ["--bg-inset", RUN_ENDED_FILL],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "history result text",
-    where: "the final assistant message, on its own inset ground inside a row",
-    fg: "--fg-mid", backdrop: ["--bg-void"], group: ["--bg-island", "--bg-void"],
+    where: "the final assistant message, on its own inset ground inside a row on the island",
+    fg: "--fg-mid", backdrop: ["--bg-island"], group: ["--bg-island", "--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -515,31 +550,31 @@ const CASES = [
   {
     what: "history /clear warning",
     where: "the line saying the result is only the tail of the conversation",
-    fg: "--st-waiting", backdrop: ["--bg-void"], group: ["--bg-island"],
+    fg: "--st-waiting", backdrop: ["--bg-island"], group: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "history row action",
-    where: "the three row controls, on their own inset ground inside a row",
-    fg: "--fg-mid", backdrop: ["--bg-void"], group: ["--bg-island", "--bg-void"],
+    where: "the three row controls, on their own inset ground inside a row on the island",
+    fg: "--fg-mid", backdrop: ["--bg-island"], group: ["--bg-island", "--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "history erase control",
-    where: "the one erasing control, on the screen's ground beside the filters",
-    fg: "--fg-mid", backdrop: ["--bg-void"],
+    where: "the one erasing control, `background: none` on the island beside the filters",
+    fg: "--fg-mid", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "history workspace label",
-    where: "which workspace the screen is scoped to, beside its heading",
-    fg: "--fg-dim", backdrop: ["--bg-void"],
+    where: "clipped in the panel, where the head one line up states it — the margin if it returns",
+    fg: "--fg-dim", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "history chain note",
-    where: "the line saying a chain is one piece of work rather than three",
-    fg: "--fg-dim", backdrop: ["--bg-void"],
+    where: "the line saying a chain is one piece of work rather than three, on the island",
+    fg: "--fg-dim", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
 
@@ -549,8 +584,8 @@ const CASES = [
   // nothing about the other two, and the drawer puts all three on screen at once.
   {
     what: "diff context text",
-    where: "the unchanged lines, most of any diff",
-    fg: "--fg-mid", backdrop: ["--bg-void"],
+    where: "the unchanged lines, most of any diff, on the code surface's own ground",
+    fg: "--fg-mid", backdrop: ["--bg-code"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -661,13 +696,13 @@ const CASES = [
   {
     what: "--line-strong as the drawer seam", rejected: true,
     where: "rejected — no brighter border than the rest of the app has; the seam is not a control",
-    fg: "--line-strong", backdrop: ["--bg-void"],
+    fg: "--line-strong", backdrop: ["--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
   {
     what: "added band against removed band", rejected: true,
     where: "rejected — tint alone cannot tell the two apart, which is why the marker is a character",
-    fg: "--diff-add-weak", backdrop: ["--bg-void"], group: ["--diff-del-weak"],
+    fg: "--diff-add-weak", backdrop: ["--bg-code"], group: ["--diff-del-weak"],
     threshold: UI, sc: "1.4.11",
   },
 ];

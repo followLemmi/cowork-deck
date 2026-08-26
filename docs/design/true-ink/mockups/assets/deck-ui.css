@@ -68,7 +68,7 @@
   --bg-inset: #28282a;
   --bg-hover: #28282a;
   --bg-hover-2: #38393b;
-  --bg-code: #08090a;
+  --bg-code: #0f1011;
 
   /* The hairline stays visible against a very dark island precisely because the
      island is not black. Both values are measured against it, and the reason
@@ -188,7 +188,7 @@
    the way Xcode keeps a dark editor under a light chrome. The diff, by contrast,
    DOES follow the theme: it is read rather than watched. */
 :root, [data-theme="light"] {
-  --term-bg: #090a0b;
+  --term-bg: #161719;
   --term-fg: #f6f7f9;
   --term-mid: #b9babd;
   --term-dim: #9a9c9f;

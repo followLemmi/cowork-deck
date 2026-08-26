@@ -148,6 +148,15 @@ export class TerminalPanel {
       // frame of one colour around a terminal of another. These are the True Ink
       // values, from `docs/design/true-ink/tools/palette.mjs --app`.
       //
+      // `background` is the ISLAND's value in this theme, and that is deliberate: a
+      // tile is one surface, head and body, and a step between a title and the thing
+      // it titles is a seam you can see. It shipped at #090a0b, which read as a hole
+      // cut in a grey card, then at a value 0.025 short of the island, which read as
+      // exactly that seam. The diff's ground did not follow it — see `--bg-code`,
+      // which is a surface that is read rather than watched. Moved in the GENERATOR,
+      // not here: `term` for the `ink` direction carries the whole reason, and this
+      // line is emitted from it.
+      //
       // The six ANSI hues are the CONTENT's, not the chrome's. They are what Claude
       // Code's own output asks for, and they stay One Dark deliberately: a person
       // reading `red` in a stack trace is reading the program's colour, not this
@@ -159,9 +168,9 @@ export class TerminalPanel {
         // when the accent became light itself: an accent-coloured caret and an
         // ink-coloured one are now the same colour, and of the two names only one
         // is true of a terminal cursor.
-        background: "#090a0b", foreground: "#f6f7f9", cursor: "#f6f7f9",
-        cursorAccent: "#090a0b", selectionBackground: "rgba(246,247,249,0.26)",
-        black: "#090a0b", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
+        background: "#161719", foreground: "#f6f7f9", cursor: "#f6f7f9",
+        cursorAccent: "#161719", selectionBackground: "rgba(246,247,249,0.26)",
+        black: "#161719", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
         blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#dcdfe4",
         // #5c6370 measured 2.73:1 on the old background — and this is the colour
         // Claude Code uses for most of its secondary output: hints, timestamps,

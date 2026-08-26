@@ -98,7 +98,37 @@ const DIRECTIONS = [
       sh2: "0 1px 3px rgba(0, 0, 0, 0.6), 0 26px 64px -20px rgba(0, 0, 0, 0.95)",
       scrimA: 0.74,
     },
-    dark: { void: 0.108, chrome: 0.152, island: 0.205, inset: 0.278, hover2: 0.345, code: 0.138, term: 0.145, line: 0.300, lineS: 0.412, fg: 0.975, mid: 0.790, dim: 0.692 },
+    /* `term` is the island's own lightness here, and `code` is not. That is the one
+       place this direction parts company with the other four, and it took two goes
+       to land.
+
+       It began at 0.145 — 0.060 under the island and 0.037 over the void, so a tile
+       read as a grey frame with a black hole in it: the eye took the frame for the
+       object and the body for a gap. 0.180 halved the step and left 0.025, which is
+       small enough to look like an accident and large enough to see: what you got
+       was a seam under the tile's head, which is worse than either end of the range.
+       So the terminal has no ground of its own in the dark theme. A tile is ONE
+       surface, head and body, and nothing draws a line between a title and the
+       thing it titles.
+
+       `code` stays at 0.173 because the diff is a different question. It is read
+       rather than watched, and the boundary between a list of pull requests and the
+       patch beside it is carried by exactly this step — `.pr-drawer` has no border,
+       and on one ground the two regions would merge into each other. The mockups
+       always had two names for these two surfaces; it was the APP that collapsed
+       them into one token, and this is that collapse undone.
+
+       Both stay dark under a light chrome, because `termTokens` reads the dark
+       ladder whatever the theme is. In the light theme the terminal is dark and the
+       island is near-white, so the two tokens diverge again and the sameness here is
+       a fact about one theme rather than a synonym.
+
+       The ANSI hues did not move and are not ours to move. What changed is the
+       ground they sit on, and every one clears 4.5:1 on it — `brightBlack`, which
+       carries most of Claude Code's secondary output, and One Dark's red, the floor
+       of the set. `npm run contrast` reads the theme in `src/terminal.ts`, so those
+       two numbers are asserted rather than quoted here. */
+    dark: { void: 0.108, chrome: 0.152, island: 0.205, inset: 0.278, hover2: 0.345, code: 0.173, term: 0.205, line: 0.300, lineS: 0.412, fg: 0.975, mid: 0.790, dim: 0.692 },
     light: { void: 0.940, chrome: 0.912, island: 1.000, inset: 0.958, hover: 0.962, hover2: 0.920, code: 0.978, line: 0.876, lineS: 0.744, fg: 0.190, mid: 0.390, dim: 0.470 },
     accent: { dark: [0.975, 0.003, 265], darkPress: [0.900, 0.004, 265], light: [0.240, 0.006, 265], lightPress: [0.180, 0.006, 265] },
   },
@@ -239,9 +269,11 @@ const list = DIRECTIONS.filter((d) => !only || d.id === only);
 /* The app's names for the same values. Four differ, and each difference is the
    app's word rather than the mockups':
 
-     --bg-terminal      a terminal body AND the diff's ground are one surface in
-                        the app; the mockups split them into --term-bg and
-                        --bg-code, which resolve one unit of lightness apart
+     --bg-terminal      a terminal body. It used to carry the diff's ground as well
+                        — one token for the mockups' --term-bg and --bg-code — and
+                        that held only while the two resolved close together. With
+                        `term` at the island's own lightness they are two surfaces
+                        answering two questions, so the app takes both names now
      --diff-add-weak    the mockups' --diff-add / --diff-del, named for being
      --diff-del-weak    weak tints under code rather than the two hues themselves
      --sh-island        the mockups' --edge-lit and --sh-1 composed: a lit top
@@ -257,6 +289,9 @@ function appTokens(d) {
   const out = {};
   for (const name of ["bg-void", "bg-chrome", "bg-island", "bg-inset"]) out[name] = k[name];
   out["bg-terminal"] = t["term-bg"];
+  // The diff's ground, which is no longer the terminal's. See the `ink` direction's
+  // `code`, which carries the reason.
+  out["bg-code"] = k["bg-code"];
   for (const name of ["bg-hover", "bg-hover-2", "line", "line-strong", "fg", "fg-mid", "fg-dim",
                       "accent", "accent-press", "accent-ink", "sel", "sel-hover", "st-ended"]) out[name] = k[name];
   out["diff-add-weak"] = k["diff-add"];

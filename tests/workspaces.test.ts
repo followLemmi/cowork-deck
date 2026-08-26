@@ -184,3 +184,83 @@ describe("remembering the startup workspace", () => {
     expect(selected).toContain("a");
   });
 });
+
+/** A window pulled out to hold one workspace lists that workspace and no other.
+ *
+ *  Two defects in one call, and the second is the quieter of the two: a pinned
+ *  window used to read `ui_state.json` for which workspace to open on — a file
+ *  that holds the MAIN window's answer — so the window whose label said `relay`
+ *  could open showing `harbor`, with a deck full of sessions belonging to
+ *  neither. */
+describe("WorkspacesPanel pinned to one workspace", () => {
+  const items = [
+    { id: "a", name: "A", path: "/a", color: "#111" },
+    { id: "b", name: "B", path: "/b", color: "#222" },
+  ];
+  const mount = () => {
+    const el = document.createElement("div");
+    document.body.append(el);
+    return el;
+  };
+
+  beforeEach(() => {
+    listWorkspacesMock.mockResolvedValue(items);
+    loadUiStateMock.mockResolvedValue({ activeWorkspaceId: "b" });
+  });
+
+  it("keeps the one it is pinned to, and drops the rest", async () => {
+    const panel = new WorkspacesPanel(mount(), () => {});
+    panel.pinTo("a");
+    await panel.load();
+    expect(panel.all.map((w) => w.id)).toEqual(["a"]);
+    expect(panel.active?.id).toBe("a");
+  });
+
+  /* The saved id names a workspace this window is not for. Reading it is what
+     made a pinned window open on somebody else's project. */
+  it("does not open on the workspace ui_state names", async () => {
+    const panel = new WorkspacesPanel(mount(), () => {});
+    panel.pinTo("a");
+    await panel.load();
+    expect(panel.active?.id).toBe("a");
+    expect(loadUiStateMock).not.toHaveBeenCalled();
+  });
+
+  it("still reads it in the main window", async () => {
+    const panel = new WorkspacesPanel(mount(), () => {});
+    await panel.load();
+    expect(panel.active?.id).toBe("b");
+  });
+
+  /* Adding a workspace is the app's act: the new one would appear in the main
+     window's tree and in no list this window keeps. */
+  it("offers no way to add a workspace, and says Sessions over the list", async () => {
+    const el = mount();
+    const panel = new WorkspacesPanel(el, () => {});
+    panel.pinTo("a");
+    await panel.load();
+    expect(el.querySelector(".ws-add")).toBeNull();
+    expect(el.querySelector("h3")?.textContent).toBe("Sessions");
+    expect(el.querySelectorAll(".ws-row")).toHaveLength(1);
+  });
+
+  it("keeps both in the main window", async () => {
+    const el = mount();
+    const panel = new WorkspacesPanel(el, () => {});
+    await panel.load();
+    expect(el.querySelector(".ws-add")).not.toBeNull();
+    expect(el.querySelector("h3")?.textContent).toBe("Workspaces and sessions");
+    expect(el.querySelectorAll(".ws-row")).toHaveLength(2);
+  });
+
+  /* `activate` is how something other than this panel names a workspace — a
+     scenario's run, say. One that is not this window's must not be switched to:
+     its sessions are in another window and the deck here would empty. */
+  it("refuses to activate a workspace it is not pinned to", async () => {
+    const panel = new WorkspacesPanel(mount(), () => {});
+    panel.pinTo("a");
+    await panel.load();
+    expect(panel.activate("b")).toBe(false);
+    expect(panel.active?.id).toBe("a");
+  });
+});

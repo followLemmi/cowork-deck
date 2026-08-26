@@ -3,6 +3,7 @@ import { wireExternal } from "./external";
 import { ghUnavailable, type GhUnavailable } from "./gh-unavailable";
 import { renderMarkdown } from "./markdown";
 import { ago, canMerge, checksLabel, reviewLabel, sortPrs } from "./pr";
+import { skeleton } from "./skeleton";
 
 export type PrUnavailable = GhUnavailable;
 
@@ -240,17 +241,10 @@ export class PrView {
     }
   }
 
-  /** Grey rows standing in for a list that has not arrived. `aria-hidden`, with
-   *  one live sentence beside them: to a screen reader four empty boxes are four
-   *  pieces of nothing. */
+  /** Rows standing in for a list that has not arrived — see `skeleton.ts`, which
+   *  draws the same shape for the board. */
   private skeleton(): HTMLElement {
-    const wrap = el("div", "pr-skeleton");
-    wrap.append(el("p", "pr-skeleton-text", "Loading…"));
-    const rows = el("div", "pr-skeleton-rows");
-    rows.setAttribute("aria-hidden", "true");
-    for (let i = 0; i < SKELETON_ROWS; i++) rows.append(el("div", "pr-skeleton-row"));
-    wrap.append(rows);
-    return wrap;
+    return skeleton("pr", SKELETON_ROWS);
   }
 
   /** Redraw from the state already on screen. No list read: everything that calls

@@ -1,15 +1,17 @@
-// Экран «GitHub»: статус утилиты gh, список аккаунтов, установка и вход.
-// Только рисование — вся логика в github.ts, поэтому здесь нет ни одной
-// ветки, которую стоило бы покрывать юнит-тестом.
+// The GitHub screen: whether gh is installed, which accounts it knows, and the
+// two things a person can do about either — install it, or sign one in.
 //
-// Все данные попадают в DOM через textContent: имена аккаунтов и текст ошибок
-// приходят извне, и innerHTML тут был бы XSS-дырой.
+// Drawing only. Every decision lives in github.ts, which is why there is not one
+// branch here worth a unit test of its own.
+//
+// Everything reaches the DOM through `textContent`: account logins and error text
+// both come from outside this app, and `innerHTML` here would be an XSS hole.
 
 import { wireExternal } from "./external";
 import { ghStatus, hostPlatform, type GhStatus } from "./ipc";
 import { installCommand, scopeWarning } from "./github";
 
-/** Минимум, который экрану нужен от деки. */
+/** The least this screen needs from the deck. */
 export interface CommandRunner {
   openCommandTile(titleText: string, command: string, cwd: string): void | Promise<void>;
 }
@@ -37,29 +39,29 @@ function notFoundBlock(
 
   const run = document.createElement("button");
   run.className = "modal-ok";
-  run.textContent = "Установить";
+  run.textContent = "Install";
   run.onclick = () => {
-    void deck.openCommandTile("установка gh", cmd.value, cwd);
+    void deck.openCommandTile("installing gh", cmd.value, cwd);
     close();
   };
 
   const docs = document.createElement("a");
   docs.className = "gh-link";
-  docs.textContent = "Поставлю сам — открыть инструкцию";
+  docs.textContent = "I will install it myself — open the instructions";
   // Through the opener plugin, like every other link out of the app: this window
   // has nowhere to navigate a `_blank` to (see `external.ts`).
   wireExternal(docs, "https://github.com/cli/cli#installation");
 
   wrap.append(
     para(
-      "GitHub CLI (gh) не найден. Без него воркспейс нельзя привязать к аккаунту — " +
-        "всё остальное в приложении работает как обычно.",
+      "GitHub CLI (gh) not found. Without it a workspace cannot be bound to an " +
+        "account — everything else in the app works as usual.",
       "gh-note",
     ),
     cmd,
     para(
-      "Команду можно поправить перед запуском — она выполнится в обычном тайле-терминале, " +
-        "и её вывод будет виден целиком.",
+      "The command can be edited before it runs — it runs in an ordinary terminal " +
+        "tile, and all of its output is there to read.",
       "gh-hint",
     ),
     run,
@@ -83,7 +85,7 @@ function foundBlock(
     // or the user with two accounts stares at an inexplicably empty list.
     wrap.append(para(`gh could not list accounts: ${status.error}`, "gh-error"));
   } else if (!status.accounts.length) {
-    wrap.append(para("Аккаунтов нет. Добавьте первый — вход проходит в терминале.", "gh-note"));
+    wrap.append(para("No accounts. Add the first — signing in happens in the terminal.", "gh-note"));
   }
 
   for (const a of status.accounts) {
@@ -92,11 +94,11 @@ function foundBlock(
 
     const name = document.createElement("span");
     name.className = "gh-acc-login";
-    name.textContent = a.active ? `${a.login} · активный в gh` : a.login;
+    name.textContent = a.active ? `${a.login} · active in gh` : a.login;
 
     const meta = document.createElement("span");
     meta.className = "gh-acc-meta";
-    meta.textContent = a.state === "success" ? a.scopes.join(", ") : `состояние: ${a.state}`;
+    meta.textContent = a.state === "success" ? a.scopes.join(", ") : `state: ${a.state}`;
 
     row.append(name, meta);
 
@@ -112,18 +114,18 @@ function foundBlock(
 
   const add = document.createElement("button");
   add.className = "modal-ok";
-  add.textContent = "Добавить аккаунт";
+  add.textContent = "Add an account";
   add.onclick = () => {
-    // Device-flow пользователь проходит сам; токен через приложение не идёт.
-    void deck.openCommandTile("вход в GitHub", "gh auth login", cwd);
+    // The device flow is the person's to complete; no token passes through the app.
+    void deck.openCommandTile("signing in to GitHub", "gh auth login", cwd);
     close();
   };
   wrap.append(add);
   return wrap;
 }
 
-/** Открывает экран. Скан gh — при открытии и по кнопке «Перечитать»;
- *  фонового опроса нет сознательно. */
+/** Open the screen. gh is scanned when it opens and when "Read again" is pressed;
+ *  there is deliberately no background poll. */
 export async function openGithubScreen(deck: CommandRunner, cwd = "."): Promise<void> {
   const ov = document.createElement("div");
   ov.className = "modal-overlay";
@@ -151,17 +153,17 @@ export async function openGithubScreen(deck: CommandRunner, cwd = "."): Promise<
         ? foundBlock(status, deck, cwd, close)
         : notFoundBlock(installCommand(await hostPlatform()), deck, cwd, close);
     } catch (e) {
-      body = para(`не удалось опросить gh: ${String((e as { message?: string })?.message ?? e)}`, "gh-note");
+      body = para(`could not ask gh: ${String((e as { message?: string })?.message ?? e)}`, "gh-note");
     }
     box.append(body);
 
     const reload = document.createElement("button");
     reload.className = "modal-cancel";
-    reload.textContent = "Перечитать";
+    reload.textContent = "Read again";
     reload.onclick = () => void render();
     const done = document.createElement("button");
     done.className = "modal-ok";
-    done.textContent = "Готово";
+    done.textContent = "Done";
     done.onclick = close;
     const row = document.createElement("div");
     row.className = "modal-actions";
