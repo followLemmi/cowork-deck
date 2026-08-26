@@ -165,11 +165,12 @@ wholesale. Recording can be switched off, and the screen says so rather than loo
 
 ## Memory sync
 
-Workspaces, scenarios and the memory of past sessions can live in a private GitHub repository of your
+Workspaces, scenarios and the journal of what has run can live in a private GitHub repository of your
 own, so a second machine has them without anyone copying files by hand. Off until you switch it on.
 
-**What travels:** workspaces and their bindings, scenarios, the memory corpus, the run journal (one file
-per machine, so two never collide). **What does not:** session layout, window state, terminal drawers,
+**What travels:** workspaces and their bindings, scenarios, the run journal (one file per machine, so
+two never collide), and the memory corpus — which is a place kept for project memory rather than a
+thing you have yet; see the roadmap. **What does not:** session layout, window state, terminal drawers,
 connected accounts — the repository is an allowlist, and a test asserts the tracked set equals it
 exactly. Absolute paths never travel: a workspace arriving from another machine has no folder here until
 you point it at one, and a schedule arrives switched off so a 03:00 job does not start firing on two
@@ -256,14 +257,19 @@ whose state label stays on `idle`.
 Work is tracked in [GitHub issues](https://github.com/followLemmi/cowork-deck/issues); the epics below
 are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](docs/adr/).
 
-### Next
+### Being built next
+
+| | |
+|---|---|
+| **Project memory** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | The piece the app is missing rather than a piece it improves. Semantic search over what earlier sessions actually did and decided — for you, and for the agents through an MCP tool of their own. The corpus fills itself: a session writes its own summary when it closes, so nothing depends on anyone keeping notes. Local, like everything else here — the embedding model runs on your machine and the index never leaves it. The sidecar under `crates/cowork-memory` is built and tested; what is left is the app around it. |
+
+### After that
 
 | | |
 |---|---|
 | **Activity** [#323](https://github.com/followLemmi/cowork-deck/issues/323) | A tile says what a session **costs**. It says nothing about what it **did**. A panel that answers which tools ran, which subagents ran them and how many times — read from the agent CLI's own session log, Claude Code [#325](https://github.com/followLemmi/cowork-deck/issues/325) first. |
 | **Limits** [#301](https://github.com/followLemmi/cowork-deck/issues/301) | Many sessions draw on one budget, and when it runs out they stall together. What each connected AI has left, where that number came from, and a pill that says "nothing moves until 19:00" instead of "3 waiting" [#305](https://github.com/followLemmi/cowork-deck/issues/305). |
 | **Frame rate** [#261](https://github.com/followLemmi/cowork-deck/issues/261) | Dragging a grip or resizing the window gives up three quarters of the display's frame rate. Measured, with the work that follows from the measurements. |
-| **Memory you can search** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | The corpus already syncs. What is left is semantic search over what earlier sessions did and decided — for you, and for the agents through an MCP tool of their own. Local: the model runs on your machine and the index never leaves it. |
 
 ### Later
 
@@ -272,7 +278,6 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 | **Remote decks** [#273](https://github.com/followLemmi/cowork-deck/issues/273) | A desktop and a laptop are two decks with no way to see one from the other. A headless core, an ssh transport, and another machine's sessions in this window — scrollback replayed on attach, one notification on the machine its person is at. |
 | **Sessions that spawn sessions** [#178](https://github.com/followLemmi/cowork-deck/issues/178) | Work across five repositories today means a person acting as the message bus between five tiles. A guarded spawn channel and a `cowork_session` sidecar, so one session can start a colleague. |
 | **More agent CLIs** [#330](https://github.com/followLemmi/cowork-deck/issues/330) | Codex, Copilot and opencode read first — their session logs are the activity panel's second, third and fourth sources — then run. |
-| **Connected accounts** [#205](https://github.com/followLemmi/cowork-deck/issues/205) | Social accounts connected once and usable from any scenario, Bluesky first, behind an approval queue and a per-account rate ceiling. |
 | **UI localization** | A language switch and translated strings. The interface is English-only today, deliberately and by written rule — which is a decision about the source, not about the person using it. |
 
 ## Where things are written down
