@@ -42,6 +42,12 @@ with a saved prompt. State — idle, working, finished a turn, waiting for a dec
 comes from Claude Code's own hooks and shows up as a rail, a chip, and a desktop notification if you
 want one.
 
+Two things it does that a window full of terminals does not. Every workspace carries **its own GitHub
+account**, so sessions in two projects push, open pull requests and sign commits as two different
+people at the same time — without the app ever switching the account your own shell is on. And your
+workspaces, their bindings, your scenarios and the run journal **follow you to the next machine**,
+through a private repository that is yours rather than anybody's cloud.
+
 Built with [Tauri v2](https://v2.tauri.app/) (Rust: PTY and process management) and a small
 TypeScript + [xterm.js](https://xtermjs.org/) frontend, no UI framework. Around 100 MB resident.
 
@@ -90,16 +96,34 @@ four things worth knowing about a session you are not watching.*
 Sessions are children of the app: there is no detached mode, and the scheduler only fires while the
 window is open. Missed runs are not lost — each scheduled scenario catches up once on the next launch.
 
+## A GitHub account per workspace
+
+Bind a workspace to a `gh` account and every session it starts has that access already in place:
+`gh pr list`, `git push`, the board reading the repository's issues, the pull requests, and the
+authorship of the commits — all of it goes out as the right person. Two workspaces run on two accounts
+**at the same time**, which is the whole point: the app never calls `gh auth switch`, so sessions on
+different accounts cannot spoil each other's environment and your own terminal outside the app keeps
+whichever account was active there. With `GH_TOKEN` set, `gh` itself refuses to change account, so a
+session cannot do it either.
+
+**No tokens are stored.** The workspace's settings hold the account name and nothing else; the token is
+read from `gh`'s keyring at the moment a session starts and handed to the child process through
+environment variables (`GH_TOKEN`, `GIT_AUTHOR_*`, and `GIT_SSH_COMMAND` where it is needed).
+
+Changing the binding applies to new and restarted sessions — a process's environment is fixed when it
+starts — so a live session is marked `GitHub ⟳` rather than quietly running on the old one. If the
+account could not be attached at all (no `gh`, logged out, a locked keyring) the session still starts,
+with an empty `GH_CONFIG_DIR` so that `gh` says "not logged in" honestly instead of quietly working as
+somebody else; the tile carries `GitHub ✕` and the reason.
+
+You need the [GitHub CLI](https://cli.github.com/) logged in to the accounts you mean to use. The
+GitHub screen in the command palette shows what `gh` reports and helps install it if it is missing —
+the install command filled in for your platform, in an **editable** field, running in an ordinary
+terminal tile so you see its output and type your own `sudo` password.
+
 ## Workspaces
 
-A workspace is a project folder, a colour, and a GitHub account.
-
-**The account is the workspace's.** Bind one and its sessions start with that access already in place:
-`gh pr list`, `git push` and the authorship of commits all go out as the right person, and two
-workspaces run on two accounts *at the same time*. The app stores **no tokens** — the account name is
-all that is saved, and the token is read from `gh`'s keyring when a session starts. It never runs
-`gh auth switch`, which is exactly why your own terminal outside the app keeps whichever account was
-active there.
+A workspace is a project folder, a colour, and the account above.
 
 **A shell drawer per workspace.** `Cmd+J` (`Ctrl+Shift+J` elsewhere) opens ordinary interactive shells
 under the deck, started in the workspace's folder and carrying its account — and saying so in one line
@@ -161,16 +185,18 @@ newest first, filterable by scenario and by trigger, and a row that produced not
 nothing it was. Records are immutable; erasing exists at one granularity — one scenario's history,
 wholesale. Recording can be switched off, and the screen says so rather than looking empty.
 
-## Memory sync
+## The same setup on your other machine
 
-Workspaces, scenarios and the journal of what has run can live in a private GitHub repository of your
-own, so a second machine has them without anyone copying files by hand. Off until you switch it on.
+Workspaces, their GitHub bindings, scenarios and the journal of what has run can live in a private
+GitHub repository of your own, so a second machine has them without anyone copying files by hand. Off
+until you switch it on, from **Memory sync…** in the command palette; switching it on needs `gh` and a
+connected account, and offers both halves of the job — create a private repository, or connect the one
+you already have, which is what every machine after the first does.
 
 **What travels:** workspaces and their bindings, scenarios, the run journal (one file per machine, so
 two never collide), and the memory corpus — which is a place kept for project memory rather than a
-thing you have yet; see the roadmap. **What does not:** session layout, window state, terminal drawers,
-connected accounts — the repository is an allowlist, and a test asserts the tracked set equals it
-exactly. Absolute paths never travel: a workspace arriving from another machine has no folder here until
+thing you have yet; see the roadmap. **What does not:** session layout, window state, terminal drawers —
+the repository is an allowlist, and a test asserts the tracked set equals it exactly. Absolute paths never travel: a workspace arriving from another machine has no folder here until
 you point it at one, and a schedule arrives switched off so a 03:00 job does not start firing on two
 machines. Conflicts are not resolved for you — notes are prose, and an automatic merge produces a
 plausible paragraph nobody wrote.
