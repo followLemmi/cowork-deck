@@ -1,8 +1,8 @@
 # The README's screenshots
 
-Seven shots, and each one is in the root `README.md` because it proves something the prose
-has to spend a paragraph on. Capture them from the **running app**, not from the mockups
-in `docs/design/slate-ember/mockups/`: the point of a repository's front page is that the
+Seven shots and one recording, each in the root `README.md` because it proves something the
+prose has to spend a paragraph on. Capture them from the **running app**, not from the mockups
+in `docs/design/true-ink/mockups/`: the point of a repository's front page is that the
 thing exists, and a render of a design file is not evidence of that.
 
 Keep this file next to them. A re-shoot six months from now should look like a re-shoot,
@@ -36,6 +36,25 @@ node harness/shoot.mjs            # all seven, into docs/images/
 node harness/shoot.mjs deck zoom  # or just the ones you are redoing
 ```
 
+If the dev server answers on `localhost` but not on `127.0.0.1` — which is what a
+default Vite bind does on some machines — point the script at it:
+`HARNESS_URL=http://localhost:1420 node harness/shoot.mjs`.
+
+## Two things the script does that are worth knowing
+
+**It runs Chromium with WebGL off.** xterm draws through a WebGL canvas when it can, and a
+screenshot of one comes back wrong in headless Chromium: the capture takes the backing
+store, which at `deviceScaleFactor: 2` is twice the canvas's CSS box, so every glyph in the
+terminals lands at double size beside chrome that is correctly sized. With no context to
+take, the app falls to its DOM renderer — a path it supports and states it supports — and
+that screenshots as what it is. Nothing else runs with the flag; a real window keeps its GPU
+renderer.
+
+**ImageMagick is used when it is there and stood in for when it is not.** `magick` does the
+downscale, the rounded corners and the 256-colour quantization. Without it the corners are
+cut in the page instead, `sips` does the downscale, and the shots come out at 1600px rather
+than 2000 — there is no quantizer to bring a 2000px file back under the size rule below.
+
 Vite does not watch this worktree (`vite.config.ts` ignores `.claude/worktrees/**`), so
 restart the dev server after editing a fixture or the shot will be of the old data.
 
@@ -50,18 +69,19 @@ restart the dev server after editing a fixture or the shot will be of the old da
 | **Content** | Fixtures, from the harness below — the sidebar shows the bound `gh` account and the tiles show absolute paths, and neither belongs on a repository's front page. Shooting a live window instead is allowed, but then every path, branch name and line of scrollback in frame is published with it. |
 | **What not to shoot** | A scrollback carrying a token, a customer name, or a path under someone else's project. Start a fresh session for the shot if the live one is not publishable. |
 
-## The six
+## The seven, and the take
 
 ### `deck.png` — the hero
 
-The Terminals screen, four tiles, **four different states at once**: one working, one
-waiting for a decision, one that finished its turn, one exited or errored. That single
-frame is the whole product: the state rail down the left edge of each tile, the state
-chips, the token counts, the git branch.
+The deck, **every state at once**: one working, one waiting for a decision, one that
+finished its turn, one stopped on an error, one idle. That single frame is the whole
+product: the state rail down the left edge of each tile, the chips, the token counts, the
+branch.
 
-The sidebar must be in it, with more than one workspace and at least two scenarios — one
-of them scheduled, so its row shows the schedule and its last run in words. One tile
-active, so its accent border and blinking caret read.
+The panel must be in it, with more than one workspace, so the tree reads as a tree — a
+workspace, its sessions indented under it, and the create row at the foot of the group. One
+tile active, so its accent border and caret read. The ledger in the top bar must have both
+readings in it.
 
 Sits directly under the badges. It is the only shot most visitors will look at.
 
@@ -71,16 +91,17 @@ One terminal zoomed near-full with the filmstrip of the others below it. This is
 thing in the app that a sentence cannot convey: the strip cards carry the name, the state,
 the branch and the token count and no terminal at all, which is the decision worth showing.
 
-### `board.png` — the board is a screen
+### `board.png` — the board belongs to a repository
 
-The Board with a configured `board.json`: four columns, cards in each, a card in the
-working step carrying its "session running" line, and — if you can catch it — the ⚙
-editor's own dialog is *not* wanted here. Just the columns, so the shot says "this is a
-screen, not a panel".
+The board with a configured `board.json`, in the workspace panel where it now lives: the
+deck still on the left, three or four columns of cards, and a card in the working step
+carrying its "session running" line. The panel is widened first, the way a person would drag
+it — four columns clipped at two says nothing about a board. The ⚙ editor's dialog is *not*
+wanted here.
 
 ### `issues.png` — the second source
 
-The same Board reading a repository's issues: the `Open`/`Closed` filter, the label filter
+The same board reading a repository's issues: the `Open`/`Closed` filter, the label filter
 with one label pressed, and rows deep enough to show the body excerpt under a title. Pick
 a repository with a dozen issues; three rows do not demonstrate a list.
 
@@ -91,17 +112,50 @@ wrapped rather than scrolled out of view, the body **rendered** as Markdown, and
 with the step, the labels and the `owner/repo#150` link. Choose an issue whose body has a
 heading, a code span and a quote in it, so the rendering is visibly rendering.
 
-### `pull-requests.png` — the third view
+### `pull-requests.png` — the diff
 
-The pull request list with one row expanded and the diff drawer open on a file, so the
-sticky line-number gutter and the `+`/`−` markers are in frame. A pull request with checks
-in more than one state is worth hunting for: "no checks" not reading as success is a
-deliberate distinction and this is where it shows.
+A pull request open on one of its files, so the sticky line-number gutter and the `+`/`−`
+markers are in frame. This is the one page the panel's widen control exists for, so the shot
+takes that width: two columns of code and a gutter do not fit in a column sized for a list
+of names.
 
-## Optional seventh
+### `workspace-window.png` — a workspace of its own
 
-### `pill.png` — the floating pill
+A workspace pulled out into its own window, which is a different window rather than a state
+of this one: one workspace in the panel, no rail at all, and the board and pull requests
+still there. What it has to show is the absence — nothing app-wide in a window that is one
+project's.
 
-Just the pill, on its own, cropped tight — 600 px wide is plenty. It is a separate
-always-on-top window, so it cannot appear in any of the six above, and it is the feature
-people ask about. Referenced from the Features list only if you shoot it.
+### `pill.png` — no longer on the front page
+
+`harness/shoot.mjs` still takes it, and `docs/images/pill.png` is still here, because the
+floating pill is still in the app. It left the README ahead of itself: the pill is on its
+way out, and a front page arguing for a feature about to be removed is a page that has to
+be edited twice. When the pill goes, the shot and `harness/pill.html` go with it.
+
+### `demo.gif` — the take
+
+Half a minute of one continuous take, driven the same way the stills are and by the same
+fixtures: a session finishes its turn, zoom and juggle, a workspace's board on its
+repository's issues, a pull request and its diff, and back to the deck. A visible pointer
+is drawn into the page — a recording where things happen with no cause reads as a
+slideshow.
+
+`harness/record.mjs` writes a `.webm` and prints where the take actually begins; the
+conversion is ffmpeg's job, and these are the numbers that land it beside the old file's
+size rather than at twice it:
+
+```bash
+node harness/record.mjs                       # → docs/images/demo.webm + a trim offset
+ffmpeg -ss <trim> -t <len> -i docs/images/demo.webm \
+  -vf "fps=9,scale=880:-1:flags=lanczos,split[a][b];\
+       [a]palettegen=max_colors=96:stats_mode=diff[p];\
+       [b][p]paletteuse=dither=none:diff_mode=rectangle" \
+  -loop 0 docs/images/demo.gif
+rm docs/images/demo.webm                      # the intermediate is not committed
+```
+
+`dither=none` is a judgement about this UI rather than a general setting: the surfaces are
+flat, so there is nothing for a dither to smooth and every pixel it changes is a pixel that
+cannot be run-length encoded. It is most of the difference between 5 MB and 9.
+

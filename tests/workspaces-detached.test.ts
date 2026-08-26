@@ -92,14 +92,13 @@ describe("a workspace that is open in its own window", () => {
     expect(rows[1].querySelector(".ws-detach")).toBeNull();
   });
 
-  /** The workspace is still being worked on, just not here — so the open-task
-   *  badge is not blanked. */
-  it("keeps its open-task count", async () => {
-    const { mount, panel } = await panelWith(["b"]);
-    panel.setCounts({ b: 3 });
-    const rows = mount.querySelectorAll(".ws-row");
-    expect(rows[1].querySelector(".ws-count")?.textContent).toBe("3");
-  });
+  /* The open-task count used to be asserted here, and the fact it protected is
+     gone rather than moved: the count lived on a "Board" row inside every workspace
+     in the tree, and those rows are gone with it — twelve identical navigation rows
+     on six workspaces, 261px of a 300px column. It is on the board's own tab now,
+     which shows the ACTIVE workspace, and a detached workspace is by definition not
+     this window's active one. There is nothing left here to keep. */
+
 
   /** It cannot also be this window's active workspace: the deck would filter to
    *  a workspace whose tiles are all elsewhere and show nothing. */

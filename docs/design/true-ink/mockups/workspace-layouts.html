@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cowork-deck — организация рабочего пространства</title>
+<link rel="stylesheet" href="assets/deck-ui.css">
+<link rel="stylesheet" href="assets/deck-screens.css">
+<link rel="stylesheet" href="assets/deck-palettes.css">
+<link rel="stylesheet" href="assets/deck-doc.css">
+</head>
+<body class="doc" data-screen="layouts">
+
+<header class="doc-bar">
+  <span class="mark-glyph" data-app-mark aria-hidden="true"></span>
+  <span class="mark-text">cowork<span>·deck</span></span>
+  <span class="crumb-sep">/</span>
+  <span class="caps">Организация пространства</span>
+  <span class="bar-spacer"></span>
+  <a class="btn btn--quiet" href="index.html"><i data-ic="chevron" class="ic ic--left"></i> К обзору</a>
+  <button class="btn--icon" data-theme-toggle aria-label="Переключить тему"><i data-ic="moon"></i></button>
+</header>
+
+<main class="sheet">
+  <h1 class="doc-title">Табы — не структура, а четыре состояния окна</h1>
+  <p class="doc-lede">Ниже — четыре схемы окна в реальных пропорциях, с аргументом и ценой каждой. Это диаграммы, а не макеты: на этапе «подумаем» единственный обсуждаемый вопрос — какая область владеет какой частью окна, а детализация уровня скриншота уводит разговор на кегли.</p>
+
+  <section class="doc-sec">
+    <h2 class="doc-h">Три вещи, которые говорят, что дело не во вкусе</h2>
+    <div class="notes">
+      <div class="note">
+        <span class="note-num">01</span>
+        <div class="note-body">
+          <h3 class="note-h">Пилюля — это симптом</h3>
+          <p class="note-now">Отдельное всегда-поверх-всех окно, которое считает сессии, заблокированные на решении, существует ровно потому, что приложение <b>не может показать деку и что-то ещё одновременно</b>. Продукт уже отгрузил обходной путь для собственной архитектуры информации. Это самый сильный аргумент против табов, какой можно предъявить, и он не мой — он ваш, он в репозитории.</p>
+        </div>
+      </div>
+      <div class="note">
+        <span class="note-num">02</span>
+        <div class="note-body">
+          <h3 class="note-h">Табы называют хранилища, а не этапы</h3>
+          <p class="note-now">Настоящий цикл — <b>очередь → сессия → pull request → запись в журнале</b>. Табы подают его как четыре альтернативы, из которых можно быть только в одной, хотя ни одна из них не альтернатива другой. «Board» и «History» вообще называют места, где лежат данные, а не то, что человек делает.</p>
+        </div>
+      </div>
+      <div class="note">
+        <span class="note-num">03</span>
+        <div class="note-body">
+          <h3 class="note-h">«Doing» нарисован дважды</h3>
+          <p class="note-now">Колонка <code>Doing</code> на доске <b>выводится из живых сессий и никогда не хранится</b> — это записано в самом проекте как решение. Значит дека и есть эта колонка. Канбан рядом с декой живых терминалов показывает один факт два раза, и это единственная часть текущего дизайна, которую я не могу защитить ничем.</p>
+          <p class="note-was">Плюс арифметика ширины: на окне 1440px список pull request упирается в 74ch (≈740px) и половину окна не использует, а доска из четырёх колонок даёт 1392px и еле влезает. Таб заставляет каждый вид владеть <b>всем</b> окном даже тогда, когда он этого не хочет.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="doc-sec">
+    <h2 class="doc-h">Четыре схемы</h2>
+
+    <div class="plans">
+
+      <!-- 0 · как сейчас -->
+      <div class="plan-wrap" data-od-id="plan-tabs">
+        <div class="plan-cap"><b>00 · Как сейчас</b><span>четыре таба</span></div>
+        <div class="plan" style="grid-template-areas: 'bar bar' 'side main'; grid-template-columns: 22% 1fr; grid-template-rows: 30px 1fr">
+          <div class="zone zone--bar" style="grid-area: bar">
+            <span class="plan-tab on">Terminals</span>
+            <span class="plan-tab">Board</span>
+            <span class="plan-tab">Pull requests</span>
+            <span class="plan-tab">History</span>
+          </div>
+          <div class="zone" style="grid-area: side"><b>Сайдбар</b><i>воркспейсы, сценарии, сессии</i></div>
+          <div class="zone zone--deck" style="grid-area: main"><b>Один вид из четырёх</b><i>Пока ты здесь, остальных трёх не существует. Сессия, которая ждёт решения на другом табе, ждёт молча — за этим и нужна пилюля.</i></div>
+        </div>
+        <p class="spec-note">Дешевле некуда: так уже сделано. Но каждое переключение стоит всего окна, а «что требует меня прямо сейчас» приходится выносить в отдельное окно поверх всех.</p>
+      </div>
+
+      <!-- 1 · дека не уходит -->
+      <div class="plan-wrap" data-od-id="plan-inspector">
+        <div class="plan-cap"><b>01 · Дека не уходит</b><span>рекомендую</span></div>
+        <div class="plan" style="grid-template-areas: 'bar bar bar' 'side deck insp'; grid-template-columns: 20% 1fr 24%; grid-template-rows: 30px 1fr">
+          <div class="zone zone--bar" style="grid-area: bar">
+            <b>relay / acme-dev</b>
+            <span class="plan-led"><s class="w">3 ждут решения</s><s class="g">2 PR готовы</s><s>1 прогон</s></span>
+          </div>
+          <div class="zone" style="grid-area: side"><b>Очередь</b><i>карточки и issues списком, сгруппированным по шагам board.json. Ниже — сценарии и сессии.</i></div>
+          <div class="zone zone--deck" style="grid-area: deck"><b>Дека</b><i>Постоянна. Никогда не уходит и ничем не перекрывается.</i></div>
+          <div class="zone zone--ghost" style="grid-area: insp"><b>Инспектор</b><i>Свёрнут по умолчанию. Открывается тем, что выбрали: pull request, карточка, прогон.</i></div>
+        </div>
+        <p class="spec-note">Три зоны вместо четырёх состояний. Верхняя полоса вместо табов несёт <b>табло</b>: не «куда пойти», а «что требует меня» — и каждое число это переход-фильтр, а не пункт назначения.</p>
+      </div>
+
+      <!-- 1b · инспектор во всю ширину -->
+      <div class="plan-wrap" data-od-id="plan-inspector-wide">
+        <div class="plan-cap"><b>01b · Инспектор во всю ширину</b><span>то же решение, второе состояние</span></div>
+        <div class="plan" style="grid-template-areas: 'bar bar' 'side insp' 'side strip'; grid-template-columns: 20% 1fr; grid-template-rows: 30px 1fr 54px">
+          <div class="zone zone--bar" style="grid-area: bar">
+            <b>relay / acme-dev</b>
+            <span class="plan-led"><s class="w">3 ждут решения</s><s class="g">2 PR готовы</s></span>
+          </div>
+          <div class="zone" style="grid-area: side; grid-row: 2 / 4"><b>Очередь</b><i>та же</i></div>
+          <div class="zone" style="grid-area: insp"><b>Инспектор: pull request #156 и дифф</b><i>Диффу нужна ширина — он её получает, забирая её у деки, а не у экрана.</i></div>
+          <div class="zone zone--deck" style="grid-area: strip"><b>Кинолента</b><i>Дека уступила место, но не исчезла: состояния всех сессий видны, любая — в один клик.</i></div>
+        </div>
+        <p class="spec-note">Механизм не новый: <b>кинолента уже существует</b> — это то, во что превращается дека при зуме плитки. Одна и та же машинерия закрывает и «увеличь эту сессию», и «уступи место диффу». Ни одного нового понятия.</p>
+      </div>
+
+      <!-- 2 · воркспейс как верхняя ось -->
+      <div class="plan-wrap" data-od-id="plan-workspace-first">
+        <div class="plan-cap"><b>02 · Воркспейс как верхняя ось</b><span>зоны вместо табов</span></div>
+        <div class="plan" style="grid-template-areas: 'bar bar' 'side deck' 'side queue' 'side prs'; grid-template-columns: 20% 1fr; grid-template-rows: 30px 1.5fr 0.6fr 0.6fr">
+          <div class="zone zone--bar" style="grid-area: bar">
+            <span class="plan-tab on">relay</span><span class="plan-tab">harbor</span><span class="plan-tab">atlas</span>
+          </div>
+          <div class="zone" style="grid-area: side; grid-row: 2 / 5"><b>Сценарии</b><i>и настройки воркспейса</i></div>
+          <div class="zone zone--deck" style="grid-area: deck"><b>Дека</b><i>сессии этого воркспейса</i></div>
+          <div class="zone" style="grid-area: queue"><b>Очередь</b><i>карточки и issues</i></div>
+          <div class="zone" style="grid-area: prs"><b>Pull requests</b><i>с проверками</i></div>
+        </div>
+        <p class="spec-note">Переключаешь не «вид», а <b>воркспейс</b> — и это ближе к тому, как человек думает («я сейчас в relay»). Цена: три зоны делят высоту, поэтому дека получает 60% вместо 100%, а диффу ширины не хватит вовсе. Для двух-трёх сессий хорошо, для двенадцати — нет.</p>
+      </div>
+
+      <!-- 3 · без хрома -->
+      <div class="plan-wrap" data-od-id="plan-chromeless">
+        <div class="plan-cap"><b>03 · Без хрома</b><span>всё через ⌘K</span></div>
+        <div class="plan" style="grid-template-areas: 'bar' 'deck'; grid-template-columns: 1fr; grid-template-rows: 30px 1fr">
+          <div class="zone zone--bar" style="grid-area: bar">
+            <b>relay / acme-dev</b>
+            <span class="plan-led"><s class="w">3 ждут решения</s></span>
+          </div>
+          <div class="zone zone--deck" style="grid-area: deck"><b>Дека во всё окно</b><i>Больше в приложении нет ничего постоянного.</i></div>
+          <div class="plan-sheet"><b>Лист, вызванный ⌘K</b><i>Очередь, pull requests, журнал — каждый приезжает поверх деки и уезжает по esc. Ни одна область не занимает места, пока не нужна.</i></div>
+        </div>
+        <p class="spec-note">Самый тихий вариант и самый честный к «дека — это продукт». Цена прямая и она попадает ровно в вашу исходную жалобу из аудита: <b>«непонятно что где»</b>. Приложение, в котором доска невидима, пока не знаешь горячую клавишу, — это шаг назад по обнаруживаемости, чем бы он ни был по вкусу.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="doc-sec">
+    <h2 class="doc-h">Что рассмотрел и отбросил</h2>
+    <dl class="costs">
+      <div class="cost">
+        <dt>Нижний док</dt>
+        <dd>Терминалы внизу, «работа» сверху — очевидный ответ в духе VS Code, и он здесь <b>переворачивает продукт</b>. В IDE терминал это инструмент, а редактор это работа. Здесь терминалы <i>и есть</i> работа, а всё остальное — обслуживание. Док превратил бы главное в подсобное.</dd>
+      </div>
+      <div class="cost">
+        <dt>Плитки-панели</dt>
+        <dd>Пользователь сам раскладывает панели, как в тайловом редакторе. Мощнее всего и лучше всего ложится на метафору «дека». Отбросил по двум причинам: цена реализации несоизмерима, и просьба «разложи панели сам» — это перекладывание дизайнерской работы на человека, который пришёл смотреть за сессиями.</dd>
+      </div>
+      <div class="cost">
+        <dt>Оставить табы, но починить</dt>
+        <dd>Дешёвый путь: убрать «History» в подменю, слить «Board» и «Pull requests» в один «Work». Три таба вместо четырёх. Честно говорю, что это лечит симптом: пилюля всё равно останется необходимой, потому что дека всё равно будет уходить.</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="doc-sec">
+    <h2 class="doc-h">Цена варианта 01, без прикрас</h2>
+    <p class="doc-p">Если берём «дека не уходит» — вот что при этом ломается и что взамен появляется. Ни один пункт не является «просто перекомпоновкой».</p>
+    <dl class="costs">
+      <div class="cost cost--keep">
+        <dt>Появится</dt>
+        <dd><b>Дека перестаёт уходить.</b> Можно читать дифф pull request, пока сессия, которая его сделала, ещё работает — сейчас это физически невозможно. Пилюля становится необязательной: табло в полосе отвечает на «что требует меня» внутри окна.</dd>
+      </div>
+      <div class="cost cost--keep">
+        <dt>Появится</dt>
+        <dd><b>Один механизм вместо двух.</b> Кинолента уже написана. Она начинает обслуживать и зум плитки, и «уступи ширину инспектору» — новых понятий в интерфейсе не добавляется ни одного.</dd>
+      </div>
+      <div class="cost cost--lose">
+        <dt>Уйдёт</dt>
+        <dd><b>Канбан перестаёт быть равноправным экраном.</b> Очередь в сайдбаре — список, сгруппированный по шагам из <code>board.json</code>, с теми же <code>‹ ›</code>. Семантика шагов сохраняется полностью, широкий канбан остаётся как редкий лист во всё окно из заголовка очереди. Но по умолчанию его не видно, и это настоящая потеря, а не переупаковка.</dd>
+      </div>
+      <div class="cost cost--lose">
+        <dt>Уйдёт</dt>
+        <dd><b>История перестаёт быть экраном.</b> Прогоны конкретного сценария — из строки сценария в инспектор. Полный журнал за всё время — лист во всё окно, для редкого разбирательства. Для сценария, у которого 42 прогона, это лучше; для «покажи всё, что было ночью» — хуже на один шаг.</dd>
+      </div>
+      <div class="cost cost--lose">
+        <dt>Риск</dt>
+        <dd><b>Обнаруживаемость.</b> Убрать табы значит убрать четыре подписанных слова. Компенсация: именованные секции в сайдбаре («Очередь», «Сценарии», «Сессии») и табло в полосе, которое называет то, что раньше называли табы. Ничего не уезжает за горячую клавишу — это условие, а не пожелание.</dd>
+      </div>
+      <div class="cost cost--lose">
+        <dt>Код</dt>
+        <dd><b>Это не косметика.</b> Исчезают <code>#viewbar</code> и <code>.tk-views</code>, а вместе с ними разъезжается часть из 747 тестов, которые на них держатся. Плюс сайдбар получает новую секцию с собственным источником данных. Оцениваю это как самую крупную из четырёх правок, которые мы обсуждали.</dd>
+      </div>
+    </dl>
+    <p class="doc-p">Мой выбор — <b>01</b>. Скажите, и я соберу его как настоящий экран, с работающим инспектором, табло и переходом деки в киноленту: тогда будет что критиковать по существу, а не по схеме. Если сомневаетесь между 01 и 03 — начнём с 01, потому что 03 из него получается снятием сайдбара, а обратно так же дёшево не собирается.</p>
+  </section>
+</main>
+
+<script src="assets/icons.js"></script>
+<script src="assets/deck-motion.js"></script>
+</body>
+</html>

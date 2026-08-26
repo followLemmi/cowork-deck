@@ -16,7 +16,7 @@ import harnessWorkspace from "../harness/workspace.html?raw";
  *  they can be is checked.
  *
  *  The failure a drift produces is not a warning. `startApp` asserts non-null on
- *  every element it queries — `#sidebar`, `#deck`, `#board`, `#viewbar` — so an
+ *  every element it queries — `#sidebar`, `#deck`, `#board`, `#rail` — so an
  *  element present in one page and missing from another is a blank window at
  *  boot, in whichever of the four nobody happened to open. Part of #247. */
 const PAGES: [name: string, html: string][] = [
@@ -30,7 +30,17 @@ const PAGES: [name: string, html: string][] = [
  *  compared wholesale: the four pages differ in their script tag and their
  *  comments by design, and a test that demanded byte equality would fail for
  *  reasons nobody should have to read past. */
-const REQUIRED = ["app", "viewbar", "stage", "sidebar", "workarea", "deck", "terminals", "board"];
+const REQUIRED = [
+  "app", "stage", "sidebar", "workarea", "deck", "terminals", "board",
+  // The shell's own four. `#viewbar` left this list with the segmented control it
+  // held: the rail selects what the panel shows, the ledger says what wants a
+  // person, and the panel is a head over a stack of pages.
+  "rail", "ledger", "panel-head", "panel-stack",
+  // The workspace panel, and the two boxes inside it that `startApp` queries with a
+  // non-null assertion. `#board` above moved INTO it: the board is one
+  // repository's, and the left panel is a column of names.
+  "wspanel", "wsp-head", "wsp-body",
+];
 
 describe("the pages that mount the app", () => {
   it.each(PAGES)("%s carries every element startApp queries", (page, html) => {

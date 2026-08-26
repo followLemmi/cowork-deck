@@ -84,6 +84,23 @@ export interface UiState {
    *  the height is how much of this window to give a terminal, and that does not
    *  change with the project. */
   terminalRows: number;
+  /** How wide the panel is in px, and how wide it is once it has taken the deck's
+   *  width. Optional, and this is where the pattern above genuinely stops: the two
+   *  above are filled from `serde` defaults, and these are not — until a person
+   *  drags an edge the width belongs to the stylesheet, whose `clamp(17.5rem,
+   *  19vw, 24rem)` tracks the window and the text size. A pixel default here would
+   *  freeze both, and `undefined` is what says "not asked for".
+   *
+   *  Px and not `ch`, unlike the diff drawer's width and the drawer's rows: what
+   *  is being sized is a column of names, not a grid of characters. */
+  panelPx?: number;
+  wspPx?: number;
+  wspWidePx?: number;
+  /** And the tool panel inside a zoomed tile. One width for the app, not one per
+   *  tile: sizing it is sizing the tool, and every session's tools are the same
+   *  tool. Its floor is the 80-column rule, which is enforced where the panel is
+   *  drawn — a stored number cannot know what the terminal is doing. */
+  toolPx?: number;
 }
 
 /** A change to the stored state, which is what `save_ui_state` takes.
@@ -99,6 +116,10 @@ export interface UiStatePatch {
   syncOfferDismissed?: boolean;
   recordScenarioRuns?: boolean;
   terminalRows?: number;
+  panelPx?: number;
+  wspPx?: number;
+  wspWidePx?: number;
+  toolPx?: number;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
@@ -731,6 +752,31 @@ export interface SessionSnapshot {
   titleSource: TitleSource | null;
 }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
+
+/** One changed file in a session's own checkout. `mark` is git's own letter — M,
+ *  A, D, R, `?` for untracked, U for a conflict — because anyone with a worktree
+ *  open has read those, and a second vocabulary for one fact is a second thing to
+ *  learn. `added`/`removed` are 0 for an untracked file: git has nothing to diff
+ *  it against, and its length is a number git never states. */
+export interface GitChange { mark: string; path: string; added: number; removed: number }
+export interface GitChanges { branch: string | null; files: GitChange[] }
+/** What this session's checkout has changed. Per session, not per workspace: a
+ *  session launched on an issue runs in a worktree of its own, and "what have I
+ *  changed here" is a question the board cannot answer for it. */
+export const gitChanges = (cwd: string) => invoke<GitChanges>("git_changes", { cwd });
+/** The files in this session's checkout, as git sees them: tracked plus
+ *  untracked-not-ignored, so the repository's own ignore rules decide what is not
+ *  worth showing rather than a list of names kept here. */
+export const worktreeFiles = (cwd: string) => invoke<string[]>("worktree_files", { cwd });
+
+/** One of the files the app keeps for itself. `exists: false` is reported rather
+ *  than omitted: the list is what this app WILL write, and a person looking for a
+ *  file they have never saved needs to be told it is not there. */
+export interface ConfigFile { name: string; exists: boolean }
+export interface ConfigPaths { dir: string; files: ConfigFile[] }
+/** Where the app keeps its own state — for the Settings window, which is the first
+ *  place in this app that answers "where is my configuration" at all. */
+export const configPaths = () => invoke<ConfigPaths>("config_paths");
 /** One invoke per tick for every open session — the title and the token counts
  *  come from the same bytes, so asking per session would read each transcript
  *  twice. Every requested id comes back, including ids with no transcript. */

@@ -1,7 +1,7 @@
 import { TerminalPanel } from "./terminal";
 import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
 import { gitStatus, sessionSnapshots, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
-import { formatContext, formatTokens, spendIn, sumUsage, tokenTooltip, uniqueCwds } from "./observability";
+import { formatContext, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
 import { NotifyRouter, wireNotificationFocus } from "./notify";
@@ -10,6 +10,7 @@ import { workspaceIdOf } from "./window-role";
 import { confirmModal } from "./modal";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
+import { TileTools } from "./tile-tools";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
 import { icon, iconButton, type IconName } from "./icons";
@@ -29,6 +30,13 @@ interface Tile {
   panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  /** The branch the poll last read for this tile's directory, kept beside the
+   *  badge that renders it because the sidebar row needs the same answer and
+   *  reading it back out of the badge's text would be parsing our own markup. */
+  branch: string | null;
+  /** The tools that belong to this session, inside its frame and only while it is
+   *  zoomed. See `tile-tools.ts` for why they are not in the app's panel. */
+  tools: TileTools;
   authBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
@@ -232,10 +240,85 @@ export class Deck {
     this.renderEmpty();
   }
 
+  /** The tree this deck's session rows live in, when something else is drawing
+   *  the workspaces.
+   *
+   *  Workspaces and sessions are one tree, and a workspace appears in it once.
+   *  That was not true before: the panel listed every workspace, and the session
+   *  list listed every workspace again as a group heading — the same fact stated
+   *  twice, in two shapes, and neither of them said where a new session would go.
+   *
+   *  Two modules render one row between them, and the split follows ownership
+   *  rather than convenience: the workspace row is the workspaces panel's, which
+   *  owns activation, the account, the form and the delete; the sessions under it
+   *  are this deck's. So the panel leaves a container under each row and this asks
+   *  for it, rather than either half moving into the other.
+   *
+   *  With no tree the deck draws its own headings — not a fallback kept for tests:
+   *  the "Other" group is sessions whose workspace was deleted from under them, and
+   *  it has no workspace row to hang under and never will. */
+  setTree(t: DeckTree) { this.tree = t; this.renderList(); }
+  private tree: DeckTree | null = null;
+
+  /** Told when the tool panel inside a tile is dragged. Wired by the app, which
+   *  owns the file the width is remembered in — a tile does not persist anything
+   *  and this deck does not know what `ui_state.json` is. */
+  setToolWidth(fn: (px: number) => void) { this.onToolWidth = fn; }
+  private onToolWidth: ((px: number) => void) | null = null;
+
+  /** Fold a group by its workspace id — for the panel's row, which activates on
+   *  the first press and folds on the second. One gesture with a rule, rather than
+   *  two targets inside one row, one of which is always the one you miss. */
+  toggleGroup(workspaceId: string) {
+    if (this.collapsed.has(workspaceId)) this.collapsed.delete(workspaceId);
+    else this.collapsed.add(workspaceId);
+    this.renderList();
+  }
+
+  /** Repaint the tree's rows. The panel rebuilds its own list from `innerHTML`,
+   *  which throws away the containers these rows were in — so the render that
+   *  replaces them has to be followed by this. */
+  repaintList() { this.renderList(); }
+
+  /** Told after every list render, because that is where the app already counts
+   *  what its sessions are doing. The ledger in the top bar reads these rather
+   *  than counting again: the two statements of "N waiting" this app used to make
+   *  — a sidebar heading and the floating pill — came from two different places,
+   *  and with two windows open they disagreed. */
+  setCounts(fn: (counts: SessionCounts) => void) {
+    this.onCounts = fn;
+    this.renderList();
+  }
+  private onCounts: ((counts: SessionCounts) => void) | null = null;
+
   /** The deck with nothing on it. "Nothing" means nothing VISIBLE: tiles belonging to
    *  another workspace stay in the DOM behind `ws-hidden`, so counting the map would
    *  call a deck full while the screen is blank. */
+  /** Which tile, if any, has the stage to itself — and therefore the tools that
+   *  belong to a session filling it.
+   *
+   *  One visible tile already HAS the stage. The condition for the tools was "the
+   *  deck is zoomed", and `zoomTo` refuses when there is nothing to zoom past — so
+   *  the one case where a person is unambiguously inside a single session was the
+   *  case with no Files, no Changes and no Source. How a session came to fill the
+   *  stage is not the question the tools answer.
+   *
+   *  Called from `renderEmpty` because that is the one function every path that
+   *  changes what the deck holds already goes through: a launch, a close, a
+   *  workspace switch, a tile arriving from another window. Marking it in
+   *  `applyLayout` instead covered three of those and missed the launch. */
+  private markStage() {
+    const visible = [...this.tiles.values()].filter((t) => !t.el.classList.contains("ws-hidden"));
+    const alone = visible.length === 1 && this.zoomedSession === null ? visible[0] : null;
+    for (const t of this.tiles.values()) {
+      const solo = t === alone;
+      t.el.classList.toggle("solo", solo);
+      t.tools.setZoomed(solo || t.el.classList.contains("zoomed"));
+    }
+  }
+
   private renderEmpty() {
+    this.markStage();
     const visible = [...this.tiles.values()]
       .some((t) => !t.el.classList.contains("ws-hidden"));
     if (visible) {
@@ -325,6 +408,7 @@ export class Deck {
       for (const t of tiles) {
         if (!this.tiles.has(t.session)) continue;
         const g = gitByCwd.get(t.workspacePath);
+        t.branch = g?.branch ?? null;
         if (g && g.branch) {
           t.gitBadge.replaceChildren(
             icon("git-branch", 12),
@@ -431,19 +515,20 @@ export class Deck {
     });
   }
 
-  /** Бейдж рисуется ТОЛЬКО когда что-то не так: аккаунт не подключился или
-   *  окружение устарело после смены привязки. В норме шапка тайла чистая. */
+  /** The badge is drawn ONLY when something is wrong: the account did not
+   *  connect, or the environment went stale when the binding changed. In the
+   *  ordinary case a tile head carries nothing here. */
   private renderAuthBadge(tile: Tile) {
     const { authBadge: b } = tile;
     if (tile.authStale) {
       b.textContent = "GitHub ⟳";
-      b.title = "Привязка воркспейса изменилась — окружение подхватится после перезапуска сессии";
+      b.title = "The workspace binding changed — the environment follows when the session restarts";
       b.className = "tile-auth stale";
       return;
     }
     if (tile.auth?.degraded) {
       b.textContent = "GitHub ✕";
-      b.title = `Аккаунт ${tile.auth.account ?? "?"} не подключён: ${tile.auth.degraded}`;
+      b.title = `Account ${tile.auth.account ?? "?"} did not connect: ${tile.auth.degraded}`;
       b.className = "tile-auth";
       return;
     }
@@ -805,7 +890,22 @@ export class Deck {
     sNext.onclick = () => tile.panel.search(sInput.value);
     sPrev.onclick = () => tile.panel.searchPrev(sInput.value);
     sClose.onclick = () => { searchBar.classList.add("hidden"); tile.panel.focus(); };
-    el.append(head, searchBar, mount);
+    /* The tile's work area is a ROW: the terminal, then the tools that belong to
+       this session, then the strip that opens them. The strip is on the right, the
+       opposite edge from the app's panel, and that distance is doing real work — it
+       is what stops "Files" in here being read as the project's files rather than
+       this checkout's. Both are `display: none` until the tile is zoomed. */
+    const work = document.createElement("div");
+    work.className = "tile-work";
+    const tools = new TileTools({
+      cwd,
+      cols: () => tile.panel.cols,
+      termWidth: () => mount.getBoundingClientRect().width,
+      source: () => this.sourceOfTile(tile),
+      onWidth: (px) => this.onToolWidth?.(px),
+    });
+    work.append(mount, tools.panel, tools.rail);
+    el.append(head, searchBar, work);
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
@@ -822,9 +922,9 @@ export class Deck {
       user: opts.userName ?? null,
     };
     const tile: Tile = {
-      session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label,
+      session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label, tools,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, authBadge, tokenBadge, scheduledSkillId: opts.scheduledSkillId,
+      gitBadge, authBadge, tokenBadge, branch: null, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
       skillId: opts.skillId, params: opts.params,
     };
@@ -1157,7 +1257,13 @@ export class Deck {
     const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
     const rid = resolveWorkspaceId(tile.workspaceId, tile.workspacePath, ws);
     if (rid !== null && rid !== this.activeWorkspaceId) {
-      this.setActiveWorkspace(rid);
+      /* Through the tree rather than `setActiveWorkspace`, and that is the fix:
+         this deck's filter was the only thing that moved, so going to a session in
+         another workspace left the panel's tint, the crumb, the board and the pull
+         requests pointing at the workspace you had just left. One notion of
+         "active", owned by the thing that also persists it. */
+      if (this.tree) this.tree.activate(rid);
+      else this.setActiveWorkspace(rid);
     } else if (tile.el.classList.contains("ws-hidden")) {
       // Orphan (or otherwise stale-hidden) target: unhide so focus lands on a visible tile.
       tile.el.classList.remove("ws-hidden");
@@ -1202,6 +1308,24 @@ export class Deck {
     }
   }
 
+  /** What launched this session, in words that can be true of it. The scenario's
+   *  NAME rather than its id where the app can resolve one: an id is not something
+   *  a person recognises, and the deck can already reach the scenario list for the
+   *  empty deck's sake. */
+  private sourceOfTile(tile: Tile): { kind: string; detail: string | null; prompt: string | null } {
+    if (tile.skillId) {
+      const skill = this.emptyActions?.scenarios().find((x) => x.id === tile.skillId);
+      return {
+        kind: tile.scheduledSkillId ? "Scenario, on its schedule" : "Scenario",
+        detail: skill?.name ?? null,
+        prompt: tile.prompt,
+      };
+    }
+    if (tile.taskId) return { kind: "Card", detail: tile.taskId, prompt: tile.prompt };
+    if (tile.kind === "command") return { kind: "Command", detail: null, prompt: tile.prompt };
+    return { kind: "Started by hand", detail: null, prompt: tile.prompt };
+  }
+
   private applyLayout() {
     const parts = zoomParticipants(
       [...this.tiles.values()].map((t) => ({
@@ -1218,6 +1342,7 @@ export class Deck {
         this.deckEl.appendChild(t.el);
       }
       if (this.strip) { this.strip.remove(); this.strip = null; }
+      this.onZoom?.(false);
       // Last, so the panel is appended after the tiles it replaces have been moved —
       // and here rather than in each caller, because this is the one function every
       // path that changes what the deck holds already goes through.
@@ -1232,15 +1357,18 @@ export class Deck {
       this.strip = document.createElement("div");
       this.strip.className = "deck-strip";
     }
+    this.onZoom?.(true);
     const z = this.tiles.get(parts.zoomed)!;
     z.el.classList.add("zoomed");
-    z.el.classList.remove("minimized");
+    z.el.classList.remove("minimized", "solo");
+    z.tools.setZoomed(true);
     this.deckEl.appendChild(z.el);
     this.deckEl.appendChild(this.strip);
     for (const s of parts.minimized) {
       const t = this.tiles.get(s)!;
       t.el.classList.add("minimized");
-      t.el.classList.remove("zoomed");
+      t.el.classList.remove("zoomed", "solo");
+      t.tools.setZoomed(false);
       this.strip.appendChild(t.el);
     }
   }
@@ -1302,6 +1430,60 @@ export class Deck {
   toggleZoomActive() {
     const id = this.activeSession;
     if (id) this.toggleZoom(id);
+  }
+
+  isZoomed(): boolean { return this.zoomedSession !== null; }
+
+  /** Refit every visible terminal, and re-check the tool panel's column floor.
+   *
+   *  For whatever moves a box these live in without resizing the window: the
+   *  panel's grip, the drawer's, the panel collapsing. `fit()` is debounced inside
+   *  the terminal, so calling this on every frame of a drag costs one resize at the
+   *  end of it — which is the behaviour the PTY needs and the reason the debounce
+   *  is there. */
+  refit() {
+    for (const t of this.tiles.values()) {
+      if (t.el.classList.contains("ws-hidden")) continue;
+      t.panel.fit();
+      t.tools.refit();
+    }
+  }
+
+  /** Told whenever the deck enters or leaves zoom.
+   *
+   *  For the panel beside it, which collapses to the rail while one session is
+   *  filling the stage: inside a session, the queue is not what a person is
+   *  looking at, and the tile's own tools want the width more. One listener
+   *  rather than a call at every site that can zoom — there are five, and a
+   *  behaviour wired at five call sites is a behaviour with four bugs in it. */
+  setZoomListener(fn: (zoomed: boolean) => void) { this.onZoom = fn; }
+  private onZoom: ((zoomed: boolean) => void) | null = null;
+
+  /** Zoom the active tile and say whether that is what happened.
+   *
+   *  For the panel taking the deck's width: the deck yields by falling into its
+   *  filmstrip, which is the layout a zoom already produces. The return value is
+   *  what lets the panel give back exactly what it took — a tile somebody zoomed
+   *  themselves must not be un-zoomed by a panel narrowing. */
+  zoomActive(): boolean {
+    if (this.zoomedSession !== null) return false;
+    const id = this.activeSession;
+    if (!id) return false;
+    this.zoomTo(id);
+    return this.zoomedSession !== null;
+  }
+
+  /** Focus the first session in a state, for the ledger's readings: pressing "2
+   *  waiting for a decision" goes to one of the two rather than to a list of
+   *  everything. Insertion order, which is the order the deck lays tiles out in,
+   *  so "first" means the same thing to the eye. */
+  focusFirst(state: SessionState): boolean {
+    for (const t of this.tiles.values()) {
+      if (t.state === state && !t.el.classList.contains("ws-hidden")) {
+        return this.focusSession(t.session);
+      }
+    }
+    return false;
   }
 
   /** Move keyboard focus into the active terminal. Half of region cycling: the
@@ -1430,6 +1612,23 @@ export class Deck {
       .catch((e) => console.debug("saveLayout failed", e));
   }
 
+  /** The row that creates a session where it stands.
+   *
+   *  Exactly one of them is prominent — the active workspace's — so the panel still
+   *  has one obvious primary action after the full-width "+ session" button that
+   *  used to be it. The difference from that button is the whole point: this one is
+   *  inside the thing it acts on and names it, so being wrong about which workspace
+   *  is active costs nothing. Pressing any of the others creates there. */
+  private createRow(workspaceId: string, name: string): HTMLElement {
+    const add = document.createElement("button");
+    add.className = "sess-add" + (workspaceId === this.activeWorkspaceId ? " sess-add--primary" : "");
+    add.dataset.focusKey = `add:${workspaceId}`;
+    add.append(icon("plus", 13), document.createTextNode(`New session in ${name}`));
+    add.title = `New session in ${name}`;
+    add.onclick = () => this.tree?.newSession(workspaceId);
+    return add;
+  }
+
   private renderList() {
     // The whole list is rebuilt via innerHTML, and the poll rebuilds it every
     // five seconds. That was harmless only while nothing in it could hold
@@ -1441,6 +1640,14 @@ export class Deck {
       : null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
+    this.onCounts?.({
+      waiting,
+      error: tiles.filter((t) => t.state === "error").length,
+      // Not for a reading of its own — the ledger is only the things that want a
+      // person — but the rail's dot needs to know whether there is anything here
+      // at all, which is a different question from whether anything is wrong.
+      total: tiles.length,
+    });
     // What this window has, not what the app has — and said as a list rather
     // than a number.
     //
@@ -1462,25 +1669,25 @@ export class Deck {
         state: t.state, workspaceId: t.workspaceId,
       })),
     });
-    const header = waiting > 0 ? `Sessions · ${waiting} waiting for input` : "Sessions";
-    this.listEl.innerHTML = `<h3>${header}</h3>`;
+    /* Nothing of its own any more, and that is the tree arriving in two steps. The
+       heading went first — the row above these sessions is the workspace's, stated
+       once, and how many are waiting is the ledger's reading in the top bar. The
+       total spend went second, by request: a running bill is not something a person
+       acts on, and it was the one line keeping a third island in this column. Each
+       session's own spend is still on its tile's token badge, in the tooltip
+       `tokenTooltip` writes.
+
+       So on the tree's own path this mount ends up EMPTY, and an empty island is a
+       small painted box with nothing in it — hidden at the end of this function.
+       It is not dead: with no tree, or with sessions whose workspace was deleted from
+       under them, the groups below still render into it. */
+    this.listEl.replaceChildren();
     document.title = waiting > 0 ? `(${waiting}) cowork-deck` : "cowork-deck";
-    // The bill across every session, subagents included. Context does not
-    // aggregate — each session has its own window and adding them describes
-    // nothing — so the footer carries spend and the tiles carry context.
-    const total = sumUsage([...this.usage.values()].map((t) => t.spend));
-    if (this.usage.size > 0) {
-      const sum = document.createElement("div");
-      sum.className = "sess-tokens-sum";
-      sum.textContent =
-        `Total spend · ${formatTokens(total.output)} out · ${formatTokens(spendIn(total))} in`;
-      this.listEl.appendChild(sum);
-    }
     const groups = groupTilesByWorkspace(
       [
         ...tiles.map((t) => ({
           session: t.session, name: resolveTileName(t.names), state: t.state,
-          workspaceId: t.workspaceId, workspacePath: t.workspacePath,
+          workspaceId: t.workspaceId, workspacePath: t.workspacePath, branch: t.branch,
         })),
         // Proxies, mixed in rather than listed apart: a session is under its
         // workspace wherever it is being rendered, and a separate "elsewhere"
@@ -1500,6 +1707,23 @@ export class Deck {
       const name = g.workspace?.name ?? "Other";
       const collapsed = this.collapsed.has(wsId);
       const groupWaiting = g.tiles.filter((t) => t.state === "waitingInput").length;
+
+      /* Where this group's rows go, and whether this deck draws its heading at
+         all. See `setTree`. The count goes out either way: with a tree it is the
+         workspace row that carries the badge, and that row is repainted on its own
+         schedule, so it has to be told rather than asked. */
+      const host = g.workspace ? this.tree?.host(g.workspace.id) ?? null : null;
+      if (g.workspace) {
+        this.tree?.waiting(g.workspace.id, groupWaiting);
+        this.tree?.expanded(g.workspace.id, !collapsed);
+      }
+      let into: HTMLElement = this.listEl;
+      if (host) {
+        host.replaceChildren();
+        host.hidden = collapsed;
+        into = host;
+        if (collapsed) continue;
+      }
 
       const head = document.createElement("button");
       head.dataset.focusKey = `group:${wsId}`;
@@ -1529,8 +1753,10 @@ export class Deck {
         if (collapsed) this.collapsed.delete(wsId); else this.collapsed.add(wsId);
         this.renderList();
       };
-      this.listEl.appendChild(head);
-      if (collapsed) continue;
+      if (!host) {
+        this.listEl.appendChild(head);
+        if (collapsed) continue;
+      }
 
       for (const t of g.tiles) {
         const live = this.tiles.get(t.session);
@@ -1540,12 +1766,12 @@ export class Deck {
         // one thing about it a sighted reader gets from the dimmed row and a
         // screen reader would otherwise get from nothing at all. Not
         // `aria-disabled`: the row is not disabled, it does something different.
-        row.setAttribute(
-          "aria-label",
-          t.remote
-            ? `${t.name} — ${LABEL[t.state]} — in another window`
-            : `${t.name} — ${LABEL[t.state]}`,
-        );
+        // The branch is on the row for the eye, so it is in the accessible name
+        // too: a list where two rows differ only by which worktree they run in
+        // must differ by that for a reader who never sees the second line.
+        const meta = [LABEL[t.state], ...(t.branch ? [t.branch] : []),
+          ...(t.remote ? ["in another window"] : [])];
+        row.setAttribute("aria-label", [t.name, ...meta].join(" — "));
         const isActive = !!live?.el.classList.contains("is-active");
         row.className = "sess-row" + (isActive ? " active" : "")
           + (t.remote ? " remote" : "");
@@ -1568,15 +1794,71 @@ export class Deck {
         row.onclick = t.remote
           ? () => this.onRemoteFocus(t.remote!, t.session)
           : () => this.focusSessionAnywhere(t.session);
-        const stateSpan = document.createElement("span");
-        stateSpan.className = `tile-state state-${t.state}`;
-        stateSpan.textContent = LABEL[t.state];
+        /* Two lines, and which one is which is the whole point: the name is what
+           tells one session from another, so it takes the row's full width on a
+           line of its own, and everything that is true of every row — the state,
+           the branch — goes under it, quieter and smaller.
+           What this replaces put the state chip FIRST, which made a column of a
+           dozen sessions read as a column of pills: the chips are the widest and
+           brightest thing in the row, they are a different width per state, and
+           so the names started at a different x on every line. There was no column
+           for the eye to run down. */
         const nameSpan = document.createElement("span");
+        nameSpan.className = "sess-name";
         nameSpan.textContent = t.name;
-        row.append(stateSpan, " ", nameSpan);
-        this.listEl.appendChild(row);
+        // The row truncates now rather than wrapping to four lines, so the full
+        // name has to be reachable. The accessible name already carries it; this
+        // is for the sighted reader looking at "Port the settings rail to t…".
+        nameSpan.title = t.name;
+        const metaLine = document.createElement("span");
+        metaLine.className = "sess-meta";
+        const stateSpan = document.createElement("span");
+        // `--bare` and not a chip: the fill was contrast spent rather than earned
+        // (see the note over `.state-ended`), and a pill per row is what made the
+        // list unreadable. The dot the chip already carries stays, and so does the
+        // rail — two channels for the state, which is one more than the name gets.
+        stateSpan.className = `tile-state tile-state--bare state-${t.state}`;
+        stateSpan.textContent = LABEL[t.state];
+        metaLine.append(stateSpan);
+        if (t.branch) {
+          const branchSpan = document.createElement("span");
+          branchSpan.className = "sess-branch";
+          branchSpan.append(icon("git-branch", 12), document.createTextNode(` ${t.branch}`));
+          metaLine.append(branchSpan);
+        }
+        row.append(nameSpan, metaLine);
+        into.appendChild(row);
+      }
+
+      /* Creation is positional: the last row inside the group, at the place the
+         new session will appear, and it says which workspace that is. What it
+         replaces was one button outside every list which created in whichever
+         workspace happened to be active — so being wrong about which workspace was
+         active was a session in the wrong folder, discovered afterwards. */
+      if (host && g.workspace) into.appendChild(this.createRow(g.workspace.id, g.workspace.name));
+    }
+
+    /* A workspace with no sessions at all still gets its create row, and this is
+       where it comes from: `groupTilesByWorkspace` groups TILES, so a workspace
+       nothing is running in produces no group. It is also the case that needs the
+       row most — an empty workspace's only useful sentence is "start something
+       here" — and without this it was the one row in the tree that could not be
+       created into. */
+    if (this.tree) {
+      for (const w of this.workspaces()) {
+        const host = this.tree.host(w.id);
+        if (!host || host.childElementCount > 0) continue;
+        const folded = this.collapsed.has(w.id);
+        host.hidden = folded;
+        this.tree.expanded(w.id, !folded);
+        if (!folded) host.appendChild(this.createRow(w.id, w.name));
       }
     }
+    /* An island with nothing in it is a box the eye has to dismiss. `hidden` rather
+       than a class, because `#sidebar .island` sets no `display` of its own and the
+       attribute's is enough — and it has to be re-evaluated on every render, since
+       an orphan group appearing is what fills this again. */
+    this.listEl.hidden = this.listEl.childElementCount === 0;
     if (focusKey) {
       this.listEl.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
     }
@@ -1613,6 +1895,33 @@ function scenarioLaunch(
     continuesRunId: continuesRunId ?? previous,
   };
 }
+
+/** What a deck needs from the tree its rows live in. Three functions and no
+ *  more: where to put the rows, what to tell the row above them, and what the
+ *  create row at the end of them does. */
+export interface DeckTree {
+  /** The container the panel leaves under a workspace's row. Null when that
+   *  workspace has no row — which is not the same as having no sessions. */
+  host(workspaceId: string): HTMLElement | null;
+  /** How many of this workspace's sessions are waiting, including the ones in
+   *  another window: the badge answers for the workspace, not for the window. */
+  waiting(workspaceId: string, n: number): void;
+  /** Whether this workspace's sessions are showing. The deck owns the folding, so
+   *  the row above them cannot know it without being told. */
+  expanded(workspaceId: string, on: boolean): void;
+  /** Create a session in this workspace, from the row that names it. */
+  newSession(workspaceId: string): void;
+  /** Make this workspace the active one — the whole app's notion of active, not
+   *  this deck's filter. Going to a session in another workspace has to go through
+   *  here: `setActiveWorkspace` moves the deck and nothing else, so the panel, the
+   *  crumb, the board and the pull requests stayed on the workspace you left. */
+  activate(workspaceId: string): void;
+}
+
+/** What the top bar's ledger is written from. Deliberately not "everything the
+ *  deck knows": three numbers, and each one has a reading in the bar or a dot on
+ *  the rail. A count nothing renders is a count nobody checks. */
+export interface SessionCounts { waiting: number; error: number; total: number }
 
 export function waitingCount(states: SessionState[]): number {
   return states.filter((s) => s === "waitingInput").length;

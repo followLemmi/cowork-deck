@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cowork-deck — оверлеи и состояния</title>
+<link rel="stylesheet" href="assets/deck-ui.css">
+<link rel="stylesheet" href="assets/deck-screens.css">
+<link rel="stylesheet" href="assets/deck-palettes.css">
+<link rel="stylesheet" href="assets/deck-doc.css">
+</head>
+<body class="doc" data-screen="overlays">
+
+<header class="doc-bar">
+  <span class="mark-glyph" data-app-mark aria-hidden="true"></span>
+  <span class="mark-text">cowork<span>·deck</span></span>
+  <span class="crumb-sep">/</span>
+  <span class="caps">Оверлеи и состояния</span>
+  <span class="bar-spacer"></span>
+  <a class="btn btn--quiet" href="index.html"><i data-ic="chevron" class="ic ic--left"></i> К обзору</a>
+  <button class="btn--icon" data-theme-toggle aria-label="Переключить тему"><i data-ic="moon"></i></button>
+</header>
+
+<main class="sheet">
+  <h1 class="doc-title">Всё, что появляется поверх</h1>
+  <p class="doc-lede">Диалоги, пилюля, тосты, пустые экраны и состояния отказа — на настоящем фоне приложения, в обеих темах. Каждый элемент здесь живой: его можно открыть, закрыть и посмотреть, как он приезжает и уезжает.</p>
+
+  <section class="doc-sec">
+    <h2 class="doc-h">Пилюля поверх всех окон</h2>
+    <p class="doc-p">Отдельное маленькое окно, поэтому нарисовано как самостоятельный объект, а не как часть экрана. Считает только сессии, заблокированные на решении: сессия, которая просто закончила ход, сообщает о себе уведомлением, а не цифрой здесь.</p>
+    <div class="specs">
+      <div class="spec">
+        <div class="spec-head"><span class="caps">Ждут решения</span></div>
+        <p class="spec-note">Янтарная точка пульсирует. Цифра — Space Grotesk, 32px: её читают через комнату.</p>
+        <div class="spec-stage">
+          <div class="pill pill--waiting" data-od-id="pill-waiting">
+            <span class="pill-dot"></span>
+            <span class="pill-count">3</span>
+            <span class="pill-text"><span class="pill-label">ждут решения</span><span class="pill-sub">relay · harbor</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="spec">
+        <div class="spec-head"><span class="caps">Ничего не ждёт</span></div>
+        <p class="spec-note">Ноль — не сигнал, поэтому он без оттенка и без точки. Оттенок принадлежит состоянию, а «всё в порядке» состоянием не является.</p>
+        <div class="spec-stage">
+          <div class="pill pill--calm" data-od-id="pill-calm">
+            <span class="pill-count">0</span>
+            <span class="pill-text"><span class="pill-label">никто не ждёт</span><span class="pill-sub">4 сессии работают</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="doc-sec">
+    <h2 class="doc-h">Пустые экраны</h2>
+    <p class="doc-p">Пустому экрану сначала нужно на что смотреть, и только потом слова — но каркасная рамка и рисованная сценка это не оно. Один вписанный глиф размером с то, чего не хватает, из собственного набора иконок приложения. И ровно одна сплошная кнопка: вторая точка входа живёт под линейкой тем же весом, что и абзац над ней.</p>
+    <div class="specs">
+      <div class="spec spec--wide">
+        <div class="spec-head"><span class="caps">Дека без сессий</span></div>
+        <div class="spec-stage spec-stage--tall">
+          <div class="empty empty--center" data-od-id="empty-deck">
+            <span class="empty-mark"><i data-ic="terminal"></i></span>
+            <span class="empty-title">Ни одной сессии</span>
+            <p>Сессия — это настоящий <code>claude</code> в выбранной папке. Можно начать с пустого промпта или взять сценарий: готовый промпт — самый быстрый старт, какой есть.</p>
+            <button class="btn btn--primary" data-toast="Новая сессия в relay" data-toast-icon="plus"><i data-ic="plus"></i> Новая сессия</button>
+            <span class="empty-alt">
+              <span class="empty-kbd">или один из сценариев этого воркспейса</span>
+              <span class="empty-alt-row">
+                <button class="btn btn--outline" data-toast="Запущен «Review the diff»" data-toast-icon="play"><i data-ic="search"></i> Review the diff</button>
+                <button class="btn btn--outline" data-toast="Запущен «Nightly dependency sweep»" data-toast-icon="play"><i data-ic="shield"></i> Nightly dependency sweep</button>
+                <button class="btn btn--outline" data-toast="Запущен «Write the release notes»" data-toast-icon="play"><i data-ic="book"></i> Write the release notes</button>
+              </span>
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="spec">
+        <div class="spec-head"><span class="caps">Доска без карточек</span></div>
+        <div class="spec-stage spec-stage--tall">
+          <div class="empty" data-od-id="empty-board">
+            <span class="empty-mark"><i data-ic="list"></i></span>
+            <span class="empty-title">Карточек ещё нет</span>
+            <p>Карточки — это markdown-файлы в <code>.cowork/tasks/</code>. Сессии заводят их сами через <code>cowork_task</code>, поэтому побочная находка становится карточкой, а не расползанием задачи.</p>
+            <button class="btn btn--outline"><i data-ic="plus"></i> Первая карточка <span class="kbd">⌘⇧T</span></button>
+          </div>
+        </div>
+      </div>
+      <div class="spec">
+        <div class="spec-head"><span class="caps">gh недоступен</span></div>
+        <div class="spec-stage spec-stage--tall">
+          <div class="empty" data-od-id="empty-gh">
+            <span class="empty-mark"><i data-ic="user"></i></span>
+            <span class="empty-title">Учётка не привязана</span>
+            <p>У воркспейса <b>atlas</b> нет аккаунта <code>gh</code>, поэтому здесь нечего показать. Приложение никогда не переключает активный аккаунт и не трогает <code>~/.config/gh</code> — привязка живёт у воркспейса.</p>
+            <button class="btn btn--outline"><i data-ic="user"></i> Привязать аккаунт к atlas</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="doc-sec">
+    <h2 class="doc-h">Отказы и ожидание</h2>
+    <p class="doc-p">Три разных факта — предупреждение, поломка и «ещё грузится» — и три разных вида. Баннер поломки несёт обычный текст на мягком фоне, а не текст того же оттенка, что и фон: у чипа каждый процент альфы стоит контраста, у баннера — нет.</p>
+    <div class="specs">
+      <div class="spec spec--wide">
+        <div class="spec-head"><span class="caps">Баннеры</span></div>
+        <div class="spec-stage" style="flex-direction: column; align-items: stretch; gap: var(--sp-3)">
+          <div class="banner banner--warn" style="margin: 0" data-od-id="banner-warn">
+            <i data-ic="alert"></i>
+            <div class="banner-body"><strong>Расписание сработает один раз за время жизни окна.</strong> Страж считает <code>waitingInput</code> активным прогоном, а интерактивный <code>claude</code> встаёт ровно в это состояние после <code>Stop</code>. Одиночный прогон отрабатывает безупречно — поэтому живой приёмкой это не ловится.</div>
+          </div>
+          <div class="banner banner--error" style="margin: 0" data-od-id="banner-error">
+            <i data-ic="alert"></i>
+            <div class="banner-body">
+              <strong>board.json не читается: строка 14, ожидался «,».</strong>
+              Доска показана на настройках по умолчанию. Это два факта, а не одно предложение: пока файл битый, реальный терминальный шаг не терминален, и все закрытые карточки вернулись бы в открытую колонку — правдоподобно и неверно.
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="spec">
+        <div class="spec-head"><span class="caps">Загрузка</span></div>
+        <p class="spec-note">Дышит, а не бегает блик: <code>opacity</code> вместо градиента, который пришлось бы двигать по фону.</p>
+        <div class="spec-stage spec-stage--flush">
+          <div class="island" style="width: 100%; border-radius: 0; box-shadow: none">
+            <div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="spec">
+        <div class="spec-head"><span class="caps">Тост</span></div>
+        <p class="spec-note">Единственное, что сообщает о завершённом действии. <code>role="status"</code>, не <code>alert</code>: закрытая карточка — новость, а не авария.</p>
+        <div class="spec-stage">
+          <button class="btn btn--outline" data-toast="Карточка перенесена в Shipped"><i data-ic="check"></i> Показать тост</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="doc-sec">
+    <h2 class="doc-h">Диалоги</h2>
+    <p class="doc-p">Все приезжают одинаково — <code>scale(0.97)</code> и 6px вверх на единственной кривой с перелётом, — и уезжают тем же движением, проигранным назад. <kbd class="kbd">esc</kbd> закрывает, фокус уходит внутрь и возвращается туда, где был.</p>
+    <div class="specs">
+      <div class="spec">
+        <div class="spec-head"><span class="caps">Палитра команд</span></div>
+        <p class="spec-note">⌘K работает на любом экране набора.</p>
+        <div class="spec-stage"><button class="btn btn--outline" data-open-overlay="palette"><i data-ic="search"></i> Открыть <span class="kbd">⌘K</span></button></div>
+      </div>
+      <div class="spec">
+        <div class="spec-head"><span class="caps">Переименование</span></div>
+        <p class="spec-note">Пустое поле возвращает автоматическое имя из транскрипта.</p>
+        <div class="spec-stage"><button class="btn btn--outline" data-open-overlay="rename"><i data-ic="pencil"></i> Открыть <span class="kbd">F2</span></button></div>
+      </div>
+      <div class="spec">
+        <div class="spec-head"><span class="caps">Необратимое действие</span></div>
+        <p class="spec-note">Кнопка называет, что произойдёт, а не «ОК».</p>
+        <div class="spec-stage"><button class="btn btn--outline" data-open-overlay="confirm"><i data-ic="trash"></i> Открыть</button></div>
+      </div>
+      <div class="spec">
+        <div class="spec-head"><span class="caps">Настройки</span></div>
+        <p class="spec-note">Тема здесь и в титульной полосе — один и тот же контрол.</p>
+        <div class="spec-stage"><button class="btn btn--outline" data-open-overlay="settings"><i data-ic="sliders"></i> Открыть</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="overlay" id="rename" hidden>
+  <div class="modal modal--narrow pop" role="dialog" aria-modal="true" aria-labelledby="rn-t" data-od-id="rename-dialog">
+    <div class="modal-head"><h2 class="modal-title" id="rn-t">Rename session</h2></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label class="form-label" for="rn-1">Name</label>
+        <input class="field" id="rn-1" value="Retry the refund webhook on a 410" data-autofocus>
+        <p class="form-hint">Empty the field and the automatic name comes back. Claude Code mints a title once and does not revise it, so a session that has moved on keeps its opening topic until you rename it.</p>
+      </div>
+    </div>
+    <div class="modal-acts">
+      <button class="btn btn--quiet" data-close-overlay>Cancel</button>
+      <button class="btn btn--primary" data-close-overlay data-toast="Session renamed">Rename</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="confirm" hidden>
+  <div class="modal modal--narrow pop" role="dialog" aria-modal="true" aria-labelledby="cf-t" data-od-id="confirm-dialog">
+    <div class="modal-head"><h2 class="modal-title" id="cf-t">Erase this scenario's history?</h2></div>
+    <div class="modal-body">
+      <p class="form-hint">All 42 recorded runs of <strong>Nightly dependency sweep</strong> go, and the transcripts they point at stay on disk. This is the only granularity at which history can be erased — there is deliberately no per-row delete.</p>
+      <div class="banner banner--error" style="margin: 0">
+        <i data-ic="alert"></i>
+        <div class="banner-body">Not undoable. The journal is append-only, so there is nothing to restore from.</div>
+      </div>
+    </div>
+    <div class="modal-acts">
+      <button class="btn btn--quiet" data-close-overlay>Keep them</button>
+      <!-- The button names what it does. "OK" on a destructive action is how a
+           person confirms something they did not read. -->
+      <button class="btn btn--outline btn--danger" data-close-overlay data-toast="42 runs erased" data-toast-icon="eraser"><i data-ic="eraser"></i> Erase 42 runs</button>
+    </div>
+  </div>
+</div>
+
+<script src="assets/deck-chrome.js"></script>
+<script src="assets/icons.js"></script>
+<script src="assets/deck-motion.js"></script>
+</body>
+</html>

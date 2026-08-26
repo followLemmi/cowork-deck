@@ -20,11 +20,12 @@ describe("installCommand", () => {
   });
 
   it("falls back to the documented installer for unknown distros", () => {
-    // Поле в UI редактируемое: угадывать наугад хуже, чем честно предложить доку.
+    // The field in the UI is editable: a wild guess is worse than honestly
+    // pointing at the documentation.
     expect(installCommand({ os: "linux", distro: "voidlinux", placesWindows: true }))
-      .toBe("# см. https://github.com/cli/cli/blob/trunk/docs/install_linux.md");
+      .toBe("# see https://github.com/cli/cli/blob/trunk/docs/install_linux.md");
     expect(installCommand({ os: "linux", distro: null, placesWindows: true }))
-      .toBe("# см. https://github.com/cli/cli/blob/trunk/docs/install_linux.md");
+      .toBe("# see https://github.com/cli/cli/blob/trunk/docs/install_linux.md");
   });
 });
 
@@ -37,10 +38,10 @@ describe("missingScopes", () => {
 });
 
 describe("scopeWarning", () => {
-  it("warns in Russian only when something is missing", () => {
+  it("warns only when something is missing", () => {
     expect(scopeWarning(acc())).toBeNull();
     expect(scopeWarning(acc({ scopes: ["gist"] })))
-      .toBe("у аккаунта нет скоупа repo — приватные репозитории будут недоступны");
+      .toBe("this account is missing the repo scope — private repositories will be out of reach");
   });
 });
 
@@ -50,9 +51,9 @@ describe("accountChoices", () => {
 
   it("puts the unbound option first and marks the active account", () => {
     const choices = accountChoices(status([acc({ login: "a", active: true }), acc({ login: "b" })]));
-    expect(choices[0]).toEqual({ value: "", label: "— не привязан —", missing: false });
+    expect(choices[0]).toEqual({ value: "", label: "— not linked —", missing: false });
     expect(choices[1].value).toBe("a");
-    expect(choices[1].label).toBe("a (активный в gh)");
+    expect(choices[1].label).toBe("a (active in gh)");
     expect(choices[2].label).toBe("b");
   });
 
@@ -61,7 +62,7 @@ describe("accountChoices", () => {
     const stale = choices.find((c) => c.value === "gone");
     expect(stale).toBeDefined();
     expect(stale!.missing).toBe(true);
-    expect(stale!.label).toBe("gone (не найден в gh)");
+    expect(stale!.label).toBe("gone (not found in gh)");
   });
 
   it("does not duplicate a saved login that gh still knows", () => {
@@ -71,7 +72,7 @@ describe("accountChoices", () => {
 
   it("offers only the unbound option when gh is absent", () => {
     expect(accountChoices({ path: null, version: null, accounts: [], error: null })).toEqual([
-      { value: "", label: "— не привязан —", missing: false },
+      { value: "", label: "— not linked —", missing: false },
     ]);
   });
 });

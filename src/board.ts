@@ -6,7 +6,9 @@ import {
   type TaskSource,
 } from "./issues";
 import { ago } from "./pr";
+import { icon } from "./icons";
 import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
+import { skeleton } from "./skeleton";
 
 export interface BoardState {
   project: string;
@@ -138,7 +140,12 @@ export class BoardView {
     // a synthesized board — there is no `board.json` to write, and one synthetic
     // kind is not a choice.
     if (caps?.boardEditable) {
-      const edit = el("button", "tk-board-edit", "⚙");
+      const edit = el("button", "tk-board-edit");
+      /* A wrench, not the sliders the top bar's Settings wears: two identical
+         glyphs on one screen meaning two different things is worse than either of
+         them being slightly less obvious. This one configures THIS board — its
+         steps and its kinds — and the app's own settings are elsewhere. */
+      edit.append(icon("wrench", 15));
       edit.setAttribute("aria-label", "Configure the board");
       edit.onclick = () => this.h.onEditBoard();
       head.append(edit);
@@ -371,19 +378,10 @@ export class BoardView {
     };
   }
 
-  /** Grey rows standing in for a list that has not arrived.
-   *
-   *  `aria-hidden`, with one live sentence beside them: to a screen reader six
-   *  empty boxes are six pieces of nothing, and "Loading…" is the whole of what
-   *  they say to anybody else either. */
+  /** Rows standing in for a list that has not arrived — see `skeleton.ts`, which
+   *  draws the same shape for the pull requests. */
   private skeleton(): HTMLElement {
-    const wrap = el("div", "tk-skeleton");
-    wrap.append(el("p", "tk-skeleton-text", "Loading…"));
-    const rows = el("div", "tk-skeleton-rows");
-    rows.setAttribute("aria-hidden", "true");
-    for (let i = 0; i < SKELETON_ROWS; i++) rows.append(el("div", "tk-skeleton-row"));
-    wrap.append(rows);
-    return wrap;
+    return skeleton("tk", SKELETON_ROWS);
   }
 
   /** One list, one state at a time, the way the repository's own issues page
@@ -632,7 +630,14 @@ export class BoardView {
     return out;
   }
 
-  /** ‹ ▶ ✓ ›, on the same rules in both layouts. */
+  /** The card's four actions, on the same rules in both layouts.
+   *
+   *  Glyphs from the app's own set rather than the characters `‹ ▶ ✓ ›` this used
+   *  to draw. Two reasons and both are the design system's: a text character is
+   *  whatever the platform's font makes of it — `▶` arrives as an emoji on some
+   *  systems and as a triangle on others — and the rest of the app is one 1.5px
+   *  outline hand. The accessible name is unchanged and is still what says where
+   *  an arrow goes; only the picture is. */
   private actions(
     t: Task, status: "open" | "done" | "working", caps: ProviderCapabilities,
   ): HTMLElement {
@@ -660,7 +665,8 @@ export class BoardView {
 
     const prevStep = stepBefore(caps.board, t.status);
     if (prevStep !== null && canWrite) {
-      const prev = el("button", "tk-prev", "‹");
+      const prev = el("button", "tk-prev icon--left");
+      prev.append(icon("chevron", 15));
       // Names the destination. "Move to the previous step" is board vocabulary, and on
       // a two-step board — which is what the GitHub source synthesizes — it names
       // nothing a person can act on: the whole board is "open" and "closed", so "the
@@ -683,7 +689,8 @@ export class BoardView {
     // it's damaged), so launching from it either fails or lands in the wrong
     // workspace — hide ▶ the same way ✓ is hidden below.
     if (status === "open" && !t.damaged) {
-      const run = el("button", "tk-run", "▶");
+      const run = el("button", "tk-run");
+      run.append(icon("play", 14));
       run.title = "Start a session from this task";
       run.setAttribute("aria-label", "Start a session from this task");
       run.onclick = () => this.h.onLaunch(t);
@@ -696,7 +703,8 @@ export class BoardView {
     // Already in a terminal step: there is nothing for ✓ to do. Asked of the
     // configuration, because which steps those are is board.json's decision.
     if (showDone) {
-      const done = el("button", "tk-done", "✓");
+      const done = el("button", "tk-done");
+      done.append(icon("check", 15));
       done.title = "Close this task";
       done.setAttribute("aria-label", "Close this task");
       done.onclick = () => this.h.onResolve(t);
@@ -717,7 +725,8 @@ export class BoardView {
     // and ✓ is the control that says so.
     const nextIsClose = nextStep !== null && closesTo !== null && nextStep === closesTo;
     if (nextStep !== null && canWrite && !nextIsClose) {
-      const next = el("button", "tk-next", "›");
+      const next = el("button", "tk-next");
+      next.append(icon("chevron", 15));
       const label = `Move to ${stepLabel(caps.board, nextStep)}`;
       next.title = label;
       next.setAttribute("aria-label", label);

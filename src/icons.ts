@@ -97,6 +97,26 @@ const PATHS: Record<string, string> = {
     + 'a3.6 3.6 0 0 0 4.6-4.6 L11 6.6 9.4 5 z"/>',
   sparkle: '<path d="M8 2.5 l1.3 3.6 3.6 1.3 -3.6 1.3 -1.3 3.6 -1.3-3.6 -3.6-1.3 3.6-1.3 z"/>'
     + '<path d="M12.6 11 l.5 1.4 1.4.5 -1.4.5 -.5 1.4 -.5-1.4 -1.4-.5 1.4-.5 z"/>',
+
+  // --- The rail's five, and the panel's two -------------------------------
+  // Authored on the same terms as everything above: 16-unit grid, ~12-unit live
+  // area, 1.5 stroke, round caps, outline rather than fill. A rail of five icons
+  // has to be legible at 17px with no label beside it, which is why none of these
+  // is a scene: `list` is three rows with their bullets, `git-merge` is the side
+  // line REJOINING the trunk (which is the whole difference from `git-branch`,
+  // where it leaves), `bolt` is a scenario firing, and `columns` is the panel
+  // taking the width.
+  list: '<path d="M5.6 4.5 H13.5"/><path d="M5.6 8 H13.5"/><path d="M5.6 11.5 H13.5"/>'
+    + '<circle cx="3" cy="4.5" r="0.9" fill="currentColor" stroke="none"/>'
+    + '<circle cx="3" cy="8" r="0.9" fill="currentColor" stroke="none"/>'
+    + '<circle cx="3" cy="11.5" r="0.9" fill="currentColor" stroke="none"/>',
+  "git-merge": '<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/>'
+    + '<circle cx="11.5" cy="8" r="1.5"/><path d="M4.5 5 v6"/>'
+    + '<path d="M10 8 H8.5 A4 4 0 0 1 4.5 5"/>',
+  bolt: '<path d="M9 2 L4.4 9 H7.4 L6.6 14 L11.6 7 H8.4 z"/>',
+  columns: '<rect x="2.5" y="3.5" width="3.2" height="9" rx="1"/>'
+    + '<rect x="6.4" y="3.5" width="3.2" height="9" rx="1"/>'
+    + '<rect x="10.3" y="3.5" width="3.2" height="9" rx="1"/>',
 };
 
 /** Icons offered as a scenario's mark. `play` is the default and comes from

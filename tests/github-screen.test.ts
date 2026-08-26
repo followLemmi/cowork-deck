@@ -38,7 +38,7 @@ beforeEach(() => {
   hostPlatformMock.mockResolvedValue({ os: "linux", distro: "ubuntu" });
 });
 
-describe("экран GitHub — gh установлен", () => {
+describe("the GitHub screen — gh is installed", () => {
   beforeEach(() => {
     ghStatusMock.mockResolvedValue({
       path: "gh",
@@ -48,43 +48,43 @@ describe("экран GitHub — gh установлен", () => {
     });
   });
 
-  it("показывает версию, путь и оба аккаунта", async () => {
+  it("shows the version, the path and both accounts", async () => {
     await openGithubScreen(deckSpy());
     expect(text()).toContain("gh version 2.82.1");
     expect(box().querySelectorAll(".gh-acc-row")).toHaveLength(2);
-    expect(text()).toContain("a · активный в gh");
+    expect(text()).toContain("a · active in gh");
   });
 
-  it("предупреждает про нехватку скоупа repo только у того аккаунта, где его нет", async () => {
+  it("warns about the missing repo scope only on the account missing it", async () => {
     await openGithubScreen(deckSpy());
     const warns = box().querySelectorAll(".gh-acc-warn");
     expect(warns).toHaveLength(1);
-    expect(warns[0].textContent).toContain("нет скоупа repo");
+    expect(warns[0].textContent).toContain("missing the repo scope");
   });
 
-  it("«Добавить аккаунт» открывает тайл с gh auth login в каталоге воркспейса", async () => {
+  it("\"Add an account\" opens a tile running gh auth login in the workspace folder", async () => {
     const deck = deckSpy();
     await openGithubScreen(deck, "/work/proj");
-    button("Добавить аккаунт")!.click();
+    button("Add an account")!.click();
     expect(deck.calls).toEqual([
-      { title: "вход в GitHub", command: "gh auth login", cwd: "/work/proj" },
+      { title: "signing in to GitHub", command: "gh auth login", cwd: "/work/proj" },
     ]);
-    // экран закрывается, чтобы не перекрывать созданный тайл
+    // the screen closes, so it does not cover the tile it just created
     expect(document.querySelector(".gh-screen")).toBeNull();
   });
 
-  it("не предлагает установку, когда gh уже есть", async () => {
+  it("does not offer to install when gh is already there", async () => {
     await openGithubScreen(deckSpy());
-    expect(button("Установить")).toBeUndefined();
+    expect(button("Install")).toBeUndefined();
   });
 });
 
-describe("экран GitHub — gh не найден", () => {
+describe("the GitHub screen — gh not found", () => {
   beforeEach(() => {
     ghStatusMock.mockResolvedValue({ path: null, version: null, accounts: [], error: null });
   });
 
-  it("подставляет команду установки под платформу в РЕДАКТИРУЕМОЕ поле", async () => {
+  it("fills the platform's install command into an EDITABLE field", async () => {
     await openGithubScreen(deckSpy());
     const input = box().querySelector("input.modal-input") as HTMLInputElement;
     expect(input).toBeTruthy();
@@ -93,17 +93,17 @@ describe("экран GitHub — gh не найден", () => {
     expect(input.disabled).toBe(false);
   });
 
-  it("запускает ИМЕННО отредактированную пользователем команду", async () => {
+  it("runs EXACTLY the command the person edited", async () => {
     const deck = deckSpy();
     await openGithubScreen(deck, "/work/proj");
     const input = box().querySelector("input.modal-input") as HTMLInputElement;
     input.value = "sudo apt install gh=2.82.1";
-    button("Установить")!.click();
+    button("Install")!.click();
     expect(deck.calls[0].command).toBe("sudo apt install gh=2.82.1");
-    expect(deck.calls[0].title).toBe("установка gh");
+    expect(deck.calls[0].title).toBe("installing gh");
   });
 
-  it("даёт ссылку на инструкцию для тех, кто ставит сам", async () => {
+  it("links the instructions for whoever installs it themselves", async () => {
     await openGithubScreen(deckSpy());
     const link = box().querySelector("a.gh-link") as HTMLAnchorElement;
     expect(link.href).toContain("cli/cli");
@@ -111,21 +111,21 @@ describe("экран GitHub — gh не найден", () => {
   });
 });
 
-describe("экран GitHub — устойчивость", () => {
-  it("не падает и объясняет, если опрос gh сорвался", async () => {
+describe("the GitHub screen — resilience", () => {
+  it("does not fall over, and says so, when asking gh failed", async () => {
     ghStatusMock.mockRejectedValue(new Error("boom"));
     await openGithubScreen(deckSpy());
-    expect(text()).toContain("не удалось опросить gh");
-    expect(button("Перечитать")).toBeDefined();
+    expect(text()).toContain("could not ask gh");
+    expect(button("Read again")).toBeDefined();
   });
 
-  it("«Перечитать» повторяет опрос и подхватывает появившийся аккаунт", async () => {
+  it("\"Read again\" asks once more and picks up an account that has appeared", async () => {
     ghStatusMock.mockResolvedValueOnce({ path: "gh", version: "v", accounts: [], error: null });
     await openGithubScreen(deckSpy());
-    expect(text()).toContain("Аккаунтов нет");
+    expect(text()).toContain("No accounts");
 
     ghStatusMock.mockResolvedValueOnce({ path: "gh", version: "v", accounts: [acc()], error: null });
-    button("Перечитать")!.click();
+    button("Read again")!.click();
     await vi.waitFor(() => expect(text()).toContain("followLemmi"));
     expect(box().querySelectorAll(".gh-acc-row")).toHaveLength(1);
   });
@@ -140,10 +140,10 @@ describe("экран GitHub — устойчивость", () => {
     });
     await openGithubScreen(deckSpy());
     expect(text()).toContain("unknown flag: --json");
-    expect(text()).not.toContain("Аккаунтов нет");
+    expect(text()).not.toContain("No accounts");
   });
 
-  it("клик по фону закрывает экран", async () => {
+  it("a click on the backdrop closes the screen", async () => {
     ghStatusMock.mockResolvedValue({ path: "gh", version: "v", accounts: [], error: null });
     await openGithubScreen(deckSpy());
     const ov = document.querySelector(".modal-overlay") as HTMLElement;

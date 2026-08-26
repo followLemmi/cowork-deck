@@ -145,8 +145,17 @@ export class TerminalPanel {
       // The FRAME colours — background, foreground, cursor, black — are the app's and
       // must track `styles.css`. `background` in particular: the tile body is painted
       // `--bg-terminal` and xterm paints inside it, so a mismatch draws a visible
-      // frame of one colour around a terminal of another. These are the Slate & Ember
-      // values.
+      // frame of one colour around a terminal of another. These are the True Ink
+      // values, from `docs/design/true-ink/tools/palette.mjs --app`.
+      //
+      // `background` is the ISLAND's value in this theme, and that is deliberate: a
+      // tile is one surface, head and body, and a step between a title and the thing
+      // it titles is a seam you can see. It shipped at #090a0b, which read as a hole
+      // cut in a grey card, then at a value 0.025 short of the island, which read as
+      // exactly that seam. The diff's ground did not follow it — see `--bg-code`,
+      // which is a surface that is read rather than watched. Moved in the GENERATOR,
+      // not here: `term` for the `ink` direction carries the whole reason, and this
+      // line is emitted from it.
       //
       // The six ANSI hues are the CONTENT's, not the chrome's. They are what Claude
       // Code's own output asks for, and they stay One Dark deliberately: a person
@@ -155,20 +164,24 @@ export class TerminalPanel {
       // look wrong for no gain. That they no longer equal `--st-working` and friends
       // is correct — terminal ANSI is a different namespace from session state.
       theme: {
-        background: "#13110f", foreground: "#efece8", cursor: "#d5eaf3",
-        cursorAccent: "#13110f", selectionBackground: "rgba(213,234,243,0.26)",
-        black: "#13110f", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
+        // The caret is the FOREGROUND, not the accent. It stopped being a choice
+        // when the accent became light itself: an accent-coloured caret and an
+        // ink-coloured one are now the same colour, and of the two names only one
+        // is true of a terminal cursor.
+        background: "#161719", foreground: "#f6f7f9", cursor: "#f6f7f9",
+        cursorAccent: "#161719", selectionBackground: "rgba(246,247,249,0.26)",
+        black: "#161719", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
         blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#dcdfe4",
         // #5c6370 measured 2.73:1 on the old background — and this is the colour
         // Claude Code uses for most of its secondary output: hints, timestamps,
         // "esc to interrupt", diff context. It is the worst-placed failure in the
         // app, on the surface the person actually reads, and already at 14px,
         // which is the proof that size is not the lever.
-        // Now `--fg-dim`'s warm neutral rather than the cool #8a919e: this is the
-        // terminal's equivalent of that token's job, and on the darker ground it
-        // measures better than the 5.09 the cool grey managed.
+        // `--fg-dim`, whatever palette that token currently resolves to: this is
+        // the terminal's equivalent of its job, and it moves with it. On True Ink's
+        // darker ground it measures higher again than it did on the warm one.
         // Measured by `npm run contrast`, which reads this line.
-        brightBlack: "#9a9690", brightRed: "#e06c75", brightGreen: "#98c379",
+        brightBlack: "#9a9c9f", brightRed: "#e06c75", brightGreen: "#98c379",
         brightYellow: "#e5c07b", brightBlue: "#61afef", brightMagenta: "#c678dd",
         brightCyan: "#56b6c2", brightWhite: "#ffffff",
       },
@@ -585,6 +598,14 @@ export class TerminalPanel {
    *  lines —
    *  `[restarting session...]` and the launch failures — which are written by
    *  `sessions.ts` and never cross a chunk boundary. */
+  /** How many columns the terminal is showing.
+   *
+   *  Read by the tool panel beside it, which may not squeeze this box under 80:
+   *  `fit()` follows whatever box the terminal sits in, so a panel that narrows it
+   *  re-wraps the agent's output — and this app has already shipped that bug once,
+   *  when the filmstrip resized a PTY to about 22 columns by 3 rows. */
+  get cols(): number { return this.term.cols; }
+
   write(data: string | Uint8Array) { this.term.write(data); }
   focus() { this.term.focus(); }
   search(term: string) { if (term) { this.lastSearch = term; this.searchAddon.findNext(term); } }

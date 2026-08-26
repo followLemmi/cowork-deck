@@ -40,12 +40,50 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return n;
 }
 
+/** Draw sync into any box, and keep it honest for as long as it is on screen.
+ *
+ *  Two callers: the dialog below, which the first-run offer opens, and the Settings
+ *  window's "Config repository" section. One implementation rather than two,
+ *  because there is one set of facts and five states of them — not set up, running,
+ *  waiting on an answer, faulted, and impossible — and a second rendering would
+ *  drift from this one on the third state nobody remembered to update.
+ *
+ *  `dispose` is not optional for the caller: the loop pushes state after every
+ *  cycle, and a subscription left behind would keep drawing into a box that is no
+ *  longer in the document. */
+export function mountSync(body: HTMLElement): { dispose: () => void } {
+  let unlisten: (() => void) | null = null;
+  let gone = false;
+  const render = async () => {
+    if (gone) return;
+    body.replaceChildren();
+    const summary = await syncSummary();
+    if (summary.on) renderOn(body, summary, render);
+    else await renderOff(body, render);
+  };
+  void render();
+  void onSyncState((s: SyncState) => {
+    // The loop pushes after every cycle, so a panel left open stays honest
+    // without polling.
+    void syncSummary().then((sum) => {
+      if (gone || !sum.on) return;
+      body.replaceChildren();
+      renderOn(body, { ...sum, state: s }, render);
+    });
+  }).then((u) => {
+    // A dispose that beat the listen call would otherwise leak it.
+    if (gone) u();
+    else unlisten = u;
+  });
+  return { dispose: () => { gone = true; unlisten?.(); } };
+}
+
 /** Open it. Resolves when the dialog closes. */
 export function syncDialog(): Promise<void> {
   return new Promise((resolve) => {
-    let unlisten: (() => void) | null = null;
+    let live: { dispose: () => void } | null = null;
     const finish = () => {
-      unlisten?.();
+      live?.dispose();
       close();
       resolve();
     };
@@ -71,26 +109,7 @@ export function syncDialog(): Promise<void> {
     actions.append(done);
     box.append(actions);
 
-    const render = async () => {
-      body.replaceChildren();
-      const summary = await syncSummary();
-      if (summary.on) renderOn(body, summary, render);
-      else await renderOff(body, render);
-    };
-
-    void render();
-    void onSyncState((s: SyncState) => {
-      // The loop pushes after every cycle, so a panel left open stays honest
-      // without polling.
-      void syncSummary().then((sum) => {
-        if (sum.on) {
-          body.replaceChildren();
-          renderOn(body, { ...sum, state: s }, render);
-        }
-      });
-    }).then((u) => {
-      unlisten = u;
-    });
+    live = mountSync(body);
   });
 }
 

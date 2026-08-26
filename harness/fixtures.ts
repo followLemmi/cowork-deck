@@ -39,7 +39,7 @@ export const workspaces: Workspace[] = [
     tracker: { providers: [{ type: "github" }] },
   },
   {
-    id: WS_ATLAS, name: "atlas", path: "/home/dev/code/atlas", color: "#d5eaf3",
+    id: WS_ATLAS, name: "atlas", path: "/home/dev/code/atlas", color: "#f6f7f9",
     github: null, tracker: null,
   },
 ];
@@ -127,6 +127,66 @@ export const gitByCwd: Record<string, { branch: string | null; dirty: boolean }>
   "/home/dev/code/relay-pr/128-flaky-timer": { branch: "fix-flaky-timer", dirty: false },
   "/home/dev/code/harbor": { branch: "main", dirty: false },
   "/home/dev/code/atlas": { branch: "release/3.2", dirty: false },
+};
+
+/** Where the app keeps its own files, as the Settings window asks for it.
+ *
+ *  `skills.json` deliberately absent: a person who has never saved a scenario has
+ *  no such file, and the window has to say so rather than list six names and leave
+ *  them wondering which of them is theirs. */
+export const configPaths = {
+  dir: "/home/dev/.local/share/ca.jvl.coworkdeck",
+  files: [
+    { name: "workspaces.json", exists: true },
+    { name: "skills.json", exists: false },
+    { name: "sessions.json", exists: true },
+    { name: "terminals.json", exists: true },
+    { name: "ui_state.json", exists: true },
+    { name: "schedule_state.json", exists: false },
+    { name: "runs.jsonl", exists: true },
+  ],
+};
+
+/** What the tool panel on a zoomed tile reads: the files git sees in a session's
+ *  own checkout, and what that checkout has changed.
+ *
+ *  Per cwd, not per session, because that is the question — a session launched on
+ *  an issue runs in a worktree of its own, and two sessions in the same folder see
+ *  the same files. The worktree entry is deliberately the interesting one: a
+ *  branch of its own, a new test file, and a deletion.
+ */
+export const filesByCwd: Record<string, string[]> = {
+  "/home/dev/code/relay": [
+    "src/app.ts", "src/sessions.ts", "src/styles.css", "src/terminal.ts",
+    "src/ui/palette.ts", "tests/sessions.test.ts", "package.json", "README.md",
+  ],
+  "/home/dev/code/relay-pr/128-flaky-timer": [
+    "src/timer.ts", "src/sessions.ts", "tests/timer-flake.test.ts",
+    "tests/sessions.test.ts", "package.json", "README.md",
+  ],
+  "/home/dev/code/harbor": ["CHANGELOG.md", "Cargo.toml", "src/main.rs"],
+};
+
+export const changesByCwd: Record<
+  string,
+  { branch: string | null; files: { mark: string; path: string; added: number; removed: number }[] }
+> = {
+  "/home/dev/code/relay": {
+    branch: "main",
+    files: [
+      { mark: "M", path: "src/sessions.ts", added: 52, removed: 19 },
+      { mark: "M", path: "src/styles.css", added: 8, removed: 2 },
+      { mark: "?", path: "notes.md", added: 0, removed: 0 },
+    ],
+  },
+  "/home/dev/code/relay-pr/128-flaky-timer": {
+    branch: "fix-flaky-timer",
+    files: [
+      { mark: "M", path: "src/timer.ts", added: 41, removed: 12 },
+      { mark: "A", path: "tests/timer-flake.test.ts", added: 141, removed: 0 },
+      { mark: "D", path: "tests/legacy-timer.test.ts", added: 0, removed: 77 },
+    ],
+  },
 };
 
 /** Tokens and the transcript's own title, off one read — the shape
