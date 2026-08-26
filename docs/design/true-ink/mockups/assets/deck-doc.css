@@ -1,0 +1,236 @@
+/* The two DOCUMENTS in this set — the overview and the state sheet — as opposed
+   to the four product screens. They are not the app, so they do not wear its
+   shell: a document that pretends to be a window is harder to read and easier to
+   mistake for a screen somebody has to build.
+   They bind the same tokens, which is the point of having tokens. */
+
+body.doc { overflow: auto; font-size: var(--fs-body); }
+
+.doc-bar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-5);
+  background: var(--glass);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  border-bottom: 1px solid var(--line);
+}
+.doc-bar .mark-text { font-size: var(--fs-caption); }
+
+.sheet { max-width: 74rem; margin: 0 auto; padding: var(--sp-8) var(--sp-6) var(--sp-10); }
+
+/* The one place in this set that gets a real editorial type ratio: 56px against
+   13px is 4.3:1, which is what a document can afford and a 44px title bar
+   cannot. */
+.doc-title {
+  font-family: var(--font-display); font-size: clamp(2.25rem, 5.2vw, 3.5rem);
+  font-weight: var(--fw-announce); letter-spacing: -0.03em; line-height: 1.02;
+  color: var(--fg); max-width: 22ch;
+}
+.doc-lede { margin-top: var(--sp-4); max-width: 68ch; color: var(--fg-mid); font-size: var(--fs-lg); line-height: 1.55; }
+.doc-sec { margin-top: var(--sp-10); }
+.doc-h { font-family: var(--font-display); font-size: var(--fs-xl); font-weight: var(--fw-announce); letter-spacing: var(--ls-xl); color: var(--fg); }
+.doc-p { margin-top: var(--sp-3); max-width: 72ch; color: var(--fg-mid); font-size: var(--fs-caption); line-height: 1.65; }
+.doc-p strong { color: var(--fg); font-weight: var(--fw-emph); }
+.doc-p code { font-family: var(--font-mono); font-size: 0.92em; color: var(--fg); }
+
+/* A numbered gutter and a hairline instead of a stack of identical cards: the
+   list of decisions is a list, and drawing seven boxes around seven paragraphs
+   is the thing this whole pass is against. */
+.notes { margin-top: var(--sp-5); border-top: 1px solid var(--line); }
+.note {
+  display: grid; grid-template-columns: 3.5rem minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-4); padding: var(--sp-5) 0;
+  border-bottom: 1px solid var(--line);
+}
+.note-num { font-family: var(--font-mono); font-size: var(--fs-caption); color: var(--fg-dim); font-variant-numeric: tabular-nums; padding-top: 5px; }
+.note-body { min-width: 0; }
+.note-h { color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-emph); line-height: 1.3; }
+.note-was { margin-top: var(--sp-2); color: var(--fg-dim); font-size: var(--fs-caption); line-height: 1.65; max-width: 72ch; }
+.note-was b { color: var(--st-error); font-weight: var(--fw-emph); }
+.note-now { margin-top: var(--sp-2); color: var(--fg-mid); font-size: var(--fs-caption); line-height: 1.65; max-width: 72ch; }
+.note-now b { color: var(--fg); font-weight: var(--fw-emph); }
+
+/* Screen links. An island each, and the hover lift is the only elevation change
+   on the page. */
+.doors { margin-top: var(--sp-5); display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+.door {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  padding: var(--sp-4); text-decoration: none;
+  background: var(--bg-island); border-radius: var(--r-island);
+  box-shadow: var(--edge-lit), var(--sh-1), 0 0 0 1px var(--line);
+  transition: transform var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+}
+.door:hover { transform: translateY(-3px); box-shadow: var(--edge-lit), var(--sh-2), 0 0 0 1px var(--line-strong); }
+.door:focus-visible { box-shadow: var(--focus-ring); }
+.door-top { display: flex; align-items: center; gap: var(--sp-2); color: var(--fg-dim); }
+.door-top svg { width: 16px; height: 16px; }
+.door-h { color: var(--fg); font-family: var(--font-display); font-size: var(--fs-lg); font-weight: var(--fw-announce); letter-spacing: -0.01em; }
+.door-p { color: var(--fg-dim); font-size: var(--fs-micro); line-height: 1.6; }
+
+/* Token and motion tables. Figures line up down the page or they are not a table. */
+.tbl { width: 100%; margin-top: var(--sp-4); border-collapse: collapse; font-size: var(--fs-micro); }
+.tbl th { text-align: left; padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--line-strong); color: var(--fg-dim); font-weight: var(--fw-announce); text-transform: uppercase; letter-spacing: var(--ls-caps); }
+.tbl td { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--line); color: var(--fg-mid); vertical-align: top; }
+.tbl td:first-child { font-family: var(--font-mono); color: var(--fg); white-space: nowrap; }
+.tbl .num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.sw { display: inline-block; width: 18px; height: 18px; border-radius: 5px; vertical-align: -4px; margin-right: var(--sp-2); box-shadow: inset 0 0 0 1px rgba(128,128,128,.35); }
+
+/* A specimen: the thing itself on the app's own ground, with the label above it
+   rather than a caption underneath pretending to be a title. */
+.specs { margin-top: var(--sp-5); display: grid; gap: var(--sp-5); grid-template-columns: repeat(auto-fit, minmax(21rem, 1fr)); }
+.spec { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.spec-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.spec-note { color: var(--fg-dim); font-size: var(--fs-micro); line-height: 1.6; }
+.spec-stage {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 9rem; padding: var(--sp-5);
+  background: var(--bg-void); border-radius: var(--r-island);
+  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.spec-stage--tall { min-height: 15rem; align-items: stretch; }
+.spec-stage--flush { padding: 0; }
+.spec--wide { grid-column: 1 / -1; }
+
+/* ============================================================================
+   The palette comparison sheet
+   ----------------------------------------------------------------------------
+   Five bands, identical apart from one attribute. That is the whole method: a
+   palette cannot be judged as a row of swatches, because what a person actually
+   asks is "can I read a token count on a tile head at 03:00", and a swatch has
+   no answer to that.
+   ========================================================================== */
+
+.band { padding: var(--sp-8) 0; border-top: 1px solid var(--line); }
+.band:first-of-type { border-top: 0; }
+.band-head { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap; }
+.band-num { font-family: var(--font-mono); font-size: var(--fs-caption); color: var(--fg-dim); }
+/* 38px against the 12px beside it — a ratio of 3.17. The in-app screen title
+   settles for 2.67 because density is the point there; a document has no such
+   excuse, so the band heading gets its own size rather than borrowing --fs-2xl. */
+.band-name { font-family: var(--font-display); font-size: clamp(2rem, 3.4vw, 2.375rem); font-weight: var(--fw-announce); letter-spacing: var(--ls-2xl); color: var(--fg); line-height: 1.04; }
+.band-en { color: var(--fg-dim); font-size: var(--fs-micro); }
+/* --bg-inset, not --sel: the accent's three jobs are selection, focus and the
+   primary action, and a label saying "recommended" is none of them. Spending the
+   accent here would be the fourth appearance on a band that already has two. */
+.band-tag { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: var(--r-pill); background: var(--bg-inset); color: var(--fg-mid); font-size: var(--fs-micro); font-weight: var(--fw-emph); }
+.band-note { margin-top: var(--sp-3); max-width: 74ch; color: var(--fg-mid); font-size: var(--fs-caption); line-height: 1.65; }
+.band-note b { color: var(--fg); font-weight: var(--fw-emph); }
+
+.band-grid { margin-top: var(--sp-5); display: grid; gap: var(--sp-4); grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); align-items: start; }
+@media (max-width: 68rem) { .band-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* The specimen wears the candidate's tokens and nothing else changes: same
+   markup, same classes, same copy, same order. */
+.mini {
+  border-radius: var(--r-island); overflow: hidden;
+  background: var(--bg-void);
+  box-shadow: 0 0 0 1px var(--line), 0 18px 44px -26px rgba(0, 0, 0, 0.55);
+}
+.mini .bar { height: 38px; padding-left: var(--sp-2); }
+.mini .tab { min-height: 38px; padding: 0 var(--sp-2); font-size: var(--fs-micro); }
+.mini .traffic i { width: 10px; height: 10px; }
+.mini-stage { display: grid; grid-template-columns: 11.5rem minmax(0, 1fr); min-height: 15rem; }
+.mini-side { background: var(--bg-void); border-right: 1px solid var(--line); padding: var(--sp-2) 6px; display: flex; flex-direction: column; gap: 2px; }
+.mini-deck { padding: var(--sp-2); display: flex; }
+.mini .tile { flex: 1; min-height: 0; }
+.mini .term { padding: var(--sp-2) var(--sp-3); font-size: var(--fs-micro); }
+.mini .row { padding: 5px var(--sp-2); font-size: var(--fs-micro); }
+.mini .row-title { font-size: var(--fs-micro); }
+.mini .tile-head { min-height: 32px; padding: 5px 6px 5px var(--sp-3); }
+.mini .tile-name { font-size: var(--fs-micro); }
+.mini .btn--icon { width: 24px; height: 24px; min-height: 24px; }
+.mini .chip-state { font-size: 11px; padding: 1px 7px 1px 6px; }
+
+/* The right-hand column: the pieces that are hardest to get right, out of the
+   window so they can be compared straight down the page. */
+.probe { display: flex; flex-direction: column; gap: var(--sp-3); }
+.probe-box { padding: var(--sp-3); border-radius: var(--r-ctl); background: var(--bg-island); box-shadow: var(--edge-lit), 0 0 0 1px var(--line); }
+.probe-lab { color: var(--fg-dim); font-size: 11px; font-weight: var(--fw-announce); text-transform: uppercase; letter-spacing: var(--ls-caps); }
+.probe-row { margin-top: var(--sp-2); display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.probe .dv-file { font-size: var(--fs-micro); margin-top: var(--sp-2); border-radius: var(--r-sm); overflow: hidden; }
+.probe .card { min-height: 0; }
+.probe .card-title { font-size: var(--fs-caption); }
+
+/* Measured in the browser, from the resolved custom properties of the band that
+   is showing them — so a number here cannot drift from the colour beside it. */
+.numbers { margin-top: var(--sp-3); display: grid; gap: 1px var(--sp-4); grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); }
+.number { display: flex; flex-direction: column; gap: 2px; padding: var(--sp-2) 0; border-top: 1px solid var(--line); }
+.number b { font-family: var(--font-display); font-size: var(--fs-lg); font-weight: var(--fw-announce); color: var(--fg); font-variant-numeric: tabular-nums; }
+.number span { color: var(--fg-dim); font-size: 11px; line-height: 1.5; }
+.number--low b { color: var(--st-error); }
+.band-acts { margin-top: var(--sp-4); display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+
+/* ============================================================================
+   Window plans — the IA sheet
+   ----------------------------------------------------------------------------
+   Diagrams, and labelled as such. Drawing these at product fidelity would hide
+   the question being asked: at this stage the only thing under discussion is
+   which region owns which part of the window, and a screenshot-quality mock
+   invites an answer about type sizes instead. They still bind the real tokens,
+   so a region that carries state carries the state hue and nothing else does.
+   ========================================================================== */
+
+.plans { margin-top: var(--sp-5); display: grid; gap: var(--sp-6); grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr)); }
+.plan-wrap { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.plan-cap { display: flex; align-items: baseline; gap: var(--sp-2); }
+.plan-cap b { color: var(--fg); font-size: var(--fs-caption); font-weight: var(--fw-emph); }
+.plan-cap span { color: var(--fg-dim); font-size: 11px; }
+
+.plan {
+  position: relative; aspect-ratio: 16 / 10; display: grid; gap: 5px; padding: 5px;
+  background: var(--bg-void); border-radius: var(--r-ctl);
+  box-shadow: 0 0 0 1px var(--line);
+  container-type: inline-size;
+}
+.zone {
+  min-width: 0; min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 7px 9px; border-radius: 5px;
+  background: var(--bg-island);
+  box-shadow: var(--edge-lit), 0 0 0 1px var(--line);
+}
+.zone b { color: var(--fg); font-size: 11px; font-weight: var(--fw-announce); text-transform: uppercase; letter-spacing: 0.07em; }
+/* 11px, not 10: a diagram whose annotations cannot be read at the size the
+   page shows them at is a picture of a decision rather than the decision.
+   The hierarchy against the label above comes from caps, weight and colour. */
+.zone i { color: var(--fg-dim); font-size: 11px; font-style: normal; line-height: 1.5; }
+/* The deck sits on the terminal's own ground: it is the one region whose content
+   is another program, and that is worth seeing in a diagram about ownership. */
+.zone--deck { background: var(--term-bg); box-shadow: 0 0 0 1px var(--line); }
+.zone--deck b { color: var(--term-fg); }
+.zone--deck i { color: var(--term-dim); }
+/* Collapsed, optional, or summoned: present in the design, absent at rest. */
+.zone--ghost { background: none; box-shadow: inset 0 0 0 1px var(--line-strong); }
+.zone--ghost b { color: var(--fg-mid); }
+/* A region that only exists while another view is open — the thing tabs cost. */
+.zone--gone { background: none; box-shadow: inset 0 0 0 1px var(--line); opacity: 0.5; }
+.zone--gone b { color: var(--fg-dim); }
+.zone--bar { flex-direction: row; align-items: center; gap: 6px; padding: 0 8px; background: var(--bg-chrome); }
+.zone--bar b { text-transform: none; letter-spacing: 0; font-weight: var(--fw-emph); }
+.plan-tab { padding: 2px 7px; border-radius: 4px; color: var(--fg-dim); font-size: 11px; white-space: nowrap; }
+.plan-tab.on { background: var(--sel); color: var(--fg); }
+.plan-led { margin-left: auto; display: flex; gap: 8px; font-size: 11px; white-space: nowrap; }
+.plan-led s { text-decoration: none; display: inline-flex; align-items: center; gap: 4px; color: var(--fg-mid); }
+.plan-led s::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.plan-led .w { color: var(--st-waiting); }
+.plan-led .g { color: var(--st-working); }
+/* A sheet summoned over everything, for the chromeless plan. */
+.plan-sheet {
+  position: absolute; left: 12%; right: 12%; top: 22%; bottom: 14%;
+  border-radius: var(--r-ctl); background: var(--bg-island);
+  box-shadow: var(--edge-lit), var(--sh-2), 0 0 0 1px var(--line-strong);
+  padding: 9px 11px; display: flex; flex-direction: column; gap: 2px;
+}
+.plan-sheet b { color: var(--fg); font-size: 11px; font-weight: var(--fw-announce); text-transform: uppercase; letter-spacing: 0.07em; }
+.plan-sheet i { color: var(--fg-dim); font-size: 11px; font-style: normal; line-height: 1.5; }
+
+/* Cost and consequence, as a list rather than as a card. */
+.costs { margin-top: var(--sp-4); border-top: 1px solid var(--line); }
+.cost { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: var(--sp-2) var(--sp-4); padding: var(--sp-3) 0; border-bottom: 1px solid var(--line); }
+.cost dt { color: var(--fg-dim); font-size: 11px; font-weight: var(--fw-announce); text-transform: uppercase; letter-spacing: var(--ls-caps); padding-top: 2px; }
+.cost dd { margin: 0; color: var(--fg-mid); font-size: var(--fs-caption); line-height: 1.6; }
+.cost dd b { color: var(--fg); font-weight: var(--fw-emph); }
+.cost--keep dt { color: var(--st-working); }
+.cost--lose dt { color: var(--st-waiting); }

@@ -1,0 +1,457 @@
+/* ============================================================================
+   cowork-deck — the proposed shell: a rail, one panel, a permanent deck
+   ----------------------------------------------------------------------------
+   Two ideas, and the second one is the reason this is worth building:
+
+   1. THE RAIL IS A SELECTOR, NOT A TAB BAR. Picking "Pull requests" changes what
+      the 300px panel holds. It does not change what the window holds. The deck
+      never moves, never yields and never disappears — which is the whole point,
+      because an always-on-top pill counting blocked sessions is what the old
+      architecture had to ship in order to answer "does anything need me".
+
+   2. A ZOOMED TILE GETS ITS OWN TOOLS, SCOPED TO ITS OWN WORKTREE. A session
+      launched on an issue runs in a worktree of its own, so "which files are
+      here and what changed" is a per-session question the app-level panel
+      cannot answer — it does not know which of twelve sessions you mean. The
+      tool panel lives INSIDE the tile's frame, on the opposite side from the
+      app panel, and states its scope in its own header. Containment and
+      geometry do the work of telling the two apart; a label alone would not.
+
+   Three rules this file enforces rather than hopes for:
+     · zooming collapses the app panel to its rail (width arithmetic, below);
+     · the tool panel may not squeeze the terminal under 80 columns — under
+       that it floats instead, so the PTY is never silently re-wrapped;
+     · the panel's width is animated, because a region that takes space from
+       another has to be seen taking it.
+   ========================================================================== */
+
+/* A flex row, not a three-track grid. As a grid the stage's `minmax(0, 1fr)`
+   track sized correctly and the tiles inside it still came out at min-content —
+   the same failure the zoomed tile had, and the same fix. Flex is what behaves
+   here: `flex: none` for the two fixed columns, `flex: 1; min-width: 0` for the
+   one that takes the rest. */
+.shell { display: flex; min-height: 0; min-width: 0; }
+.shell > .nav-rail { flex: none; }
+.shell > .panel { flex: none; }
+.shell > .stage-deck { flex: 1 1 auto; min-width: 0; }
+
+/* --- The rail ------------------------------------------------------------
+   `.nav-rail`, not `.rail`. This was `.rail`, and `.rail` already belonged to
+   the STATE rail in `deck-ui.css` — the 3px hue on a row, a card and a tile —
+   so every `.tile rail`, `.row rail` and `.q-card rail` in this shell was also
+   being handed `width: 44px`, `align-items: center`, `padding: var(--sp-2) 0`,
+   `background: var(--bg-void)` and `border-right: 1px solid var(--line)`.
+   That is the whole of the three mysteries this file spent two rounds on:
+     · the zoomed tile that "collapsed to 40px" was 44px wide, by declaration;
+     · the deck's tiles and the panel's rows that came out "packed to the middle
+       instead of stretching" were centred by `align-items: center`;
+     · the pale border on the session rows, whose source was not in any rule,
+       was `border-right: 1px solid var(--line)` — measured in the render at
+       x=346, one pixel wide, `#2d2e30`, and only ever on `.rail` elements.
+   None of it was the renderer. The block at the end of this file was written to
+   compensate for it and is now suspect: every `width: 100%` in it has to be
+   re-tested rather than believed. */
+.nav-rail {
+  position: relative; display: flex; flex-direction: column; align-items: center;
+  gap: 2px; width: 44px; padding: var(--sp-2) 0;
+  background: var(--bg-void); border-right: 1px solid var(--line);
+}
+.rail-btn {
+  display: grid; place-items: center; width: 32px; height: 32px;
+  background: none; border: 0; border-radius: var(--r-ctl);
+  color: var(--fg-dim); cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.rail-btn svg { width: 17px; height: 17px; }
+.rail-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.rail-btn[aria-current="true"] { color: var(--fg); background: var(--sel); }
+/* The moving marker. Same idea as the tab ink, turned on its side: what makes a
+   column of five icons read as one control with a position is that the mark
+   TRAVELS between them. */
+.rail-ink {
+  position: absolute; left: 0; top: 0; width: 2px; height: 32px;
+  background: var(--accent); border-radius: 0 2px 2px 0;
+  transform: translate3d(0, var(--y, 0), 0);
+  transition: transform var(--dur-3) var(--ease-out), opacity var(--dur-2) var(--ease-out);
+}
+.rail-ink[hidden] { display: block !important; opacity: 0; }
+.rail-sp { flex: 1; }
+/* A dot, not a number. Digits on a 32px icon overlapped the glyph and read as
+   noise — and they were the ledger's number said twice. So the rail says only
+   "there is something here"; how much is in the ledger, and in the button's own
+   accessible name, where a screen reader gets it without the clutter. */
+.rail-dot {
+  position: absolute; top: 5px; right: 5px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--st-waiting);
+}
+.rail-dot--calm { background: var(--fg-dim); }
+/* Amber is the default because "needs a decision" is the state that made this
+   dot necessary; red outranks it, because a workspace with a stopped session and
+   a waiting one has one thing to say first. */
+.rail-dot--error { background: var(--st-error); }
+.rail-btn { position: relative; }
+
+/* --- The one panel ------------------------------------------------------- */
+.panel {
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  width: var(--panel-w, 19.5rem); min-width: 0; overflow: hidden;
+  background: var(--bg-void); border-right: 1px solid var(--line);
+  transition: width var(--dur-3) var(--ease-out);
+}
+.panel.is-collapsed { width: 0; border-right-color: transparent; }
+/* Wide, for the two things that genuinely need width: a diff and a whole board.
+   Going wide is what makes the deck fall into the filmstrip — the deck yields
+   space rather than the window changing what it is. */
+.panel.is-wide { width: min(46rem, 58vw); }
+
+.panel-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-2) var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.panel-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+/* The scope line is not decoration. With two panel systems on screen, "whose
+   files are these" is the question that breaks the idea, and it is answered here
+   before it is asked. */
+.panel-scope { color: var(--fg-dim); font-size: var(--fs-micro); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel-title { color: var(--fg); font-size: var(--fs-caption); font-weight: var(--fw-emph); }
+.panel-body { min-height: 0; overflow: auto; padding: var(--sp-2); }
+
+/* Push navigation: a list and its detail are two pages of one panel, not two
+   destinations. The list slides out to the left as the detail arrives, which is
+   what tells you the detail belongs to the row you pressed. */
+.panel-stack { position: relative; min-height: 0; overflow: hidden; }
+.panel-page {
+  position: absolute; inset: 0; overflow: auto; padding: var(--sp-2);
+  transition: transform var(--dur-3) var(--ease-out), opacity var(--dur-2) var(--ease-out);
+}
+.panel-page[hidden] { display: none !important; }
+.panel-page--behind { transform: translate3d(-22%, 0, 0); opacity: 0; pointer-events: none; }
+.panel-page--ahead { transform: translate3d(22%, 0, 0); opacity: 0; pointer-events: none; }
+.panel-back {
+  display: inline-flex; align-items: center; gap: 5px; margin-bottom: var(--sp-2);
+  padding: 3px var(--sp-2) 3px 5px; border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--fg-mid); font-size: var(--fs-micro); cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.panel-back:hover { background: var(--bg-hover); color: var(--fg); }
+.panel-back svg { width: 13px; height: 13px; }
+
+/* Queue steps as collapsible groups: `board.json` keeps its semantics, and the
+   column strip becomes a list because a per-workspace backlog of thirteen cards
+   IS a list. The kanban survives as an occasional wide page, not as a screen. */
+.q-step { display: flex; flex-direction: column; gap: 1px; margin-bottom: var(--sp-2); }
+.q-card {
+  display: grid; gap: 4px; width: 100%;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  background: none; border: 0; border-radius: var(--r-ctl);
+  text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.q-card:hover { background: var(--bg-hover); }
+/* Same reason `.row-open` exists: a card that carries its own action buttons
+   cannot itself be a button, so the card is a container and the main target
+   inside it is the button. Its focus ring is its own. */
+.q-open { display: block; width: 100%; padding: 0; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.q-open:focus-visible { box-shadow: var(--focus-ring); }
+.q-title { display: block; color: var(--fg); font-size: var(--fs-caption); font-weight: var(--fw-emph); line-height: 1.35; }
+.q-foot { display: flex; align-items: center; gap: var(--sp-2); }
+
+/* --- The stage ----------------------------------------------------------- */
+.stage-deck { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3); min-width: 0; min-height: 0; }
+
+/* ============================================================================
+   The zoomed tile, and its tools
+   ========================================================================== */
+
+/* A zoomed tile keeps the flex column every tile has — head, then the work — and
+   the work is a flex ROW: terminal, tool panel, tool rail. It was a grid with
+   named areas first, and that broke: the deck is itself a grid, the tile is one
+   of its items, and the item collapsed to the width of its own tool rail. Flex
+   here is not a preference, it is the thing that is predictable when a box is
+   simultaneously a grid item and a layout of its own.
+
+   The tools rail sits on the RIGHT, the opposite edge from the app panel, and
+   that distance is doing real work: it is what stops "Files" in here being read
+   as the project's files rather than this worktree's. */
+.tile.zoomed { position: relative; }
+.tile.zoomed > .tile-body { display: flex; align-items: stretch; position: relative; }
+.tile.zoomed > .tile-body > .term { flex: 1; min-width: 0; }
+.tile-panel, .tile-tools { display: none; }
+.tile.zoomed .tile-panel { display: grid; }
+.tile.zoomed .tile-tools { display: flex; }
+
+.tile-tools {
+  flex-direction: column; align-items: center; gap: 2px;
+  width: 40px; padding: var(--sp-2) 0;
+  background: var(--bg-island); border-left: 1px solid var(--line);
+}
+.tool-btn {
+  display: grid; place-items: center; width: 28px; height: 28px;
+  background: none; border: 0; border-radius: var(--r-ctl);
+  color: var(--fg-dim); cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.tool-btn svg { width: 16px; height: 16px; }
+.tool-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.tool-btn[aria-pressed="true"] { background: var(--sel); color: var(--fg); }
+.tool-sp { flex: 1; }
+/* The `+` is the whole of "extensible" made visible. A strip a person can add to
+   has to say so on the strip; a preference pane nobody opens does not count. */
+.tool-add { color: var(--fg-dim); }
+.tool-add:hover { color: var(--fg); }
+
+.tile-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+  width: var(--tool-w, 19rem); min-width: 0; overflow: hidden;
+  background: var(--bg-island); border-left: 1px solid var(--line);
+  transition: width var(--dur-3) var(--ease-out);
+}
+.tile-panel.is-shut { width: 0; border-left-color: transparent; }
+/* Under the column floor the panel FLOATS instead of squeezing. The reason is not
+   aesthetic: `fit()` follows whatever box the terminal sits in, so a panel that
+   narrows the terminal re-wraps the agent's output — and this project has already
+   shipped that bug once, when the filmstrip resized a PTY to about 22 columns by
+   3 rows. Floating costs some output being covered; squeezing costs the
+   transcript. */
+.tile-panel.is-floating {
+  position: absolute; z-index: 3; right: 40px; top: 0; bottom: 0;
+  width: min(19rem, 62%);
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  border-left: 1px solid var(--line-strong);
+  box-shadow: var(--sh-2);
+}
+.tool-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.tool-titles { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.tool-name { color: var(--fg); font-size: var(--fs-micro); font-weight: var(--fw-announce); text-transform: uppercase; letter-spacing: var(--ls-caps); }
+/* Always present, always the worktree: the scope statement that keeps the two
+   panel systems apart. */
+.tool-scope { color: var(--fg-dim); font-size: 11px; font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-body { min-height: 0; overflow: auto; padding: var(--sp-2); }
+
+/* --- The file tree ------------------------------------------------------- */
+.tree { font-family: var(--font-mono); font-size: var(--fs-micro); line-height: 1.7; }
+.tree-row {
+  display: flex; align-items: center; gap: 5px; width: 100%;
+  padding: 1px var(--sp-2) 1px calc(var(--d, 0) * 12px + 4px);
+  background: none; border: 0; border-radius: var(--r-sm);
+  color: var(--fg-mid); font: inherit; text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.tree-row:hover { background: var(--bg-hover); color: var(--fg); }
+.tree-row[aria-current="true"] { background: var(--sel); color: var(--fg); }
+.tree-row svg { width: 12px; height: 12px; flex: none; color: var(--fg-dim); }
+.tree-row .caret { transition: transform var(--dur-2) var(--ease-spring); }
+.tree-row[aria-expanded="true"] .caret { transform: rotate(90deg); }
+.tree-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-mark { flex: none; font-size: 11px; }
+.tree-kids { display: flex; flex-direction: column; }
+.tree-kids[hidden] { display: none !important; }
+/* A directory that is not part of this worktree's own checkout — the shared git
+   dir, node_modules — is quieter, because in a worktree the question is always
+   "what is mine". */
+.tree-row--muted .tree-name { color: var(--fg-dim); }
+
+/* --- The changed-files tool --------------------------------------------- */
+.chg { display: flex; flex-direction: column; gap: 1px; font-family: var(--font-mono); font-size: var(--fs-micro); }
+.chg-row {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  width: 100%; padding: 3px var(--sp-2); border: 0; border-radius: var(--r-sm);
+  background: none; color: var(--fg-mid); font: inherit; text-align: left; cursor: pointer;
+}
+.chg-row:hover { background: var(--bg-hover); color: var(--fg); }
+.chg-mark { flex: none; width: 1.2ch; text-align: center; font-weight: var(--fw-announce); }
+.chg-mark--a { color: var(--st-working); }
+.chg-mark--m { color: var(--fg-dim); }
+.chg-mark--d { color: var(--st-error); }
+.chg-path { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+/* --- "Add a tool": extensibility, as a list of things that exist --------- */
+.tool-pop {
+  position: absolute; z-index: 6; right: 44px; bottom: var(--sp-2);
+  width: 17rem; padding: var(--sp-2);
+  background: var(--bg-island); border-radius: var(--r-island);
+  box-shadow: var(--edge-lit), var(--sh-2), 0 0 0 1px var(--line-strong);
+}
+.tool-pop[hidden] { display: none !important; }
+.tool-pop-head { padding: var(--sp-2) var(--sp-2) var(--sp-1); }
+.tool-opt {
+  display: flex; align-items: center; gap: var(--sp-2); width: 100%;
+  padding: 6px var(--sp-2); border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--fg); font-size: var(--fs-micro); text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.tool-opt:hover { background: var(--bg-hover); }
+.tool-opt svg { width: 15px; height: 15px; color: var(--fg-dim); flex: none; }
+.tool-opt span { flex: 1; }
+.tool-opt em { color: var(--fg-dim); font-style: normal; font-size: 11px; }
+.tool-pop-foot { padding: var(--sp-2); border-top: 1px solid var(--line); margin-top: var(--sp-1); color: var(--fg-dim); font-size: 11px; line-height: 1.5; }
+
+/* --- Nothing to show, in a 19rem column ---------------------------------
+   The screen-sized empty state is built for a stage: 6-step padding, a 52px
+   glyph and 62 characters of measure. In the panel it would be one word per
+   line, so the same parts are re-proportioned rather than a second empty state
+   being invented. */
+.panel .empty { padding: var(--sp-4) var(--sp-3); max-width: none; gap: var(--sp-3); }
+.panel .empty-mark { width: 38px; height: 38px; }
+.panel .empty-mark svg { width: 18px; height: 18px; }
+.panel .empty b { color: var(--fg); font-weight: var(--fw-emph); }
+.panel .empty-alt { padding-top: var(--sp-3); }
+.panel .empty-kbd { text-align: center; line-height: 1.55; }
+
+/* --- The ledger in the title bar: what replaces four tab labels ---------- */
+.ledger { display: flex; align-items: center; gap: var(--sp-1); }
+.led {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px var(--sp-2); border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--fg-mid); font-size: var(--fs-micro); cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.led:hover { background: var(--bg-hover); color: var(--fg); }
+.led::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.led b { font-variant-numeric: tabular-nums; font-weight: var(--fw-announce); }
+.led--wait { color: var(--st-waiting); }
+.led--wait::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
+/* A session that stopped on an error is the other thing that requires a person,
+   so it gets a reading of its own rather than being folded into the amber one.
+   What left with it: "1 run overnight" — a run that finished while you slept
+   does not require you, and the ledger is only for the things that do. */
+.led--err { color: var(--st-error); }
+.led--ok { color: var(--st-working); }
+
+/* --- The zoomed deck is a flex column, not a grid -------------------------
+   Zoomed there is exactly one tile and one strip, which is a column — so this
+   is not a workaround, it is the right box for the job. (The reading that led
+   here was wrong, though: the zoomed tile "coming out 40px wide" as a grid item
+   was `width: 44px`, inherited from the class collision at the top of this file,
+   not a track that had sized to content.) The deck stays a grid in its normal
+   state, where it has to lay N tiles into as many columns as fit. */
+.deck.is-zoomed { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.deck.is-zoomed > .tile.zoomed { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.deck.is-zoomed > .strip { flex: 0 0 auto; }
+
+/* --- The `min-width: 0` chain, which is not a workaround ------------------
+   A flex or grid item's automatic minimum is its MIN-CONTENT, so one long
+   session name is enough to push a row past its column and out of the panel.
+   That is a real bug in the original CSS, and this is the fix for it.
+
+   What used to stand here: some thirty `width: 100%`, `align-self: stretch` and
+   `text-align: left` declarations under a comment that said this renderer does
+   not apply `stretch`. It does. Every box in that list was a `.rail` element or
+   a child of one, being centred and held at 44px by the collision named at the
+   top of this file, so they came out with the collision — and the render is
+   identical without them. A workaround kept after its cause is found is worse
+   than no workaround: it is a false statement about the tools. */
+.stage-deck { overflow: auto; }
+.stage-deck > .deck { flex: 1; min-height: 0; min-width: 0; }
+.stage-deck > .deck > .tile { min-width: 0; }
+.panel, .panel-stack, .panel-body, .panel-page { min-width: 0; }
+.panel .row, .panel .q-card, .panel .group-body { min-width: 0; }
+/* And a title in the panel truncates, for the reason the sidebar's did: this
+   column exists to show names, and a name that pushes the row out of the column
+   is not being shown. */
+.panel .row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.panel .q-title { overflow-wrap: anywhere; }
+
+/* ============================================================================
+   The workspace tree
+   ----------------------------------------------------------------------------
+   One tree, not two lists. The old panel held "Workspaces" and, separately,
+   "Sessions" grouped by workspace — the same fact stated twice, in two places,
+   in two different shapes, and neither of them said where a new session would
+   go. A workspace appears once here, and its sessions are its children.
+
+   The consequence that matters: creating a session is POSITIONAL. The last row
+   inside a group is that group's own create row, and it names the workspace it
+   will create in. The global "New session" button is gone, because it was the
+   modal one — the same control doing different things depending on a selection
+   you may never have noticed, with the outcome visible only afterwards.
+
+   A "current" workspace still exists, but it is no longer what creation depends
+   on. It is what the Queue, Pull requests and Journal panels are showing, since
+   those live inside one repository — and its header says exactly that instead of
+   relying on a tint to imply it.
+   ========================================================================== */
+
+.wsg { display: flex; flex-direction: column; width: 100%; min-width: 0; }
+/* A hairline between workspaces and nothing around them: the seam is the only
+   place a border earns its keep, and this is one. */
+.wsg + .wsg { border-top: 1px solid var(--line); }
+
+.wsg-head {
+  display: flex; align-items: flex-start; justify-content: flex-start; gap: var(--sp-2);
+  width: 100%; padding: var(--sp-3) var(--sp-2) var(--sp-2) var(--sp-3);
+  background: none; border: 0; text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.wsg-head:hover { background: var(--bg-hover); }
+.wsg-head > svg { width: 12px; height: 12px; flex: none; margin-top: 3px; color: var(--fg-dim); transition: transform var(--dur-2) var(--ease-spring); }
+.wsg-head[aria-expanded="true"] > svg { transform: rotate(90deg); }
+.wsg-main { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; width: 100%; }
+.wsg-line { display: flex; align-items: baseline; justify-content: flex-start; gap: var(--sp-2); width: 100%; }
+.wsg-name { color: var(--fg); font-size: var(--fs-caption); font-weight: var(--fw-announce); }
+.wsg-sub { color: var(--fg-dim); font-size: 11px; line-height: 1.5; width: 100%; text-align: left; overflow-wrap: anywhere; }
+/* What "current" actually means, written out. It is not a highlight looking for
+   a meaning: these three panels are per-repository, so one of them has to be
+   chosen, and this says which choice is in force. */
+.wsg-scope {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  padding: 1px 7px; border-radius: var(--r-pill);
+  background: var(--sel); color: var(--fg);
+  font-size: 10px; font-weight: var(--fw-emph); letter-spacing: var(--ls-ui); white-space: nowrap;
+}
+.wsg-scope svg { width: 10px; height: 10px; }
+/* A collapsed workspace still has to report its sessions, or folding one would
+   hide the thing this app exists to watch. Counts by state, in the state hues. */
+.wsg-sum { display: flex; align-items: center; gap: var(--sp-2); flex: none; margin-left: auto; margin-top: 1px; }
+.wsg-dot { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--fg-dim); }
+.wsg-dot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.wsg-dot--working { color: var(--st-working); }
+.wsg-dot--waiting { color: var(--st-waiting); }
+.wsg-dot--waiting::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
+.wsg-dot--error { color: var(--st-error); }
+.wsg-dot--none { color: var(--fg-dim); }
+.wsg-dot--none::before { display: none; }
+
+.wsg-body { display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 0 0 var(--sp-3); }
+.wsg-body[hidden] { display: none !important; }
+.wsg-body.is-animating { overflow: hidden; transition: height var(--dur-3) var(--ease-out); }
+
+/* A session row in the tree is deliberately two lines: a name that may wrap, and
+   its state under it. In a 19rem column a name and a chip on one baseline means
+   the name gets ~150px, which is not showing a name. */
+.sess-meta { display: flex; align-items: center; justify-content: flex-start; gap: var(--sp-2); width: 100%; margin-top: 2px; }
+
+/* The create row. It is the last child of its group, at the position the new
+   session will occupy, and it says which workspace it belongs to — so pressing
+   it cannot mean something you did not read. */
+.ws-add {
+  display: flex; align-items: center; justify-content: flex-start; gap: var(--sp-2);
+  width: 100%; padding: 7px var(--sp-2) 7px var(--sp-3); margin-top: var(--sp-1);
+  background: none; border: 0; border-radius: var(--r-ctl);
+  color: var(--fg-dim); font-size: var(--fs-caption); text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.ws-add > svg { width: 14px; height: 14px; flex: none; }
+.ws-add span { flex: 1; min-width: 0; }
+.ws-add:hover { background: var(--bg-hover); color: var(--fg); }
+/* Exactly one of these is prominent — the current workspace's — so the window
+   still has one obvious primary action. The difference from the old button is
+   that this one is INSIDE the thing it acts on and names it, so being wrong
+   about which workspace is showing costs nothing. */
+.ws-add--primary {
+  background: var(--sel); color: var(--fg); font-weight: var(--fw-emph);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.ws-add--primary:hover { background: var(--sel-hover); }
+.ws-add--primary > svg { color: var(--fg); }
+.ws-add .kbd { flex: none; }
+/* An empty workspace is the one case where the create row is the whole group. */
+.wsg-empty { padding: 0 var(--sp-3) var(--sp-2); color: var(--fg-dim); font-size: 11px; line-height: 1.55; }

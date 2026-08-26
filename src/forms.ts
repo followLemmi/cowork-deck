@@ -19,20 +19,21 @@ import { icon, SCENARIO_ICONS, type IconName } from "./icons";
  *  button" — colour was the only carrier and there was no text alternative
  *  anywhere, which is 1.4.1 and 4.1.2, both Level A. The name lives beside the
  *  value so the two cannot drift; `#e06c75` is not a name a person can act on. */
-/* Moved onto the Slate & Ember palette: a workspace dot sits two pixels from a state
- * chip on the same row, so a dot in the old blue-cyan family read as a sixth signal
- * competing with the four that mean something. Three of these ARE the state hues,
- * which is deliberate — a dot is a 9px circle with no text and no border, and nothing
- * in the app treats it as a state, so reusing the hues keeps the screen to one set of
- * colours instead of two. `ice` and `stone` replace `purple` and `cyan`, both of which
- * the new palette does not contain. */
+/* On the app's own palette, because a workspace dot sits two pixels from a state chip
+ * on the same row: a dot in a family the palette does not contain reads as a sixth
+ * signal competing with the four that mean something. Three of these ARE the state
+ * hues, which is deliberate — a dot is a 9px circle with no text and no border, and
+ * nothing in the app treats it as a state, so reusing the hues keeps the screen to one
+ * set of colours instead of two. The other three are the ink steps and they move with
+ * the palette: `ice` was the old accent's icy blue, True Ink has no blue to give it,
+ * and a name is worth less than nothing over a colour that is no longer icy. */
 const COLORS = [
   { value: "#7bd77f", name: "green" },
   { value: "#efc845", name: "amber" },
   { value: "#fb817a", name: "red" },
-  { value: "#d5eaf3", name: "ice" },
-  { value: "#bab7b2", name: "stone" },
-  { value: "#9a9690", name: "slate" },
+  { value: "#f6f7f9", name: "chalk" },
+  { value: "#b9babd", name: "stone" },
+  { value: "#9a9c9f", name: "slate" },
 ];
 
 /** Shows a validation message where the user is looking, instead of the OK
@@ -40,6 +41,16 @@ const COLORS = [
 function showError(el: HTMLElement, message: string) {
   el.textContent = message;
   el.style.display = "";
+}
+
+/** Two form rows on one line, collapsing to one column when the box is too narrow
+ *  to hold both — see `.form-pair`. A wrapper rather than a class on the parent,
+ *  because only some of a form's rows pair up and the rest must stay full width. */
+function pair(left: HTMLElement, right: HTMLElement): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "form-pair";
+  wrap.append(left, right);
+  return wrap;
 }
 
 function labeled(labelText: string, field: HTMLElement): HTMLElement {
@@ -54,8 +65,11 @@ function labeled(labelText: string, field: HTMLElement): HTMLElement {
 
 /** A checkbox belongs beside its label, not under it. `labeled()` stacks the
  *  label above the field, which is right for text inputs and leaves a lone
- *  16px box adrift on its own line for a checkbox. */
-function labeledCheck(labelText: string, box: HTMLInputElement, hint?: string): HTMLElement {
+ *  16px box adrift on its own line for a checkbox.
+ *
+ *  Exported for the settings window, which grew a switch of its own: one shape for
+ *  "a box, its label and the line under it" beats two that drift apart. */
+export function labeledCheck(labelText: string, box: HTMLInputElement, hint?: string): HTMLElement {
   const wrap = document.createElement("label");
   wrap.className = "form-check";
   const text = document.createElement("span");
@@ -116,7 +130,7 @@ export function workspaceForm(
       onCancel: () => close(null),
       onAccept: () => void submit(),
     });
-    box.classList.add("modal-box--form");
+    box.classList.add("modal-box--form", "modal-box--workspace");
     const title = document.createElement("div");
     title.className = "modal-title";
     title.textContent = initial ? "Edit workspace" : "New workspace";
@@ -176,13 +190,13 @@ export function workspaceForm(
     colorLabel.textContent = "Colour";
     colorRow.append(colorLabel, swatches);
 
-    // --- GitHub: аккаунт и идентичность коммитов ---
+    // --- GitHub: the account, and the identity commits are made under ---
     const account = document.createElement("select");
     account.className = "modal-input form-gh-account";
-    // gh может отсутствовать — тогда останется единственный пункт «не привязан».
-    // Promise.resolve оборачивает вызов: падение самого IPC (а не его промиса)
-    // иначе роняет построение формы целиком, и пользователь не видит ни одного
-    // поля из-за недоступного gh.
+    // gh may not be installed, and then the one option left is "not linked".
+    // `Promise.resolve` wraps the call because a throw from the IPC ITSELF — not
+    // from its promise — would otherwise take the whole form down with it, and an
+    // unavailable gh would cost the person every other field on this screen.
     void Promise.resolve()
       .then(() => ghStatus())
       .then((st) => {
@@ -199,29 +213,29 @@ export function workspaceForm(
         console.debug("ghStatus failed", e);
         const opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = "— gh недоступен —";
+        opt.textContent = "— gh unavailable —";
         account.append(opt);
       });
 
     const gitName = document.createElement("input");
     gitName.className = "modal-input"; gitName.type = "text";
-    gitName.placeholder = "как в глобальном .gitconfig";
+    gitName.placeholder = "as in the global .gitconfig";
     gitName.value = initial?.github?.gitName ?? "";
 
     const gitEmail = document.createElement("input");
     gitEmail.className = "modal-input"; gitEmail.type = "text";
-    gitEmail.placeholder = "как в глобальном .gitconfig";
+    gitEmail.placeholder = "as in the global .gitconfig";
     gitEmail.value = initial?.github?.gitEmail ?? "";
 
     const sshKey = document.createElement("input");
     sshKey.className = "modal-input"; sshKey.type = "text";
-    sshKey.placeholder = "ключ для ssh-ремоутов (необязательно)";
+    sshKey.placeholder = "key for ssh remotes (optional)";
     sshKey.value = initial?.github?.sshKey ?? "";
 
     const ghHint = document.createElement("p");
     ghHint.className = "form-hint";
     ghHint.textContent =
-      "Применится к новым и перезапущенным сессиям — у живых окружение уже зафиксировано.";
+      "Applies to new and restarted sessions — a live one's environment is already fixed.";
 
     // --- Task tracker ---
     // The checkbox is a single control, so `labeledCheck` fits. Each radio
@@ -391,11 +405,19 @@ export function workspaceForm(
     const error = document.createElement("div");
     error.className = "form-error"; error.style.display = "none";
     const { row, ok, cancel } = actions();
-    box.append(title, labeled("Name", name), labeled("Folder", pathRow), colorRow,
-      labeled("Аккаунт GitHub", account),
-      labeled("Имя в коммитах", gitName),
-      labeled("Почта в коммитах", gitEmail),
-      labeled("SSH-ключ", sshKey),
+    /* Two fields to a line where two fields belong together, and it is height this
+       buys rather than tidiness: at 145% text this form ran 1015px tall in a 920px
+       window, which put Cancel and OK below the bottom edge — reachable by
+       scrolling the overlay, and invisible until you did. Pairing three rows takes
+       ~250px off, and the box is sized in `rem` so it widens with the type instead
+       of squeezing the same columns.
+       What stays on a line of its own is what needs the width: the folder, whose
+       value is an absolute path with a button after it. */
+    box.append(title,
+      pair(labeled("Name", name), colorRow),
+      labeled("Folder", pathRow),
+      pair(labeled("GitHub account", account), labeled("SSH key", sshKey)),
+      pair(labeled("Name on commits", gitName), labeled("Email on commits", gitEmail)),
       ghHint,
       onRow, rootRow, unknownNote, trackerPathRow, trackerPreview, error, row);
 
@@ -415,8 +437,8 @@ export function workspaceForm(
       if (!p) return showError(error, "Choose a project folder.");
       const login = account.value.trim();
       const opt = (el: HTMLInputElement) => { const v = el.value.trim(); return v ? v : undefined; };
-      // Пустой логин снимает привязку целиком: git-идентичность без аккаунта —
-      // отдельная фича, которой мы не обещали.
+      // An empty login drops the binding entirely: a git identity with no account
+      // behind it is a separate feature, and not one this form promised.
       const github: WorkspaceGithub | null = login
         ? {
             host: initial?.github?.host ?? "github.com",

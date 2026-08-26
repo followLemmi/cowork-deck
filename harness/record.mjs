@@ -12,8 +12,8 @@
  * note at the top of that file.
  */
 
-import { existsSync, globSync, mkdirSync, renameSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, globSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const chromium = await (async () => {
@@ -69,6 +69,12 @@ const pause = (ms) => page.waitForTimeout(ms);
 /** Move the pointer to a locator in real time — one step per ~12 ms with an
  *  ease-in-out, so the video shows travel rather than teleportation. */
 async function glide(locator, { dx = 0, dy = 0 } = {}) {
+  /* Before the box is measured, not after: this drives the raw mouse rather than
+     `locator.click()`, so nothing scrolls the target into view on its own and a
+     box measured off the bottom edge sends the pointer to whatever is there
+     instead. That is how the take used to end on a timeout waiting for a diff
+     that was never opened. */
+  await locator.scrollIntoViewIfNeeded();
   const box = await locator.boundingBox();
   if (!box) throw new Error(`no box for ${locator}`);
   const to = { x: box.x + box.width / 2 + dx, y: box.y + box.height / 2 + dy };
@@ -93,7 +99,14 @@ async function dblclick(locator, opts) {
 }
 
 const pickWorkspace = (name) => page.locator(".ws-row", { hasText: name }).first();
-const tab = (name) => page.locator("#viewbar button", { hasText: name });
+/* The board and the pull requests are one repository's, so the way in is that
+   repository's own row — the `board · PRs · journal` chip on it — and the two
+   pages switch between themselves on the panel's own tabs. There is no window-
+   wide tab bar to click any more, and no "Terminals" to come back to: the deck
+   never left. */
+const scopeChip = () => page.locator(".ws-scope").first();
+const wspTab = (name) => page.locator(".wsp-tab", { hasText: name });
+const wspShut = () => page.locator("#wsp-head button").last();
 
 /** Boot the deck exactly the way shoot.mjs does: tiles, states, badges. */
 async function deckReady() {
@@ -110,10 +123,22 @@ async function deckReady() {
 /* --- The take -------------------------------------------------------------- */
 
 mkdirSync(dirname(OUT), { recursive: true });
-const browser = await chromium.launch(CHROME ? { executablePath: CHROME } : {});
+/* The raw take goes to a temporary directory and is renamed into place at the
+   end. Recorded straight into `docs/images/` it was a `page@<hash>.webm` left
+   behind by every take that threw — a 4 MB orphan beside the shots, in exactly
+   the directory nobody looks at twice before committing. */
+const takeDir = mkdtempSync(join(tmpdir(), "cowork-take-"));
+/* WebGL off, for the reason `shoot.mjs` states at greater length: a headless
+   Chromium composites xterm's WebGL canvas at its backing-store size, so the
+   terminals come out at double scale in anything captured. With no context to
+   take, the app falls to the DOM renderer it already supports. */
+const browser = await chromium.launch({
+  ...(CHROME ? { executablePath: CHROME } : {}),
+  args: ["--disable-webgl", "--disable-webgl2"],
+});
 const context = await browser.newContext({
   viewport: VIEW,
-  recordVideo: { dir: dirname(OUT), size: VIEW },
+  recordVideo: { dir: takeDir, size: VIEW },
 });
 await context.addInitScript(CURSOR);
 page = await context.newPage();
@@ -143,10 +168,11 @@ await pause(1500);
 await dblclick(page.locator(".tile:not(.minimized) .tile-name").first());
 await pause(900);
 
-/* 4 — the board reading the repository's issues. */
+/* 4 — the board reading the repository's issues, opened from the workspace's
+   own row rather than from a tab over the whole window. */
 await click(pickWorkspace("harbor"));
-await pause(500);
-await click(tab("Board"));
+await pause(600);
+await click(scopeChip());
 await page.waitForSelector(".tk-rows .tk-row");
 await pause(1500);
 await click(page.locator(".tk-row").filter({ hasText: "#150" }).first());
@@ -155,31 +181,41 @@ await pause(2000);
 await page.keyboard.press("Escape");
 await pause(600);
 
-/* 5 — the pull requests and a diff. */
-await click(tab("Pull requests"));
+/* 5 — the pull requests and a diff, on the panel's second tab. */
+await click(wspTab("Pull requests"));
 await page.waitForSelector(".pr-row");
 await pause(1000);
 await click(page.locator('[data-fk="toggle-157"]'));
 await page.waitForSelector(".pr-detail-file");
 await pause(800);
+/* The row that opened pushed its file list to the bottom edge. A wheel over the
+   panel is what a person does here, and it puts the list where the click can be
+   seen to land. */
+await page.mouse.wheel(0, 240);
+await pause(700);
 await click(page.locator(".pr-detail-file").first());
 await page.waitForSelector(".dv-line");
 await pause(2200);
 
-/* 6 — end where it began: the deck. */
-await click(tab("Terminals"));
-await pause(400);
+/* 6 — end where it began. The deck was never replaced, so coming back is
+   closing the panel over it rather than switching a screen. */
+await click(wspShut());
+await pause(600);
 await click(pickWorkspace("relay"));
 await pause(1800);
 
 const takeEnd = Date.now();
 const video = page.video();
+/* The page and its context first — the video is only finalised when the context
+   closes — and the browser LAST, because `saveAs` below still speaks to it. */
 await page.close();
 await context.close();
+/* `saveAs` rather than a rename: the take is written to a temporary directory,
+   and on a machine where that is a different filesystem — /tmp as tmpfs, which
+   is most Linux — `rename` fails with EXDEV. Playwright's own call copies. */
+await video.saveAs(OUT);
 await browser.close();
-
-const path = await video.path();
-renameSync(path, OUT);
+rmSync(takeDir, { recursive: true, force: true });
 const trim = ((takeStart - videoStart) / 1000).toFixed(2);
 const len = ((takeEnd - takeStart) / 1000).toFixed(1);
 console.log(`${OUT}\ntake: ${len}s, trim the first ${trim}s (ffmpeg -ss ${trim})`);

@@ -177,16 +177,24 @@ export function emptyHistoryCopy(o: {
   if (!o.recording) {
     return {
       title: "Scenario runs are not being recorded",
-      body: "Nothing new is being written to the journal. Anything recorded before the "
-        + "switch went down is still here and still readable — turning it off erases nothing.",
+      body: "Recording is switched off, so nothing new is being written. Everything written "
+        + "before it went off is still here and still readable — switching it off erases "
+        + "nothing.",
     };
   }
+  /* The one branch that has to say what this page IS, because it is the only one a
+     person can reach before they have ever seen a record. The other three describe a
+     situation; this one describes the page. */
   if (!o.anyRuns) {
     return {
       title: "No scenario runs yet",
-      body: "A run is recorded every time a scenario starts a session — by hand, from ⏰, "
-        + "or from a schedule. Sessions started from a card, an issue or “+ session” are "
-        + "deliberately not: this answers what your scenarios did.",
+      body: "A scenario is a prompt you keep, and the journal is what one leaves behind: "
+        + "every time a scenario starts a session, its run is recorded here — how it "
+        + "started, how long it took, and what it reported at the end. That is what makes "
+        + "a sweep that ran at 03:00 readable at 09:00, when its session is long closed. "
+        + "Sessions you start yourself — from a card, from an issue, from “+ session” — "
+        + "are deliberately not recorded: this page answers what your scenarios did while "
+        + "nobody was watching.",
     };
   }
   // Before the filter case, and that order is the whole of this branch: a

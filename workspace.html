@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cowork-deck</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <!-- A copy of the app's own `index.html` body, and it has to be one: this page
+         starts the same app under a different role, so every element `startApp`
+         queries has to be here under the same id. Vite serves one module graph per
+         page, so the two cannot share a fragment without a build step neither
+         needs. Keep them in step — an element only `index.html` has is an element
+         `startApp` finds null in a workspace window, and the non-null assertions
+         in `app.ts` turn that into a blank window at boot rather than a warning.
+         `harness/index.html` carries the same standing instruction and the same
+         reason. -->
+    <div id="app">
+      <!-- Mirrors `index.html`: a rail, one panel, and a deck that never yields
+           its place in the row. A workspace window has one workspace, so its
+           panel is the same five pages narrowed to it. -->
+      <header class="topbar">
+        <div class="mark" id="mark" data-od-id="wordmark"></div>
+        <span class="topbar-spacer"></span>
+        <!-- What replaced four tab labels. Not "where to go" but "what wants me",
+             and every reading in it is a jump into the panel rather than a
+             destination. Empty here on purpose: `app.ts` writes it from the deck's
+             own counts, so no number in this markup can go stale. -->
+        <div id="ledger" data-od-id="ledger"></div>
+        <div id="topbar-actions"></div>
+      </header>
+      <div id="stage">
+        <nav id="rail" aria-label="Panels"></nav>
+        <aside id="sidebar">
+          <div id="panel-head"></div>
+          <div id="panel-stack"></div>
+        </aside>
+        <!-- The deck and the terminal drawer are one column: the drawer is a
+             strip under the deck, not a fourth screen and not a floating panel.
+             `#workarea` exists only to stack them, so `#deck` keeps its id, its
+             `main` landmark and every selector already written against it. -->
+        <div id="workarea">
+          <main id="deck"></main>
+          <div id="terminals"></div>
+        </div>
+        <!-- The workspace's own two pages, on the side of the window this app
+             already means by "what I am looking at". Kept in step with the other
+             three copies of this body — `page-bodies.test.ts` is what makes that
+             request enforceable. -->
+        <aside id="wspanel" hidden>
+          <div id="wsp-head"></div>
+          <div id="wsp-body">
+            <div id="board" class="panel-page hidden"></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+    <script type="module" src="/src/workspace.ts"></script>
+  </body>
+</html>

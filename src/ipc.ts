@@ -68,6 +68,10 @@ export interface UiState {
    *  is for. Required for the same reason as `uiScale`: Rust fills it from a
    *  `serde` default, so an optional here would guard a case that cannot happen. */
   prDiffCols: number;
+  /** Whether the offer to switch memory sync on has been waved away. Local to
+   *  this machine — `ui_state.json` is not on the sync allowlist, so declining
+   *  on the laptop says nothing about the desktop. */
+  syncOfferDismissed: boolean;
   /** Whether scenario runs are journalled. Default on; off writes nothing new
    *  and deletes nothing already written, and reads keep working. Required for
    *  the same reason as the two above: Rust fills it from a `serde` default. */
@@ -80,6 +84,23 @@ export interface UiState {
    *  the height is how much of this window to give a terminal, and that does not
    *  change with the project. */
   terminalRows: number;
+  /** How wide the panel is in px, and how wide it is once it has taken the deck's
+   *  width. Optional, and this is where the pattern above genuinely stops: the two
+   *  above are filled from `serde` defaults, and these are not — until a person
+   *  drags an edge the width belongs to the stylesheet, whose `clamp(17.5rem,
+   *  19vw, 24rem)` tracks the window and the text size. A pixel default here would
+   *  freeze both, and `undefined` is what says "not asked for".
+   *
+   *  Px and not `ch`, unlike the diff drawer's width and the drawer's rows: what
+   *  is being sized is a column of names, not a grid of characters. */
+  panelPx?: number;
+  wspPx?: number;
+  wspWidePx?: number;
+  /** And the tool panel inside a zoomed tile. One width for the app, not one per
+   *  tile: sizing it is sizing the tool, and every session's tools are the same
+   *  tool. Its floor is the 80-column rule, which is enforced where the panel is
+   *  drawn — a stored number cannot know what the terminal is doing. */
+  toolPx?: number;
 }
 
 /** A change to the stored state, which is what `save_ui_state` takes.
@@ -92,8 +113,13 @@ export interface UiStatePatch {
   activeWorkspaceId?: string;
   uiScale?: number;
   prDiffCols?: number;
+  syncOfferDismissed?: boolean;
   recordScenarioRuns?: boolean;
   terminalRows?: number;
+  panelPx?: number;
+  wspPx?: number;
+  wspWidePx?: number;
+  toolPx?: number;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
@@ -117,9 +143,76 @@ export const claudeAvailable = () => invoke<boolean>("claude_available");
 
 export interface GhAccount { host: string; login: string; active: boolean; scopes: string[]; state: string; }
 export interface GhStatus { path: string | null; version: string | null; accounts: GhAccount[]; error: string | null; }
-export interface HostPlatform { os: "macos" | "windows" | "linux"; distro: string | null; }
+export interface HostPlatform {
+  os: "macos" | "windows" | "linux";
+  distro: string | null;
+  /** Whether the app may say where a window goes. False on Wayland, where
+   *  `set_position` returns success and silently does nothing — so the tear-out
+   *  gesture, which is built on placing a window under the cursor, is not
+   *  offered there. The plain trigger does the same job everywhere. */
+  placesWindows: boolean;
+}
 
 export const ghStatus = () => invoke<GhStatus>("gh_status");
+
+// ---------------------------------------------------------------- sync
+
+/** Why sync cannot be switched on yet. Two of the three reasons
+ *  `ghUnavailable` already words — the third, `no-repo`, is about a
+ *  workspace's own folder and does not apply here. */
+export type SyncBlocked = "no-gh" | "no-account";
+export interface SyncPreflight {
+  blocked: SyncBlocked | null;
+  accounts: GhAccount[];
+  /** The account listing itself failed. Not the same as having none. */
+  error: string | null;
+}
+export type SyncRepoState =
+  | { kind: "empty" }
+  | { kind: "ours"; format: number }
+  | { kind: "ours-newer"; format: number }
+  | { kind: "foreign" }
+  | { kind: "missing" }
+  | { kind: "unknown"; why: string };
+export type SyncFault =
+  | { kind: "offline"; since: number }
+  | { kind: "conflict"; files: string[] }
+  | { kind: "push-rejected"; message: string }
+  | { kind: "auth-gone"; message: string }
+  | { kind: "format-newer"; found: number; supported: number };
+export interface SyncState {
+  lastPull: number | null;
+  lastPush: number | null;
+  fault: SyncFault | null;
+}
+export interface SyncMachine { id: string; label: string; }
+export interface SyncSummary {
+  on: boolean;
+  remote: string | null;
+  state: SyncState;
+  machine: SyncMachine;
+}
+export type SyncQuestion =
+  | { kind: "needs-path"; workspaceId: string; name: string; cloneFrom: string | null }
+  | { kind: "duplicate"; arrivingId: string; localId: string; name: string }
+  | { kind: "needs-board-path"; workspaceId: string; name: string };
+
+export const syncSummary = () => invoke<SyncSummary>("sync_summary");
+export const syncPreflight = () => invoke<SyncPreflight>("sync_preflight");
+export const syncProbe = (host: string, login: string, repo: string) =>
+  invoke<SyncRepoState>("sync_probe", { host, login, repo });
+export const syncCreate = (host: string, login: string, name: string) =>
+  invoke<string>("sync_create", { host, login, name });
+export const syncConnect = (host: string, login: string, repo: string, url: string) =>
+  invoke<void>("sync_connect", { host, login, repo, url });
+export const syncDisconnect = () => invoke<void>("sync_disconnect");
+export const syncNow = () => invoke<SyncState>("sync_now");
+export const syncQuestions = () => invoke<SyncQuestion[]>("sync_questions");
+
+/** The loop pushes state after every cycle, so a panel left open does not have
+ *  to poll to stay honest. */
+export const onSyncState = (fn: (s: SyncState) => void): Promise<UnlistenFn> =>
+  listen<SyncState>("sync://state", (e) => fn(e.payload));
 export const hostPlatform = () => invoke<HostPlatform>("host_platform");
 
 /** Four distinct check states. `none` is not `passed`: nothing has built this.
@@ -424,6 +517,61 @@ export const writeSession = (session: string, data: string) => invoke<void>("wri
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
 export const closeSession = (session: string) => invoke<void>("close_session", { session });
+/** One tile as it crosses between windows: everything `sessions.json` records
+ *  about it, plus what was on its screen.
+ *
+ *  The scrollback rides with the tile rather than being fetched afterwards
+ *  because the window that has it is the window that is giving it up — a moment
+ *  later there is nobody left to ask. */
+export interface HandOffTile extends SessionEntry {
+  scrollback: string;
+}
+
+/** Take over a running session: point its output here and record this window as
+ *  its owner. Spawns nothing — see `TerminalPanel.attach`. */
+export const claimSession = (session: string, sink: Channel<ArrayBuffer>) =>
+  invoke<void>("claim_session", { session, sink });
+/** A session changed hands. Every window hears it; the one whose label is
+ *  `owner` asked for it, and the rest give the session up. */
+export const onSessionOwner = (cb: (session: string, owner: string) => void) =>
+  listen<{ session: string; owner: string }>("session://owner", (e) =>
+    cb(e.payload.session, e.payload.owner));
+/** Open the window pinned to `workspaceId`, or raise it if it is already up.
+ *
+ *  Windows are built in Rust rather than here. `core:webview:default` does not
+ *  grant `allow-create-webview-window`, and granting it to a webview that renders
+ *  untrusted agent output is not worth what it buys — the label scheme and the
+ *  window cap belong on that side anyway.
+ *
+ *  Resolves with the new window's label once that window has attached its
+ *  listeners, and rejects if it never does. So a caller that gets a label back
+ *  may address the window immediately; one that gets an error has a window that
+ *  failed to boot, reported rather than left on screen and inert. */
+export const openWorkspaceWindow = (
+  workspaceId: string,
+  /** Physical screen coordinates to place it at — the tear-out gesture's cursor.
+   *  Absent for the plain trigger, which lets the window state plugin put the
+   *  window back where it was last left. */
+  at?: [number, number],
+  /** Hand the new window to the OS's own move, so a torn-out workspace keeps
+   *  following the cursor as an ordinary window. Only meaningful with `at`. */
+  drag?: boolean,
+) => invoke<string>("open_workspace_window", { workspaceId, at, drag });
+/** "My listeners are attached; you may send me things."
+ *
+ *  Called last in a window's bootstrap, and only there. An emit to a webview
+ *  holding no listener for that event is a silent no-op at both ends, so the
+ *  backend routes nothing to a window until this arrives. The label is taken
+ *  from the runtime, not passed, so no window can answer for another. */
+export const windowReady = () => invoke<void>("window_ready");
+/** The tiles **this window** should restore — not every tile on disk.
+ *
+ *  The filtering happens in Rust, against the window label the runtime attaches
+ *  to the invoke, so there is nothing to pass and no way for a window to ask for
+ *  another one's tiles. Saving stamps the same label. That is why `SessionEntry`
+ *  above has no `owner` field although `sessions.json` records one: the frontend
+ *  neither sets it nor needs to read it, and a field it cannot write is a field
+ *  it cannot forge. */
 export const loadLayout = () => invoke<SessionEntry[]>("load_layout");
 export const saveLayout = (sessions: SessionEntry[]) => invoke<void>("save_layout", { sessions });
 
@@ -604,6 +752,31 @@ export interface SessionSnapshot {
   titleSource: TitleSource | null;
 }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
+
+/** One changed file in a session's own checkout. `mark` is git's own letter — M,
+ *  A, D, R, `?` for untracked, U for a conflict — because anyone with a worktree
+ *  open has read those, and a second vocabulary for one fact is a second thing to
+ *  learn. `added`/`removed` are 0 for an untracked file: git has nothing to diff
+ *  it against, and its length is a number git never states. */
+export interface GitChange { mark: string; path: string; added: number; removed: number }
+export interface GitChanges { branch: string | null; files: GitChange[] }
+/** What this session's checkout has changed. Per session, not per workspace: a
+ *  session launched on an issue runs in a worktree of its own, and "what have I
+ *  changed here" is a question the board cannot answer for it. */
+export const gitChanges = (cwd: string) => invoke<GitChanges>("git_changes", { cwd });
+/** The files in this session's checkout, as git sees them: tracked plus
+ *  untracked-not-ignored, so the repository's own ignore rules decide what is not
+ *  worth showing rather than a list of names kept here. */
+export const worktreeFiles = (cwd: string) => invoke<string[]>("worktree_files", { cwd });
+
+/** One of the files the app keeps for itself. `exists: false` is reported rather
+ *  than omitted: the list is what this app WILL write, and a person looking for a
+ *  file they have never saved needs to be told it is not there. */
+export interface ConfigFile { name: string; exists: boolean }
+export interface ConfigPaths { dir: string; files: ConfigFile[] }
+/** Where the app keeps its own state — for the Settings window, which is the first
+ *  place in this app that answers "where is my configuration" at all. */
+export const configPaths = () => invoke<ConfigPaths>("config_paths");
 /** One invoke per tick for every open session — the title and the token counts
  *  come from the same bytes, so asking per session would read each transcript
  *  twice. Every requested id comes back, including ids with no transcript. */

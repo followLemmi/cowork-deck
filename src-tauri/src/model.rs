@@ -442,6 +442,23 @@ pub struct SessionEntry {
     /// a scenario ran twice in one day.
     #[serde(rename = "runId", default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// The window whose deck this tile belongs to, by window label.
+    ///
+    /// Absent means the main window. That is what every file written before this
+    /// field existed says implicitly, and what a single-window app meant by every
+    /// entry in it — so an old layout restores exactly as it did, into the same
+    /// window, with nothing to migrate.
+    ///
+    /// **The frontend never sends this.** `save_layout` stamps it from the label
+    /// the runtime attaches to the invoke, which webview code cannot forge, so a
+    /// window cannot claim another window's tiles by writing the field. It is
+    /// absent from the TypeScript `SessionEntry` for the same reason.
+    ///
+    /// One word, so unlike every field above it needs no `rename` — serde already
+    /// writes the key TS would read. Read the NOTE on `task_id` before adding a
+    /// second word to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// Which of the two kinds of launch name `SessionEntry::name` holds.
@@ -477,6 +494,17 @@ pub struct UiState {
     /// on disk predates it.
     #[serde(rename = "prDiffCols", default = "default_pr_diff_cols")]
     pub pr_diff_cols: u32,
+    /// Whether the offer to switch memory sync on has been waved away.
+    ///
+    /// Local by nature, and this is the file for it: `ui_state.json` is not on
+    /// the sync allowlist, so the answer stays with the machine that gave it. A
+    /// person who declines on the laptop has said nothing about the desktop.
+    ///
+    /// `#[serde(default)]` for the reason spelled out above `ui_scale` — every
+    /// `ui_state.json` on disk predates this field, and a missing key on a
+    /// non-`Option` fails the whole parse.
+    #[serde(rename = "syncOfferDismissed", default)]
+    pub sync_offer_dismissed: bool,
     /// Whether scenario runs are journalled at all. **Default on.**
     ///
     /// Off means: write nothing new, delete nothing already written. Reads keep
@@ -498,6 +526,33 @@ pub struct UiState {
     /// text size, not however many fit in 260 pixels after the next change.
     #[serde(rename = "terminalRows", default = "default_terminal_rows")]
     pub terminal_rows: u32,
+    /// How wide the panel is, in px, and how wide it is when it has taken the
+    /// deck's width. Two numbers because they answer two questions: a column of
+    /// names and a kanban do not want the same width, and a person who sizes one
+    /// has not said anything about the other.
+    ///
+    /// `Option` rather than a default, and this is the one place in this struct
+    /// where that is the right shape: "never dragged" has to be distinguishable
+    /// from a number, because until it is dragged the width belongs to the
+    /// stylesheet — `clamp(17.5rem, 19vw, 24rem)` tracks the window and the text
+    /// size, and baking a pixel default here would freeze both.
+    #[serde(rename = "panelPx", default)]
+    pub panel_px: Option<u32>,
+    /// And how wide the workspace panel is — the board and the pull requests, on
+    /// the other side of the deck. Two numbers, because the diff's width and the
+    /// page's answer different questions: this was `panelWidePx` while the board
+    /// was a page of the LEFT panel, and the rename is the honest record of the
+    /// board having moved. Nothing reads the old key, so a stored one is ignored
+    /// rather than migrated: the loss is one dragged width, once.
+    #[serde(rename = "wspPx", default)]
+    pub wsp_px: Option<u32>,
+    #[serde(rename = "wspWidePx", default)]
+    pub wsp_wide_px: Option<u32>,
+    /// And how wide the tool panel inside a zoomed tile is. Same reasoning; its
+    /// floor is the 80-column rule, which is enforced where the panel is drawn
+    /// rather than here — a stored number cannot know what the terminal is doing.
+    #[serde(rename = "toolPx", default)]
+    pub tool_px: Option<u32>,
 }
 
 /// On. A journal nobody switched on records nothing, and the first thing anyone
@@ -540,8 +595,15 @@ impl Default for UiState {
             active_workspace_id: None,
             ui_scale: default_ui_scale(),
             pr_diff_cols: default_pr_diff_cols(),
+            sync_offer_dismissed: false,
             record_scenario_runs: default_record_runs(),
             terminal_rows: default_terminal_rows(),
+            // None, and not a pixel figure: until a person drags one, the width
+            // belongs to the stylesheet, which tracks the window and the text size.
+            panel_px: None,
+            wsp_px: None,
+            wsp_wide_px: None,
+            tool_px: None,
         }
     }
 }
@@ -564,16 +626,78 @@ pub struct UiStatePatch {
     pub ui_scale: Option<f32>,
     #[serde(rename = "prDiffCols")]
     pub pr_diff_cols: Option<u32>,
+    #[serde(rename = "syncOfferDismissed")]
+    pub sync_offer_dismissed: Option<bool>,
     #[serde(rename = "recordScenarioRuns")]
     pub record_scenario_runs: Option<bool>,
     #[serde(rename = "terminalRows")]
     pub terminal_rows: Option<u32>,
+    #[serde(rename = "panelPx")]
+    pub panel_px: Option<u32>,
+    #[serde(rename = "wspPx")]
+    pub wsp_px: Option<u32>,
+    #[serde(rename = "wspWidePx")]
+    pub wsp_wide_px: Option<u32>,
+    #[serde(rename = "toolPx")]
+    pub tool_px: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GitStatus {
     pub branch: Option<String>,
     pub dirty: bool,
+}
+
+/// One of the files the app keeps for itself, and whether it is there yet.
+///
+/// `exists: false` is a fact worth reporting rather than a row to omit: the list
+/// is what this app WILL write, and "no scenarios have ever been saved" is
+/// something a person looking for the file needs told, not hidden.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConfigFile {
+    pub name: String,
+    pub exists: bool,
+}
+
+/// Where the app keeps its own state, for the Settings window.
+///
+/// The directory is the answer to "where is my configuration"; the file list is
+/// the answer to "which of it is mine" — a person who wants to back one up, diff
+/// one, or delete one needs the names, and every one of them is a plain JSON or
+/// JSONL file on purpose.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConfigPaths {
+    pub dir: String,
+    pub files: Vec<ConfigFile>,
+}
+
+/// One changed file in a session's own checkout.
+///
+/// `mark` is git's own letter — M, A, D, R, ? for untracked, U for a conflict —
+/// rather than a word of ours. Anyone who has a worktree open has read those
+/// letters; translating them would be a second vocabulary for one fact.
+///
+/// `added` and `removed` are 0 for an untracked file, which is not the same as a
+/// file with no changes: `git diff` has nothing to compare it against, and
+/// counting its whole length as added would be a number git never states.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GitChange {
+    pub mark: String,
+    pub path: String,
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// What a session's own checkout has changed, file by file.
+///
+/// For the tool panel on a zoomed tile: a session launched on an issue runs in a
+/// worktree of its own, so "what have I changed here" is a per-session question
+/// that the app-level board cannot answer — it does not know which of a dozen
+/// sessions is being asked about.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct GitChanges {
+    pub branch: Option<String>,
+    pub files: Vec<GitChange>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
@@ -763,7 +887,7 @@ mod tests {
         let entry = SessionEntry {
             session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
             task_id: None, scheduled_skill_id: None, user_name: None, name_kind: None,
-            skill_id: None, run_id: None,
+            skill_id: None, run_id: None, owner: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
@@ -799,7 +923,7 @@ mod tests {
             session_id: "s3".into(), cwd: "/c".into(), name: "session · deck".into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: Some("relay".into()), name_kind: Some(NameKind::Placeholder),
-            skill_id: None, run_id: None,
+            skill_id: None, run_id: None, owner: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""userName":"relay""#), "got {json}");

@@ -1,0 +1,702 @@
+/* ============================================================================
+   cowork-deck — "Slate & Ember II": the screens
+   ----------------------------------------------------------------------------
+   Split from `deck-ui.css` for one reason: that file is the contract every
+   screen binds to, and it has to stay readable end to end. This one is the four
+   views plus the overlays, and nothing in it invents a token.
+   ========================================================================== */
+
+/* ============================================================================
+   Terminals — the deck
+   ========================================================================== */
+
+.screen--deck { padding: var(--sp-4); gap: var(--sp-3); }
+
+.deck {
+  display: grid; gap: var(--sp-3);
+  /* Capped rather than `1fr` to infinity: three terminals stretched across a 4K
+     window was most of the "too much empty space" complaint. The 440px floor is
+     a measurement — a tile head carries a name, a branch, a token count, a state
+     chip and three 28px buttons, about 384px that cannot shrink. */
+  grid-template-columns: repeat(auto-fill, minmax(clamp(27.5rem, 33vw, 38rem), 1fr));
+  grid-auto-rows: minmax(15.5rem, 1fr);
+  align-content: start;
+  flex: 1; min-height: 0;
+}
+
+/* The tile lost its coloured border. That was the double signal: a full-height
+   rail AND a 1px ring in the same hue said one thing twice and left the tile
+   with nothing to say when it was merely FOCUSED. Now the rail is state and the
+   ring is attention, and they never compete. */
+.tile {
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  background: var(--bg-island); border-radius: var(--r-island);
+  box-shadow: var(--edge-lit), var(--sh-1), 0 0 0 1px var(--line);
+  transition: box-shadow var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
+}
+.tile.is-active { box-shadow: var(--edge-lit), var(--sh-1), 0 0 0 1px var(--accent); }
+.tile:focus-visible { box-shadow: var(--focus-ring); }
+
+.tile-head {
+  display: flex; align-items: center; gap: var(--sp-2); flex: none;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  min-height: 40px;
+  user-select: none; cursor: default;
+}
+.tile-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg); font-size: var(--fs-caption); font-weight: var(--fw-emph);
+}
+.tile-tokens { color: var(--fg-dim); font-size: var(--fs-micro); flex: none; }
+/* Live figures crossfade rather than snapping — a count that changes under the
+   eye without any transition reads as a glitch, not as news. */
+.tile-tokens b { color: var(--fg-mid); font-weight: var(--fw-emph); transition: color var(--dur-2) var(--ease-out); }
+.tile-tokens.just-ticked b { color: var(--fg); }
+.tile-check { accent-color: var(--accent); width: 14px; height: 14px; margin: 0; flex: none; }
+
+/* The seam between the tile's chrome and the program inside it. A border here
+   would be a fourth line on a box that already has three; the terminal's own
+   darker ground is the edge. */
+.tile-body { flex: 1; min-height: 0; background: var(--term-bg); overflow: hidden; position: relative; }
+
+.term {
+  height: 100%; overflow: auto; padding: var(--sp-3) var(--sp-4);
+  font-family: var(--font-mono); font-size: var(--fs-caption); line-height: var(--lh-code);
+  color: var(--term-mid); white-space: pre-wrap; word-break: break-word;
+}
+.term-dim { color: var(--term-dim); }
+.term-ok { color: var(--term-ok); }
+.term-warn { color: var(--term-warn); }
+.term-err { color: var(--term-err); }
+.term-ink { color: var(--term-fg); }
+.term-box { display: block; border: 1px solid var(--term-dim); border-radius: var(--r-sm); padding: var(--sp-2) var(--sp-3); margin: var(--sp-2) 0; color: var(--term-mid); }
+/* Ink, not the accent: a terminal caret is the foreground, and four accent-bright
+   carets blinking at once would spend the whole accent budget on four places the
+   eye is not meant to be pulled to. Only the focused tile's caret blinks. */
+.term-cursor { display: inline-block; width: 8px; height: 1.05em; vertical-align: -0.18em; background: var(--term-mid); }
+.tile.is-active .term-cursor { background: var(--term-fg); animation: caret 1.1s steps(1) infinite; }
+/* The one place the app admits it is waiting on a machine. Three dots on their
+   own timeline, so the row reads as thinking rather than as stuck. */
+.term-think::after { content: "···"; letter-spacing: 2px; animation: breathe 1.4s ease-in-out infinite; }
+
+.tile-search {
+  display: flex; gap: var(--sp-1); flex: none; padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-island); border-bottom: 1px solid var(--line);
+}
+.tile-search .field { min-height: 28px; padding: 4px var(--sp-2); font-size: var(--fs-caption); }
+
+/* --- Zoom and juggle -----------------------------------------------------
+   The gesture the deck is FOR, and the one that most needs to be followable:
+   the picked tile grows into the stage while the others fall into a strip along
+   the bottom. Both halves are one FLIP run in `deck-motion.js`, so nothing
+   teleports and the eye keeps hold of which tile went where. */
+.deck.is-zoomed { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+.deck.is-zoomed > .tile:not(.zoomed) { display: none; }
+.deck.is-zoomed > .tile.zoomed { grid-row: 1; min-height: 0; }
+.strip { grid-row: 2; display: flex; gap: var(--sp-2); overflow-x: auto; overflow-y: hidden; padding: var(--sp-1) 0 var(--sp-2); }
+
+/* A strip card carries NO terminal. At 240×60 a thumbnail of a terminal is
+   texture, not information — and in the app it also stopped the PTY being
+   resized, because `fit()` follows whatever box the terminal sits in and a
+   minimized tile was re-wrapping its agent's output to ~22 columns. */
+.strip .tile {
+  flex: 0 0 15rem; min-height: 0; cursor: pointer;
+  /* The radius belongs to the size of the object: 12px reads as a considered
+     corner on a 240px tile and as a blob on a 60px card. */
+  border-radius: var(--r-ctl);
+}
+.strip .tile:hover { transform: translateY(-2px); box-shadow: var(--edge-lit), var(--sh-1), 0 0 0 1px var(--line-strong); }
+.strip .tile .tile-body, .strip .tile .tile-search, .strip .tile .acts { display: none; }
+.strip .tile .tile-head { flex-wrap: wrap; gap: 2px var(--sp-2); padding: var(--sp-2) var(--sp-3); min-height: 0; }
+/* Two lines, broken explicitly by a zero-height full-width pseudo-element:
+   letting flex wrap freely put the branch and the token count on a line each. */
+.strip .tile .tile-head::after { content: ""; order: 3; flex-basis: 100%; height: 0; }
+.strip .tile .tile-check { order: 0; }
+.strip .tile .tile-name { order: 1; }
+.strip .tile .chip-state { order: 2; }
+.strip .tile .chip { order: 4; }
+.strip .tile .tile-tokens { order: 6; margin-left: auto; }
+
+/* --- Broadcast ------------------------------------------------------------
+   A bar the deck makes room for, not an overlay parked over the last tile's
+   final rows. It arrives by sliding up from the edge it is anchored to. */
+.bcast {
+  flex: none; display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  padding: var(--sp-3);
+  background: var(--bg-island); border-radius: var(--r-island);
+  box-shadow: var(--edge-lit), var(--sh-1), 0 0 0 1px var(--line);
+}
+.bcast-label { display: inline-flex; align-items: center; gap: var(--sp-2); flex: none; color: var(--fg); font-weight: var(--fw-emph); font-size: var(--fs-caption); }
+.bcast .field { flex: 1; min-width: 12rem; font-family: var(--font-mono); font-size: var(--fs-caption); }
+.bcast-targets { color: var(--fg-dim); font-size: var(--fs-micro); flex: none; }
+
+/* ============================================================================
+   Board
+   ========================================================================== */
+
+.cols {
+  display: grid; grid-auto-flow: column;
+  /* Capped and left-aligned: `minmax(240px, 1fr)` spread four columns across the
+     whole window and made a three-card board look abandoned. */
+  grid-auto-columns: minmax(17rem, 21rem);
+  justify-content: start; align-items: start;
+  gap: var(--sp-4); overflow-x: auto; padding-bottom: var(--sp-4);
+  flex: 1; min-height: 0;
+}
+.col { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+/* The column head is the only place on this screen with a rule under it, and the
+   rule is what makes a column read as a column without a box around it. */
+.col-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 0 var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--line);
+}
+.col-count { margin-left: auto; color: var(--fg-dim); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+.col-drop { display: flex; flex-direction: column; gap: var(--sp-2); min-height: 4rem; border-radius: var(--r-island); transition: background var(--dur-2) var(--ease-out); }
+.col.is-over .col-drop { background: var(--sel); box-shadow: inset 0 0 0 1px var(--accent); }
+.col--unknown .col-head .caps { color: var(--st-error); }
+
+/* The card is the island here and the column is not — that is what gives the
+   board depth: the things you can pick up sit above the ground you cannot.
+   The hover lift is the ONLY --sh-2 on this screen, which is the rule about one
+   floating object at a time doing real work. */
+.card {
+  display: grid; grid-template-rows: auto auto auto; gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2) var(--sp-4);
+  background: var(--bg-island); border-radius: var(--r-island);
+  box-shadow: var(--edge-lit), var(--sh-1), 0 0 0 1px var(--line);
+  cursor: pointer;
+  transition: box-shadow var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
+}
+.card:hover { transform: translateY(-2px); box-shadow: var(--edge-lit), var(--sh-2), 0 0 0 1px var(--line-strong); }
+.card.is-dragging { opacity: 0.45; }
+.card.is-damaged { box-shadow: var(--edge-lit), var(--sh-1), 0 0 0 1px var(--st-error); }
+/* `min-height`, not `height`: at a fixed height a card carrying more labels than
+   fit drew over the card below it, and labels are the one thing on a GitHub card
+   you cannot get from anywhere else on the screen. */
+.card { min-height: 6.5rem; }
+.card-title {
+  padding: 0; margin: 0; width: 100%; background: none; border: 0; text-align: left; cursor: pointer;
+  color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-emph); line-height: 1.32;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.card-title:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line-strong); }
+.card-foot { display: flex; align-items: center; gap: var(--sp-1); min-height: 28px; }
+.card-foot .head-spacer { flex: 1; }
+
+/* --- The issue list (the board's second source) --------------------------
+   Hairlines inside one island rather than fifty bordered boxes: a list is one
+   thing with fifty rows in it, and that is the whole difference between this and
+   what the old board did with the same data. */
+.rows { overflow: hidden; }
+.rows > .list-row { border-top: 1px solid var(--line); border-radius: 0; }
+.rows > .list-row:first-child { border-top: 0; }
+.list-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start; gap: var(--sp-2) var(--sp-3);
+  width: 100%; padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  background: none; border: 0; text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.list-row:hover { background: var(--bg-hover); }
+.list-main { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 0; }
+/* Tabular figures and a `ch` floor, so `#7` and `#412` share a column and the
+   numbers line up down the page — which is the whole reason the number got one. */
+.list-num { color: var(--fg-dim); font-size: var(--fs-caption); font-family: var(--font-mono); min-width: 5ch; text-align: right; padding-top: 2px; }
+.list-title { padding: 0; margin: 0; width: 100%; background: none; border: 0; text-align: left; cursor: pointer; color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-emph); line-height: 1.32; }
+.list-excerpt { color: var(--fg-dim); font-size: var(--fs-caption); line-height: var(--lh-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); min-width: 0; margin-top: 1px; }
+.filters--labels { flex-wrap: wrap; }
+
+/* ============================================================================
+   Pull requests
+   ========================================================================== */
+
+.pr-view { flex: 1; min-width: 0; min-height: 0; display: flex; }
+.pr-list { flex: 1; min-width: 0; overflow: auto; padding: var(--sp-5) var(--sp-6) var(--sp-8); }
+
+.pr-row { border-top: 1px solid var(--line); }
+.pr-row:first-of-type { border-top: 0; }
+.pr-head {
+  display: flex; align-items: flex-start; gap: var(--sp-3);
+  width: 100%; padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  background: none; border: 0; text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.pr-head:hover { background: var(--bg-hover); }
+.pr-row.is-open > .pr-head { background: var(--sel); }
+.pr-caret { display: inline-grid; place-items: center; width: 20px; height: 22px; flex: none; color: var(--fg-dim); }
+.pr-caret svg { width: 13px; height: 13px; transition: transform var(--dur-2) var(--ease-spring); }
+.pr-row.is-open .pr-caret svg { transform: rotate(90deg); }
+.pr-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.pr-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); }
+.pr-num { color: var(--fg-dim); font-family: var(--font-mono); font-size: var(--fs-caption); flex: none; }
+.pr-title { color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-emph); line-height: 1.32; }
+
+/* The body a row opens into. Height is animated from a measured value, not from
+   a `max-height` guess — a guess that is too small clips and one that is too
+   large makes a two-line body take the full duration to arrive. */
+.pr-detail-wrap { height: 0; overflow: hidden; }
+.pr-detail-wrap.is-animating { transition: height var(--dur-3) var(--ease-out); }
+.pr-detail { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-3); padding: 0 var(--sp-4) var(--sp-4) var(--sp-4); }
+.pr-body {
+  flex: 1 1 42ch; min-width: min(42ch, 100%); max-width: 74ch; max-height: 38vh; overflow: auto;
+  padding: var(--sp-3); background: var(--bg-code); border-radius: var(--r-ctl);
+  box-shadow: 0 0 0 1px var(--line);
+  color: var(--fg-mid); font-size: var(--fs-caption); line-height: var(--lh-body);
+  overflow-wrap: anywhere;
+}
+.pr-files {
+  flex: 0 1 auto; width: fit-content; max-width: 66ch; max-height: 38vh; overflow: auto;
+  /* `fit-content` takes no account of an overflow scrollbar, so once the list is
+     long enough to scroll the bar lands over the right-hand end of every row —
+     which is exactly where `−13` sits. Reserving the gutter fixes it. */
+  scrollbar-gutter: stable;
+  padding: var(--sp-2); list-style: none;
+  background: var(--bg-code); border-radius: var(--r-ctl); box-shadow: 0 0 0 1px var(--line);
+  font-family: var(--font-mono); font-size: var(--fs-caption); line-height: var(--lh-code);
+}
+.file-row {
+  display: flex; align-items: baseline; gap: var(--sp-3);
+  width: 100%; min-height: 26px; padding: 2px var(--sp-2);
+  background: none; border: 0; border-radius: var(--r-sm);
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.file-row:hover { background: var(--bg-hover); }
+.file-row[aria-current="true"] { background: var(--sel); }
+.file-path { flex: 1; min-width: 0; color: var(--fg-mid); overflow-wrap: anywhere; }
+.file-row[aria-current="true"] .file-path { color: var(--fg); }
+.plus { color: var(--st-working); flex: none; font-variant-numeric: tabular-nums; }
+.minus { color: var(--st-error); flex: none; font-variant-numeric: tabular-nums; }
+.pr-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+
+/* Four states, four appearances: "no checks" must never read as "passed". */
+.checks--none { color: var(--fg-dim); }
+.checks--running { color: var(--st-waiting); }
+.checks--passed { color: var(--st-working); }
+.checks--failed { color: var(--st-error); }
+/* Why Merge is refused, in the row rather than in a `title` a keyboard cannot
+   reach. Amber, not red: a refusal is a "not yet". */
+.pr-refusal { color: var(--st-waiting); font-size: var(--fs-caption); line-height: var(--lh-body); max-width: 62ch; }
+
+/* --- The diff drawer ------------------------------------------------------
+   It SQUEEZES the list rather than covering it — no z-index and no shadow, so it
+   cannot assert an elevation it does not have, and a still-focusable list can
+   never end up behind it (SC 2.4.11). Which is also why it opens by animating
+   its width: the list has to be seen giving way. */
+.drawer {
+  flex: none; display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  /* `ch` against the drawer's OWN mono face: the one question a diff pane
+     answers is "does this line fit", and that is a column count. */
+  font-family: var(--font-mono); font-size: var(--fs-caption);
+  width: 62ch; min-width: 0; max-width: calc(100% - 2 * var(--sp-6));
+  background: var(--bg-island); border-left: 1px solid var(--line);
+  overflow: hidden;
+  transition: width var(--dur-3) var(--ease-out);
+}
+.drawer[hidden] { display: none !important; }
+.drawer.is-closing { width: 0 !important; }
+.pr-view--narrow .pr-list { display: none; }
+.pr-view--narrow .drawer { flex: 1 1 auto; max-width: 100%; border-left: 0; }
+
+.drawer-grip {
+  grid-column: 1; grid-row: 1 / -1;
+  display: flex; align-items: center; justify-content: center;
+  /* 24px literal, not rem: SC 2.5.8 is written in CSS pixels, so a relative
+     value here would fall under the minimum at the smallest text-size step. */
+  width: 24px; min-width: 24px; padding: 0;
+  background: none; border: 0; cursor: col-resize; touch-action: none;
+  color: var(--fg-dim); transition: color var(--dur-1) var(--ease-out);
+}
+.drawer-grip::before { content: ""; width: 2px; height: 2.4rem; border-radius: 1px; background: currentColor; transition: height var(--dur-2) var(--ease-out); }
+.drawer-grip:hover { color: var(--accent); }
+.drawer-grip:hover::before { height: 3.4rem; }
+/* The ring goes on the BAR: on the 24px column the head and body paint over its
+   inner half and leave a 2px sliver as the whole indicator. */
+.drawer-grip:focus-visible { outline: none; box-shadow: none; color: var(--accent); }
+.drawer-grip:focus-visible::before { box-shadow: var(--focus-ring); }
+
+.drawer-head {
+  grid-column: 2; grid-row: 1;
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--line);
+  font-family: var(--font-ui);
+}
+/* The path takes a line of its own: sharing one with the counts and three buttons
+   left it ~190px, and what it did with them was wrap mid-basename. */
+.drawer-path { flex: 1 1 100%; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-caption); color: var(--fg-dim); overflow-wrap: anywhere; }
+.drawer-path b { color: var(--fg); font-weight: var(--fw-emph); }
+.drawer-counts { display: inline-flex; gap: var(--sp-2); flex: none; font-size: var(--fs-caption); white-space: nowrap; }
+.pr-pos { color: var(--fg-dim); font-size: var(--fs-micro); flex: none; white-space: nowrap; }
+.drawer-body { grid-column: 2; grid-row: 2; min-height: 0; overflow: auto; padding: var(--sp-2) 0; background: var(--bg-code); }
+
+.dv-file {
+  display: grid; grid-template-columns: max-content max-content max-content 1fr;
+  overflow-x: auto;
+  font-family: var(--font-mono); font-size: var(--fs-caption); line-height: var(--lh-code);
+  --dv-digits: 4;
+  --dv-num-w: calc(var(--dv-digits) * 1ch + var(--sp-2));
+}
+.dv-line { display: contents; }
+/* The gutter survives horizontal scroll, and that works only because these three
+   cells are OPAQUE: a sticky gutter under a translucent tint shows the scrolling
+   code through itself. */
+.dv-old, .dv-new, .dv-mark { position: sticky; background-color: var(--bg-code); padding: 0 var(--sp-1); }
+.dv-old { left: 0; }
+.dv-new { left: var(--dv-num-w); }
+.dv-mark { left: calc(var(--dv-num-w) * 2); text-align: center; }
+/* Two number columns, not one: a single column cannot answer "what line is this
+   now" for a removed line. */
+.dv-old, .dv-new { min-width: var(--dv-num-w); text-align: right; color: var(--fg-dim); user-select: none; }
+.dv-text { white-space: pre; padding: 0 var(--sp-2); color: var(--fg-mid); }
+/* The band starts at the MARKER and never at the frame, so both number columns
+   keep the untinted ground the sticky rule needs. The marker's tint arrives as a
+   one-colour gradient because that cell spends its background-color on being
+   opaque. */
+.dv-line--add .dv-text { background-color: var(--diff-add); }
+.dv-line--del .dv-text { background-color: var(--diff-del); }
+.dv-line--add .dv-mark { background-image: linear-gradient(var(--diff-add), var(--diff-add)); color: var(--st-working); }
+.dv-line--del .dv-mark { background-image: linear-gradient(var(--diff-del), var(--diff-del)); color: var(--st-error); }
+/* Colour is a third channel, not the channel: the two bands measure ~1.0 against
+   each other, so the literal + and − in their own column do the real work. */
+.dv-line--add .dv-text, .dv-line--del .dv-text { color: var(--fg); }
+.dv-line--meta .dv-text { color: var(--fg-dim); font-style: italic; }
+.dv-file--wrap .dv-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* "Hunk 2 of 5 · lines 91–99" — the parsed @@ header as a sentence, never the
+   raw `@@ -91,7 +91,9 @@`. A heading, because a reader's heading key is how a
+   62-file diff actually gets moved through. */
+.dv-hunk {
+  grid-column: 1 / -1; margin: 0; padding: 5px var(--sp-3);
+  background: var(--bg-inset); color: var(--fg-mid);
+  font-family: var(--font-ui); font-size: var(--fs-micro); font-weight: var(--fw-emph);
+  letter-spacing: var(--ls-ui);
+}
+
+/* ============================================================================
+   History — every run a scenario ever made
+   ========================================================================== */
+
+/* A table would be wrong here: six of the eight facts on a run are short and one
+   (the final message) is a paragraph. So it is a list of rows on one island,
+   with a fixed left gutter carrying the time — which is the axis a person reads
+   this screen along. */
+.hist { display: flex; flex-direction: column; }
+.hist-row {
+  display: grid; grid-template-columns: 5.5rem minmax(0, 1fr) auto;
+  align-items: start; gap: var(--sp-2) var(--sp-4);
+  width: 100%; padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--line);
+  background: none; text-align: left;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.hist-row:first-child { border-top: 0; }
+.hist-row:hover { background: var(--bg-hover); }
+.hist-when { display: flex; flex-direction: column; gap: 2px; padding-top: 1px; }
+.hist-time { color: var(--fg); font-family: var(--font-mono); font-size: var(--fs-caption); font-variant-numeric: tabular-nums; }
+.hist-day { color: var(--fg-dim); font-size: var(--fs-micro); }
+.hist-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.hist-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); }
+.hist-name { color: var(--fg); font-size: var(--fs-body); font-weight: var(--fw-emph); }
+/* The final assistant message, and the reason this screen exists: a schedule
+   that fired at 03:00 into a session nobody saw used to leave nothing behind. */
+.hist-said { color: var(--fg-mid); font-size: var(--fs-caption); line-height: var(--lh-body); max-width: 82ch; }
+.hist-said--absent { color: var(--fg-dim); font-style: italic; }
+.hist-dur { color: var(--fg-dim); font-size: var(--fs-micro); }
+.hist-trigger { display: inline-flex; align-items: center; gap: 5px; color: var(--fg-dim); font-size: var(--fs-micro); }
+.hist-trigger svg { width: 12px; height: 12px; }
+
+/* ============================================================================
+   Overlays
+   ========================================================================== */
+
+.overlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: var(--sp-6);
+  background: var(--scrim);
+  backdrop-filter: blur(6px) saturate(120%);
+  -webkit-backdrop-filter: blur(6px) saturate(120%);
+  overflow: auto;
+  animation: enter-fade var(--dur-2) var(--ease-out) both;
+}
+.overlay[hidden] { display: none !important; }
+.overlay.is-closing { animation: enter-fade var(--dur-2) var(--ease-out) reverse both; }
+.overlay.is-closing > * { animation: enter-pop var(--dur-2) var(--ease-in-out) reverse both; }
+
+/* `margin: auto` rather than `align-items: center`: centring a box taller than
+   its container pushes the overflow off both ends and the top becomes
+   unreachable, whereas auto margins centre when there is room and collapse to
+   zero when there is not. */
+.modal {
+  margin: auto; display: flex; flex-direction: column; gap: var(--sp-4);
+  width: min(34rem, 100%); padding: var(--sp-5);
+  background: var(--bg-island); border-radius: var(--r-island);
+  box-shadow: var(--edge-lit), var(--sh-2), 0 0 0 1px var(--line-strong);
+}
+.modal--narrow { width: min(26rem, 100%); }
+.modal--wide { width: min(47rem, 100%); }
+.modal--card {
+  width: min(62rem, 100%);
+  /* `min-height` as well as `max-height`, and this is what makes the two-column
+     shape worth having. With a cap alone the dialog is content-tall: the rail
+     runs out after four facts, the grid row is as tall as the taller column, and
+     the body — the one thing a person came to read — settles for what is left
+     while a column of dead space sits beside it. */
+  min-height: min(38rem, calc(100vh - 2 * var(--sp-6)));
+  max-height: calc(100vh - 2 * var(--sp-6));
+}
+.modal-head { display: flex; align-items: baseline; gap: var(--sp-3); }
+.modal-title { font-family: var(--font-display); font-size: var(--fs-xl); font-weight: var(--fw-announce); letter-spacing: var(--ls-xl); color: var(--fg); }
+.modal-sub { color: var(--fg-dim); font-size: var(--fs-caption); line-height: var(--lh-body); }
+.modal-body { display: flex; flex-direction: column; gap: var(--sp-3); }
+.modal-acts { display: flex; justify-content: flex-end; gap: var(--sp-2); align-items: center; }
+.modal-acts .head-spacer { flex: 1; }
+
+/* A form section that reads as a section rather than as more flat form. */
+.fieldset {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  background: var(--bg-code); border-radius: var(--r-ctl); box-shadow: 0 0 0 1px var(--line);
+}
+.fieldset-head { display: flex; align-items: center; gap: var(--sp-2); }
+
+.swatches { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.swatch { width: 22px; height: 22px; padding: 0; border-radius: 50%; border: 2px solid transparent; cursor: pointer; transition: transform var(--dur-1) var(--ease-spring); }
+.swatch:hover { transform: scale(1.14); }
+.swatch[aria-pressed="true"] { border-color: var(--fg); box-shadow: 0 0 0 2px var(--bg-island); }
+/* A pressed swatch's separating halo is a box-shadow, so on the only swatch whose
+   POSITION is the thing to see the ring disappeared. The --fg ring from the
+   pressed rule stays: it is a border, not a shadow. */
+.swatch:focus-visible { box-shadow: var(--focus-ring); }
+.icon-swatch {
+  display: inline-grid; place-items: center; width: 32px; height: 32px;
+  border-radius: var(--r-ctl); background: var(--bg-inset); border: 1px solid transparent;
+  color: var(--fg-dim); cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.icon-swatch:hover { background: var(--bg-hover-2); color: var(--fg); }
+.icon-swatch[aria-pressed="true"] { border-color: var(--accent); background: var(--sel); color: var(--fg); }
+.icon-swatch svg { width: 17px; height: 17px; }
+
+/* The card dialog's two columns. NOT because there was room: a dialog wide
+   enough to stop the body scrolling is also wide enough to give it a
+   100-character measure, which is worse to read than the narrow box it replaced
+   — so the width goes to a rail of reference material and the body keeps a
+   readable measure while gaining all the height there is. */
+.tk-cols {
+  flex: 1 1 auto; min-height: 0; display: grid; gap: var(--sp-4);
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 18rem);
+  align-items: stretch;
+}
+@media (max-width: 62rem) { .tk-cols { grid-template-columns: minmax(0, 1fr); } }
+.tk-main { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; min-height: 0; }
+.tk-main > .form-row:last-child { flex: 1 1 auto; min-height: 0; }
+.tk-side { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+/* An issue title runs to eighty characters as a matter of course, and a
+   single-line input answers that by scrolling the beginning out of sight —
+   worse when the dialog focuses the field on open and the caret lands at the end.
+   So the title WRAPS: two lines at the dialog's width, three before it scrolls. */
+.tk-title { min-height: 0; max-height: 5.4em; resize: none; overflow-y: auto; font-size: var(--fs-body); font-weight: var(--fw-emph); line-height: 1.35; }
+/* Reading is the RESTING state and the editor is one press away. Same ground,
+   same measure, so switching between them does not move the page. */
+.tk-read {
+  flex: 1 1 auto; min-height: 11rem; width: 100%; max-width: 74ch; overflow-y: auto;
+  padding: var(--sp-3); background: var(--bg-inset); border: 1px solid var(--line-strong);
+  border-radius: var(--r-ctl); font-size: var(--fs-caption); line-height: var(--lh-body); color: var(--fg-mid);
+}
+.tk-read:focus-visible { box-shadow: var(--focus-ring); }
+.tk-body { flex: 1 1 auto; min-height: 11rem; width: 100%; max-width: 82ch; font-family: var(--font-mono); font-size: var(--fs-caption); line-height: var(--lh-code); resize: vertical; }
+/* Two columns: labels, then values. Six `label: value` lines of one weight is a
+   wall; the grid is what lets the eye run down the values. */
+.tk-facts {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px var(--sp-3); margin: 0; padding: var(--sp-3);
+  background: var(--bg-code); border-radius: var(--r-ctl); box-shadow: 0 0 0 1px var(--line);
+  font-size: var(--fs-micro); line-height: var(--lh-body);
+}
+.tk-facts dt { color: var(--fg-dim); }
+.tk-facts dd { margin: 0; color: var(--fg-mid); min-width: 0; overflow-wrap: anywhere; }
+.tk-facts .tk-mono { font-family: var(--font-mono); color: var(--fg); }
+.tk-facts a { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.tk-facts a:hover { color: var(--accent); }
+.tk-labels { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+/* Beside the button that does it, and to the LEFT of it: a person reads what will
+   happen before reaching the control that makes it happen. */
+.tk-patch { margin: 0 auto 0 0; max-width: 46ch; color: var(--fg-dim); font-size: var(--fs-micro); line-height: var(--lh-body); }
+.tk-mode {
+  padding: 2px var(--sp-2); min-height: 24px; background: none;
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  color: var(--fg-mid); font-size: var(--fs-micro); font-weight: var(--fw-emph);
+  letter-spacing: var(--ls-ui); cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.tk-mode:hover { background: var(--bg-hover); color: var(--fg); }
+
+/* --- The command palette -------------------------------------------------- */
+.palette {
+  margin: 9vh auto auto; width: min(38rem, 100%);
+  background: var(--bg-island); border-radius: var(--r-island);
+  box-shadow: var(--edge-lit), var(--sh-2), 0 0 0 1px var(--line-strong);
+  overflow: hidden;
+}
+.palette-search { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--line); }
+.palette-search svg { width: 17px; height: 17px; color: var(--fg-dim); flex: none; }
+.palette-search input { flex: 1; background: none; border: 0; outline: none; color: var(--fg); font-size: var(--fs-body); }
+.palette-search input::placeholder { color: var(--fg-dim); }
+.palette-list { max-height: 46vh; overflow: auto; padding: var(--sp-2); }
+.palette-group { padding: var(--sp-2) var(--sp-2) var(--sp-1); }
+.palette-item {
+  display: flex; align-items: center; gap: var(--sp-3); width: 100%;
+  padding: 8px var(--sp-2) 8px var(--sp-3); border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--fg); font-size: var(--fs-caption); text-align: left; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.palette-item svg { width: 16px; height: 16px; color: var(--fg-dim); flex: none; }
+.palette-item:hover { background: var(--bg-hover); }
+.palette-item[aria-selected="true"] { background: var(--sel); }
+.palette-item[aria-selected="true"] svg { color: var(--fg); }
+.palette-label { flex: 1; }
+.palette-keys { display: flex; gap: 3px; flex: none; }
+.palette-foot { display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-2) var(--sp-4); border-top: 1px solid var(--line); background: var(--bg-code); color: var(--fg-dim); font-size: var(--fs-micro); }
+.palette-empty { padding: var(--sp-5) var(--sp-4); color: var(--fg-dim); font-size: var(--fs-caption); line-height: var(--lh-body); }
+
+/* --- The always-on-top pill ---------------------------------------------- */
+.pill {
+  display: inline-flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-3);
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border-radius: var(--r-pill);
+  box-shadow: var(--sh-2), 0 0 0 1px var(--line-strong);
+}
+.pill-count { font-family: var(--font-display); font-size: var(--fs-2xl); font-weight: var(--fw-announce); line-height: 1; letter-spacing: var(--ls-2xl); }
+.pill--waiting .pill-count { color: var(--st-waiting); }
+.pill--calm .pill-count { color: var(--fg-dim); }
+.pill-text { display: flex; flex-direction: column; gap: 1px; }
+.pill-label { color: var(--fg); font-size: var(--fs-caption); font-weight: var(--fw-emph); }
+.pill-sub { color: var(--fg-dim); font-size: var(--fs-micro); }
+.pill-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-waiting); animation: pulse-dot 1.4s var(--ease-out) infinite; }
+
+/* --- Toast: the one thing that reports a completed action ---------------- */
+.toasts { position: fixed; right: var(--sp-5); bottom: var(--sp-5); z-index: 200; display: flex; flex-direction: column; gap: var(--sp-2); align-items: flex-end; pointer-events: none; }
+.toast {
+  display: flex; align-items: center; gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-3);
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border-radius: var(--r-pill); box-shadow: var(--sh-2), 0 0 0 1px var(--line-strong);
+  color: var(--fg); font-size: var(--fs-caption);
+  animation: enter-pop var(--dur-3) var(--ease-spring) both;
+}
+.toast.is-leaving { animation: enter-fade var(--dur-2) var(--ease-out) reverse both; }
+.toast svg { width: 15px; height: 15px; color: var(--fg-dim); }
+
+/* ============================================================================
+   Rendered Markdown, empty states, banners
+   ========================================================================== */
+
+.md > * { margin: 0; }
+.md > * + * { margin-top: var(--sp-2); }
+.md h4, .md h5, .md h6 { color: var(--fg); font-weight: var(--fw-announce); line-height: var(--lh-tight); }
+.md h4 { font-size: var(--fs-body); }
+.md h5 { font-size: var(--fs-caption); }
+.md h6 { font-size: var(--fs-micro); }
+.md :is(h4, h5, h6) + * { margin-top: var(--sp-1); }
+.md ul, .md ol { padding-left: 1.4em; }
+.md li + li { margin-top: 3px; }
+.md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+[data-theme="light"] .md a { color: var(--accent); }
+.md code { font-family: var(--font-mono); font-size: 0.92em; background: var(--bg-inset); border-radius: 3px; padding: 1px 5px; }
+.md pre { font-family: var(--font-mono); font-size: var(--fs-caption); line-height: var(--lh-code); background: var(--bg-inset); border-radius: var(--r-ctl); padding: var(--sp-2) var(--sp-3); overflow-x: auto; white-space: pre; }
+.md pre code { background: none; padding: 0; }
+.md blockquote { padding-left: var(--sp-3); border-left: 2px solid var(--line-strong); color: var(--fg-dim); }
+.md hr { border: 0; border-top: 1px solid var(--line); }
+.md input[type="checkbox"] { accent-color: var(--accent); margin-right: 5px; }
+
+.empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-6); color: var(--fg-dim); font-size: var(--fs-caption); line-height: var(--lh-body); max-width: 62ch; }
+.empty-title { color: var(--fg); font-size: var(--fs-xl); font-weight: var(--fw-announce); font-family: var(--font-display); letter-spacing: var(--ls-xl); }
+.empty--center { align-items: center; text-align: center; margin: auto; max-width: 44ch; }
+/* An empty screen needs something to look at before it needs words — but a
+   wireframe box or a hand-drawn scene is not it. One inset glyph at the size of
+   the thing that is missing, from the app's own icon set. */
+.empty-mark { display: grid; place-items: center; flex: none; width: 52px; height: 52px; border-radius: var(--r-island); background: var(--bg-inset); box-shadow: var(--edge-lit), 0 0 0 1px var(--line); color: var(--fg-mid); }
+.empty-mark svg { width: 24px; height: 24px; }
+/* The second way in, under a hairline: the same weight as the paragraph above it
+   and never a second solid button, because the screen already has its primary. */
+.empty-alt { display: flex; flex-direction: column; align-items: center; gap: var(--sp-2); width: 100%; margin-top: var(--sp-2); padding-top: var(--sp-4); border-top: 1px solid var(--line); }
+.empty-alt-row { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--sp-2); }
+.empty-kbd { color: var(--fg-dim); font-size: var(--fs-micro); }
+
+.banner {
+  display: flex; align-items: flex-start; gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4); border-radius: var(--r-ctl);
+  margin-bottom: var(--sp-4); font-size: var(--fs-caption); line-height: var(--lh-body);
+  background: var(--bg-island); box-shadow: 0 0 0 1px var(--line);
+}
+.banner--warn { background: var(--chip-waiting); box-shadow: 0 0 0 1px var(--st-waiting); color: var(--fg); }
+.banner--error { background: var(--bg-error-soft); box-shadow: 0 0 0 1px var(--st-error); color: var(--fg); }
+.banner svg { width: 17px; height: 17px; flex: none; margin-top: 1px; }
+.banner-body { flex: 1; }
+.banner--warn svg { color: var(--st-waiting); }
+.banner--error svg { color: var(--st-error); }
+
+.skeleton { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-2); }
+.skeleton-row { height: 54px; border-radius: var(--r-ctl); background: var(--bg-inset); animation: breathe 1.6s var(--ease-in-out) infinite; }
+.skeleton-row:nth-child(2) { animation-delay: 140ms; }
+.skeleton-row:nth-child(3) { animation-delay: 280ms; }
+
+/* ============================================================================
+   Forced colours — the diff is what earns this block
+   ========================================================================== */
+/* Under Windows high contrast every background-color is replaced by a system
+   colour, so the two diff bands become identical rather than merely similar. The
+   marker character is the only channel that survives; these rules give it the
+   weight the tint used to carry. And every box-shadow hairline in this system is
+   discarded outright, so the shapes that relied on one get a border back. */
+@media (forced-colors: active) {
+  .dv-old, .dv-new, .dv-mark { background: Canvas; }
+  .dv-mark { font-weight: 700; }
+  .dv-hunk { border-top: 1px solid CanvasText; border-bottom: 1px solid CanvasText; }
+  .drawer-grip::before { background: CanvasText; }
+  .drawer-grip:hover::before, .drawer-grip:focus-visible::before { background: Highlight; }
+  .rail::before { background: CanvasText; }
+  .island, .tile, .card, .modal, .palette, .pill, .toast, .banner, .empty-mark,
+  .pr-body, .pr-files, .fieldset, .tk-facts { border: 1px solid CanvasText; }
+  .tabs-ink { background: Highlight; }
+}
+
+/* --- Two late additions the deck earned ---------------------------------
+   The broadcast checkbox only exists while broadcast is on. Four permanent
+   checkboxes in four tile heads is four controls that do nothing until a mode is
+   entered, and their being there at rest was a quarter of the head's clutter. */
+.tile-check { display: none; }
+.deck.has-bcast .tile-check { display: block; }
+/* A tile mid-zoom must not be clipped by the strip's scroller while it travels. */
+.deck.is-flipping { overflow: visible; }
+
+/* --- Three things static review caught ----------------------------------- */
+
+/* `.board-view` has to be a flex column that fills the screen, or `.cols`'s own
+   `flex: 1; min-height: 0` lands in a block context and does nothing — the
+   column strip would size to its tallest card and scroll the whole screen
+   sideways instead of scrolling itself. */
+.board-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+/* A hovered first or last row in an island paints a square corner over the
+   island's rounded one. Rounding the row is the fix rather than clipping the
+   island: `overflow: hidden` on the container would cut the focus ring off every
+   row inside it, which trades a cosmetic defect for an accessibility one. */
+.rows > .list-row:first-child, .hist-row:first-child, .pr-row:first-of-type > .pr-head {
+  border-radius: var(--r-island) var(--r-island) 0 0;
+}
+.rows > .list-row:last-child, .hist-row:last-child {
+  border-radius: 0 0 var(--r-island) var(--r-island);
+}
+/* And the last pull request row's foot, which is a detail panel rather than a
+   head, so its own bottom corners are the island's. */
+.pr-row:last-of-type .pr-detail-wrap { border-radius: 0 0 var(--r-island) var(--r-island); }

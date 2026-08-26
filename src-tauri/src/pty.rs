@@ -151,6 +151,19 @@ struct Session {
     /// birth cannot be looked up wrong, and cannot be confused by an id that is
     /// spawned, killed and spawned again.
     live: Arc<AtomicBool>,
+    /// Where this session's output goes, and it can be pointed somewhere else.
+    ///
+    /// The reader thread used to capture `on_output` by value, which made the
+    /// destination part of the thread and fixed for the life of the process. A
+    /// session that moves to another window has to keep running while its output
+    /// starts arriving in a different webview, so the destination has to be a
+    /// slot rather than a capture — see `retarget`.
+    ///
+    /// `Mutex<Arc<..>>` and not `Mutex<Box<..>>`: the reader clones the `Arc` out
+    /// under the lock and calls it with the lock released. Calling through the
+    /// lock would make every batch — an IPC crossing — block a `retarget`, and
+    /// `retarget` runs while a person is dragging a window.
+    sink: Arc<Mutex<Arc<dyn Fn(Vec<u8>) + Send + Sync>>>,
 }
 
 #[derive(Clone)]
@@ -186,7 +199,7 @@ impl PtyManager {
         on_exit: impl Fn(Exit) + Send + 'static,
     ) -> std::io::Result<()>
     where
-        F: Fn(Vec<u8>) + Send + 'static,
+        F: Fn(Vec<u8>) + Send + Sync + 'static,
     {
         // The check and the removal happen under one lock, so two concurrent
         // spawns of the same id cannot both find it free.
@@ -301,6 +314,9 @@ impl PtyManager {
         // `Disconnected` here and would otherwise flush a batch belonging to a
         // process the app has already forgotten into its successor's terminal.
         let live_out = Arc::clone(&live);
+        let sink: Arc<Mutex<Arc<dyn Fn(Vec<u8>) + Send + Sync>>> =
+            Arc::new(Mutex::new(Arc::new(on_output)));
+        let sink_out = Arc::clone(&sink);
         std::thread::spawn(move || {
             // `recv` blocks, so nothing is polled while the session is idle, and it
             // ends the loop when the reader thread hits EOF and drops its sender.
@@ -326,7 +342,10 @@ impl PtyManager {
                 if !live_out.load(Ordering::SeqCst) {
                     break;
                 }
-                on_output(batch);
+                // Cloned out under the lock and called with it released, so a
+                // batch crossing into the webview never holds up a `retarget`.
+                let send = Arc::clone(&sink_out.lock().unwrap());
+                send(batch);
                 if closed {
                     break;
                 }
@@ -354,11 +373,40 @@ impl PtyManager {
 
         self.sessions.lock().unwrap().insert(
             session.to_string(),
-            Session { master: pair.master, writer, killer, pid, live },
+            Session { master: pair.master, writer, killer, pid, live, sink },
         );
         Ok(())
     }
 
+    /// Send this session's output somewhere else from now on.
+    ///
+    /// What makes a session able to move between windows without stopping. The
+    /// PTY, the process and everything inside it are untouched; only the far end
+    /// of the pipe changes.
+    ///
+    /// There is no gap and no overlap: the swap happens under the same lock the
+    /// reader takes to read the destination, so a batch is delivered wholly to
+    /// the old sink or wholly to the new one. A batch already in flight — cloned
+    /// out and being sent — lands in the old window, which is why the receiving
+    /// window claims *before* the source disposes and reconciles what it
+    /// buffered against the scrollback it was handed.
+    pub fn retarget<F>(&self, session: &str, on_output: F) -> std::io::Result<()>
+    where
+        F: Fn(Vec<u8>) + Send + Sync + 'static,
+    {
+        let map = self.sessions.lock().unwrap();
+        let Some(s) = map.get(session) else { return Err(no_such_session(session)) };
+        *s.sink.lock().unwrap() = Arc::new(on_output);
+        Ok(())
+    }
+
+    /// A session this manager does not hold.
+    ///
+    /// Both `write` and `resize` used to answer `Ok(())` here, and that silence
+    /// is what made a stale window undetectable: it wrote into nothing, was told
+    /// nothing, and carried on believing it owned a terminal. `NotFound` is the
+    /// kind, so the command layer can tell this apart from a write that reached
+    /// the PTY and failed there.
     pub fn write(&self, session: &str, data: &[u8]) -> std::io::Result<()> {
         // Only hold the map lock long enough to clone out this session's writer
         // handle. The blocking IO below runs against the per-session writer
@@ -368,7 +416,7 @@ impl PtyManager {
             let map = self.sessions.lock().unwrap();
             match map.get(session) {
                 Some(s) => Arc::clone(&s.writer),
-                None => return Ok(()),
+                None => return Err(no_such_session(session)),
             }
         };
 
@@ -380,11 +428,10 @@ impl PtyManager {
 
     pub fn resize(&self, session: &str, cols: u16, rows: u16) -> std::io::Result<()> {
         let map = self.sessions.lock().unwrap();
-        if let Some(s) = map.get(session) {
-            s.master
-                .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-                .map_err(to_io)?;
-        }
+        let Some(s) = map.get(session) else { return Err(no_such_session(session)) };
+        s.master
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(to_io)?;
         Ok(())
     }
 
@@ -661,6 +708,15 @@ fn all_pids() -> Vec<i32> {
     Vec::new()
 }
 
+/// The error a session this manager does not hold produces.
+///
+/// `NotFound` and nothing else in the kind, because the command layer reads the
+/// kind to tell "there is no such session" from "the write reached the PTY and
+/// failed" — and only the first of those is ordinary enough to swallow.
+fn no_such_session(session: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::NotFound, format!("no such session: {session}"))
+}
+
 fn to_io<E: std::fmt::Display>(e: E) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
 }
@@ -677,7 +733,7 @@ mod tests {
         session: &str,
         script: &str,
         replace: bool,
-        on_output: impl Fn(Vec<u8>) + Send + 'static,
+        on_output: impl Fn(Vec<u8>) + Send + Sync + 'static,
         on_exit: impl Fn(Exit) + Send + 'static,
     ) -> std::io::Result<()> {
         #[cfg(windows)]
@@ -685,6 +741,43 @@ mod tests {
         #[cfg(not(windows))]
         let (prog, args) = ("/bin/sh", vec!["-c".to_string(), script.to_string()]);
         mgr.spawn(session, prog, &args, ".", 80, 24, &[], replace, on_output, on_exit)
+    }
+
+    /// A session moving between windows keeps running; only the far end of its
+    /// pipe changes. The process must not notice, and no byte may be lost or
+    /// doubled at the seam.
+    #[test]
+    fn retargeting_sends_later_output_to_the_new_window_and_the_process_carries_on() {
+        let mgr = PtyManager::new();
+        let (first_tx, first_rx) = mpsc::channel();
+        spawn_sh(
+            &mgr, "s1",
+            "printf before; sleep 5; printf after",
+            false,
+            move |b| { let _ = first_tx.send(b); },
+            |_| {},
+        ).unwrap();
+
+        assert!(wait_for(&first_rx, "before").contains("before"));
+
+        let (second_tx, second_rx) = mpsc::channel();
+        mgr.retarget("s1", move |b| { let _ = second_tx.send(b); }).unwrap();
+
+        assert!(
+            wait_for(&second_rx, "after").contains("after"),
+            "output after the swap belongs to the window that claimed the session",
+        );
+        mgr.kill("s1");
+    }
+
+    /// A claim for an id nothing is running under has to fail, or the window
+    /// asking would build a panel for a session that does not exist and wait for
+    /// output that can never come.
+    #[test]
+    fn retargeting_a_session_that_is_not_there_is_an_error() {
+        let mgr = PtyManager::new();
+        let err = mgr.retarget("nobody", |_| {}).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     /// Read from `rx` until `needle` shows up or the deadline passes.

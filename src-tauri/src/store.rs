@@ -2,7 +2,76 @@ use crate::model::{
     ScheduleRun, SessionEntry, Skill, TerminalLayout, UiState, UiStatePatch, Workspace,
 };
 use crate::runs::{fold_events, retain_recent, RunEvent, RunRecord, RUNS_PER_SKILL};
+use crate::windows::MAIN as MAIN_WINDOW;
 use std::path::PathBuf;
+
+/// Does this entry belong to `owner`?
+///
+/// The absent-means-main rule lives here rather than at the two call sites, so
+/// reading and writing cannot drift apart — a filter that disagreed with the
+/// merge by one case would either restore an entry twice or drop it.
+fn is_owned_by(e: &SessionEntry, owner: &str) -> bool {
+    match e.owner.as_deref() {
+        Some(label) => label == owner,
+        None => owner == MAIN_WINDOW,
+    }
+}
+
+/// The entries `owner` should restore.
+///
+/// An entry owned by a window that does not currently exist is deliberately
+/// restored by **nobody** here, rather than falling back to the main window.
+/// Re-homing those is #245 (closing a window returns its workspace) and #246 (a
+/// workspace deleted while detached); guessing at it in the loader would put a
+/// tile in the main window that a workspace window is about to claim, which is
+/// the duplicate-`--resume` this whole issue exists to prevent. Today no entry
+/// can name a window other than the main one, so this branch is unreachable
+/// until those land.
+pub fn owned_by(entries: Vec<SessionEntry>, owner: &str) -> Vec<SessionEntry> {
+    entries.into_iter().filter(|e| is_owned_by(e, owner)).collect()
+}
+
+/// Fold one window's list into the file without disturbing another's.
+///
+/// `incoming` is the complete list of tiles `owner` currently has, which is what
+/// `persistLayout` sends: so the rule is **replace this owner's entries, keep
+/// everyone else's**. A tile that was closed is simply absent from `incoming` and
+/// drops out, so there is no forget-this-entry command.
+///
+/// #238 sketched one, beside an upsert keyed on `sessionId`, preferring it to a
+/// per-window write because that "needs no bookkeeping about who authored which
+/// entry". But `owner` — added by the same issue — *is* that bookkeeping, and it
+/// is stamped here from the window label rather than trusted from the caller, so
+/// the objection does not survive its own first bullet. A command whose only job
+/// is to delete a row the next save would drop anyway is a second way to be
+/// wrong about which rows are gone.
+///
+/// The second filter is the one that is easy to miss. While a session is moving
+/// between windows (#241) both windows list it for a moment, so an entry for it
+/// can already be in the file under the *other* owner. Dropping any entry whose
+/// session the incoming list claims keeps `sessionId` unique across the whole
+/// file, and makes the last writer the owner. Without it a move that raced a
+/// save would leave two entries for one session — and two `claude --resume` on
+/// the next launch, which is exactly the defect this is fixing.
+pub fn merge_layout(
+    existing: Vec<SessionEntry>,
+    incoming: &[SessionEntry],
+    owner: &str,
+) -> Vec<SessionEntry> {
+    let claimed: std::collections::HashSet<&str> =
+        incoming.iter().map(|e| e.session_id.as_str()).collect();
+    let mut merged: Vec<SessionEntry> = existing
+        .into_iter()
+        .filter(|e| !is_owned_by(e, owner) && !claimed.contains(e.session_id.as_str()))
+        .collect();
+    merged.extend(incoming.iter().cloned().map(|mut e| {
+        // Stamped here and nowhere else. Whatever the caller sent is discarded:
+        // the label comes from the runtime, one layer up.
+        e.owner = Some(owner.to_string());
+        e
+    }));
+    merged
+}
 
 pub struct Store {
     pub dir: PathBuf,
@@ -80,9 +149,31 @@ impl Store {
     }
 
     fn layout_path(&self) -> PathBuf { self.dir.join("sessions.json") }
+    /// Every entry in the file, whoever owns it. What a window restores from is
+    /// `layout_for`; this is the whole record, for merging and for tests.
     pub fn layout(&self) -> Vec<SessionEntry> { Self::read_vec(&self.layout_path()) }
-    pub fn save_layout(&self, items: &[SessionEntry]) -> std::io::Result<()> {
-        Self::write_vec(&self.layout_path(), items)
+    /// The entries `owner` should restore.
+    pub fn layout_for(&self, owner: &str) -> Vec<SessionEntry> {
+        owned_by(self.layout(), owner)
+    }
+    /// Write `owner`'s tiles, leaving every other window's alone.
+    ///
+    /// This was a whole-file replace, which was correct only while one window
+    /// existed: the last window to save deleted every other window's sessions
+    /// from the file, and the next launch restored half the deck. `save_ui_state`
+    /// below stopped being a replace for the same reason.
+    ///
+    /// `try_read_vec`, not `layout()`, and for the reason the NOTE above
+    /// `upsert_workspace` gives: this is now a read-before-write, so a read that
+    /// fails must abort rather than be taken for "the file was empty". The
+    /// best-effort read would turn one unreadable `sessions.json` into the
+    /// permanent loss of every other window's sessions on the next save — #117,
+    /// in a second place. Refusing costs a layout that is not persisted this
+    /// tick, which the caller already tolerates and logs.
+    pub fn save_layout(&self, owner: &str, items: &[SessionEntry]) -> std::io::Result<()> {
+        let existing: Vec<SessionEntry> = Self::try_read_vec(&self.layout_path())?;
+        let merged = merge_layout(existing, items, owner);
+        Self::write_vec(&self.layout_path(), &merged)
     }
 
     fn terminals_path(&self) -> PathBuf { self.dir.join("terminals.json") }
@@ -125,6 +216,24 @@ impl Store {
         }
         if let Some(cols) = patch.pr_diff_cols {
             st.pr_diff_cols = cols;
+        }
+        if let Some(dismissed) = patch.sync_offer_dismissed {
+            st.sync_offer_dismissed = dismissed;
+        }
+        // Each of the three is set only when the person has dragged that thing, and
+        // a patch that omits one must not clear it — the same rule every field above
+        // follows.
+        if let Some(px) = patch.panel_px {
+            st.panel_px = Some(px);
+        }
+        if let Some(px) = patch.wsp_px {
+            st.wsp_px = Some(px);
+        }
+        if let Some(px) = patch.wsp_wide_px {
+            st.wsp_wide_px = Some(px);
+        }
+        if let Some(px) = patch.tool_px {
+            st.tool_px = Some(px);
         }
         if let Some(on) = patch.record_scenario_runs {
             st.record_scenario_runs = on;
@@ -485,6 +594,7 @@ mod tests {
                 workspace_id: Some("w1".into()), task_id: Some("01AAA".into()),
                 scheduled_skill_id: None, user_name: None,
                 name_kind: Some(NameKind::Context), skill_id: None, run_id: None,
+                owner: None,
             },
             SessionEntry {
                 session_id: "s2".into(), cwd: "/tmp/b".into(), name: "terminal · P".into(),
@@ -492,11 +602,112 @@ mod tests {
                 // The whole point of the field: this one survives the round trip.
                 user_name: Some("the one I must not close".into()),
                 name_kind: Some(NameKind::Placeholder), skill_id: None, run_id: None,
+                owner: None,
             },
         ];
-        s.save_layout(&entries).unwrap();
+        s.save_layout(MAIN_WINDOW, &entries).unwrap();
         let reloaded = Store::new(s.dir.clone()).layout();
-        assert_eq!(reloaded, entries);
+        // Everything round trips, and the owner is stamped on the way in: the
+        // frontend does not send it, so the save is the only place it can come
+        // from.
+        let stamped: Vec<SessionEntry> = entries
+            .into_iter()
+            .map(|mut e| { e.owner = Some(MAIN_WINDOW.into()); e })
+            .collect();
+        assert_eq!(reloaded, stamped);
+    }
+
+    /// A layout entry with only the fields the multi-window tests care about.
+    fn entry(session_id: &str, owner: Option<&str>) -> SessionEntry {
+        SessionEntry {
+            session_id: session_id.into(), cwd: "/tmp".into(), name: session_id.into(),
+            workspace_id: None, task_id: None, scheduled_skill_id: None,
+            user_name: None, name_kind: None, skill_id: None, run_id: None,
+            owner: owner.map(Into::into),
+        }
+    }
+
+    fn ids_owned_by(s: &Store, owner: &str) -> Vec<String> {
+        s.layout_for(owner).into_iter().map(|e| e.session_id).collect()
+    }
+
+    /// The defect this issue leads the epic for: whichever window saved last used
+    /// to remove every other window's sessions from the file, and the next launch
+    /// restored half the deck.
+    #[test]
+    fn two_windows_saving_in_turn_keep_both_sets() {
+        let s = Store::new(tmp());
+        s.save_layout(MAIN_WINDOW, &[entry("s1", None), entry("s2", None)]).unwrap();
+        s.save_layout("project:w1", &[entry("s3", None)]).unwrap();
+        // ...and again from the first, which is the ordering that used to lose s3.
+        s.save_layout(MAIN_WINDOW, &[entry("s1", None), entry("s2", None)]).unwrap();
+
+        assert_eq!(ids_owned_by(&s, MAIN_WINDOW), ["s1", "s2"]);
+        assert_eq!(ids_owned_by(&s, "project:w1"), ["s3"]);
+        assert_eq!(s.layout().len(), 3, "and nothing is duplicated");
+    }
+
+    /// Closing a tile is just a save without it, so no forget-this-entry command
+    /// is needed — but it must remove that entry and no one else's.
+    #[test]
+    fn closing_a_tile_removes_exactly_its_own_entry() {
+        let s = Store::new(tmp());
+        s.save_layout(MAIN_WINDOW, &[entry("s1", None), entry("s2", None)]).unwrap();
+        s.save_layout("project:w1", &[entry("s3", None)]).unwrap();
+
+        s.save_layout(MAIN_WINDOW, &[entry("s1", None)]).unwrap();
+
+        assert_eq!(ids_owned_by(&s, MAIN_WINDOW), ["s1"]);
+        assert_eq!(ids_owned_by(&s, "project:w1"), ["s3"], "another window's tile is untouched");
+    }
+
+    /// Every `sessions.json` on disk today predates the field, and every entry in
+    /// one belongs to the main window. So an upgrade restores exactly what it
+    /// restored before, into the same window, with nothing to migrate.
+    #[test]
+    fn a_layout_written_before_the_owner_field_belongs_to_the_main_window() {
+        let s = Store::new(tmp());
+        std::fs::write(
+            s.layout_path(),
+            r#"[{"sessionId":"s1","cwd":"/a","name":"session · deck"}]"#,
+        ).unwrap();
+
+        assert_eq!(ids_owned_by(&s, MAIN_WINDOW), ["s1"]);
+        assert!(
+            s.layout_for("project:w1").is_empty(),
+            "an ownerless entry is the main window's, not everyone's",
+        );
+    }
+
+    /// The move race from #241: both windows list the session for a moment, so a
+    /// save from each can reach the file. Two entries for one session would mean
+    /// two `claude --resume` on the next launch — the very thing being fixed.
+    #[test]
+    fn a_session_claimed_by_another_window_appears_exactly_once() {
+        let s = Store::new(tmp());
+        s.save_layout(MAIN_WINDOW, &[entry("s1", None)]).unwrap();
+        s.save_layout("project:w1", &[entry("s1", None)]).unwrap();
+
+        assert_eq!(s.layout().len(), 1);
+        assert_eq!(ids_owned_by(&s, "project:w1"), ["s1"], "the last writer owns it");
+        assert!(s.layout_for(MAIN_WINDOW).is_empty());
+    }
+
+    /// #117, in the second place it can now happen: the save reads before it
+    /// writes, so a read it cannot trust must abort instead of being taken for an
+    /// empty file — which would delete every other window's sessions for good.
+    #[test]
+    fn an_unreadable_layout_refuses_the_save_rather_than_truncating_it() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.layout_path(), "[{ not json }]").unwrap();
+
+        assert!(s.save_layout(MAIN_WINDOW, &[entry("s1", None)]).is_err());
+        assert_eq!(
+            std::fs::read_to_string(s.layout_path()).unwrap(),
+            "[{ not json }]",
+            "and the evidence of what was there is still on disk",
+        );
     }
 
     #[test]
@@ -515,20 +726,35 @@ mod tests {
         // Must match `DEFAULT_TERMINAL_ROWS` in `src/drawer.ts`, which is the
         // height the drawer opens at before a stored value has been read.
         assert_eq!(UiState::default().terminal_rows, 14);
+        // Off: nobody has been asked yet, so nobody has declined.
+        assert!(!UiState::default().sync_offer_dismissed);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
             pr_diff_cols: Some(80),
+            sync_offer_dismissed: Some(true),
             record_scenario_runs: Some(false),
             terminal_rows: Some(20),
+            panel_px: Some(340),
+            wsp_px: Some(720),
+            wsp_wide_px: None,
+            tool_px: Some(360),
         };
         s.save_ui_state(&patch).unwrap();
         let reloaded = Store::new(s.dir.clone()).ui_state();
         assert_eq!(reloaded.active_workspace_id, Some("w-1".into()));
         assert_eq!(reloaded.ui_scale, 1.3);
         assert_eq!(reloaded.pr_diff_cols, 80);
+        // The three that were set come back; the one the patch left out stays unset
+        // rather than being cleared to a number nobody chose.
+        assert_eq!(reloaded.panel_px, Some(340));
+        assert_eq!(reloaded.tool_px, Some(360));
+        assert_eq!(reloaded.wsp_px, Some(720));
+        assert_eq!(reloaded.wsp_wide_px, None);
         assert!(!reloaded.record_scenario_runs);
         assert_eq!(reloaded.terminal_rows, 20);
+        // An offer that comes back after being waved away is not an offer.
+        assert!(reloaded.sync_offer_dismissed);
     }
 
     /// The drawer's own file, and the reason it is a struct rather than the bare

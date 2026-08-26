@@ -1,7 +1,7 @@
 {
   "name": "cowork-deck",
   "private": true,
-  "version": "0.4.1",
+  "version": "0.5.0",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -12,7 +12,9 @@
     "contrast": "node scripts/contrast.mjs",
     "tauri": "tauri",
     "stage:reporter": "bash scripts/stage-reporter.sh",
-    "stage:task": "bash scripts/stage-sidecar.sh cowork_task"
+    "stage:task": "bash scripts/stage-sidecar.sh cowork_task",
+    "stage:memory": "bash scripts/stage-memory.sh",
+    "sync:preview": "bash scripts/sync-preview.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -23,6 +25,7 @@
     "@tauri-apps/plugin-updater": "^2.10.1",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-serialize": "^0.14.0",
     "@xterm/addon-unicode11": "^0.8.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^5.5.0",

@@ -59,6 +59,10 @@ vi.mock("../src/ipc", async (orig) => ({
   taskMigrationStatus: vi.fn().mockResolvedValue(null),
 }));
 
+/** The tree hooks `startApp` hands the workspaces panel — the app's only route
+ *  to a workspace's own board and pull requests now that neither is in the rail. */
+let treeHooks: { openPage: (id: string, page: "board" | "pr") => void } | null = null;
+
 vi.mock("../src/workspaces", () => ({
   WorkspacesPanel: class {
     get active() { return WS_GH; }
@@ -66,6 +70,17 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    // The tree's half of the panel: the workspace row is this panel's and the
+    // sessions under it are the deck's, so `startApp` hands each the other.
+    /* Captured, because the board and the pull requests are opened through this
+       seam now: they left the rail for the tree, where each is a child of the
+       workspace it belongs to, so there is no app-wide button to click. */
+    setTreeHooks = vi.fn((h: never) => { treeHooks = h; });
+    sessionHost = vi.fn().mockReturnValue(null);
+    showWaiting = vi.fn();
+    showExpanded = vi.fn();
+    focusActive = vi.fn();
+    activate = vi.fn().mockReturnValue(true);
   },
 }));
 
@@ -96,7 +111,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
+  getCurrentWindow: () => ({ label: "main", onCloseRequested: async () => () => {}, destroy: async () => {}, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
 }));
 
 /** Let the promise chain behind a click settle. */
@@ -106,17 +121,18 @@ describe("a GitHub board's first read", () => {
   it("draws skeleton rows, and never claims no tracker is configured", async () => {
     capsMock.mockResolvedValue(CAPS);
     document.body.innerHTML =
-      // Mirrors index.html — `main.ts` mounts the view switch into `#viewbar`.
-      '<div id="app"><nav id="viewbar"></nav><div id="stage">'
-      + '<div id="sidebar"></div><main id="deck"></main><div id="terminals"></div>'
-      + '<div id="board" class="hidden"></div></div></div>';
+      // Mirrors index.html — `app.ts` mounts the rail into `#rail` and the panel's pages into `#panel-stack`.
+      '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
+      + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
+    + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
+    + '</div></div>';
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
 
-    await import("../src/main");
+    await import("../src/app").then((m) => m.startApp({ kind: "main" }));
     await flush();
 
-    const [, boardBtn] = document.querySelectorAll<HTMLButtonElement>(".tk-views button");
-    boardBtn.click();
+    treeHooks!.openPage(WS_GH.id, "board");
     await flush();
 
     const board = document.querySelector("#board")!;

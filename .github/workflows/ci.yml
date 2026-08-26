@@ -77,7 +77,9 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            crates/cowork-memory
 
       # `scripts/stage-sidecar.sh` reads the sidecar list out of
       # tauri.conf.json with node.
@@ -104,3 +106,17 @@ jobs:
       # worth.
       - name: Tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # `cowork-memory` is a separate crate with its own target directory,
+      # deliberately outside any root `[workspace]` — one would move src-tauri's
+      # target directory and break the staging scripts. The consequence here is
+      # that the step above does not reach it: without naming it, its suite
+      # never runs on a pull request, and a golden parity test that never runs
+      # guards nothing.
+      #
+      # No model and no network at test time: the suite uses a deterministic
+      # fake embedder, and the tests needing the real 470 MB model are
+      # `#[ignore]`d. Building it does fetch ONNX Runtime, which is what the
+      # second cache entry above is for.
+      - name: Memory sidecar tests
+        run: cargo test --manifest-path crates/cowork-memory/Cargo.toml

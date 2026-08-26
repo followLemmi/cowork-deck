@@ -16,19 +16,55 @@ import * as F from "./fixtures";
 /** Event name -> the callback ids `listen()` registered for it. */
 const listeners = new Map<string, number[]>();
 
-function b64(text: string): string {
-  const bytes = new TextEncoder().encode(text);
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin);
+function internals() {
+  return (window as unknown as {
+    __TAURI_INTERNALS__: { runCallback(id: number, data: unknown): void };
+  }).__TAURI_INTERNALS__;
 }
 
 /** Deliver an event the way the Rust side would. */
 export function emit(event: string, payload: unknown): void {
-  const internals = (window as unknown as {
-    __TAURI_INTERNALS__: { runCallback(id: number, data: unknown): void };
-  }).__TAURI_INTERNALS__;
-  for (const id of listeners.get(event) ?? []) internals.runCallback(id, { event, id, payload });
+  for (const id of listeners.get(event) ?? []) internals().runCallback(id, { event, id, payload });
+}
+
+/* --- The output channel ---------------------------------------------------
+   A session's bytes do not come back as an event any more. Every launch hands
+   the backend a Tauri `Channel`, and the backend writes the pty's output into
+   it — which is why the harness's terminals had been empty for a while and the
+   README's shots were the last set taken before the change: this file went on
+   emitting `session://output`, and nothing had listened for it since.
+
+   A channel crosses the IPC boundary as the string `__CHANNEL__:<id>`, where the
+   id names a callback the mock registered. Delivering to it means calling that
+   callback with the envelope the real transport uses — an index, so the client
+   can keep order, and the message itself. */
+const sinks = new Map<string, number>();
+
+function rememberSink(session: string, sink: unknown): void {
+  /* Two shapes, because `mockIPC` hands the argument over WITHOUT serialising
+     it: over the real bridge a channel arrives as the string `__CHANNEL__:<id>`,
+     while here it is still the `Channel` object, whose `toJSON` produces that
+     string. Reading only the string is the bug this comment exists to prevent —
+     it looks right in a log (`JSON.stringify` calls `toJSON`) and matches
+     nothing at runtime. */
+  const raw = sink as { id?: number } | string | undefined;
+  const id = typeof raw === "string"
+    ? (raw.startsWith("__CHANNEL__:") ? Number(raw.slice("__CHANNEL__:".length)) : NaN)
+    : Number(raw?.id);
+  if (Number.isFinite(id)) sinks.set(session, id);
+}
+
+/** How many messages a session's channel has taken. The client drops anything
+ *  out of order, so the count is not decoration. */
+const sinkIndex = new Map<string, number>();
+
+/** Write bytes into a session's channel, as the pty would. */
+function toSink(session: string, text: string): void {
+  const id = sinks.get(session);
+  if (id === undefined) return;
+  const index = sinkIndex.get(session) ?? 0;
+  sinkIndex.set(session, index + 1);
+  internals().runCallback(id, { index, message: new TextEncoder().encode(text).buffer });
 }
 
 /** The journal, mutable — `delete_skill_history` actually erases from it, so the
@@ -49,7 +85,7 @@ const STATE: Record<string, string> = {
 function feed(session: string): void {
   setTimeout(() => {
     const text = F.scrollback[session];
-    if (text) emit("session://output", { session, dataB64: b64(text) });
+    if (text) toSink(session, text);
     const state = STATE[session];
     if (state) emit("session://state", { session, state });
   }, 30);
@@ -62,7 +98,7 @@ function feed(session: string): void {
 function feedShell(session: string): void {
   setTimeout(() => {
     const text = F.shellScrollback[session];
-    if (text) emit("session://output", { session, dataB64: b64(text) });
+    if (text) toSink(session, text);
   }, 60);
 }
 
@@ -134,20 +170,36 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     case "scheduler_ready": return null;
     case "claude_available": return true;
     case "gh_status": return F.ghStatus;
-    case "host_platform": return { os: "linux", distro: "Ubuntu" };
+    /* `placesWindows` was missing, which reads as false — and false is the one
+       value that switches the tear-out gesture OFF. So the harness ran the branch
+       no desktop but Wayland runs, and could not see that the capture the gesture
+       takes was killing every control on a workspace row. The Rust struct always
+       sends the field; so does this. */
+    case "host_platform": return { os: "linux", distro: "Ubuntu", placesWindows: true };
 
     /* Sessions. */
     case "load_layout": return F.layout;
     case "save_layout": return null;
     case "start_session": {
+      rememberSink(args.session as string, args.sink);
       feed(args.session as string);
       return { account: "acme-dev", degraded: null };
     }
-    case "start_command_session": return null;
+    case "start_command_session": {
+      rememberSink(args.session as string, args.sink);
+      return null;
+    }
+    /* A session taken over by this window — the other half of the hand-off. It
+       brings its own channel, so the old one is replaced rather than kept. */
+    case "claim_session": {
+      rememberSink(args.session as string, args.sink);
+      return null;
+    }
     /* The drawer. `feed` gives the shell something on screen, the same way the
        session mocks do — an empty terminal shows nothing about the surface
        around it. */
     case "start_shell_session": {
+      rememberSink(args.session as string, args.sink);
       feedShell(args.session as string);
       return { auth: { account: "acme-dev", degraded: null }, identity: "Ada <ada@acme.dev>", program: "zsh" };
     }
@@ -159,6 +211,14 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     case "close_session": return null;
     case "git_status":
       return F.gitByCwd[args.cwd as string] ?? { branch: null, dirty: false };
+    // The tool panel's two reads. A folder with no entry answers empty rather than
+    // throwing: "not a git checkout" is a real state and the panel says so.
+    case "config_paths":
+      return F.configPaths;
+    case "worktree_files":
+      return F.filesByCwd[args.cwd as string] ?? [];
+    case "git_changes":
+      return F.changesByCwd[args.cwd as string] ?? { branch: null, files: [] };
     case "session_snapshots": {
       // Every requested id gets an entry, exactly as the Rust command promises —
       // a mock that dropped the unknown ones would hide the bug it exists to show.
@@ -197,16 +257,49 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
       return F.prDiffs[args.number as number] ?? F.genericDiff(args.number as number);
     case "pr_merge_options": return F.mergeOptions;
 
+    /* The window plugin.
+     *
+     * These used to fall through to the `plugin:` case below, which answers
+     * `null` and logs nothing — so the pill's show/hide, the focus a
+     * notification click produces, and the raise a detached workspace's row asks
+     * for could not be exercised or screenshot at all. They are answered
+     * truthfully now, against a per-label visibility the harness keeps, which is
+     * what `pill.ts` reads back before deciding whether to show itself.
+     *
+     * The `pill://count` path in particular is a state machine over `isVisible`
+     * — `show()` is `makeKeyAndOrderFront:` on macOS and is not idempotent — and
+     * a stub that always said "hidden" would have exercised the wrong branch
+     * every time. */
+    case "plugin:window|is_visible":
+      return F.windowVisible(String(args.label ?? "main"));
+    case "plugin:window|show":
+      F.setWindowVisible(String(args.label ?? "main"), true);
+      return null;
+    case "plugin:window|hide":
+      F.setWindowVisible(String(args.label ?? "main"), false);
+      return null;
+    case "plugin:window|unminimize":
+    case "plugin:window|set_focus":
+    case "plugin:window|destroy":
+    case "plugin:window|close":
+      return null;
+
     default:
-      // Window calls (`plugin:window|…`) and anything else the app asks for that
-      // has no visible answer. Logged rather than thrown: a missing case should
-      // show up while shooting, not stop the page.
+      // Anything else the app asks for that has no visible answer. Logged rather
+      // than thrown: a missing case should show up while shooting, not stop the
+      // page.
       if (!cmd.startsWith("plugin:")) console.debug("[harness] unhandled command", cmd, args);
       return null;
   }
 }
 
-export function installMocks(): void {
+/** Stand the app up on mocked IPC.
+ *
+ *  `label` is which window this page is pretending to be, and it has to be a
+ *  parameter: `getCurrentWindow().label` is what `startApp` reads to decide
+ *  whether it is the whole app or one workspace, so a hardcoded `"main"` made a
+ *  second harness page impossible rather than merely inconvenient. */
+export function installMocks(label = "main"): void {
   // The plugin asks the browser first and only falls back to IPC, so the browser
   // has to answer — otherwise headless Chrome shows a permission prompt nobody
   // can click and the deck never finishes wiring its events.
@@ -214,7 +307,7 @@ export function installMocks(): void {
     configurable: true,
     value: { permission: "denied", requestPermission: async () => "denied" },
   });
-  mockWindows("main");
+  mockWindows(label);
   mockIPC((cmd, args) => handle(cmd, (args ?? {}) as Record<string, unknown>));
   // For harness/record.mjs, which needs to change a session's state mid-take
   // the way the backend would; nothing in the app reads this.

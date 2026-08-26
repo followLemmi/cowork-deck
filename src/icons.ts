@@ -27,6 +27,19 @@ const NS = "http://www.w3.org/2000/svg";
 const PATHS: Record<string, string> = {
   chevron: '<polyline points="6,4 10,8 6,12"/>',
   x: '<path d="M4.5 4.5 L11.5 11.5"/><path d="M11.5 4.5 L4.5 11.5"/>',
+  // The same window, with the arrow coming back in. Deliberately the mirror of
+  // `detach` rather than a different idea: the two are one gesture in two
+  // directions, and a person who has learned one has learned the other.
+  attach: '<path d="M8.2 3.5 H4 a1.5 1.5 0 0 0-1.5 1.5 v7 a1.5 1.5 0 0 0 1.5 1.5 h7 '
+    + 'a1.5 1.5 0 0 0 1.5-1.5 V7.8"/>'
+    + '<path d="M8.4 7.6 H12.1 V3.9"/><path d="M13.5 2.5 L8.4 7.6"/>',
+  // A window with one corner open and an arrow leaving through it: the shape
+  // every desktop uses for "this opens somewhere else". The box is deliberately
+  // the same rounded rectangle as `terminal` — what is being pulled out is a
+  // window of this app, not a link to elsewhere.
+  detach: '<path d="M8.2 3.5 H4 a1.5 1.5 0 0 0-1.5 1.5 v7 a1.5 1.5 0 0 0 1.5 1.5 h7 '
+    + 'a1.5 1.5 0 0 0 1.5-1.5 V7.8"/>'
+    + '<path d="M9.8 2.5 H13.5 V6.2"/><path d="M13.5 2.5 L8.4 7.6"/>',
   trash: '<path d="M3.5 4.5 h9"/><path d="M6.25 4.5 V3 h3.5 v1.5"/>'
     + '<path d="M5 4.5 l.5 8.5 h5 l.5-8.5"/>',
   pencil: '<path d="M10.4 3.1 l2.5 2.5 -8 8 -3.2 .7 .7-3.2 z"/><path d="M9.2 4.3 l2.5 2.5"/>',
@@ -84,6 +97,26 @@ const PATHS: Record<string, string> = {
     + 'a3.6 3.6 0 0 0 4.6-4.6 L11 6.6 9.4 5 z"/>',
   sparkle: '<path d="M8 2.5 l1.3 3.6 3.6 1.3 -3.6 1.3 -1.3 3.6 -1.3-3.6 -3.6-1.3 3.6-1.3 z"/>'
     + '<path d="M12.6 11 l.5 1.4 1.4.5 -1.4.5 -.5 1.4 -.5-1.4 -1.4-.5 1.4-.5 z"/>',
+
+  // --- The rail's five, and the panel's two -------------------------------
+  // Authored on the same terms as everything above: 16-unit grid, ~12-unit live
+  // area, 1.5 stroke, round caps, outline rather than fill. A rail of five icons
+  // has to be legible at 17px with no label beside it, which is why none of these
+  // is a scene: `list` is three rows with their bullets, `git-merge` is the side
+  // line REJOINING the trunk (which is the whole difference from `git-branch`,
+  // where it leaves), `bolt` is a scenario firing, and `columns` is the panel
+  // taking the width.
+  list: '<path d="M5.6 4.5 H13.5"/><path d="M5.6 8 H13.5"/><path d="M5.6 11.5 H13.5"/>'
+    + '<circle cx="3" cy="4.5" r="0.9" fill="currentColor" stroke="none"/>'
+    + '<circle cx="3" cy="8" r="0.9" fill="currentColor" stroke="none"/>'
+    + '<circle cx="3" cy="11.5" r="0.9" fill="currentColor" stroke="none"/>',
+  "git-merge": '<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/>'
+    + '<circle cx="11.5" cy="8" r="1.5"/><path d="M4.5 5 v6"/>'
+    + '<path d="M10 8 H8.5 A4 4 0 0 1 4.5 5"/>',
+  bolt: '<path d="M9 2 L4.4 9 H7.4 L6.6 14 L11.6 7 H8.4 z"/>',
+  columns: '<rect x="2.5" y="3.5" width="3.2" height="9" rx="1"/>'
+    + '<rect x="6.4" y="3.5" width="3.2" height="9" rx="1"/>'
+    + '<rect x="10.3" y="3.5" width="3.2" height="9" rx="1"/>',
 };
 
 /** Icons offered as a scenario's mark. `play` is the default and comes from

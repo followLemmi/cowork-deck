@@ -1,14 +1,16 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
 import {
-  startSession, startCommandSession, startShellSession, writeSession, resizeSession,
+  startSession, startCommandSession, startShellSession, writeSession, resizeSession, claimSession,
   prepareWorkspace, type OutputSink, type ScenarioLaunch, type SessionAuth, type ShellStart,
 } from "./ipc";
+import { sessionRefusal, SESSION_GONE, SESSION_NOT_OWNER } from "./session-refusal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import { terminalKeyBytes } from "./terminal-keys";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
@@ -84,6 +86,10 @@ export class TerminalPanel {
    *  `styles.css`), which reads as not intersecting — so this covers both
    *  minimizing and scrolling out of view with one mechanism. */
   private io: IntersectionObserver | null = null;
+  /** What a hand-off copies. Only ever read from the window that is giving a
+   *  session up, and only while it is still alive — which is why there is no ring
+   *  buffer in Rust for this. See `serialize`. */
+  private serializeAddon = new SerializeAddon();
   private onScreen = false;
   /** Bound once so `dispose` can remove the same reference it added. */
   private onScaleEvent = (e: Event) => {
@@ -100,6 +106,23 @@ export class TerminalPanel {
      *  cannot know which tile it is answering for, so the panel carries the one
      *  flag. Such a tile is renamed with the pencil or from the palette. */
     private readonly keepsRenameKey = false,
+    /** Born without resize authority, for a panel that is about to take over a
+     *  session another window is still rendering.
+     *
+     *  The constructor asserts that authority whether a caller wants it or not:
+     *  `document.fonts.ready.then(fit)` and the `ResizeObserver` both land after
+     *  it returns and reach the `onResize` handler, so a panel built for a
+     *  hand-off would tell the PTY its geometry before it owned the session —
+     *  and the child would take a SIGWINCH for a window that is not yet showing
+     *  it. The synchronous `fitAddon.fit()` in the constructor is safe either
+     *  way; it runs before that handler exists.
+     *
+     *  Input is held rather than dropped: `started` stays false, so what is typed
+     *  into a panel mid-hand-off is buffered by `send` and delivered by
+     *  `activate`, exactly as it is for a session that has not spawned yet.
+     *
+     *  `activate()` is what ends it, and nothing else does. */
+    private suppressResize = false,
   ) {
     this.term = new Terminal({
       fontFamily: '"CaskaydiaCove Nerd Font Mono", "Cascadia Code", ui-monospace, monospace',
@@ -122,8 +145,17 @@ export class TerminalPanel {
       // The FRAME colours — background, foreground, cursor, black — are the app's and
       // must track `styles.css`. `background` in particular: the tile body is painted
       // `--bg-terminal` and xterm paints inside it, so a mismatch draws a visible
-      // frame of one colour around a terminal of another. These are the Slate & Ember
-      // values.
+      // frame of one colour around a terminal of another. These are the True Ink
+      // values, from `docs/design/true-ink/tools/palette.mjs --app`.
+      //
+      // `background` is the ISLAND's value in this theme, and that is deliberate: a
+      // tile is one surface, head and body, and a step between a title and the thing
+      // it titles is a seam you can see. It shipped at #090a0b, which read as a hole
+      // cut in a grey card, then at a value 0.025 short of the island, which read as
+      // exactly that seam. The diff's ground did not follow it — see `--bg-code`,
+      // which is a surface that is read rather than watched. Moved in the GENERATOR,
+      // not here: `term` for the `ink` direction carries the whole reason, and this
+      // line is emitted from it.
       //
       // The six ANSI hues are the CONTENT's, not the chrome's. They are what Claude
       // Code's own output asks for, and they stay One Dark deliberately: a person
@@ -132,20 +164,24 @@ export class TerminalPanel {
       // look wrong for no gain. That they no longer equal `--st-working` and friends
       // is correct — terminal ANSI is a different namespace from session state.
       theme: {
-        background: "#13110f", foreground: "#efece8", cursor: "#d5eaf3",
-        cursorAccent: "#13110f", selectionBackground: "rgba(213,234,243,0.26)",
-        black: "#13110f", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
+        // The caret is the FOREGROUND, not the accent. It stopped being a choice
+        // when the accent became light itself: an accent-coloured caret and an
+        // ink-coloured one are now the same colour, and of the two names only one
+        // is true of a terminal cursor.
+        background: "#161719", foreground: "#f6f7f9", cursor: "#f6f7f9",
+        cursorAccent: "#161719", selectionBackground: "rgba(246,247,249,0.26)",
+        black: "#161719", red: "#e06c75", green: "#98c379", yellow: "#e5c07b",
         blue: "#61afef", magenta: "#c678dd", cyan: "#56b6c2", white: "#dcdfe4",
         // #5c6370 measured 2.73:1 on the old background — and this is the colour
         // Claude Code uses for most of its secondary output: hints, timestamps,
         // "esc to interrupt", diff context. It is the worst-placed failure in the
         // app, on the surface the person actually reads, and already at 14px,
         // which is the proof that size is not the lever.
-        // Now `--fg-dim`'s warm neutral rather than the cool #8a919e: this is the
-        // terminal's equivalent of that token's job, and on the darker ground it
-        // measures better than the 5.09 the cool grey managed.
+        // `--fg-dim`, whatever palette that token currently resolves to: this is
+        // the terminal's equivalent of its job, and it moves with it. On True Ink's
+        // darker ground it measures higher again than it did on the warm one.
         // Measured by `npm run contrast`, which reads this line.
-        brightBlack: "#9a9690", brightRed: "#e06c75", brightGreen: "#98c379",
+        brightBlack: "#9a9c9f", brightRed: "#e06c75", brightGreen: "#98c379",
         brightYellow: "#e5c07b", brightBlue: "#61afef", brightMagenta: "#c678dd",
         brightCyan: "#56b6c2", brightWhite: "#ffffff",
       },
@@ -209,6 +245,7 @@ export class TerminalPanel {
       this.term.input(bytes);
       return false;
     });
+    this.term.loadAddon(this.serializeAddon);
     this.fitAddon.fit();
     if ((document as any).fonts?.ready) {
       (document as any).fonts.ready.then(() => this.fit());
@@ -230,11 +267,34 @@ export class TerminalPanel {
     this.started = true;
     const held = this.pending;
     this.pending = [];
-    for (const d of held) void writeSession(this.session, d);
+    for (const d of held) this.writeToPty(d);
   }
   private send(data: string) {
     if (!this.started) { this.pending.push(data); return; }
-    void writeSession(this.session, data);
+    this.writeToPty(data);
+  }
+
+  /** One write to the PTY, and what to do when the backend refuses it.
+   *
+   *  `catch` rather than a bare `void`, for the reason the resize below already
+   *  had one: a write can now be refused, and an unhandled rejection is what a
+   *  bare `void` makes of that. The two refusals are not the same thing —
+   *  `no-session` is a keystroke landing just after a close, which is ordinary;
+   *  `not-owner` means another window is rendering this session and this panel is
+   *  stale. Acting on the second — giving up the panel — belongs with the hand-off
+   *  that can produce it (#241). Until that exists there is no window to be stale
+   *  *for*, so it is recorded and not acted on: disposing a panel here today could
+   *  only ever be a reaction to a bug, and it would make a tile vanish. */
+  private writeToPty(data: string) {
+    writeSession(this.session, data).catch((e) => {
+      const refusal = sessionRefusal(e);
+      if (refusal === SESSION_GONE) return;
+      if (refusal === SESSION_NOT_OWNER) {
+        console.debug("write refused: this window no longer owns", this.session);
+        return;
+      }
+      console.debug("terminal write failed", e);
+    });
   }
 
   /** A fresh output channel for one spawn.
@@ -362,6 +422,96 @@ export class TerminalPanel {
     this.gpu = null;
   }
 
+  /** Everything on this terminal's screen and in its scrollback, as the bytes
+   *  that would redraw it.
+   *
+   *  Read from the window **giving a session up**, while it is still alive. The
+   *  first design put a ring buffer per session in Rust and a `session_tail`
+   *  command beside it; this replaced it, and the reasoning is worth keeping. A
+   *  Rust buffer only helps when the source is already gone, which is not this
+   *  case — during a hand-off the source window is right there. It would also
+   *  cost resident memory per session for something read at most once in a
+   *  session's life. And the app already discards scrollback on every restart,
+   *  so an empty screen with a live conversation is a state people live with;
+   *  this is strictly better than that, not a regression from perfect. */
+  serialize(): string {
+    return this.serializeAddon.serialize();
+  }
+
+  /** Take over a session that is already running, without starting anything.
+   *
+   *  The third path, and it exists because the other two cannot be reused.
+   *  `start(..., resume: true)` runs `claude --resume` against a PTY that is
+   *  still alive — a second agent on one conversation, which is the defect the
+   *  whole epic begins with. This spawns nothing: it points the PTY's output at
+   *  this window and records the ownership, and the process never notices.
+   *
+   *  Listeners first, claim second. The output channel is created here and handed
+   *  to Rust inside the claim, so there is no window in which output has been
+   *  redirected to a panel that is not reading yet. */
+  async attach(): Promise<void> {
+    const { cols, rows } = this.term;
+    // Counts as sent: `activate` decides what the first authoritative size is,
+    // and this is what the PTY currently believes.
+    this.sentSize = { cols, rows };
+    await claimSession(this.session, this.openSink());
+  }
+
+  /** Put back what the person was looking at, then make the process redraw.
+   *
+   *  **A replay is not a live frame and must not pretend to be one.** Claude Code
+   *  is Ink: it repaints with cursor moves relative to the current width, so
+   *  content restored into a terminal of different `cols` — precisely the case
+   *  when the other monitor is a different size — stitches itself into garbage.
+   *  So the replay is the *history*, and the current frame is asked for again.
+   *
+   *  The asking is a resize to `rows - 1` and back. SIGWINCH is the only way to
+   *  get a true current frame out of a running TUI. Not `Ctrl+L`: that reaches
+   *  Claude Code as input, and typing into somebody's session on their behalf is
+   *  not a repaint.
+   *
+   *  One thing the repaint does not cover: modes set once at startup and never
+   *  re-sent. Bracketed paste (`?2004h`) is the one that matters — without it a
+   *  paste into a reattached terminal regresses permanently, and silently. The
+   *  alternate screen and application cursor keys are re-emitted by Ink on every
+   *  redraw, so they correct themselves. */
+  replay(scrollback: string) {
+    if (scrollback) this.term.write(scrollback);
+    // Re-asserted here because nothing else will re-assert it: unlike the modes
+    // Ink rewrites on each frame, this one is sent once at startup and the new
+    // terminal never saw it.
+    this.term.write("\u001b[?2004h");
+  }
+
+  /** Hand this panel its authority: the size it settled on goes to the PTY, and
+   *  the process is made to draw the frame it is actually showing.
+   *
+   *  Ends the suppression `suppressResize` describes, and releases whatever was
+   *  typed while the hand-off was in flight. */
+  activate() {
+    this.suppressResize = false;
+    const { cols, rows } = this.term;
+    // The first authoritative resize, sent directly rather than queued: the
+    // debounce exists to collapse a drag, and this is not one.
+    this.sentSize = { cols, rows };
+    resizeSession(this.session, cols, rows)
+      .then(() => this.forceRepaint(cols, rows))
+      .catch((e) => console.debug("hand-off resize failed", sessionRefusal(e) ?? e));
+    this.markStarted();
+  }
+
+  /** One SIGWINCH the process cannot ignore, and then the real size back.
+   *
+   *  A resize to the size it already has is not a change, so it produces no
+   *  signal and no repaint — hence the detour through `rows - 1`. Short enough
+   *  that nothing renders at the wrong height; a TUI redraws on the second one. */
+  private forceRepaint(cols: number, rows: number) {
+    if (rows <= 1) return;
+    resizeSession(this.session, cols, rows - 1)
+      .then(() => resizeSession(this.session, cols, rows))
+      .catch((e) => console.debug("repaint nudge failed", sessionRefusal(e) ?? e));
+  }
+
   /** Returns the outcome of the GitHub account binding: the caller decides
    *  whether to hang a badge on the tile. The environment is fixed here, at the
    *  birth of the process. */
@@ -448,6 +598,14 @@ export class TerminalPanel {
    *  lines —
    *  `[restarting session...]` and the launch failures — which are written by
    *  `sessions.ts` and never cross a chunk boundary. */
+  /** How many columns the terminal is showing.
+   *
+   *  Read by the tool panel beside it, which may not squeeze this box under 80:
+   *  `fit()` follows whatever box the terminal sits in, so a panel that narrows it
+   *  re-wraps the agent's output — and this app has already shipped that bug once,
+   *  when the filmstrip resized a PTY to about 22 columns by 3 rows. */
+  get cols(): number { return this.term.cols; }
+
   write(data: string | Uint8Array) { this.term.write(data); }
   focus() { this.term.focus(); }
   search(term: string) { if (term) { this.lastSearch = term; this.searchAddon.findNext(term); } }
@@ -486,6 +644,10 @@ export class TerminalPanel {
    *  another — the failure `setFontSize`'s comment above describes, arrived at from
    *  the other direction. */
   private queueResize(cols: number, rows: number) {
+    // A panel built for a hand-off has no authority over the PTY yet. Geometry
+    // still settles — the fit happened, xterm knows its grid — but nothing is
+    // told about it until `activate`, which sends the settled size once.
+    if (this.suppressResize) return;
     this.pendingSize = { cols, rows };
     if (this.sizeTimer !== null) return;
     this.sizeTimer = setTimeout(() => {
@@ -500,7 +662,7 @@ export class TerminalPanel {
       // That is not a failure worth a console error, but it is an unhandled
       // rejection if nobody takes it.
       resizeSession(this.session, next.cols, next.rows)
-        .catch((e) => console.debug("terminal resize skipped", e));
+        .catch((e) => console.debug("terminal resize skipped", sessionRefusal(e) ?? e));
     }, PTY_RESIZE_QUIET_MS);
   }
   dispose() {

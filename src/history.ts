@@ -1,5 +1,8 @@
 import type { RunRecord, RunTrigger, Skill } from "./ipc";
 import { icon, SCENARIO_ICONS, type IconName } from "./icons";
+// The panel names live in one place, and this page is one of them: the rail says
+// "Journal", the palette says "Journal", and now so does its own head.
+import { PANEL_TITLE } from "./view";
 import {
   agoLabel, canEraseHistory, canJump, canRerun, canReveal, chainRuns, durationLabel,
   emptyHistoryCopy, filterRuns, noResultReason, RUN_STATUS_LABEL, RUN_TRIGGER_LABEL,
@@ -45,11 +48,6 @@ export interface HistoryHandlers {
    *  The refusals are `aria-disabled`, not `disabled`, precisely so they can be
    *  reached and read without a mouse — see `refuse`. */
   onRefused: (reason: string) => void;
-  /** Turn recording on or off. The switch lives here rather than in
-   *  `settingsDialog`: that dialog is a text-size chooser and its own doc
-   *  comment argues against growing it casually, and this screen is already the
-   *  one place that has to explain what being off looks like. */
-  onRecording: (on: boolean) => void;
 }
 
 /** Refuse before the click, with the reason on the control itself — and
@@ -114,7 +112,14 @@ export class HistoryView {
       ? (document.activeElement as HTMLElement).dataset.fk ?? null
       : null;
     this.mount.replaceChildren();
-    this.mount.append(this.head(state));
+    /* The island's own head, in the shape the other two use: a bare `h3` as the
+       first child of the mount, which `#sidebar h3` turns into the island's head.
+       It says "Journal" and not "Scenario runs" — one name for one thing, and it is
+       the name the rail and the palette already use.
+       It was `h2.hist-title`, clipped out of sight, because the panel's head above
+       this page said the name instead. That head no longer states which page it is
+       holding, so the page says it itself. */
+    this.mount.append(el("h3", "", PANEL_TITLE.history), this.head(state));
 
     const rows = filterRuns(state.runs, state.filters);
     if (rows.length === 0) {
@@ -152,10 +157,9 @@ export class HistoryView {
 
   private head(state: HistoryState): HTMLElement {
     const head = el("div", "hist-head");
-    const title = el("h2", "hist-title", "Scenario runs");
     const where = el("span", "hist-where",
       state.workspaceName === null ? "no workspace" : state.workspaceName);
-    head.append(title, where);
+    head.append(where);
 
     const filters = el("div", "hist-filters");
 
@@ -187,15 +191,14 @@ export class HistoryView {
       ...state.filters, trigger: byTrigger.value === "" ? null : byTrigger.value as RunTrigger,
     });
 
-    const record = el("label", "hist-record");
-    const box = el("input");
-    box.type = "checkbox";
-    box.checked = state.recording;
-    box.dataset.fk = "record-toggle";
-    box.onchange = () => this.handlers.onRecording(box.checked);
-    record.append(box, document.createTextNode("Record scenario runs"));
-
-    filters.append(bySkill, byTrigger, record);
+    /* Two filters and nothing else. The "Record scenario runs" switch was here — a
+       setting living inside the page it affects, which is a fair argument while a
+       page has room for it and a bad one in a 280px column where it sat above the
+       records looking like a filter. It belongs in the settings window, beside the
+       other things that are set once and left alone. Until it gets there the value is
+       read-only: `ui_state`'s `recordScenarioRuns` still gates recording and still
+       defaults to on, and the empty state still says so when it is off. */
+    filters.append(bySkill, byTrigger);
     head.append(filters);
 
     // Erasing is per scenario and wholesale, and it is offered only while the

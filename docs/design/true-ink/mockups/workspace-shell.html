@@ -1,0 +1,980 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cowork-deck — one shell</title>
+<link rel="stylesheet" href="assets/deck-ui.css">
+<link rel="stylesheet" href="assets/deck-screens.css">
+<link rel="stylesheet" href="assets/deck-palettes.css">
+<link rel="stylesheet" href="assets/deck-shell.css">
+</head>
+<body data-screen="shell" data-workspace="relay" data-boot-zoom="">
+
+<div class="app">
+
+  <header class="bar" data-od-id="titlebar">
+    <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="mark">
+      <span class="mark-glyph" data-app-mark aria-hidden="true"></span>
+      <span class="mark-text">cowork<span>·deck</span></span>
+    </div>
+    <button class="crumb" data-od-id="workspace-crumb" data-toast="Workspace switcher" data-toast-icon="folder">
+      <span class="dot" style="background: var(--st-working)"></span>
+      <span class="crumb-name">relay</span>
+      <span class="crumb-sep">/</span>
+      <span class="crumb-login">acme-dev</span>
+      <i data-ic="chevron" class="ic ic--down"></i>
+    </button>
+
+    <span class="bar-spacer"></span>
+
+    <!-- What replaces four tab labels. Not "where to go" but "what wants me",
+         and every count is a jump into the panel rather than a destination.
+         Empty on purpose: it is written from the fixture, because when these
+         three numbers were typed here they disagreed with the tree below. -->
+    <div class="ledger" data-od-id="ledger"></div>
+
+    <div class="bar-acts">
+      <button class="btn--icon" data-open-overlay="palette" aria-label="Find a command (⌘K)" title="Find a command (⌘K)"><i data-ic="search"></i></button>
+      <button class="btn--icon" data-theme-toggle aria-label="Switch appearance"><i data-ic="moon"></i></button>
+      <button class="btn--icon" data-open-overlay="settings" aria-label="Settings" title="Settings"><i data-ic="sliders"></i></button>
+    </div>
+  </header>
+
+  <div class="shell">
+
+    <!-- The rail selects what the panel holds. It never changes what the window
+         holds, and that is the whole difference from a tab bar. -->
+    <nav class="nav-rail" aria-label="Panels" data-od-id="rail">
+      <span class="rail-ink" aria-hidden="true"></span>
+      <button class="rail-btn" data-sec="ws" data-name="Workspaces and sessions" data-key="⌘1" aria-current="true"><i data-ic="terminal"></i><span class="rail-dot" aria-hidden="true" hidden></span></button>
+      <button class="rail-btn" data-sec="queue" data-name="Queue" data-key="⌘2"><i data-ic="list"></i><span class="rail-dot" aria-hidden="true" hidden></span></button>
+      <button class="rail-btn" data-sec="prs" data-name="Pull requests" data-key="⌘3"><i data-ic="git-merge"></i><span class="rail-dot" aria-hidden="true" hidden></span></button>
+      <button class="rail-btn" data-sec="log" data-name="Journal" data-key="⌘4"><i data-ic="clock"></i><span class="rail-dot" aria-hidden="true" hidden></span></button>
+      <button class="rail-btn" data-sec="scen" data-name="Scenarios" data-key="⌘5"><i data-ic="bolt"></i><span class="rail-dot" aria-hidden="true" hidden></span></button>
+      <span class="rail-sp"></span>
+      <button class="rail-btn" data-toast="Workspace settings" data-toast-icon="sliders" aria-label="Workspace settings"><i data-ic="wrench"></i></button>
+    </nav>
+
+    <aside class="panel" id="panel" data-od-id="panel">
+      <div class="panel-head">
+        <div class="panel-titles">
+          <span class="panel-scope" id="panel-scope">relay · acme-labs/relay · as acme-dev</span>
+          <span class="panel-title" id="panel-title">Workspaces and sessions</span>
+        </div>
+        <button class="btn--icon" id="panel-wide" aria-label="Widen the panel" title="Widen the panel"><i data-ic="expand"></i></button>
+        <button class="btn--icon" id="panel-shut" aria-label="Collapse the panel (⌘B)" title="Collapse the panel ⌘B"><i data-ic="chevron" class="ic ic--left"></i></button>
+      </div>
+
+      <div class="panel-stack" id="stack">
+
+        <!-- ws: one tree. A workspace appears once, its sessions are its
+             children, and each group ends with its own create row. -->
+        <div class="panel-page" data-page="ws">
+          <p class="form-hint" style="padding: 0 var(--sp-2) var(--sp-3)">A session belongs to a workspace — its folder, its <code>gh</code> account, its branches. So it is created <b>inside one</b>, on the row where it will appear.</p>
+
+          <section class="wsg is-current" data-ws="relay" data-od-id="wsg-relay">
+            <button class="wsg-head" aria-expanded="true" aria-controls="wsb-relay">
+              <i data-ic="chevron"></i>
+              <span class="wsg-main">
+                <span class="wsg-line">
+                  <span class="wsg-name">relay</span>
+                  <span class="wsg-scope"><i data-ic="list"></i>queue · PRs · journal</span>
+                </span>
+                <span class="wsg-sub">acme-labs/relay · as acme-dev</span>
+              </span>
+              <span class="wsg-sum">
+                <span class="wsg-dot wsg-dot--working" title="1 working">1</span>
+                <span class="wsg-dot wsg-dot--waiting" title="1 waiting for a decision">1</span>
+              </span>
+            </button>
+            <div class="wsg-body" id="wsb-relay">
+            <button class="row rail is-working disclose" data-go="s1" data-od-id="sess-s1">
+              <span class="row-main">
+                <span class="row-title">Retry the refund webhook on a 410</span>
+                <span class="sess-meta"><span class="chip-state is-working">working</span><span class="chip">↑48.3k</span></span>
+              </span>
+            </button>
+            <button class="row rail is-waiting disclose" data-go="s2" data-od-id="sess-s2">
+              <span class="row-main">
+                <span class="row-title">Review the diff</span>
+                <span class="sess-meta"><span class="chip-state is-waiting">needs input</span><span class="chip">↑12.9k</span></span>
+              </span>
+            </button>
+            <button class="row rail is-done disclose" data-go="s3" data-od-id="sess-s3">
+              <span class="row-main">
+                <span class="row-title">Nightly dependency sweep</span>
+                <span class="sess-meta"><span class="chip-state is-done">done</span><span class="chip">↑91.7k</span></span>
+              </span>
+            </button>
+              <button class="ws-add ws-add--primary" data-open-overlay="new-session" data-new-ws="relay" data-od-id="add-relay">
+                <i data-ic="plus"></i><span>New session in relay</span><span class="kbd">⌘N</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="wsg" data-ws="harbor" data-od-id="wsg-harbor">
+            <button class="wsg-head" aria-expanded="true" aria-controls="wsb-harbor">
+              <i data-ic="chevron"></i>
+              <span class="wsg-main">
+                <span class="wsg-line"><span class="wsg-name">harbor</span></span>
+                <span class="wsg-sub">acme-labs/harbor · as acme-release</span>
+              </span>
+              <span class="wsg-sum"><span class="wsg-dot wsg-dot--error" title="1 broken">1</span></span>
+            </button>
+            <div class="wsg-body" id="wsb-harbor">
+            <button class="row rail is-error disclose" data-go="s4" data-od-id="sess-s4">
+              <span class="row-main">
+                <span class="row-title">#128 · fix the flaky timer</span>
+                <span class="sess-meta"><span class="chip-state is-error">error</span><span class="chip">↑4.2k</span></span>
+              </span>
+            </button>
+              <button class="ws-add" data-open-overlay="new-session" data-new-ws="harbor" data-od-id="add-harbor">
+                <i data-ic="plus"></i><span>New session in harbor</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="wsg" data-ws="atlas" data-od-id="wsg-atlas">
+            <button class="wsg-head" aria-expanded="true" aria-controls="wsb-atlas">
+              <i data-ic="chevron"></i>
+              <span class="wsg-main">
+                <span class="wsg-line"><span class="wsg-name">atlas</span></span>
+                <span class="wsg-sub">no account bound</span>
+              </span>
+              <span class="wsg-sum"><span class="wsg-dot wsg-dot--none">0</span></span>
+            </button>
+            <div class="wsg-body" id="wsb-atlas">
+              <p class="wsg-empty">No sessions. A session does not need an account — but the board and pull requests do, so those stay empty until one is bound.</p>
+              <button class="ws-add" data-open-overlay="new-session" data-new-ws="atlas" data-od-id="add-atlas">
+                <i data-ic="plus"></i><span>New session in atlas</span>
+              </button>
+            </div>
+          </section>
+
+          <div class="empty-alt" style="border-top: 1px solid var(--line)">
+            <div class="empty-alt-row">
+              <button class="btn btn--quiet" data-toast="New workspace" data-toast-icon="plus"><i data-ic="plus"></i> Add a workspace</button>
+            </div>
+            <span class="empty-kbd">Pressing a workspace's name makes it the one the queue, pull requests and journal are showing. It does not decide where a new session goes — the row you press does.</span>
+          </div>
+        </div>
+
+        <!-- The four data pages below are rendered from `deck-shell-data.js` for
+             the workspace that is current, because a panel that keeps another
+             repository's rows under a changed caption is worse than an empty
+             one. Their markup lives there; only their containers live here. -->
+        <div class="panel-page" data-page="queue" hidden></div>
+        <div class="panel-page" data-page="prs" hidden></div>
+        <div class="panel-page panel-page--ahead" data-page="pr-detail" hidden></div>
+        <div class="panel-page" data-page="log" hidden></div>
+        <div class="panel-page" data-page="scen" hidden></div>
+
+      </div>
+    </aside>
+
+    <main class="screen screen--deck stage-deck" data-od-id="stage">
+      <div class="deck" id="deck" data-enter data-od-id="deck">
+
+        <section class="tile rail rail--full is-working is-active" data-tile="s1" data-name="Retry the refund webhook on a 410"
+                 data-branch="main" data-worktree="~/code/relay" data-card="#— · started by hand" tabindex="0"
+                 aria-label="Session: Retry the refund webhook on a 410" data-od-id="tile-s1">
+          <header class="tile-head disclose">
+            <span class="tile-name">Retry the refund webhook on a 410</span>
+            <span class="chip chip--mono"><i data-ic="git-branch"></i>main</span>
+            <span class="tile-tokens">↑<b>48.3k</b> ↓6.1k</span>
+            <span class="chip-state is-working">working</span>
+            <div class="acts">
+              <button class="btn--icon" data-zoom aria-label="Zoom this session"><i data-ic="expand"></i></button>
+              <button class="btn--icon btn--danger" data-toast="Close asks first" data-toast-icon="alert" aria-label="Close"><i data-ic="x"></i></button>
+            </div>
+          </header>
+          <div class="tile-body"><div class="term">
+<span class="term-warn">●</span> <span class="term-ink">Bash(cargo test -p webhooks retry)</span>
+  <span class="term-dim">running 12 tests</span>
+  <span class="term-ok">ok. 12 passed; 0 failed</span>
+
+<span class="term-warn">✳</span> <span class="term-think">Resetting the backoff on restart</span>
+  <span class="term-dim">(21s · ↑2.1k tokens · esc to interrupt)</span>
+<span class="term-cursor"></span></div></div>
+        </section>
+
+        <section class="tile rail rail--full is-waiting" data-tile="s2" data-name="Review the diff"
+                 data-branch="main" data-worktree="~/code/relay" data-card="scenario · Review the diff" tabindex="0"
+                 aria-label="Session: Review the diff" data-od-id="tile-s2">
+          <header class="tile-head disclose">
+            <span class="tile-name">Review the diff</span>
+            <span class="chip chip--mono"><i data-ic="git-branch"></i>main</span>
+            <span class="tile-tokens">↑<b>12.9k</b> ↓1.8k</span>
+            <span class="chip-state is-waiting">needs input</span>
+            <div class="acts">
+              <button class="btn--icon" data-zoom aria-label="Zoom this session"><i data-ic="expand"></i></button>
+              <button class="btn--icon btn--danger" data-toast="Close asks first" data-toast-icon="alert" aria-label="Close"><i data-ic="x"></i></button>
+            </div>
+          </header>
+          <div class="tile-body"><div class="term">
+<span class="term-warn">●</span> <span class="term-ink">The suite has to run before I touch the timer.</span>
+<span class="term-box"><span class="term-ink">Bash command</span>
+
+<span class="term-ok">npm test -- tests/webhook.test.ts</span>
+
+Do you want to proceed?
+<span class="term-warn">❯ 1. Yes</span>
+  2. Yes, and don't ask again
+  3. No, and tell Claude what to do</span>
+<span class="term-cursor"></span></div></div>
+        </section>
+
+        <section class="tile rail rail--full is-done" data-tile="s3" data-name="Nightly dependency sweep"
+                 data-branch="main" data-worktree="~/code/relay" data-card="scenario · Nightly dependency sweep" tabindex="0"
+                 aria-label="Session: Nightly dependency sweep" data-od-id="tile-s3">
+          <header class="tile-head disclose">
+            <span class="tile-name">Nightly dependency sweep</span>
+            <span class="chip chip--mono"><i data-ic="git-branch"></i>main</span>
+            <span class="tile-tokens">↑<b>91.7k</b> ↓9.4k</span>
+            <span class="chip-state is-done">done</span>
+            <div class="acts">
+              <button class="btn--icon" data-zoom aria-label="Zoom this session"><i data-ic="expand"></i></button>
+              <button class="btn--icon btn--danger" data-toast="Close asks first" data-toast-icon="alert" aria-label="Close"><i data-ic="x"></i></button>
+            </div>
+          </header>
+          <div class="tile-body"><div class="term">
+<span class="term-warn">●</span> <span class="term-ink">Bash(gh pr create --fill)</span>
+  <span class="term-dim">acme-labs/relay/pull/161</span>
+
+<span class="term-warn">●</span> The sweep is done. Fourteen packages moved, the suite is
+  green, and #161 is open with the lockfile diff.
+
+<span class="term-dim">&gt;</span> <span class="term-cursor"></span></div></div>
+        </section>
+
+        <!-- The worktree case, and the reason the tool panel exists at all. -->
+        <section class="tile rail rail--full is-error" data-tile="s4" data-name="#128 · fix the flaky timer"
+                 data-branch="fix-flaky-timer" data-worktree="~/code/relay-wt/fix-flaky-timer" data-card="#128 · fix the flaky timer"
+                 tabindex="0" aria-label="Session: number 128, fix the flaky timer" data-od-id="tile-s4">
+          <header class="tile-head disclose">
+            <span class="tile-name">#128 · fix the flaky timer</span>
+            <span class="chip chip--mono"><i data-ic="git-branch"></i>fix-flaky-timer</span>
+            <span class="tile-tokens">↑<b>4.2k</b> ↓610</span>
+            <span class="chip-state is-error">error</span>
+            <div class="acts">
+              <button class="btn--icon" data-toast="Restarting with claude --resume" data-toast-icon="rotate" aria-label="Restart and resume"><i data-ic="rotate"></i></button>
+              <button class="btn--icon" data-zoom aria-label="Zoom this session"><i data-ic="expand"></i></button>
+              <button class="btn--icon btn--danger" data-toast="Close asks first" data-toast-icon="alert" aria-label="Close"><i data-ic="x"></i></button>
+            </div>
+          </header>
+          <div class="tile-body"><div class="term">
+<span class="term-warn">●</span> <span class="term-ink">Bash(cargo test -p relay timer)</span>
+  <span class="term-err">error: linker `cc` not found</span>
+
+<span class="term-err">●</span> The toolchain in this worktree cannot link. I stopped
+  rather than guess at a build environment.
+
+<span class="term-dim">[process exited with code 101]</span>
+<span class="term-cursor"></span></div></div>
+        </section>
+
+      </div>
+    </main>
+
+  </div>
+</div>
+
+
+<!-- Belt and braces: even if the wrong row was pressed, the dialog names the
+     workspace, lets it be changed, and says the consequence — which account the
+     session will push as. -->
+<div class="overlay" id="new-session" hidden>
+  <div class="modal pop" role="dialog" aria-modal="true" aria-labelledby="ns-t" data-od-id="new-session-dialog">
+    <div class="modal-head">
+      <h2 class="modal-title" id="ns-t">New session</h2>
+      <span class="modal-sub" id="ns-sub">in relay</span>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label class="form-label" for="ns-ws">Workspace</label>
+        <div class="select"><select id="ns-ws" aria-describedby="ns-acct">
+          <option value="relay">relay — acme-labs/relay</option>
+          <option value="harbor">harbor — acme-labs/harbor</option>
+          <option value="atlas">atlas — no repository bound</option>
+        </select></div>
+        <p class="form-hint" id="ns-acct">Runs under this workspace's own <code>gh</code> account, and will push as <b id="ns-login">acme-dev</b>. Different workspaces run under different accounts at the same time — the app never switches the active account.</p>
+      </div>
+      <div class="form-row">
+        <label class="form-label" for="ns-dir">Folder</label>
+        <input class="field field--mono" id="ns-dir" value="~/code/relay">
+        <p class="form-hint">The workspace's folder, and changeable for this session alone — which is how a session on a worktree gets its own checkout.</p>
+      </div>
+      <!-- The two sourced options belong to the workspace, so they are filled
+           from it: offering "a card from the queue" in a workspace whose queue is
+           issues, or in one that has no source at all, is the same defect as the
+           create button that did not say where it created. -->
+      <div class="fieldset">
+        <div class="fieldset-head"><span class="caps">Start from</span></div>
+        <label class="check"><input type="radio" name="ns-from" id="ns-from-blank" checked><span class="check-text">An empty prompt</span></label>
+        <label class="check" id="ns-from-scen-row"><input type="radio" name="ns-from" id="ns-from-scen"><span class="check-text">A scenario</span>
+          <span class="check-hint" id="ns-scen-hint">Review the diff · Nightly dependency sweep</span></label>
+        <label class="check" id="ns-from-src-row"><input type="radio" name="ns-from" id="ns-from-src"><span class="check-text" id="ns-src-text">A card from the queue</span>
+          <span class="check-hint" id="ns-src-hint">Opens on a branch in a worktree of its own.</span></label>
+      </div>
+    </div>
+    <div class="modal-acts">
+      <button class="btn btn--quiet" data-close-overlay>Cancel</button>
+      <button class="btn btn--primary" data-close-overlay id="ns-go"><i data-ic="play"></i> Start in relay</button>
+    </div>
+  </div>
+</div>
+
+<script>
+window.deckScreen = function (api) {
+  var panel = document.getElementById("panel");
+  var stack = document.getElementById("stack");
+  var deck = document.getElementById("deck");
+  var order = api.$$(".tile", deck);
+  var strip = null, wasCollapsed = false;
+
+  /* --- Workspaces -------------------------------------------------------
+     `current` is what the queue, pull requests and journal are showing, because
+     those three live inside one repository and one of them has to be chosen. It
+     is NOT what creation depends on: every group has its own create row, so
+     "which workspace am I on" can never silently decide where a session lands.
+     That was the whole defect. */
+  var D = window.deckShellData;
+  var WS = D.ws;
+  var current = document.body.getAttribute("data-workspace") || "relay";
+
+  /* The scope line is derived, not stored: a string patched with a regular
+     expression turned `acme-labs/relay` into `harbor-labs/relay` the first time
+     the workspace changed. A panel that misnames whose data it holds is worse
+     than one that says nothing. */
+  var SECTIONS = {
+    ws:    { page: "ws",    title: "Workspaces and sessions", wide: false, scope: D.scope.ws },
+    queue: { page: "queue", title: "Queue",         wide: true,  scope: D.scope.queue, draw: D.render.queue },
+    prs:   { page: "prs",   title: "Pull requests", wide: true,  scope: D.scope.prs,   draw: D.render.prs },
+    log:   { page: "log",   title: "Journal",       wide: false, scope: D.scope.log,   draw: D.render.log },
+    /* No `draw` here: the scenarios page is rendered once, because it is the one
+       panel that does not belong to a repository. */
+    scen:  { page: "scen",  title: "Scenarios",     wide: false, scope: D.scope.scen }
+  };
+
+  /* --- Counted, not typed ------------------------------------------------
+     The tree in this panel and the tiles in the deck are the same four sessions
+     written once each, so the ledger and the rail COUNT them. A number typed
+     beside a list is a number that will disagree with it, and all three of the
+     ones that were here did. */
+  function sessionCounts() {
+    var c = { working: 0, waiting: 0, error: 0, done: 0 };
+    api.$$(".wsg-body .chip-state").forEach(function (ch) {
+      if (ch.classList.contains("is-waiting")) c.waiting++;
+      else if (ch.classList.contains("is-error")) c.error++;
+      else if (ch.classList.contains("is-working")) c.working++;
+      else c.done++;
+    });
+    return c;
+  }
+
+  /* Sessions are counted across every workspace, because the deck holds them all
+     at once. Pull requests are counted inside the current one, because that is
+     what the panel can show — so that reading says which workspace it means. */
+  function drawLedger() {
+    var c = sessionCounts(), ready = D.prsReady(WS[current]), out = "";
+    if (c.waiting) out += '<button class="led led--wait" data-jump="ws" data-od-id="led-waiting"><b>' + c.waiting + '</b> waiting for a decision</button>';
+    if (c.error) out += '<button class="led led--err" data-jump="ws" data-od-id="led-error"><b>' + c.error + '</b> stopped on an error</button>';
+    if (ready) out += '<button class="led led--ok" data-jump="prs" data-od-id="led-prs"><b>' + ready + '</b> pull request' + (ready > 1 ? "s" : "") + ' ready · ' + current + '</button>';
+    api.$(".ledger").innerHTML = out;
+  }
+
+  /* The rail says only "there is something here" — a dot, never a digit, since
+     digits on a 32px icon are the ledger's number said twice. How much is in the
+     accessible name, where a screen reader gets it without the clutter. */
+  function drawRail() {
+    var c = sessionCounts(), w = WS[current];
+    var note = {
+      ws: [c.waiting ? c.waiting + " waiting for a decision" : "", c.error ? c.error + " stopped on an error" : ""].filter(Boolean).join(", "),
+      queue: w.source ? D.queueCount(w) + (w.source.kind === "issues" ? " open issues" : " cards") : "no source bound",
+      prs: w.repo ? w.prs.length + " open, " + D.prsReady(w) + " ready" : "no repository bound",
+      log: w.runs.length ? w.runs.length + " runs kept" : "nothing has run",
+      scen: D.scope.scen().replace(" · every workspace", "").replace(" · ", ", ")
+    };
+    var dot = {
+      ws: c.error ? "error" : c.waiting ? "waiting" : "calm",
+      queue: w.source && D.queueCount(w) ? "calm" : "",
+      prs: w.prs.length ? "calm" : "",
+      log: w.runs.length ? "calm" : "",
+      scen: "calm"
+    };
+    api.$$(".rail-btn[data-sec]").forEach(function (b) {
+      var id = b.getAttribute("data-sec"), name = b.getAttribute("data-name"), n = note[id];
+      b.setAttribute("aria-label", n ? name + " — " + n : name);
+      b.setAttribute("title", name + " " + b.getAttribute("data-key") + (n ? " — " + n : ""));
+      var d = api.$(".rail-dot", b);
+      if (!d) return;
+      d.hidden = !dot[id];
+      d.className = "rail-dot" + (dot[id] === "calm" ? " rail-dot--calm" : dot[id] === "error" ? " rail-dot--error" : "");
+    });
+  }
+
+  /* The three per-repository pages are re-rendered for the workspace that is
+     current. The detail page is emptied with them: a pull request from another
+     repository left standing under a changed caption is the defect this whole
+     file is about, one level down. */
+  function drawPages() {
+    /* Scenarios are absent from this loop on purpose: the panel lists every
+       workspace's, so a workspace change has nothing to do to it. */
+    ["queue", "prs", "log"].forEach(function (id) {
+      var page = api.$('.panel-page[data-page="' + id + '"]', stack);
+      if (page) page.innerHTML = SECTIONS[id].draw(current);
+    });
+    api.$('.panel-page[data-page="pr-detail"]', stack).innerHTML = "";
+    if (window.hydrateDeckIcons) window.hydrateDeckIcons(stack);
+  }
+
+  function showPR(n) {
+    var det = api.$('.panel-page[data-page="pr-detail"]', stack);
+    det.innerHTML = D.render.prDetail(current, n);
+    if (window.hydrateDeckIcons) window.hydrateDeckIcons(det);
+    show("pr-detail");
+    api.$("#panel-title").textContent = "Pull request #" + n;
+  }
+
+  /* --- The rail ---------------------------------------------------------
+     The marker travels between icons, which is what makes a column of five
+     read as one control with a position rather than five things one of which
+     is lit. */
+  function ink() {
+    var on = api.$('.rail-btn[aria-current="true"]');
+    var mark = api.$(".rail-ink");
+    if (!on || !mark) return;
+    var a = on.getBoundingClientRect(), b = on.parentElement.getBoundingClientRect();
+    mark.style.setProperty("--y", Math.round(a.top - b.top) + "px");
+  }
+
+  function show(page) {
+    api.$$(".panel-page", stack).forEach(function (p) {
+      var on = p.getAttribute("data-page") === page;
+      p.classList.remove("panel-page--behind", "panel-page--ahead");
+      if (on) { p.hidden = false; }
+      else {
+        /* The list slides out to the LEFT as its detail arrives, and back in
+           from the left when you return — the direction is what tells you the
+           detail belonged to the row you pressed. */
+        p.classList.add(page === "pr-detail" && p.getAttribute("data-page") === "prs" ? "panel-page--behind" : "panel-page--ahead");
+        window.setTimeout(function () { if (p.classList.contains("panel-page--behind") || p.classList.contains("panel-page--ahead")) p.hidden = true; }, 340);
+      }
+    });
+  }
+
+  function section(id) {
+    var s = SECTIONS[id];
+    if (!s) return;
+    api.$$(".rail-btn[data-sec]").forEach(function (b) {
+      b.setAttribute("aria-current", String(b.getAttribute("data-sec") === id));
+    });
+    api.$("#panel-title").textContent = s.title;
+    api.$("#panel-scope").textContent = s.scope(current);
+    api.$("#panel-wide").hidden = !s.wide;
+    if (panel.classList.contains("is-collapsed")) panel.classList.remove("is-collapsed");
+    if (!s.wide) narrow();
+    show(s.page);
+    ink();
+  }
+
+  function setCurrent(id) {
+    current = id;
+    var w = WS[id];
+    api.$$(".wsg").forEach(function (g) {
+      var on = g.getAttribute("data-ws") === id;
+      g.classList.toggle("is-current", on);
+      /* The scope chip moves rather than being drawn on every header: it names a
+         state only one workspace can be in, and three of them saying it would be
+         three claims where there is one fact. */
+      var line = api.$(".wsg-line", g);
+      var chip = api.$(".wsg-scope", g);
+      if (on && !chip) line.insertAdjacentHTML("beforeend",
+        '<span class="wsg-scope"><svg class="ic" aria-hidden="true"><use href="#i-list"/></svg>queue · PRs · journal</span>');
+      if (!on && chip) chip.remove();
+      /* And exactly one create row is prominent — the likely one. Pressing any
+         other still creates there, which is why being wrong costs nothing. */
+      var add = api.$(".ws-add", g);
+      if (add) {
+        add.classList.toggle("ws-add--primary", on);
+        var key = api.$(".kbd", add);
+        if (on && !key) add.insertAdjacentHTML("beforeend", '<span class="kbd">⌘N</span>');
+        if (!on && key) key.remove();
+      }
+    });
+    api.$(".crumb-name").textContent = id;
+    api.$(".crumb-login").textContent = w.login || "no account";
+    /* The separator is a separator, so it goes when there is nothing on its far
+       side: `relay / acme-dev` is a path, `atlas /` is a typo. */
+    api.$(".crumb .crumb-sep").hidden = !w.login;
+    /* The crumb's dot is the workspace's worst live state, read off its own
+       sessions. Left as a constant it kept saying "working" over a workspace
+       whose only session had stopped on an error. */
+    api.$(".crumb .dot").style.background = worstHue(id);
+
+    drawPages();
+    drawLedger();
+    drawRail();
+
+    /* And the panel that is open re-states whose data it is holding. A detail
+       page cannot survive the change, so it steps back to its list. */
+    var live = api.$('.panel-page[data-page]:not([hidden])');
+    var sec = live && live.getAttribute("data-page");
+    if (sec === "pr-detail") { show("prs"); sec = "prs"; api.$("#panel-title").textContent = SECTIONS.prs.title; }
+    if (sec && SECTIONS[sec]) api.$("#panel-scope").textContent = SECTIONS[sec].scope(id);
+  }
+
+  function worstHue(id) {
+    var g = api.$('.wsg[data-ws="' + id + '"]');
+    if (!g) return "var(--fg-dim)";
+    if (api.$(".chip-state.is-error", g)) return "var(--st-error)";
+    if (api.$(".chip-state.is-waiting", g)) return "var(--st-waiting)";
+    if (api.$(".chip-state.is-working", g)) return "var(--st-working)";
+    return "var(--fg-dim)";
+  }
+
+  /* One gesture, and its rule is stated rather than guessed at: pressing a
+     workspace that is not current makes it current and opens it; pressing the
+     one that already is folds it. Splitting "activate" from "expand" across two
+     targets inside one row is how a tree gets two things you can miss. */
+  api.$$(".wsg-head").forEach(function (h) {
+    h.addEventListener("click", function () {
+      var g = h.closest(".wsg"), id = g.getAttribute("data-ws");
+      var body = document.getElementById(h.getAttribute("aria-controls"));
+      var open = h.getAttribute("aria-expanded") === "true";
+      if (id !== current) {
+        setCurrent(id);
+        if (!open) { h.setAttribute("aria-expanded", "true"); api.slideOpen(body); }
+      } else {
+        h.setAttribute("aria-expanded", open ? "false" : "true");
+        if (open) api.slideShut(body, true); else api.slideOpen(body);
+      }
+    });
+  });
+
+  /* --- The create dialog names its destination ------------------------- */
+  function prefill(id) {
+    var w = WS[id];
+    api.$("#ns-ws").value = id;
+    api.$("#ns-sub").textContent = "in " + id;
+    api.$("#ns-dir").value = w.dir;
+    api.$("#ns-go").innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-play"/></svg> Start in ' + id;
+    var acct = api.$("#ns-acct");
+    acct.innerHTML = w.login
+      ? 'Runs under this workspace\'s own <code>gh</code> account, and will push as <b>' + w.login + '</b>. Different workspaces run under different accounts at the same time — the app never switches the active one.'
+      : 'No account is bound to <b>' + id + '</b>. The session still runs; <code>gh pr list</code> and <code>git push</code> in it will not.';
+
+    /* The two sourced starting points are the workspace's, so an option that has
+       nothing behind it is disabled and says which nothing it is — rather than
+       being offered and failing after the dialog has closed. */
+    var names = w.scenarios.map(function (x) { return x.name; });
+    setOption("ns-from-scen", names.length, names.join(" · "), "No scenarios in " + id + " yet.");
+    var src = w.source;
+    api.$("#ns-src-text").textContent = src && src.kind === "issues" ? "An issue from the queue" : "A card from the queue";
+    setOption("ns-from-src", !!src,
+      src && src.kind === "issues" ? "An open issue in " + w.repo + ". Opens on a branch in a worktree of its own."
+                                   : "A card in " + (w.repo ? w.source.where : "") + ". Opens on a branch in a worktree of its own.",
+      "No source is bound to " + id + ", so there is no card and no issue to start from.");
+  }
+
+  function setOption(inputId, on, hint, why) {
+    var input = document.getElementById(inputId);
+    var row = input.closest(".check");
+    input.disabled = !on;
+    row.classList.toggle("check--off", !on);
+    api.$(".check-hint", row).textContent = on ? hint : why;
+    if (!on && input.checked) { input.checked = false; api.$("#ns-from-blank").checked = true; }
+  }
+  /* Capture, so the fields are filled before the shared handler opens the
+     dialog — otherwise the first frame shows the previous workspace. */
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("[data-new-ws]");
+    if (a) prefill(a.getAttribute("data-new-ws"));
+  }, true);
+  api.$("#ns-ws").addEventListener("change", function () { prefill(this.value); });
+  /* `data-close-overlay` is handled and returned on before `data-toast` is read,
+     so the button closed the dialog and said nothing. It states the consequence
+     it promised: which workspace, and in which folder. */
+  api.$("#ns-go").addEventListener("click", function () {
+    api.toast("New session in " + api.$("#ns-ws").value + " · " + api.$("#ns-dir").value, "play");
+  });
+
+  api.$$(".rail-btn[data-sec]").forEach(function (b) {
+    b.addEventListener("click", function () { section(b.getAttribute("data-sec")); });
+  });
+  document.addEventListener("click", function (e) {
+    var j = e.target.closest && e.target.closest("[data-jump]");
+    if (j) section(j.getAttribute("data-jump"));
+  });
+
+  /* --- Collapse, and widen ---------------------------------------------
+     Widening is what makes the deck fall into the filmstrip. The deck yields
+     space; the window never changes what it is. */
+  function wide() { panel.classList.add("is-wide"); if (!deck.classList.contains("is-zoomed")) zoom(api.$(".tile.is-active", deck) || order[0], true); }
+  /* The same key both ways, and only where width is the thing that is short: a
+     queue and a diff. On the workspace tree it used to widen a 19rem column of
+     names to 46rem and push the deck into the filmstrip for nothing — something
+     the widen button in the head never offered, because it hides itself there. A
+     key that silently does the wrong thing is worse than one that says no. */
+  function widen() {
+    if (panel.classList.contains("is-wide")) { narrow(); unzoom(); return; }
+    var on = api.$('.rail-btn[aria-current="true"]');
+    var sec = on && on.getAttribute("data-sec");
+    if (sec && SECTIONS[sec] && SECTIONS[sec].wide) wide();
+    else api.toast("Only the queue and a pull request take the deck's width", "columns");
+  }
+  function narrow() { panel.classList.remove("is-wide"); }
+  api.$("#panel-shut").addEventListener("click", function () { panel.classList.toggle("is-collapsed"); });
+  /* The 80-column floor is measured on a box that is still moving: the panel's
+     width is animated, so `zoom()` measures the terminal before the panel has
+     finished taking or giving back its room. Refit when the width lands, or the
+     floor only holds for the state the tile happened to open in. */
+  panel.addEventListener("transitionend", function (e) {
+    if (e.propertyName !== "width") return;
+    var z = api.$(".tile.zoomed", deck);
+    if (z) fitTool(z);
+  });
+  api.$("#panel-wide").addEventListener("click", function () {
+    if (panel.classList.contains("is-wide")) { narrow(); unzoom(); } else wide();
+  });
+  /* One handler for the panel, because everything in it below the workspace tree
+     is rendered per workspace: rows bound at boot would be bound to nodes the
+     next workspace change throws away. */
+  stack.addEventListener("click", function (e) {
+    if (e.target.closest("#wide-board")) { wide(); api.toast("The whole board, in the panel", "columns"); return; }
+    var pr = e.target.closest("[data-pr]");
+    if (pr) { showPR(pr.getAttribute("data-pr")); return; }
+    if (e.target.closest("#pr-back")) { show("prs"); api.$("#panel-title").textContent = SECTIONS.prs.title; return; }
+    var go = e.target.closest("[data-go]");
+    if (go) { var t = api.$('[data-tile="' + go.getAttribute("data-go") + '"]'); if (t) zoom(t); }
+  });
+
+  /* ====================================================================
+     Zoom, and the tools that come with it
+     ==================================================================== */
+  var TOOLS = [
+    { id: "files",  icon: "folder",     name: "Files",    scope: function (t) { return t.getAttribute("data-worktree"); } },
+    { id: "chg",    icon: "git-branch", name: "Changes",  scope: function (t) { return t.getAttribute("data-branch") + " · 5 files"; } },
+    { id: "src",    icon: "list",       name: "Source",   scope: function (t) { return t.getAttribute("data-card"); } },
+    { id: "find",   icon: "search",     name: "Find",     scope: function (t) { return "in this transcript"; } }
+  ];
+
+  var TREE = [
+    { n: "src", d: 0, dir: 1, open: 1 },
+    { n: "terminal.ts", d: 1, m: "M" }, { n: "sessions.ts", d: 1 }, { n: "flip.ts", d: 1 },
+    { n: "styles.css", d: 1, m: "M" }, { n: "icons.ts", d: 1 },
+    { n: "src-tauri", d: 0, dir: 1 },
+    { n: "tests", d: 0, dir: 1, open: 1 },
+    { n: "timer-flake.test.ts", d: 1, m: "A" }, { n: "pr-polling.test.ts", d: 1 },
+    { n: "package.json", d: 0, m: "M" }, { n: "README.md", d: 0 },
+    { n: ".git", d: 0, muted: 1, note: "shared with main" },
+    { n: "node_modules", d: 0, dir: 1, muted: 1 }
+  ];
+
+  var CHANGES = [
+    ["M", "src/terminal.ts", "+52", "−19"],
+    ["M", "src/styles.css", "+8", "−2"],
+    ["A", "tests/timer-flake.test.ts", "+141", "−0"],
+    ["D", "tests/legacy-timer.test.ts", "+0", "−77"],
+    ["M", "package.json", "+1", "−1"]
+  ];
+
+  function toolBody(id, tile) {
+    if (id === "files") {
+      return '<div class="tree">' + TREE.map(function (r, i) {
+        return '<button class="tree-row' + (r.muted ? " tree-row--muted" : "") + '" style="--d: ' + r.d + '"'
+          + (r.dir ? ' aria-expanded="' + (r.open ? "true" : "false") + '"' : "") + '>'
+          + (r.dir ? '<svg class="ic caret" aria-hidden="true"><use href="#i-chevron"/></svg>' : '<span style="width:12px;flex:none"></span>')
+          + '<svg class="ic" aria-hidden="true"><use href="#i-' + (r.dir ? "folder" : "book") + '"/></svg>'
+          + '<span class="tree-name">' + r.n + "</span>"
+          + (r.m ? '<span class="tree-mark ' + (r.m === "A" ? "plus" : r.m === "D" ? "minus" : "") + '">' + r.m + "</span>" : "")
+          + (r.note ? '<span class="tree-mark" style="color: var(--fg-dim)">' + r.note + "</span>" : "")
+          + "</button>";
+      }).join("") + "</div>";
+    }
+    if (id === "chg") {
+      return '<div class="chg">' + CHANGES.map(function (c) {
+        return '<button class="chg-row"><span class="chg-mark chg-mark--' + c[0].toLowerCase() + '">' + c[0] + "</span>"
+          + '<span class="chg-path">' + c[1] + '</span><span class="plus">' + c[2] + '</span><span class="minus">' + c[3] + "</span></button>";
+      }).join("") + '</div><p class="form-hint" style="margin-top: var(--sp-3)">5 files · <span class="plus">+202</span> <span class="minus">−99</span> · this worktree is 3 commits ahead of <code>main</code>.</p>';
+    }
+    if (id === "src") {
+      return '<p class="form-hint">The card this session was launched from. It is the session\'s prompt, so it belongs to the session rather than to the board.</p>'
+        + '<div class="q-card rail is-error" style="margin-top: var(--sp-2); background: var(--bg-inset)">'
+        + '<span class="q-title">' + tile.getAttribute("data-card") + "</span>"
+        + '<span class="q-foot"><span class="chip"><i data-ic="alert"></i>bug</span><span class="chip">ux</span></span></div>'
+        + '<p class="form-hint" style="margin-top: var(--sp-3)">The gesture hangs on <code>dblclick</code> alone, so the one thing the deck is for cannot be reached without a mouse.</p>';
+    }
+    return '<input class="field field--mono" placeholder="Find in this transcript…" aria-label="Find in this transcript">'
+      + '<p class="form-hint" style="margin-top: var(--sp-2)">Scoped to this session. The app-level search is <span class="kbd">⌘K</span> and looks at commands, not output.</p>';
+  }
+
+  var ADDABLE = [
+    ["chart", "Tokens and cost", "for this session"],
+    ["git-merge", "The pull request on this branch", "#158 exists"],
+    ["clock", "Runs of its scenario", "started by hand — nothing to show"],
+    ["sliders", "Environment", "9 variables, 2 from the workspace"],
+    ["book", "A note on this session", "empty"]
+  ];
+
+  function mountTools(tile) {
+    if (api.$(".tile-tools", tile)) return;
+    var railHtml = '<div class="tile-tools" data-od-id="tile-tools">'
+      + TOOLS.map(function (t, i) {
+          return '<button class="tool-btn" data-tool="' + t.id + '" aria-pressed="' + (i === 0) + '" aria-label="' + t.name + '" title="' + t.name + '"><i data-ic="' + t.icon + '"></i></button>';
+        }).join("")
+      + '<span class="tool-sp"></span>'
+      /* The `+` is the whole of "extensible", made visible on the strip. A
+         preference pane nobody opens is not an affordance. */
+      + '<button class="tool-btn tool-add" data-tool-add aria-label="Add a tool" title="Add a tool"><i data-ic="plus"></i></button>'
+      + "</div>";
+    var panelHtml = '<div class="tile-panel" data-od-id="tile-panel">'
+      + '<div class="tool-head"><div class="tool-titles">'
+      + '<span class="tool-name">Files</span><span class="tool-scope">' + tile.getAttribute("data-worktree") + "</span></div>"
+      + '<button class="btn--icon" data-tool-shut aria-label="Close this tool"><i data-ic="x"></i></button></div>'
+      + '<div class="tool-body">' + toolBody("files", tile) + "</div></div>";
+    var pop = '<div class="tool-pop" hidden data-od-id="tool-add-pop"><div class="tool-pop-head"><span class="caps">Add a tool</span></div>'
+      + ADDABLE.map(function (a) {
+          return '<button class="tool-opt" data-toast="' + a[1] + ' added to this session" data-toast-icon="' + a[0] + '"><i data-ic="' + a[0] + '"></i><span>' + a[1] + "</span><em>" + a[2] + "</em></button>";
+        }).join("")
+      + '<p class="tool-pop-foot">A tool is a name, an icon, a scope — session, workspace or repository — and whether it needs the worktree path. Everything else is just what it draws.</p></div>';
+    /* The panel and the rail go INSIDE the terminal's box, so the row that
+       holds them is the same box the terminal lives in — that is what makes the
+       floating variant clip to the terminal rather than to the whole tile. The
+       popover goes on the tile, because a popover clipped by `overflow: hidden`
+       is a popover nobody can read. */
+    api.$(".tile-body", tile).insertAdjacentHTML("beforeend", panelHtml + railHtml);
+    tile.insertAdjacentHTML("beforeend", pop);
+    if (window.hydrateDeckIcons) window.hydrateDeckIcons(tile);
+    fitTool(tile);
+  }
+
+  /* The column floor, measured in the terminal's OWN font rather than in pixels.
+     Below 80 columns the panel floats instead of squeezing, because `fit()`
+     follows whatever box the terminal sits in — this project has already shipped
+     the bug where a shrinking box re-wrapped an agent's output to about 22
+     columns, and a tool panel that does it on every open is worse. */
+  function fitTool(tile) {
+    var p = api.$(".tile-panel", tile), term = api.$(".term", tile);
+    if (!p || !term) return;
+    var probe = document.createElement("span");
+    probe.style.cssText = "position:absolute;visibility:hidden;display:inline-block;width:80ch";
+    term.appendChild(probe);
+    var need = probe.offsetWidth + 34;
+    probe.remove();
+    var have = api.$(".tile-body", tile).getBoundingClientRect().width - 40 - (p.classList.contains("is-shut") ? 0 : 304);
+    p.classList.toggle("is-floating", !p.classList.contains("is-shut") && have < need);
+  }
+
+  function zoom(tile, keepPanel) {
+    var nodes = order.slice();
+    api.flip(nodes, function () {
+      if (!strip) { strip = document.createElement("div"); strip.className = "strip"; deck.appendChild(strip); }
+      deck.classList.add("is-zoomed");
+      order.forEach(function (t) {
+        t.classList.toggle("zoomed", t === tile);
+        t.classList.toggle("is-active", t === tile);
+        if (t === tile) deck.insertBefore(t, strip); else strip.appendChild(t);
+        var u = api.$("[data-zoom] use", t);
+        if (u) u.setAttribute("href", t === tile ? "#i-collapse" : "#i-expand");
+      });
+      mountTools(tile);
+    });
+    /* Zooming collapses the app panel to its rail. Not a nicety: at 1280px the
+       rail, a 304px panel and a 304px tool panel leave the terminal 68 columns.
+       And when you are inside one session, the queue is not what you are
+       looking at. `⌘B` brings it back if you disagree. */
+    if (!keepPanel) {
+      wasCollapsed = panel.classList.contains("is-collapsed");
+      panel.classList.add("is-collapsed");
+    }
+    api.store("zoom", tile.getAttribute("data-tile"));
+    window.setTimeout(function () { fitTool(tile); }, 360);
+  }
+
+  function unzoom() {
+    var nodes = order.slice();
+    api.flip(nodes, function () {
+      deck.classList.remove("is-zoomed");
+      order.forEach(function (t) {
+        t.classList.remove("zoomed");
+        deck.appendChild(t);
+        var u = api.$("[data-zoom] use", t);
+        if (u) u.setAttribute("href", "#i-expand");
+      });
+      if (strip) { strip.remove(); strip = null; }
+    });
+    api.store("zoom", "");
+    if (!wasCollapsed) panel.classList.remove("is-collapsed");
+  }
+
+  deck.addEventListener("click", function (e) {
+    var z = e.target.closest("[data-zoom]");
+    if (z) { e.stopPropagation(); var t = z.closest(".tile"); if (t.classList.contains("zoomed")) unzoom(); else zoom(t); return; }
+    var card = e.target.closest(".strip .tile");
+    if (card) { zoom(card); return; }
+
+    var tb = e.target.closest("[data-tool]");
+    if (tb) {
+      e.stopPropagation();
+      var tile = tb.closest(".tile"), p = api.$(".tile-panel", tile);
+      var id = tb.getAttribute("data-tool"), spec = TOOLS.filter(function (x) { return x.id === id; })[0];
+      var already = tb.getAttribute("aria-pressed") === "true" && !p.classList.contains("is-shut");
+      api.$$("[data-tool]", tile).forEach(function (o) { o.setAttribute("aria-pressed", String(o === tb && !already)); });
+      if (already) { p.classList.add("is-shut"); p.classList.remove("is-floating"); return; }
+      p.classList.remove("is-shut");
+      api.$(".tool-name", tile).textContent = spec.name;
+      api.$(".tool-scope", tile).textContent = spec.scope(tile);
+      api.$(".tool-body", tile).innerHTML = toolBody(id, tile);
+      if (window.hydrateDeckIcons) window.hydrateDeckIcons(tile);
+      fitTool(tile);
+      return;
+    }
+    var add = e.target.closest("[data-tool-add]");
+    if (add) { e.stopPropagation(); var pop = api.$(".tool-pop", add.closest(".tile")); pop.hidden = !pop.hidden; return; }
+    /* Picking an option closes the popover but does NOT stop propagation: the
+       shared handler downstream is what reports the choice. */
+    if (e.target.closest(".tool-opt")) { api.$$(".tool-pop").forEach(function (o) { o.hidden = true; }); }
+    var shut = e.target.closest("[data-tool-shut]");
+    if (shut) {
+      e.stopPropagation();
+      var tl = shut.closest(".tile");
+      api.$(".tile-panel", tl).classList.add("is-shut");
+      api.$(".tile-panel", tl).classList.remove("is-floating");
+      api.$$("[data-tool]", tl).forEach(function (o) { o.setAttribute("aria-pressed", "false"); });
+      return;
+    }
+    var dir = e.target.closest('.tree-row[aria-expanded]');
+    if (dir) { e.stopPropagation(); dir.setAttribute("aria-expanded", dir.getAttribute("aria-expanded") === "true" ? "false" : "true"); return; }
+
+    var tile2 = e.target.closest(".tile");
+    if (tile2 && !deck.classList.contains("is-zoomed")) order.forEach(function (t) { t.classList.toggle("is-active", t === tile2); });
+  });
+
+  deck.addEventListener("dblclick", function (e) {
+    var h = e.target.closest(".tile-head");
+    if (!h) return;
+    var t = h.closest(".tile");
+    if (t.classList.contains("zoomed")) unzoom(); else zoom(t);
+  });
+
+  document.addEventListener("keydown", function (e) {
+    var meta = e.metaKey || e.ctrlKey;
+    /* An overlay owns the keyboard while it is up. Without this, ⌘2 quietly
+       rebuilt the panel behind an open dialog and ⌘↵ zoomed a tile nobody could
+       see — esc first is the whole contract of a modal. */
+    if (api.$$(".overlay").filter(function (o) { return !o.hidden; })[0]) return;
+    if (meta && e.key.toLowerCase() === "b") { e.preventDefault(); panel.classList.toggle("is-collapsed"); return; }
+    if (meta && e.key === "Enter") {
+      e.preventDefault();
+      if (api.$(".tile.zoomed", deck)) unzoom(); else zoom(api.$(".tile.is-active", deck) || order[0]);
+      return;
+    }
+    if (meta && e.key.toLowerCase() === "n") {
+      e.preventDefault();
+      prefill(current);
+      window.deckUI.openOverlay("new-session");
+      return;
+    }
+    /* The same key both ways, and only where width is the thing that is short:
+       a queue and a diff. On the workspace tree it used to widen a 19rem column
+       of names to 46rem and push the deck into the filmstrip for nothing, which
+       the widen button in the head never offered because it hides itself there.
+       A key that silently does the wrong thing is worse than one that says no. */
+    if (meta && e.shiftKey && e.key === "ArrowRight") { e.preventDefault(); widen(); return; }
+    if (meta && "12345".indexOf(e.key) > -1) {
+      e.preventDefault();
+      section(["ws", "queue", "prs", "log", "scen"][+e.key - 1]);
+    }
+  });
+
+  /* Anywhere else dismisses it. */
+  document.addEventListener("click", function (e) {
+    if (e.target.closest && (e.target.closest("[data-tool-add]") || e.target.closest(".tool-pop"))) return;
+    api.$$(".tool-pop").forEach(function (o) { o.hidden = true; });
+  });
+
+  /* Which session was open is part of where you were, so it is persisted with
+     everything else the deck remembers. Restoring is done WITHOUT the FLIP: there
+     is no previous position to travel from at boot, and an entrance animation
+     fighting a transform is how the tile would arrive invisible. */
+  function restore(tile) {
+    if (!strip) { strip = document.createElement("div"); strip.className = "strip"; deck.appendChild(strip); }
+    deck.classList.add("is-zoomed");
+    order.forEach(function (t) {
+      t.classList.toggle("zoomed", t === tile);
+      t.classList.toggle("is-active", t === tile);
+      if (t === tile) deck.insertBefore(t, strip); else strip.appendChild(t);
+      var u = api.$("[data-zoom] use", t);
+      if (u) u.setAttribute("href", t === tile ? "#i-collapse" : "#i-expand");
+    });
+    mountTools(tile);
+    wasCollapsed = panel.classList.contains("is-collapsed");
+    panel.classList.add("is-collapsed");
+    window.setTimeout(function () { fitTool(tile); }, 60);
+  }
+
+  var boot = api.store("zoom") || document.body.getAttribute("data-boot-zoom");
+  if (boot) {
+    var bt = api.$('[data-tile="' + boot + '"]');
+    if (bt) window.requestAnimationFrame(function () { restore(bt); });
+  }
+
+  /* --- The command palette -----------------------------------------------
+     It ends with "every binding in the app is in this list — a command missing
+     here is missing from the app", and the new shell added seven it did not know
+     about. They come from the same table the keys use, and they RUN rather than
+     announcing: the two that were already in the list and now exist for real
+     (a new session, zoom) are wired to the same functions the keys call. */
+  var pal = document.getElementById("palette");
+  if (pal) {
+    api.$(".palette-empty", pal).insertAdjacentHTML("beforebegin", D.render.commands());
+    api.$$(".palette-item", pal).forEach(function (it) {
+      var k = api.$(".kbd", it);
+      var key = k ? k.textContent : "";
+      if (key === "⌘N") it.setAttribute("data-shell-cmd", "new");
+      if (key === "⌘↵") it.setAttribute("data-shell-cmd", "zoom");
+    });
+    if (window.hydrateDeckIcons) window.hydrateDeckIcons(pal);
+    var foot = api.$$(".palette-foot span", pal).slice(-1)[0];
+    if (foot) foot.textContent = api.$$(".palette-item", pal).length + " commands";
+    pal.addEventListener("click", function (e) {
+      var it = e.target.closest("[data-shell-cmd]");
+      if (!it) return;
+      var cmd = it.getAttribute("data-shell-cmd");
+      if (cmd.indexOf("sec:") === 0) section(cmd.slice(4));
+      else if (cmd === "wide") widen();
+      else if (cmd === "shut") panel.classList.toggle("is-collapsed");
+      else if (cmd === "zoom") { if (api.$(".tile.zoomed", deck)) unzoom(); else zoom(api.$(".tile.is-active", deck) || order[0]); }
+      else if (cmd === "new") {
+        /* "A new session in relay" was a constant in the palette's own copy.
+           The shared handler reads `data-does` on this same click, after this
+           one, so the sentence it announces is written a moment before it. */
+        it.setAttribute("data-does", "A new session in " + current);
+        prefill(current);
+        window.deckUI.openOverlay("new-session");
+      }
+    });
+  }
+
+  api.$('.panel-page[data-page="scen"]', stack).innerHTML = D.render.scen();
+
+  window.addEventListener("resize", function () { ink(); var z = api.$(".tile.zoomed", deck); if (z) fitTool(z); });
+  setCurrent(current);
+  ink();
+  /* The widen button belongs to the section, and at boot no section had been
+     picked — so the workspace tree, which cannot use the width and which the key
+     refuses to widen, was still offering the button. Set last and set alone,
+     rather than by running `section()` at boot: nothing else here needs to move,
+     and a boot path that opens with a page transition is not worth the button. */
+  api.$("#panel-wide").hidden = !SECTIONS[api.$('.rail-btn[aria-current="true"]').getAttribute("data-sec")].wide;
+};
+</script>
+<script src="assets/deck-shell-data.js"></script>
+<script src="assets/deck-chrome.js"></script>
+<script src="assets/icons.js"></script>
+<script src="assets/deck-motion.js"></script>
+</body>
+</html>

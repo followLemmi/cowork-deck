@@ -5,7 +5,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
  *  was raised for. No DOM/Tauri dependency — unit-tested directly. */
 export class NotifyRouter {
   private map = new Map<number, string>();
-  private seq = 1;
+  private seq: number;
+
+  /** `seed` is where this window's ids start. It used to be 1 in every window,
+   *  so id 3 named a different session in each of them: clicking a notification
+   *  resolved to the wrong tile, in a window that then raised itself over the one
+   *  the person was working in. With disjoint ranges a foreign id resolves to
+   *  nothing, which is the right answer whether or not the notification plugin
+   *  delivers an action to every listening webview — a question this does not
+   *  have to answer. See `notifyIdSeed`. */
+  constructor(seed = 1) { this.seq = seed; }
 
   register(session: string): number {
     const id = this.seq++;

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>cowork-deck</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <!-- The second kind of window, on the same mocks. A copy of the body for
+         the same reason `index.html` beside it is one, plus one more:
+         `installMocks` has to run before the entry is imported, and the entry
+         begins booting the moment it is evaluated. The label is what `startApp`
+         reads to decide it is one workspace rather than the whole app. Keep all
+         three in step. -->
+    <!-- A copy of the app's own `index.html` body. It has to be a copy rather than
+         a reuse: the mocks must be installed before `main.ts` is imported, and
+         `main.ts` starts booting the moment it is evaluated. Keep the two in step —
+         a screen the harness cannot mount is a screen the README cannot show. -->
+    <div id="app">
+      <header class="topbar">
+        <div class="mark" id="mark" data-od-id="wordmark"></div>
+        <span class="topbar-spacer"></span>
+        <!-- What replaced four tab labels. Not "where to go" but "what wants me",
+             and every reading in it is a jump into the panel rather than a
+             destination. Empty here on purpose: `app.ts` writes it from the deck's
+             own counts, so no number in this markup can go stale. -->
+        <div id="ledger" data-od-id="ledger"></div>
+        <div id="topbar-actions"></div>
+      </header>
+      <div id="stage">
+        <!-- Mirrors `index.html`: a rail, one panel, and the deck that never
+             yields its place in the row. -->
+        <nav id="rail" aria-label="Panels"></nav>
+        <aside id="sidebar">
+          <div id="panel-head"></div>
+          <div id="panel-stack"></div>
+        </aside>
+        <div id="workarea">
+          <main id="deck"></main>
+          <div id="terminals"></div>
+        </div>
+        <!-- The workspace's own two pages, on the side of the window this app
+             already means by "what I am looking at". Kept in step with the other
+             three copies of this body — `page-bodies.test.ts` is what makes that
+             request enforceable. -->
+        <aside id="wspanel" hidden>
+          <div id="wsp-head"></div>
+          <div id="wsp-body">
+            <div id="board" class="panel-page hidden"></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+    <script type="module">
+      import { installMocks } from "/harness/mock.ts";
+      // `ws-relay`, and it has to be: every session in `harness/fixtures.ts`
+      // belongs to relay, and a window pinned to a workspace now lists that
+      // workspace and no other. Pinned to harbor, this page showed an empty
+      // deck above five sessions filed under "Other" — a state the real window
+      // cannot reach, since a detached window is handed its own workspace's
+      // sessions and nobody else's.
+      installMocks("workspace-ws-relay");
+      await import("/src/workspace.ts");
+      window.__HARNESS_BOOTED__ = true;
+    </script>
+  </body>
+</html>

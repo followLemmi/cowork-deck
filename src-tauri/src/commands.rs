@@ -17,7 +17,8 @@
 //! `gh_invocation`), which is what makes concurrent commands safe here.
 //!
 //! **Every command that spawns a process or touches the network carries it.**
-//! That is all of `gh_*`, `pr_*`, `issue_*` and `git_status` here, and the whole
+//! That is all of `gh_*`, `pr_*`, `issue_*`, `git_status`, `git_changes` and
+//! `worktree_files` here, and the whole
 //! of `tasks_cmd`, whose file board reads a directory that may be on a network
 //! mount. The three deliberate exceptions, which stay on the main thread:
 //!
@@ -48,8 +49,8 @@
 use crate::gh;
 use crate::hooks::build_settings_json;
 use crate::model::{
-    GitStatus, SessionEntry, SessionTokens, Skill, TokenUsage, UiState, UiStatePatch, Workspace,
-    WorkspaceGithub,
+    ConfigFile, ConfigPaths, GitChange, GitChanges, GitStatus, SessionEntry, SessionTokens, Skill,
+    TokenUsage, UiState, UiStatePatch, Workspace, WorkspaceGithub,
 };
 use crate::pty::PtyManager;
 use crate::store::Store;
@@ -57,7 +58,7 @@ use crate::which;
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::ipc::{Channel, Response};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AppState {
     pub store: Mutex<Store>,
@@ -105,6 +106,18 @@ pub struct AppState {
     /// a network call. A workspace whose board has not been opened this run is
     /// absent, and `WorkspacesPanel` already draws nothing for that.
     pub issue_open_counts: Mutex<std::collections::HashMap<String, usize>>,
+    /// Which windows have attached their listeners, and how to wait for one.
+    ///
+    /// The same problem `scheduler_ready` above solves for `schedule://fire`,
+    /// with more than one thing to wait for: an emit to a webview that holds no
+    /// listener for that event is a silent no-op at both ends, so a window that
+    /// has not announced itself is not spoken to. See `windows::WindowReady`.
+    pub windows_ready: std::sync::Arc<crate::windows::WindowReady>,
+    /// Which window may write to which session. Claimed where a session is
+    /// spawned, cleared where one closes and where a window is destroyed, and
+    /// checked before every write and resize. See `ownership::SessionOwners`
+    /// for why the frontend cannot be the layer that decides this.
+    pub session_owners: crate::ownership::SessionOwners,
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
@@ -269,7 +282,17 @@ pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Works
 }
 #[tauri::command]
 pub fn remove_workspace(state: State<AppState>, id: String) -> Result<Vec<Workspace>, String> {
-    state.store.lock().unwrap().delete_workspace(&id).map_err(|e| e.to_string())
+    let (left, dir) = {
+        let store = state.store.lock().unwrap();
+        (store.delete_workspace(&id).map_err(|e| e.to_string())?, store.dir.clone())
+    };
+    // Deletion is an event, and this is the moment it happens. Sync cannot work
+    // it out later by comparing the repository against the store: a record that
+    // arrived in a pull and has not been merged yet is indistinguishable from
+    // one deleted here, and guessing wrong deletes another machine's workspace.
+    // Its memory is deliberately left where it is.
+    crate::sync::publish::forget_workspace(&dir, &id);
+    Ok(left)
 }
 #[tauri::command]
 pub fn list_skills(state: State<AppState>) -> Vec<Skill> {
@@ -281,7 +304,12 @@ pub fn save_skill(state: State<AppState>, sk: Skill) -> Result<Vec<Skill>, Strin
 }
 #[tauri::command]
 pub fn remove_skill(state: State<AppState>, id: String) -> Result<Vec<Skill>, String> {
-    state.store.lock().unwrap().delete_skill(&id).map_err(|e| e.to_string())
+    let (left, dir) = {
+        let store = state.store.lock().unwrap();
+        (store.delete_skill(&id).map_err(|e| e.to_string())?, store.dir.clone())
+    };
+    crate::sync::publish::forget_scenario(&dir, &id);
+    Ok(left)
 }
 
 /// Runtime schedule state for the UI. The backend owns this file; without a
@@ -486,6 +514,15 @@ pub struct HostPlatform {
     pub os: String,
     /// ID дистрибутива из /etc/os-release; None на macOS/Windows.
     pub distro: Option<String>,
+    /// Whether this platform lets the app say where a window goes.
+    ///
+    /// False on Wayland, where `set_position` returns `Ok` and silently does
+    /// nothing. The tear-out gesture is built on putting the new window under
+    /// the cursor, so it is not offered where that cannot work — the plain
+    /// trigger does the same job and reads as the way to do it, rather than as
+    /// the fallback beside a gesture that looks broken.
+    #[serde(rename = "placesWindows")]
+    pub places_windows: bool,
 }
 
 /// Достаёт `ID=` из /etc/os-release. Кавычки вокруг значения допустимы.
@@ -514,7 +551,22 @@ pub fn host_platform() -> HostPlatform {
     } else {
         None
     };
-    HostPlatform { os: os.to_string(), distro }
+    // Whether this platform lets an app say where a window goes.
+    //
+    // `set_position` compiles and returns `Ok` on Wayland and silently does
+    // nothing: the compositor owns placement. The tear-out gesture is built on
+    // putting the new window under the cursor, so on Wayland it cannot work at
+    // all — and a gesture that half-works is worse than one that is not offered,
+    // because the plain trigger is right there and reads as broken beside it.
+    //
+    // Named for the capability rather than the display server, because that is
+    // what the caller needs to know and it stays true if another platform ever
+    // makes the same choice.
+    let places_windows = !(os == "linux"
+        && std::env::var("XDG_SESSION_TYPE")
+            .map(|t| t.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false));
+    HostPlatform { os: os.to_string(), distro, places_windows }
 }
 
 #[tauri::command(async)]
@@ -715,6 +767,17 @@ pub fn prepare_workspace(state: State<AppState>, workspace_id: String) -> Sessio
         store.workspaces().into_iter().find(|w| w.id == workspace_id).and_then(|w| w.github)
     };
     session_auth(&state, Some(&workspace_id), github.as_ref()).auth
+}
+
+/// The sentence a workspace with no folder on this machine gets.
+///
+/// A marker the frontend can match on, the way `unavailableFrom` matches the
+/// `gh` states, plus prose for anywhere that only shows the text.
+pub fn no_local_path(workspace_id: Option<&str>) -> String {
+    let _ = workspace_id;
+    "no-local-path: this workspace has no folder on this machine yet. \
+     Point it at one before starting a session here."
+        .to_string()
 }
 
 /// Cap on one page of pull requests. Named rather than inlined because the
@@ -1288,7 +1351,15 @@ fn workspace_path(state: &State<AppState>, workspace_id: &str) -> Result<String,
         let store = state.store.lock().map_err(|_| "store lock".to_string())?;
         store.workspaces().into_iter().find(|w| w.id == workspace_id).map(|w| w.path)
     };
-    found.ok_or_else(|| "no such workspace".to_string())
+    // Empty is not the same as absent, and both are refused: a workspace that
+    // arrived over sync exists as a record while naming no folder here, and
+    // every caller of this — worktrees, git status, `gh` resolving from a
+    // directory — would otherwise run somewhere unspecified.
+    match found {
+        Some(p) if !p.trim().is_empty() => Ok(p),
+        Some(_) => Err(no_local_path(Some(workspace_id))),
+        None => Err("no such workspace".to_string()),
+    }
 }
 
 /// Where this pull request's worktree would live, and whether it is there.
@@ -1601,6 +1672,7 @@ pub fn issue_worktree_remove(
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<AppState>,
     session: String,
     cwd: String,
@@ -1639,6 +1711,15 @@ pub fn start_session(
     // see `PtyManager::spawn`.
     replace: bool,
 ) -> Result<SessionAuth, String> {
+    // A workspace that arrived over sync has no folder on this machine until
+    // somebody says where it is (#316). Everything downstream — the pty's
+    // working directory, worktrees, `gh` resolving a repository from where it
+    // stands — assumes this names a directory that exists. Refused here with a
+    // sentence, because the alternative is a shell in an unspecified directory
+    // and a failure three layers further in.
+    if cwd.trim().is_empty() {
+        return Err(no_local_path(workspace_id.as_deref()));
+    }
     let resolved = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let program = resolved.program;
     let settings = build_settings_json(&state.reporter_path, state.listener_port, &session, &state.task_bin_path);
@@ -1748,6 +1829,10 @@ pub fn start_session(
         crate::run_journal::failed_to_start(&session, &e);
         return Err(e);
     }
+    // After the spawn, so a session that failed to start leaves no owner behind
+    // for a later id collision to inherit. The window that started a session
+    // owns it until it hands it on.
+    state.session_owners.claim(&session, window.label());
     Ok(outcome.auth)
 }
 
@@ -1760,6 +1845,7 @@ pub fn start_session(
 #[tauri::command]
 pub fn start_command_session(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<AppState>,
     session: String,
     cwd: String,
@@ -1795,7 +1881,9 @@ pub fn start_command_session(
     state
         .pty
         .spawn(&session, &program, &args, &cwd, cols, rows, &[], false, on_output, on_exit)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    state.session_owners.claim(&session, window.label());
+    Ok(())
 }
 
 /// How many shells may be open at once.
@@ -1879,6 +1967,7 @@ fn shell_name(program: &str) -> String {
 #[tauri::command]
 pub fn start_shell_session(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     state: State<AppState>,
     session: String,
     cwd: String,
@@ -1933,6 +2022,7 @@ pub fn start_shell_session(
         .spawn(&session, &program, &args, &cwd, cols, rows, &outcome.env, false, on_output, on_exit)
         .map_err(|e| e.to_string())?;
 
+    state.session_owners.claim(&session, window.label());
     if let Ok(mut shells) = state.shells.lock() {
         shells.insert(session);
     }
@@ -1978,13 +2068,111 @@ pub fn save_terminals(
     state.store.lock().unwrap().save_terminals(&layout).map_err(|e| e.to_string())
 }
 
+/// Input for a session, from the window that owns it.
+///
+/// `window` comes from the runtime, so there is no token to pass and no call
+/// site to change — `src/broadcast.ts` included. The refusals are named rather
+/// than described: `not-owner` tells a window it is stale and should dispose,
+/// `no-session` says the session is gone, which for a keystroke arriving just
+/// after a close is ordinary. Both used to be `Ok(())`, which is exactly why a
+/// stale window could never detect itself.
 #[tauri::command]
-pub fn write_session(state: State<AppState>, session: String, data: String) -> Result<(), String> {
-    state.pty.write(&session, data.as_bytes()).map_err(|e| e.to_string())
+pub fn write_session(
+    window: tauri::WebviewWindow, state: State<AppState>, session: String, data: String,
+) -> Result<(), String> {
+    state.session_owners.check(&session, window.label()).map_err(|r| r.as_str().to_string())?;
+    state.pty.write(&session, data.as_bytes()).map_err(session_io_error)
 }
+/// A new geometry for a session, from the window that owns it.
+///
+/// The ownership check is what keeps a resize that was in flight across the IPC
+/// boundary when ownership changed from reaching the child: without it the
+/// process gets a SIGWINCH for a geometry no visible window has, and an Ink
+/// application repaints at the wrong width.
 #[tauri::command]
-pub fn resize_session(state: State<AppState>, session: String, cols: u16, rows: u16) -> Result<(), String> {
-    state.pty.resize(&session, cols, rows).map_err(|e| e.to_string())
+pub fn resize_session(
+    window: tauri::WebviewWindow, state: State<AppState>, session: String, cols: u16, rows: u16,
+) -> Result<(), String> {
+    state.session_owners.check(&session, window.label()).map_err(|r| r.as_str().to_string())?;
+    state.pty.resize(&session, cols, rows).map_err(session_io_error)
+}
+
+/// What `window://gone` carries: the window that has just been destroyed.
+///
+/// The main window keeps a picture of what every other window holds, and draws a
+/// detached workspace's row and its sessions from it. Nothing told it when a
+/// window went away, so that picture outlived the window: the row stayed marked
+/// as being elsewhere, could not be selected, and clicking it emitted into a
+/// label nothing answers to — a workspace that had been brought back was
+/// unreachable until the app restarted.
+#[derive(Clone, Serialize)]
+pub struct WindowGonePayload {
+    pub label: String,
+}
+
+/// What `session://owner` carries: a session and the window that now holds it.
+#[derive(Clone, Serialize)]
+pub struct OwnerPayload {
+    pub session: String,
+    pub owner: String,
+}
+
+/// Take a running session over, output and all.
+///
+/// The receiving half of a workspace moving between windows. The order is the
+/// whole design and it is not negotiable: **the receiving window becomes
+/// authoritative before the source gives anything up.** By the time this
+/// returns, the new window owns the session, its output arrives there, and every
+/// write from the old window is refused (#240) — so the source can dispose
+/// whenever it notices, and losing that race costs nothing.
+///
+/// It spawns nothing. `start_session` with `resume: true` would run
+/// `claude --resume` against a PTY that is still alive, which is a second agent
+/// on one conversation — the defect this whole epic starts from.
+///
+/// `sink` is a fresh output channel belonging to the calling window;
+/// `PtyManager::retarget` swaps it in under the same lock the reader takes, so a
+/// batch goes wholly to one window or wholly to the other. One already in flight
+/// lands in the source, which is why the caller reconciles what it buffered
+/// against the scrollback it was handed rather than assuming a clean cut.
+#[tauri::command(async)]
+pub async fn claim_session(
+    app: AppHandle, window: tauri::WebviewWindow, state: State<'_, AppState>,
+    session: String, sink: Channel<Response>,
+) -> Result<(), String> {
+    // Refuse an id nothing is running under, rather than recording an owner for
+    // a session that does not exist and leaving the caller to build a panel for
+    // it.
+    state.pty.retarget(&session, move |bytes: Vec<u8>| {
+        let _ = sink.send(Response::new(bytes));
+    }).map_err(session_io_error)?;
+
+    // After the retarget: if that failed there is nothing to own.
+    state.session_owners.claim(&session, window.label());
+
+    // Global rather than aimed at the source, because the source is whoever used
+    // to own it and this is the message telling them so. A window compares the
+    // owner against its own label; the one that matches has just asked for this
+    // and ignores it.
+    let _ = app.emit(
+        "session://owner",
+        OwnerPayload { session, owner: window.label().to_string() },
+    );
+    Ok(())
+}
+
+/// Name the one io error the frontend has to recognise, and pass every other
+/// through as it reads.
+///
+/// A session the manager no longer holds is `NotFound`, and that is a race
+/// between a keystroke and a close rather than a fault. Anything else reached
+/// the PTY and failed there, which is worth its own words.
+fn session_io_error(e: std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        crate::ownership::NO_SESSION.to_string()
+    } else {
+        e.to_string()
+    }
 }
 #[tauri::command]
 pub fn close_session(state: State<AppState>, session: String) {
@@ -1994,6 +2182,7 @@ pub fn close_session(state: State<AppState>, session: String) {
     // cannot overwrite `ended` with an exit code nobody asked for.
     crate::run_journal::close(&session, crate::runs::RunStatus::Ended);
     state.pty.kill(&session);
+    state.session_owners.release(&session);
     crate::transcripts::forget(&session);
 }
 
@@ -2016,14 +2205,180 @@ pub fn quit_cancelled(state: State<AppState>) {
     state.quit_asked.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// A window saying that it has attached its listeners.
+///
+/// The label comes from the runtime rather than a parameter, for the reason
+/// `load_layout` below takes a `WebviewWindow`: a window that could name another
+/// would be able to unblock a hand-off that has not happened.
+///
+/// Synchronous, and cheap enough to stay that way: one lock, one insert into a
+/// set of at most a handful of labels, and a wake of whoever is waiting. Making
+/// it async would also make it race the window it is announcing.
 #[tauri::command]
-pub fn load_layout(state: State<AppState>) -> Vec<SessionEntry> {
-    state.store.lock().unwrap().layout()
+pub fn window_ready(window: tauri::WebviewWindow, state: State<AppState>) {
+    state.windows_ready.mark(window.label());
 }
 
+/// How long a new window has to say it is listening before the attempt is
+/// called a failure.
+///
+/// Generous, because what is being waited for is a webview booting on a machine
+/// that may be busy compiling; short enough that a page which will never boot is
+/// reported rather than left spinning. The cost of being wrong in either
+/// direction is one dialog, not a lost session.
+const WINDOW_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Open the window pinned to `workspace_id`, or raise it if it is already up.
+///
+/// Built here rather than in the webview. `core:webview:default` does not include
+/// `allow-create-webview-window`, and granting window-spawning to a webview that
+/// renders untrusted agent output buys less than it costs — the label scheme and
+/// the window cap belong on this side anyway. `WebviewUrl::App` is same-origin,
+/// exactly as the pill already is, so the CSP is not a factor.
+///
+/// Returns only once the new window has announced itself, so a caller holding the
+/// label may address it at once. A window that never announces itself is closed
+/// and the failure reported: an inert window that renders and answers nothing is
+/// the exact outcome the handshake exists to prevent, and leaving one on screen
+/// would hide the cause rather than show it.
+#[tauri::command(async)]
+pub async fn open_workspace_window(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_id: String,
+    // `at` is where to put it, in physical screen coordinates, and `drag` hands
+    // the window straight to the OS's own move so the person keeps dragging what
+    // is now an ordinary window. Both are set by the tear-out gesture and absent
+    // for the plain trigger, which lets the window state plugin restore the
+    // window wherever it was last left. `drag` is only meaningful with `at`.
+    at: Option<(f64, f64)>,
+    drag: Option<bool>,
+) -> Result<String, String> {
+    let label = crate::windows::workspace_label(&workspace_id);
+
+    // The id arrives from the webview and is about to become a window label —
+    // the thing every capability match, every emit target and every ownership
+    // check is keyed on. One that does not survive the round trip would mint a
+    // label naming a different workspace, or none at all; an empty id mints the
+    // bare prefix, which parses back to nothing.
+    if crate::windows::workspace_id_of(&label) != Some(workspace_id.as_str()) {
+        return Err("that is not a workspace id a window can be opened for".to_string());
+    }
+
+    // Already open: raise it. Tauri refuses a second window with the same label,
+    // and a person who asks twice means "show me that one".
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.unminimize();
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(label);
+    }
+
+    // A label is reusable — the same workspace pulled out, returned, and pulled
+    // out again — and the readiness of the window that has gone is not this
+    // one's. Cleared here as well as on `Destroyed` because only one of the two
+    // is guaranteed to have run by now.
+    state.windows_ready.forget(&label);
+
+    let title = {
+        // Scoped: the guard must not be held across the await below.
+        let store = state.store.lock().unwrap();
+        store
+            .workspaces()
+            .into_iter()
+            .find(|w| w.id == workspace_id)
+            .map(|w| w.name)
+            .unwrap_or_else(|| "cowork-deck".to_string())
+    };
+
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::App("workspace.html".into()),
+    )
+    .title(title)
+    .inner_size(1100.0, 760.0)
+    // Hidden, then shown once the geometry is settled. The window-state plugin
+    // restores size and position after the window exists, so a visible window
+    // appears at the default position and visibly jumps to the remembered one.
+    // The plugin's own `show()` is not in play: `StateFlags::VISIBLE` is cleared
+    // in `main.rs`, which is what keeps it from focus-stealing.
+    .visible(false)
+    .build()
+    .map_err(|e| format!("could not create the window for this workspace: {e}"))?;
+
+    fit_to_display(&window);
+    if let Some((x, y)) = at {
+        // Offset so the cursor lands near the top-left of the new window rather
+        // than at its centre: what the person is dragging should appear under
+        // their hand, the way a torn-off tab does.
+        let _ = window.set_position(tauri::PhysicalPosition::new(x - 60.0, y - 12.0));
+        // After the placement, or the clamp would measure against the display the
+        // window was built on rather than the one it was dropped on.
+        fit_to_display(&window);
+    }
+    window
+        .show()
+        .map_err(|e| format!("the window for this workspace could not be shown: {e}"))?;
+    if drag.unwrap_or(false) {
+        // The OS takes over from here: the compositor's own move, so the window
+        // follows the cursor natively and snapping and edge behaviour are the
+        // platform's. Best effort — a window that did not pick up the drag is
+        // still open, in the right place, holding the workspace.
+        let _ = window.start_dragging();
+    }
+
+    if !state.windows_ready.wait_for(&label, WINDOW_READY_TIMEOUT).await {
+        let _ = window.close();
+        return Err("the window for this workspace did not finish loading".to_string());
+    }
+    Ok(label)
+}
+
+/// Cut a restored size down to the display the window actually landed on.
+///
+/// The window-state plugin applies a remembered position only when a monitor
+/// intersects it, but applies a remembered **size** unconditionally — so a window
+/// last sized on a 4K display reopens 3840px wide on a laptop, most of it and its
+/// close button past the edge of the screen.
+///
+/// Best effort throughout: every step here can fail on a machine whose display
+/// configuration is changing underneath it, and none of those failures is worth
+/// refusing to open a window over. A window of the wrong size is recoverable by
+/// dragging it; one that did not open is not.
+fn fit_to_display(window: &tauri::WebviewWindow) {
+    let Ok(Some(monitor)) = window.current_monitor() else { return };
+    let Ok(size) = window.outer_size() else { return };
+    let area = monitor.work_area().size;
+    let (w, h) = crate::windows::clamp_to_work_area(
+        (size.width, size.height),
+        (area.width, area.height),
+    );
+    if (w, h) != (size.width, size.height) {
+        let _ = window.set_size(tauri::PhysicalSize::new(w, h));
+    }
+}
+
+/// The tiles this window should restore, and nobody else's.
+///
+/// `window` is supplied by the runtime rather than passed by the caller, so a
+/// webview cannot ask for another window's tiles by naming a label — the same
+/// reason it stamps the owner on the way out. `invoke("load_layout")` in
+/// `src/ipc.ts` is unchanged and stays that way.
 #[tauri::command]
-pub fn save_layout(state: State<AppState>, sessions: Vec<SessionEntry>) -> Result<(), String> {
-    state.store.lock().unwrap().save_layout(&sessions).map_err(|e| e.to_string())
+pub fn load_layout(window: tauri::WebviewWindow, state: State<AppState>) -> Vec<SessionEntry> {
+    state.store.lock().unwrap().layout_for(window.label())
+}
+
+/// Write this window's tiles into `sessions.json` without disturbing another
+/// window's. See `Store::save_layout` for what the merge holds and why a
+/// failed read refuses rather than truncating.
+#[tauri::command]
+pub fn save_layout(
+    window: tauri::WebviewWindow, state: State<AppState>, sessions: Vec<SessionEntry>,
+) -> Result<(), String> {
+    let store = state.store.lock().unwrap();
+    store.save_layout(window.label(), &sessions).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2067,6 +2422,143 @@ pub fn git_status(cwd: String) -> GitStatus {
             .map(|o| !o.stdout.is_empty())
             .unwrap_or(false);
     GitStatus { branch, dirty }
+}
+
+/// Every file this app writes for itself, by name, in the directory it writes them
+/// to.
+///
+/// Named rather than listed off the disk with `read_dir`, and that is the whole
+/// design: `read_dir` answers "what is there", and the question a person opening
+/// Settings has is "what does this app keep about me" — which includes the file
+/// that does not exist yet because they have never saved a scenario. A directory
+/// listing would quietly leave that one out.
+const CONFIG_FILES: [&str; 7] = [
+    "workspaces.json",
+    "skills.json",
+    "sessions.json",
+    "terminals.json",
+    "ui_state.json",
+    "schedule_state.json",
+    "runs.jsonl",
+];
+
+/// Split from the command so it can be tested against a real directory: the rule
+/// with something to get wrong is "a missing file is reported, not dropped".
+fn config_files(dir: &std::path::Path) -> Vec<ConfigFile> {
+    CONFIG_FILES
+        .iter()
+        .map(|name| ConfigFile {
+            name: (*name).to_string(),
+            exists: dir.join(name).exists(),
+        })
+        .collect()
+}
+
+#[tauri::command(async)]
+pub fn config_paths(state: State<AppState>) -> ConfigPaths {
+    // The lock is taken and released around the reads rather than held across
+    // them, which is the rule the note at the top of this file states.
+    let dir = { state.store.lock().unwrap().dir.clone() };
+    ConfigPaths {
+        dir: dir.to_string_lossy().to_string(),
+        files: config_files(&dir),
+    }
+}
+
+/// The files in a session's own checkout, as git sees them.
+///
+/// `git ls-files` rather than a directory walk, and that is the whole design: the
+/// question a worktree raises is "what is MINE here", and `--exclude-standard`
+/// answers it with the repository's own ignore rules instead of a list of ignore
+/// patterns we would have to keep in step with them. `node_modules` and `target`
+/// are absent because the repository says they are, not because this code knows
+/// their names.
+///
+/// Tracked and untracked-but-not-ignored, which is the same pair a person sees in
+/// `git status`. Paths are relative to `cwd` and separated by `\n`; a path with a
+/// newline in it comes back quoted by git and is left that way rather than
+/// silently splitting into two files that do not exist.
+#[tauri::command(async)]
+pub fn worktree_files(cwd: String) -> Vec<String> {
+    use std::process::Command;
+    let out = Command::new("git")
+        .arg("-C").arg(&cwd)
+        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    let mut files: Vec<String> = out.lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// What this checkout has changed, file by file, with the branch it is on.
+///
+/// Two reads folded into one answer, because they are two halves of one question
+/// and a caller asking twice would paint half of it: `--porcelain` says WHICH
+/// files and how, `--numstat` says how much. A file appears once, with zeroes when
+/// git has nothing to diff it against.
+#[tauri::command(async)]
+pub fn git_changes(cwd: String) -> GitChanges {
+    use std::process::Command;
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C").arg(&cwd)
+            .args(args)
+            .output().ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).trim().to_string();
+    GitChanges {
+        branch: Some(branch).filter(|b| !b.is_empty() && b != "HEAD"),
+        files: merge_changes(&git(&["status", "--porcelain"]), &git(&["diff", "--numstat", "HEAD"])),
+    }
+}
+
+/// Fold `git status --porcelain` and `git diff --numstat HEAD` into one list.
+///
+/// Split out from the command because it is the part with rules in it, and rules
+/// are what tests can hold: the mark is the WORKTREE's letter when there is one
+/// and the index's otherwise (a file staged and then edited again is `M` either
+/// way, but one staged and untouched since reads `M` only in the index column); a
+/// rename's path is the destination, since that is the file that exists now; and a
+/// binary file's `-` in numstat is a zero rather than a parse failure.
+fn merge_changes(porcelain: &str, numstat: &str) -> Vec<GitChange> {
+    let mut sizes: std::collections::HashMap<&str, (u32, u32)> = std::collections::HashMap::new();
+    for line in numstat.lines() {
+        let mut parts = line.split('\t');
+        let added = parts.next().unwrap_or("-");
+        let removed = parts.next().unwrap_or("-");
+        let Some(path) = parts.next() else { continue };
+        sizes.insert(
+            path,
+            (added.parse().unwrap_or(0), removed.parse().unwrap_or(0)),
+        );
+    }
+    let mut files = Vec::new();
+    for line in porcelain.lines() {
+        if line.len() < 4 { continue }
+        let (status, rest) = line.split_at(2);
+        let index = status.as_bytes()[0] as char;
+        let work = status.as_bytes()[1] as char;
+        let mark = if work != ' ' { work } else { index };
+        // `R  old -> new`: the destination is the file that exists now, and the one
+        // a person clicking the row wants opened.
+        let path = rest.trim_start();
+        let path = path.rsplit(" -> ").next().unwrap_or(path);
+        let (added, removed) = sizes.get(path).copied().unwrap_or((0, 0));
+        files.push(GitChange {
+            mark: mark.to_string(),
+            path: path.to_string(),
+            added,
+            removed,
+        });
+    }
+    files
 }
 
 /// Fold `message.usage.*` into `acc`, **once per API request**. Tolerant of
@@ -2471,6 +2963,125 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
         tokens: Some(SessionTokens { context: last_context(main), spend, subagents: counted }),
         title,
         title_source,
+    }
+}
+
+#[cfg(test)]
+mod config_path_tests {
+    use super::{config_files, CONFIG_FILES};
+
+    /// A file that has never been written is reported as absent rather than left
+    /// out of the list. The list is what this app keeps ABOUT you, and a person
+    /// looking for a file they have not created yet needs to be told it is not
+    /// there — not shown a shorter list.
+    #[test]
+    fn reports_a_missing_file_rather_than_dropping_it() {
+        let dir = std::env::temp_dir().join(format!("cowork-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ui_state.json"), "{}").unwrap();
+
+        let files = config_files(&dir);
+        assert_eq!(files.len(), CONFIG_FILES.len());
+        assert!(files.iter().find(|f| f.name == "ui_state.json").unwrap().exists);
+        assert!(!files.iter().find(|f| f.name == "skills.json").unwrap().exists);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Every name is a plain JSON or JSONL file, which is the promise the window
+    /// makes when it lists them: a person can read, diff and back one up without
+    /// this app's help.
+    #[test]
+    fn every_file_is_plain_text() {
+        for name in CONFIG_FILES {
+            assert!(
+                name.ends_with(".json") || name.ends_with(".jsonl"),
+                "{name} is neither JSON nor JSONL",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::merge_changes;
+
+    /// The mark is the worktree's letter when there is one. A file staged and then
+    /// edited again reads `MM`, and what a person is looking at is the second M.
+    #[test]
+    fn takes_the_worktree_letter_when_there_is_one() {
+        let files = merge_changes("MM src/app.ts\n", "4\t2\tsrc/app.ts\n");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].mark, "M");
+        assert_eq!(files[0].path, "src/app.ts");
+        assert_eq!((files[0].added, files[0].removed), (4, 2));
+    }
+
+    /// And the index's when the worktree column is blank — a file staged and not
+    /// touched since is a change, and one this would otherwise mark with a space.
+    #[test]
+    fn falls_back_to_the_index_letter() {
+        let files = merge_changes("A  tests/new.test.ts\n", "12\t0\ttests/new.test.ts\n");
+        assert_eq!(files[0].mark, "A");
+        assert_eq!(files[0].added, 12);
+    }
+
+    /// An untracked file has no counts, and 0/0 is the honest answer: `git diff`
+    /// has nothing to compare it against, so its length is a number git never
+    /// states. It is still a change, and it is still listed.
+    #[test]
+    fn lists_an_untracked_file_with_no_counts() {
+        let files = merge_changes("?? notes.md\n", "");
+        assert_eq!(files[0].mark, "?");
+        assert_eq!(files[0].path, "notes.md");
+        assert_eq!((files[0].added, files[0].removed), (0, 0));
+    }
+
+    /// A rename's path is the destination: that is the file that exists now, and
+    /// the one a row leads to.
+    #[test]
+    fn a_rename_reports_where_the_file_went() {
+        let files = merge_changes("R  src/old.ts -> src/new.ts\n", "0\t0\tsrc/new.ts\n");
+        assert_eq!(files[0].mark, "R");
+        assert_eq!(files[0].path, "src/new.ts");
+    }
+
+    /// numstat writes `-` for a binary file. Not a parse failure — a zero, beside
+    /// the mark that says it changed.
+    #[test]
+    fn a_binary_file_counts_as_zero_rather_than_failing() {
+        let files = merge_changes(" M docs/images/deck.png\n", "-\t-\tdocs/images/deck.png\n");
+        assert_eq!(files[0].mark, "M");
+        assert_eq!((files[0].added, files[0].removed), (0, 0));
+    }
+
+    /// A clean checkout is an empty list, not an error and not a fabricated row.
+    #[test]
+    fn a_clean_checkout_has_no_files() {
+        assert!(merge_changes("", "").is_empty());
+    }
+
+    /// numstat carries a path that porcelain does not — a staged deletion whose
+    /// entry has already been committed away, say — and the list follows
+    /// porcelain: it is the one that says what the working tree looks like now.
+    #[test]
+    fn numstat_alone_does_not_invent_a_row() {
+        assert!(merge_changes("", "3\t1\tsrc/ghost.ts\n").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod path_guard_tests {
+    use super::no_local_path;
+
+    /// The marker is what the frontend matches on, the way `unavailableFrom`
+    /// matches the `gh` states — so it is bare and stays at the front, and the
+    /// prose after it can be reworded without breaking the match.
+    #[test]
+    fn the_sentence_carries_a_marker_and_says_what_to_do() {
+        let m = no_local_path(Some("ws-1"));
+        assert!(m.starts_with("no-local-path:"), "{m}");
+        assert!(m.to_lowercase().contains("point it at one"), "{m}");
     }
 }
 
@@ -3511,7 +4122,10 @@ branch refs/heads/feature/y\n";
     /// beside it — fifty of them on a delegation-heavy session — for every open
     /// session at once, so it carries `(async)` like everything else that does
     /// real I/O.
-    const MAIN_THREAD_COMMANDS: [&str; 15] = [
+    const MAIN_THREAD_COMMANDS: [&str; 16] = [
+        // One lock, one insert, one wake. It also must not be async: a window
+        // announcing itself cannot be allowed to race the window it announces.
+        "window_ready",
         "list_workspaces",
         "save_workspace",
         "remove_workspace",
