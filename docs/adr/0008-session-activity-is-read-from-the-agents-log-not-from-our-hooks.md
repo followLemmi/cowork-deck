@@ -5,7 +5,7 @@ deciders:
   - evgenykharetski
 ---
 
-# ADR-0007 — Session activity is read from the agent's own log, not from the hooks the deck installs
+# ADR-0008 — Session activity is read from the agent's own log, not from the hooks the deck installs
 
 ## Context
 

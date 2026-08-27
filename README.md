@@ -124,7 +124,7 @@ and both are the point rather than a limitation:
 
 The panel reads that log when you open it and while it stays open, and not otherwise — a deck of twelve
 with no panel open reads nothing. The reasoning is in
-[ADR-0007](docs/adr/0007-session-activity-is-read-from-the-agents-log-not-from-our-hooks.md).
+[ADR-0008](docs/adr/0008-session-activity-is-read-from-the-agents-log-not-from-our-hooks.md).
 
 Which CLIs can be read today: **Claude Code**, the **Copilot CLI**, and **opencode**. Every session the
 deck launches is Claude Code — driving the others is a separate piece of work — but a log can be read
