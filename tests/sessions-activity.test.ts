@@ -222,3 +222,39 @@ describe("a command tile", () => {
     expect(activity).not.toHaveBeenCalled();
   });
 });
+
+describe("which CLI a session runs", () => {
+  const tiles = (deck: Deck) =>
+    (deck as unknown as { tiles: Map<string, { cliKind?: string }> }).tiles;
+
+  it("is claude for a freshly launched tile — which is what every session is", async () => {
+    const { deck } = await tileWithPanelClosed();
+    expect(tiles(deck).get("s1")!.cliKind).toBe("claude");
+  });
+
+  it("is claude for a layout entry that predates the field", async () => {
+    const { deck } = mount();
+    await deck.restore([{ sessionId: "s1", cwd: "/p", name: "n", workspaceId: "w" }]);
+    expect(tiles(deck).get("s1")!.cliKind).toBe("claude");
+  });
+
+  // An unrecognised CLI is a session the deck can still show, so the tile
+  // restores rather than being dropped over a field.
+  it("restores a tile naming a CLI this build does not know", async () => {
+    const { deck, deckEl } = mount();
+    await deck.restore([
+      { sessionId: "s1", cwd: "/p", name: "n", workspaceId: "w", cliKind: "some-cli-from-2027" as never },
+    ]);
+    expect(tiles(deck).has("s1")).toBe(true);
+    expect(deckEl.querySelectorAll(".tile").length).toBe(1);
+  });
+
+  // A command tile runs a shell command, not an agent, so it names no CLI at
+  // all — which is a different thing from naming the default one.
+  it("is unset on a command tile", async () => {
+    const { deck } = mount();
+    await deck.openCommandTile("gh auth login", "gh auth login", "/p");
+    const only = [...tiles(deck).values()][0];
+    expect(only.cliKind).toBeUndefined();
+  });
+});

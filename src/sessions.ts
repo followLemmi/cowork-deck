@@ -1,6 +1,6 @@
 import { TerminalPanel } from "./terminal";
 import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionActivity, sessionSnapshots, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
+import { gitStatus, sessionActivity, sessionSnapshots, type CliKind, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
 import { activityButton, localRoll, openActivityPanel, setActivityCount, type ActivityPanel } from "./activity";
 import { formatContext, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -66,6 +66,11 @@ interface Tile {
    *  can hand them back to the journal rather than opening a record that
    *  forgets what it ran with. */
   params?: Record<string, string>;
+  /** Which agent CLI this tile runs. Always `claude` for now, and that is the
+   *  point: the field is what the activity registry dispatches on, and the
+   *  alternative was discovering at the second reader that the shape had
+   *  nowhere to live. */
+  cliKind?: CliKind;
 }
 
 /** The four things that can name a tile, in one place so no reader can hold a
@@ -789,6 +794,9 @@ export class Deck {
      *  when a workspace arrives from another window. */
     attach?: { scrollback: string };
     command?: string;
+    /** Which agent CLI this tile runs. Absent is `claude` — every launch path,
+     *  and every entry restored from a layout written before the field. */
+    cliKind?: CliKind;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const grabAttention = opts.grabAttention ?? true;
@@ -962,6 +970,10 @@ export class Deck {
       branch: null, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
       skillId: opts.skillId, params: opts.params,
+      // A command tile runs a shell command, not an agent, so it names no CLI
+      // at all — which is a different thing from naming the default one, and
+      // the panel says so in its own sentence.
+      cliKind: isCommand ? undefined : opts.cliKind ?? "claude",
     };
     this.applyName(tile);
     this.tiles.set(session, tile);
@@ -1171,6 +1183,12 @@ export class Deck {
           titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
           prompt: null, resume: true,
           scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
+          // A layout entry with no `cliKind`, or with one this build has never
+          // heard of, restores as `claude` and the tile behaves exactly as
+          // before. An unrecognised CLI is a session the deck can still show,
+          // which is why the field is a string on the way to disk and never an
+          // enum that could fail the parse and drop the tile.
+          cliKind: e.cliKind ?? "claude",
           // Only a tile that was itself launched from a scenario gets a record.
           // A restored card session or bare "+ session" stays out of the
           // journal, which answers "what did my scenarios do" and nothing wider.
@@ -1653,6 +1671,10 @@ export class Deck {
         titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
         prompt: null, resume: false,
         scheduledSkillId: e.scheduledSkillId, taskId: e.taskId, skillId: e.skillId,
+        // A layout entry with no `cliKind`, or with one this build does not
+        // know, restores as `claude` — the tile behaves exactly as before, and
+        // an unrecognised CLI is a session the deck can still show.
+        cliKind: e.cliKind ?? "claude",
         attach: { scrollback: e.scrollback },
         grabAttention: false,
       });
@@ -1692,6 +1714,7 @@ export class Deck {
       nameKind: t.names.context === null ? "placeholder" : "context",
       skillId: t.skillId,
       runId: t.runId,
+      cliKind: t.cliKind,
     })));
     // Skip a write that would change nothing. Not something the naming needs —
     // it is here because it lives in the function this change touches, and it
@@ -2052,6 +2075,7 @@ export function serializeTiles(
     nameKind?: NameKind;
     skillId?: string;
     runId?: string;
+    cliKind?: CliKind;
   }[],
 ): SessionEntry[] {
   return tiles
@@ -2067,6 +2091,10 @@ export function serializeTiles(
       ...(t.userName ? { userName: t.userName } : {}),
       ...(t.skillId ? { skillId: t.skillId } : {}),
       ...(t.runId ? { runId: t.runId } : {}),
+      // Written only when it is not the default, so a layout file does not grow
+      // a key that says what its absence already says. Every entry on disk today
+      // is a Claude session, and this keeps them byte-identical.
+      ...(t.cliKind && t.cliKind !== "claude" ? { cliKind: t.cliKind } : {}),
       nameKind: t.nameKind ?? "context",
     }));
 }

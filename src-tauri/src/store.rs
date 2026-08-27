@@ -594,7 +594,7 @@ mod tests {
                 workspace_id: Some("w1".into()), task_id: Some("01AAA".into()),
                 scheduled_skill_id: None, user_name: None,
                 name_kind: Some(NameKind::Context), skill_id: None, run_id: None,
-                owner: None,
+                owner: None, cli_kind: None,
             },
             SessionEntry {
                 session_id: "s2".into(), cwd: "/tmp/b".into(), name: "terminal · P".into(),
@@ -602,7 +602,7 @@ mod tests {
                 // The whole point of the field: this one survives the round trip.
                 user_name: Some("the one I must not close".into()),
                 name_kind: Some(NameKind::Placeholder), skill_id: None, run_id: None,
-                owner: None,
+                owner: None, cli_kind: None,
             },
         ];
         s.save_layout(MAIN_WINDOW, &entries).unwrap();
@@ -623,7 +623,7 @@ mod tests {
             session_id: session_id.into(), cwd: "/tmp".into(), name: session_id.into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: None, name_kind: None, skill_id: None, run_id: None,
-            owner: owner.map(Into::into),
+            owner: owner.map(Into::into), cli_kind: None,
         }
     }
 
@@ -1107,6 +1107,7 @@ mod tests {
             params: std::collections::HashMap::new(),
             prompt: Some("go".into()),
             continues_run_id: None,
+            cli_kind: Some("claude".into()),
         })
     }
 

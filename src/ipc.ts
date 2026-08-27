@@ -53,6 +53,13 @@ export interface SessionEntry {
    *  degrades into guessing "the previous run of this scenario" — wrong the
    *  moment a scenario ran twice in a day. */
   runId?: string;
+  /** Which agent CLI this session runs. **Absent means `claude`**, which is
+   *  every entry written before this field existed and every session in them —
+   *  `start_session` resolves `claude` and nothing else. Typed as `CliKind`
+   *  here and as a bare string on the Rust side, deliberately: an entry naming
+   *  a CLI an older build has never heard of must still restore its tile rather
+   *  than fail the whole parse. */
+  cliKind?: CliKind;
 }
 export type NameKind = "context" | "placeholder";
 export interface UiState {
