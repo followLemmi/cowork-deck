@@ -12,10 +12,11 @@ use super::reader::ActivityReader;
 pub fn reader_for(cli: CliKind) -> Option<Box<dyn ActivityReader>> {
     match cli {
         CliKind::Claude => Some(Box::new(super::claude::ClaudeReader)),
+        CliKind::Copilot => Some(Box::new(super::copilot::CopilotReader)),
         // Every remaining arm is filled by the issue that measures that CLI's
         // log. A panel opened on one of them says "no reader" rather than
         // drawing zeroes.
-        CliKind::Copilot | CliKind::Opencode | CliKind::Codex => None,
+        CliKind::Opencode | CliKind::Codex => None,
     }
 }
 
