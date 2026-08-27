@@ -67,7 +67,7 @@ import {
   allSessions, sumWaiting, windowOf,
   type RemoteSession, type SessionsByWindow, type WindowSessions,
 } from "./cross-window";
-import { MAIN_WINDOW_LABEL, workspaceIdOf, workspaceLabel } from "./window-role";
+import { addressedTo, MAIN_WINDOW_LABEL, workspaceIdOf, workspaceLabel } from "./window-role";
 import { hasLeftWindow, pressStartsOnControl, startsTearOut } from "./tear-out";
 import { getCurrentWindow, cursorPosition } from "@tauri-apps/api/window";
 import type { WindowRole } from "./window-role";
@@ -117,6 +117,12 @@ export function startApp(role: WindowRole): Promise<void> {
   const pinnedTo = role.kind === "workspace" ? role.workspaceId : null;
   /** This window's own label — what `session://owner` is compared against. */
   const myLabel = getCurrentWindow().label;
+  /** For every listener whose event is addressed to one window rather than
+   *  broadcast: `session://focus`, `workspace://gone`, `workspace://take`. A bare
+   *  `listen` hears all three whoever they were sent to — see `addressedTo`, and
+   *  #349 for what that cost. Only the three, deliberately: every other listener
+   *  in this file is waiting on a broadcast and must go on hearing it. */
+  const addressed = addressedTo(myLabel);
 
   installSprite();
   /** The panel — still `#sidebar` in the DOM. The element stopped being a sidebar
@@ -1922,7 +1928,7 @@ export function startApp(role: WindowRole): Promise<void> {
   const focusListener = listen<{ session: string }>("session://focus", async (e) => {
     await raiseThisWindow();
     deck.focusSession(e.payload.session);
-  });
+  }, addressed);
 
   /** The workspace this window is pinned to has been deleted.
    *
@@ -1935,7 +1941,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  once and in one place whatever ends the window. */
   const goneListener = listen("workspace://gone", () => {
     void getCurrentWindow().close();
-  });
+  }, addressed);
 
   async function raiseThisWindow() {
     const w = getCurrentWindow();
@@ -2768,7 +2774,7 @@ export function startApp(role: WindowRole): Promise<void> {
     // A workspace arriving from another window.
     listen<{ tiles: HandOffTile[] }>("workspace://take", (e) => {
       void deck.receive(e.payload.tiles);
-    }),
+    }, addressed),
     // A session changed hands. The window that asked for it ignores this; every
     // other one gives up the tile without ending anything — the process, the PTY
     // and the conversation carry on where they went.
