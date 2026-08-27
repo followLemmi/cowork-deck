@@ -200,12 +200,8 @@ pub fn run_once(
     // cycle commits the memory the sidecar wrote and none of the configuration,
     // which is half a feature that looks like a whole one.
     let m = machine::load_or_create(root);
-    // `gh` is not asked here: resolving a repository per workspace means a
-    // subprocess each, on a five-minute timer, for a value that only matters to
-    // a machine that has never seen the project. #316's adoption path resolves
-    // it when it is actually needed.
-    let no_repo = |_: &crate::model::Workspace| None;
-    if let Err(e) = crate::sync::publish::publish(root, workspaces, skills, &m, &no_repo) {
+    let workspaces = with_repos(root, workspaces);
+    if let Err(e) = crate::sync::publish::publish(root, &workspaces, skills, &m) {
         eprintln!("warning: could not write the sync projection ({e})");
     }
 
@@ -220,7 +216,7 @@ pub fn run_once(
                 // What arrived is on disk; this is what makes it exist for the
                 // app. Without it a pulled workspace is a file nobody reads —
                 // and the next `publish` used to delete it for being unfamiliar.
-                adopt_into_store(root, workspaces, skills);
+                adopt_into_store(root, &workspaces, skills);
             }
             if p.pushed {
                 st.last_push = Some(now);
@@ -249,13 +245,24 @@ fn adopt_into_store(
     workspaces: &[crate::model::Workspace],
     skills: &[crate::model::Skill],
 ) {
-    let no_repo = |_: &crate::model::Workspace| None;
-    let adopted = crate::sync::adopt::adopt(root, workspaces, skills, &no_repo);
+    // Before anything is read: an answer somebody gave on the other machine is
+    // a fact about this one's files too. Idempotent, so a merge already applied
+    // here costs a directory that is not there and a journal with nothing to
+    // rewrite.
+    apply_ledger(root);
+
+    let adopted = crate::sync::adopt::adopt(root, workspaces, skills);
 
     for path in &adopted.unreadable {
         // Named rather than skipped: a record that quietly fails to arrive is
         // indistinguishable from one that was never synced.
         eprintln!("warning: sync could not read {path}");
+    }
+
+    // Published by a machine that had not pulled the merge yet. Withdrawn here
+    // rather than left, or the two machines take turns republishing it.
+    for id in &adopted.withdrawn {
+        crate::sync::publish::forget_workspace(root, id);
     }
 
     // Nothing arrived at all — an empty repository, or a pull that changed only
@@ -285,6 +292,48 @@ fn write_merged(
         store.save_skills(&adopted.skills)?;
     }
     Ok(())
+}
+
+/// Every merge in the ledger, made true of this machine's own files.
+///
+/// Runs on every pull rather than only when the ledger changed. Working out
+/// whether it changed would mean remembering what it looked like last time,
+/// which is a second source of truth about a file that is already on disk — and
+/// each `apply` is a directory listing and a read of files that are almost
+/// always absent.
+fn apply_ledger(root: &std::path::Path) {
+    for m in crate::sync::identity::Ledger::load(root).merges {
+        let applied = crate::sync::identity::apply(root, &m.from, &m.into);
+        if applied.notes > 0 || !applied.rewritten.is_empty() {
+            eprintln!(
+                "sync: {} folded into {} ({} notes moved)",
+                m.from, m.into, applied.notes
+            );
+        }
+    }
+}
+
+/// The workspaces with their repositories resolved, saved if that taught us
+/// anything new.
+///
+/// This is the one place the question "what repository is this folder?" is
+/// asked, and `identity::refresh` is what makes asking it here affordable: a
+/// workspace whose cached answer still names its current path is skipped, so
+/// the steady state of a five-minute cycle is no subprocesses at all.
+///
+/// A save that fails is not fatal — the answer is a cache, and the next cycle
+/// will resolve it again.
+fn with_repos(
+    root: &std::path::Path,
+    workspaces: &[crate::model::Workspace],
+) -> Vec<crate::model::Workspace> {
+    let mut items = workspaces.to_vec();
+    if crate::sync::identity::refresh(&mut items) {
+        if let Err(e) = crate::store::Store::new(root.to_path_buf()).save_workspaces(&items) {
+            eprintln!("warning: could not remember what repository a workspace is ({e})");
+        }
+    }
+    items
 }
 
 /// The token for whichever account owns the remote.
@@ -334,8 +383,117 @@ pub fn sync_questions(state: State<AppState>) -> Result<Vec<crate::sync::adopt::
         let store = state.store.lock().map_err(|_| "store lock".to_string())?;
         (store.workspaces(), store.skills())
     };
-    let no_repo = |_: &crate::model::Workspace| None;
-    Ok(crate::sync::adopt::adopt(&root, &workspaces, &skills, &no_repo).questions)
+    // Resolved here too, not only on the sync cycle: this is what the settings
+    // rail asks, and on a machine that has just pulled for the first time the
+    // cycle that would have filled the cache in may not have run yet.
+    let workspaces = with_repos(&root, &workspaces);
+    Ok(crate::sync::adopt::adopt(&root, &workspaces, &skills).questions)
+}
+
+/// Two records are one project. Fold the arriving one into the local one.
+///
+/// The local one survives because it is the one with a folder on this machine.
+/// Nothing is deleted: the losing id's memory moves under the surviving id, and
+/// this machine's run journal, deck layout, drawer and scenarios are repointed
+/// at it (`sync::identity::apply`).
+///
+/// The answer is written to the ledger *before* it is acted on, and the ledger
+/// travels — otherwise the machine that owns the losing id republishes it on its
+/// next cycle and the merge is undone by the thing that was supposed to spread
+/// it.
+#[tauri::command(async)]
+pub fn sync_merge_workspaces(
+    state: State<AppState>,
+    from: String,
+    into: String,
+) -> Result<Vec<crate::model::Workspace>, String> {
+    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    let root = store.dir.clone();
+    merge_workspaces(&root, &store, &from, &into)
+}
+
+/// The whole of the answer, taking a store rather than the app's state so it can
+/// be exercised without a running window — the split `commands.rs` is 4000 lines
+/// for want of.
+pub fn merge_workspaces(
+    root: &std::path::Path,
+    store: &crate::store::Store,
+    from: &str,
+    into: &str,
+) -> Result<Vec<crate::model::Workspace>, String> {
+    if from == into {
+        return Err("a workspace cannot be merged into itself".into());
+    }
+
+    let mut ledger = crate::sync::identity::Ledger::load(root);
+    ledger.version = crate::sync::identity::LEDGER_VERSION;
+    ledger.record_merge(from, into, chrono::Utc::now().timestamp());
+    ledger.save(root).map_err(|e| format!("could not record the answer: {e}"))?;
+
+    crate::sync::identity::apply(root, from, into);
+    crate::sync::publish::forget_workspace(root, from);
+
+    let merged = fold_records(store.workspaces(), from, into);
+    store.save_workspaces(&merged).map_err(|e| e.to_string())?;
+    Ok(merged)
+}
+
+/// The two records as one. The surviving id, and whichever side actually knows
+/// something: the local record may be the one that has never been located here,
+/// and dropping the other's path would undo the merge the person just asked for.
+fn fold_records(
+    items: Vec<crate::model::Workspace>,
+    from: &str,
+    into: &str,
+) -> Vec<crate::model::Workspace> {
+    let losing = items.iter().find(|w| w.id == from).cloned();
+    let mut out: Vec<crate::model::Workspace> = Vec::with_capacity(items.len());
+    for w in items {
+        if w.id == from {
+            continue;
+        }
+        if w.id == into {
+            let mut kept = w;
+            if let Some(l) = losing.as_ref() {
+                if kept.path.trim().is_empty() {
+                    kept.path = l.path.clone();
+                    kept.repo = l.repo.clone();
+                }
+                kept.github = kept.github.or_else(|| l.github.clone());
+                kept.tracker = kept.tracker.or_else(|| l.tracker.clone());
+            }
+            out.push(kept);
+            continue;
+        }
+        out.push(w);
+    }
+    // The surviving record has not been pulled yet — rare, but a pull that
+    // brings the answer before it brings the record would otherwise lose the
+    // workspace entirely. Re-key the losing one instead.
+    if !out.iter().any(|w| w.id == into) {
+        if let Some(mut l) = losing {
+            l.id = into.to_string();
+            out.push(l);
+        }
+    }
+    out
+}
+
+/// These two are not the same project, and the deck is to stop asking.
+///
+/// Recorded rather than remembered per machine: the answer is about the
+/// projects, and the person on the other machine has no more reason to be asked
+/// than the person on this one.
+#[tauri::command(async)]
+pub fn sync_keep_distinct(state: State<AppState>, a: String, b: String) -> Result<(), String> {
+    keep_distinct(&root(&state)?, &a, &b)
+}
+
+pub fn keep_distinct(root: &std::path::Path, a: &str, b: &str) -> Result<(), String> {
+    let mut ledger = crate::sync::identity::Ledger::load(root);
+    ledger.version = crate::sync::identity::LEDGER_VERSION;
+    ledger.record_distinct(a, b);
+    ledger.save(root).map_err(|e| format!("could not record the answer: {e}"))
 }
 
 /// Named so the frontend's three blocking states and these agree by
@@ -367,6 +525,7 @@ mod tests {
             color: "#8ab4f8".into(),
             github: None,
             tracker: None,
+            repo: None,
         }
     }
 
@@ -493,6 +652,182 @@ mod tests {
         run_once(&t.b, &[], &[]);
         assert!(!t.b.join("ws-2/workspace.json").exists(), "the deletion travels");
         assert_eq!(stored(&t.b).len(), 1);
+    }
+
+    /// A folder that is a checkout of `url`, so `identity::resolve` has
+    /// something to find. Only the remote matters; nothing is ever committed
+    /// here.
+    fn checkout(dir: &Path, url: &str) -> String {
+        fs::create_dir_all(dir).unwrap();
+        for args in [&["init", "-q"][..], &["remote", "add", "origin", url][..]] {
+            assert!(std::process::Command::new("git")
+                .arg("-C").arg(dir).args(args)
+                .output().unwrap().status.success());
+        }
+        dir.to_string_lossy().into_owned()
+    }
+
+    fn facts(dir: &Path, id: &str, line: &str) {
+        let p = dir.join(id).join("Facts.md");
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, format!("{line}\n")).unwrap();
+    }
+
+    fn questions(dir: &Path) -> Vec<crate::sync::adopt::Question> {
+        crate::sync::adopt::adopt(dir, &stored(dir), &[]).questions
+    }
+
+    fn asks_about_duplicates(dir: &Path) -> bool {
+        questions(dir).iter().any(|q| matches!(q, crate::sync::adopt::Question::Duplicate { .. }))
+    }
+
+    /// #348, end to end. Both machines already had the project — each added the
+    /// folder before sync was switched on, so each made its own id — and the
+    /// first pull used to leave two workspaces for one project with nothing
+    /// saying they were the same.
+    #[test]
+    fn two_machines_that_both_had_the_project_are_asked_once_and_end_with_one_workspace() {
+        let t = two_machines("dupe");
+        let url = "https://github.com/me/deck.git";
+        let on_a = checkout(&t.root.join("proj-a"), url);
+        let on_b = checkout(&t.root.join("proj-b"), "git@github.com:me/deck.git");
+
+        let mine = vec![ws("ws-a", "deck", &on_a)];
+        crate::store::Store::new(t.a.clone()).save_workspaces(&mine).unwrap();
+        facts(&t.a, "ws-a", "- a remembered this");
+        run_once(&t.a, &mine, &[]);
+
+        let theirs = vec![ws("ws-b", "deck", &on_b)];
+        crate::store::Store::new(t.b.clone()).save_workspaces(&theirs).unwrap();
+        facts(&t.b, "ws-b", "- b remembered that");
+        run_once(&t.b, &theirs, &[]);
+
+        // One question, naming both sides. Nothing has been decided.
+        let asked = questions(&t.b);
+        let dupes: Vec<_> = asked
+            .iter()
+            .filter(|q| matches!(q, crate::sync::adopt::Question::Duplicate { .. }))
+            .collect();
+        assert_eq!(dupes.len(), 1, "{asked:?}");
+        assert!(
+            matches!(dupes[0], crate::sync::adopt::Question::Duplicate { arriving_id, local_id, .. }
+                if arriving_id == "ws-a" && local_id == "ws-b"),
+            "{:?}",
+            dupes[0]
+        );
+        assert_eq!(stored(&t.b).len(), 2, "and both records are still here until it is answered");
+
+        // Answered: same project.
+        merge_workspaces(&t.b, &crate::store::Store::new(t.b.clone()), "ws-a", "ws-b").unwrap();
+        let on_b_now = stored(&t.b);
+        assert_eq!(on_b_now.len(), 1);
+        assert_eq!(on_b_now[0].id, "ws-b");
+        assert_eq!(on_b_now[0].path, on_b, "this machine's folder");
+        let merged = fs::read_to_string(t.b.join("ws-b/Facts.md")).unwrap();
+        assert!(
+            merged.contains("a remembered this") && merged.contains("b remembered that"),
+            "neither machine's history may be lost: {merged}"
+        );
+        assert!(questions(&t.b).is_empty(), "and nothing is left to ask here: {:?}", questions(&t.b));
+
+        run_once(&t.b, &on_b_now, &[]);
+
+        // A pulls the answer and arrives at the same one workspace, still
+        // pointed at its own folder.
+        run_once(&t.a, &stored(&t.a), &[]);
+        let on_a_now = stored(&t.a);
+        assert_eq!(on_a_now.len(), 1, "{on_a_now:?}");
+        assert_eq!(on_a_now[0].id, "ws-b", "under the id that survived");
+        assert_eq!(on_a_now[0].path, on_a, "and A's own folder, not B's");
+        let carried = fs::read_to_string(t.a.join("ws-b/Facts.md")).unwrap();
+        assert!(carried.contains("a remembered this") && carried.contains("b remembered that"));
+        assert!(!asks_about_duplicates(&t.a), "and A is never asked a question that has been answered");
+
+        // The record A republished before it knew is withdrawn rather than left
+        // to be pushed back and forth.
+        run_once(&t.a, &stored(&t.a), &[]);
+        assert!(!t.a.join("ws-a/workspace.json").exists());
+        assert_eq!(stored(&t.a).len(), 1);
+    }
+
+    /// The other half of the answer. Two checkouts of one repository really can
+    /// be two workspaces on purpose, and saying so has to stick.
+    #[test]
+    fn declining_leaves_both_workspaces_and_is_not_asked_again() {
+        let t = two_machines("distinct");
+        let url = "https://github.com/me/deck.git";
+        let on_a = checkout(&t.root.join("proj-a"), url);
+        let on_b = checkout(&t.root.join("proj-b"), url);
+
+        let mine = vec![ws("ws-a", "deck", &on_a)];
+        crate::store::Store::new(t.a.clone()).save_workspaces(&mine).unwrap();
+        run_once(&t.a, &mine, &[]);
+
+        let theirs = vec![ws("ws-b", "deck", &on_b)];
+        crate::store::Store::new(t.b.clone()).save_workspaces(&theirs).unwrap();
+        run_once(&t.b, &theirs, &[]);
+        assert_eq!(questions(&t.b).len(), 1);
+
+        keep_distinct(&t.b, "ws-a", "ws-b").unwrap();
+        assert!(!asks_about_duplicates(&t.b), "an answered question does not come back");
+        assert_eq!(stored(&t.b).len(), 2, "and both workspaces stay");
+        assert!(
+            questions(&t.b).iter().any(|q| matches!(q, crate::sync::adopt::Question::NeedsPath { .. })),
+            "the other machine's workspace is a workspace here now, and needs locating"
+        );
+
+        // Not once per tick, and not once per machine either: the answer is
+        // about the projects, so it travels.
+        run_once(&t.b, &stored(&t.b), &[]);
+        assert!(!asks_about_duplicates(&t.b), "still quiet a cycle later");
+        run_once(&t.a, &stored(&t.a), &[]);
+        assert!(!asks_about_duplicates(&t.a), "the other machine does not ask it again either");
+        assert_eq!(stored(&t.a).len(), 2);
+    }
+
+    /// A folder with no remote has no cross-machine identity to offer, and name
+    /// plus something else is a guess that merges two real projects when it is
+    /// wrong.
+    #[test]
+    fn a_workspace_with_no_remote_is_never_offered_as_a_duplicate() {
+        let t = two_machines("noremote");
+        let bare_a = t.root.join("plain-a");
+        let bare_b = t.root.join("plain-b");
+        fs::create_dir_all(&bare_a).unwrap();
+        fs::create_dir_all(&bare_b).unwrap();
+
+        let mine = vec![ws("ws-a", "notes", bare_a.to_str().unwrap())];
+        crate::store::Store::new(t.a.clone()).save_workspaces(&mine).unwrap();
+        run_once(&t.a, &mine, &[]);
+
+        let theirs = vec![ws("ws-b", "notes", bare_b.to_str().unwrap())];
+        crate::store::Store::new(t.b.clone()).save_workspaces(&theirs).unwrap();
+        run_once(&t.b, &theirs, &[]);
+
+        assert!(!asks_about_duplicates(&t.b), "same name is not identity: {:?}", questions(&t.b));
+    }
+
+    /// The cache is what makes resolving affordable at all: a workspace whose
+    /// folder has already been asked — including one that has no remote — must
+    /// not be asked again on the next cycle.
+    #[test]
+    fn a_repository_is_remembered_on_the_record_rather_than_re_derived() {
+        let t = two_machines("cache");
+        let on_a = checkout(&t.root.join("proj-a"), "https://github.com/me/deck.git");
+        let mine = vec![ws("ws-a", "deck", &on_a)];
+        crate::store::Store::new(t.a.clone()).save_workspaces(&mine).unwrap();
+
+        run_once(&t.a, &mine, &[]);
+        let saved = stored(&t.a);
+        let cached = saved[0].repo.clone().expect("resolved once, and written down");
+        assert_eq!(cached.url.as_deref(), Some("https://github.com/me/deck.git"));
+        assert_eq!(cached.from, on_a, "and it says which folder that was true of");
+
+        let mut again = saved;
+        assert!(
+            !crate::sync::identity::refresh(&mut again),
+            "a second pass has nothing left to ask"
+        );
     }
 
     #[test]

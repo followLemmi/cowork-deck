@@ -9,9 +9,16 @@ const m = vi.hoisted(() => ({
   syncConnect: vi.fn(),
   syncDisconnect: vi.fn(),
   syncNow: vi.fn(),
+  syncQuestions: vi.fn(),
+  syncMergeWorkspaces: vi.fn(),
+  syncKeepDistinct: vi.fn(),
+  listWorkspaces: vi.fn(),
+  saveWorkspace: vi.fn(),
   onSyncState: vi.fn(),
 }));
 vi.mock("../src/ipc", () => m);
+const picker = vi.hoisted(() => ({ pickFolder: vi.fn() }));
+vi.mock("../src/dialog", () => picker);
 
 import { syncDialog, DEFAULT_REPO_NAME } from "../src/sync-dialog";
 
@@ -38,6 +45,8 @@ beforeEach(() => {
   m.onSyncState.mockResolvedValue(() => {});
   m.syncSummary.mockResolvedValue(off);
   m.syncPreflight.mockResolvedValue({ blocked: null, accounts: [acc()], error: null });
+  m.syncQuestions.mockResolvedValue([]);
+  picker.pickFolder.mockReset();
 });
 
 describe("switching sync on", () => {
@@ -158,5 +167,145 @@ describe("while sync is running", () => {
     await settle();
     expect(button(/Stop syncing/)).toBeTruthy();
     expect(text()).toMatch(/leaves the repository and everything in it alone/i);
+  });
+});
+
+/** #348: the questions a pull raises were collected and shown nowhere. The
+ *  settings rail counted them into an amber dot and named none of them. */
+describe("the questions a pull raised", () => {
+  const duplicate = {
+    kind: "duplicate", arrivingId: "ws-a", localId: "ws-b", name: "cowork-deck",
+  } as const;
+
+  beforeEach(() => {
+    m.syncSummary.mockResolvedValue(on);
+  });
+
+  it("says nothing at all when there is nothing outstanding", async () => {
+    void syncDialog();
+    await settle();
+    expect(document.querySelector(".sync-ask")).toBeFalsy();
+    expect(text()).not.toMatch(/to answer/i);
+  });
+
+  it("names the project a duplicate is about, rather than only counting it", async () => {
+    m.syncQuestions.mockResolvedValue([duplicate]);
+    void syncDialog();
+    await settle();
+    expect(text()).toContain("cowork-deck");
+    expect(text()).toMatch(/same repository/i);
+  });
+
+  it("offers both answers and takes neither on its own", async () => {
+    m.syncQuestions.mockResolvedValue([duplicate]);
+    void syncDialog();
+    await settle();
+    // Merging loses one of two memories under its own id. Never automatic.
+    expect(button(/^Same project$/)).toBeTruthy();
+    expect(button(/^Different projects$/)).toBeTruthy();
+    expect(m.syncMergeWorkspaces).not.toHaveBeenCalled();
+    expect(m.syncKeepDistinct).not.toHaveBeenCalled();
+  });
+
+  it("folds the arriving record into the local one, which is the located one", async () => {
+    m.syncQuestions.mockResolvedValue([duplicate]);
+    m.syncMergeWorkspaces.mockResolvedValue([]);
+    void syncDialog();
+    await settle();
+    button(/^Same project$/)?.click();
+    await settle();
+    expect(m.syncMergeWorkspaces).toHaveBeenCalledWith("ws-a", "ws-b");
+  });
+
+  it("records a decline so the question does not come back every tick", async () => {
+    m.syncQuestions.mockResolvedValue([duplicate]);
+    m.syncKeepDistinct.mockResolvedValue(undefined);
+    void syncDialog();
+    await settle();
+    button(/^Different projects$/)?.click();
+    await settle();
+    expect(m.syncKeepDistinct).toHaveBeenCalledWith("ws-a", "ws-b");
+    expect(m.syncMergeWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it("locates a workspace that came from another machine", async () => {
+    m.syncQuestions.mockResolvedValue([
+      { kind: "needs-path", workspaceId: "ws-a", name: "deck", cloneFrom: null },
+    ]);
+    m.listWorkspaces.mockResolvedValue([{ id: "ws-a", name: "deck", path: "", color: "#fff" }]);
+    m.saveWorkspace.mockResolvedValue([]);
+    picker.pickFolder.mockResolvedValue("/here/deck");
+    void syncDialog();
+    await settle();
+    button(/^Locate…$/)?.click();
+    await settle();
+    expect(m.saveWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "ws-a", path: "/here/deck" }),
+    );
+  });
+
+  it("names the repository a record came from, so it can be cloned first", async () => {
+    m.syncQuestions.mockResolvedValue([
+      {
+        kind: "needs-path", workspaceId: "ws-a", name: "deck",
+        cloneFrom: "https://github.com/me/deck.git",
+      },
+    ]);
+    void syncDialog();
+    await settle();
+    expect(text()).toContain("https://github.com/me/deck.git");
+  });
+
+  it("records nothing when the folder picker is cancelled", async () => {
+    m.syncQuestions.mockResolvedValue([
+      { kind: "needs-path", workspaceId: "ws-a", name: "deck", cloneFrom: null },
+    ]);
+    picker.pickFolder.mockResolvedValue(null);
+    void syncDialog();
+    await settle();
+    button(/^Locate…$/)?.click();
+    await settle();
+    expect(m.saveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("points a board whose folder was on the other machine at one here", async () => {
+    m.syncQuestions.mockResolvedValue([
+      { kind: "needs-board-path", workspaceId: "ws-a", name: "deck" },
+    ]);
+    m.listWorkspaces.mockResolvedValue([
+      { id: "ws-a", name: "deck", path: "/here/deck", color: "#fff" },
+    ]);
+    m.saveWorkspace.mockResolvedValue([]);
+    picker.pickFolder.mockResolvedValue("/here/vault");
+    void syncDialog();
+    await settle();
+    button(/^Locate the board…$/)?.click();
+    await settle();
+    expect(m.saveWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tracker: { providers: [{ type: "fs", root: { kind: "path", path: "/here/vault" } }] },
+      }),
+    );
+  });
+
+  it("shows a refusal in the row that caused it, and keeps the question", async () => {
+    m.syncQuestions.mockResolvedValue([duplicate]);
+    m.syncMergeWorkspaces.mockRejectedValue("a workspace cannot be merged into itself");
+    void syncDialog();
+    await settle();
+    button(/^Same project$/)?.click();
+    await settle();
+    // Doing nothing silently would read as "answered", which is the one thing a
+    // failed merge must not look like.
+    expect(text()).toContain("cannot be merged into itself");
+    expect(button(/^Same project$/)).toBeTruthy();
+  });
+
+  it("keeps the rest of the panel honest when the questions cannot be read", async () => {
+    m.syncQuestions.mockRejectedValue(new Error("store lock"));
+    void syncDialog();
+    await settle();
+    expect(text()).toMatch(/Last sent/i);
+    expect(document.querySelector(".sync-ask")).toBeFalsy();
   });
 });

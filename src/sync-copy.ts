@@ -4,7 +4,7 @@
 // read by the dialog and asserted by the tests, and a copy in each would let the
 // two drift until a test passes against wording nobody ships.
 
-import type { SyncBlocked, SyncFault, SyncRepoState } from "./ipc";
+import type { SyncBlocked, SyncFault, SyncQuestion, SyncRepoState } from "./ipc";
 import { ghUnavailable } from "./gh-unavailable";
 
 /** What stands between a person and switching sync on.
@@ -107,4 +107,57 @@ export function agoLabel(then: number | null, now: number): string {
   const h = Math.round(m / 60);
   if (h < 48) return `${h} h ago`;
   return `${Math.round(h / 24)} days ago`;
+}
+
+/** One thing a pull could not decide, and the actions that decide it.
+ *
+ *  Every question names both answers, and neither is a default. A duplicate in
+ *  particular is never resolved on the person's behalf: merging means one of two
+ *  memories stops being findable under the surviving id, and that is a loss of
+ *  history rather than a tidy-up (`sync::adopt::Question`).
+ *
+ *  `secondary` is absent where there is only one sensible thing to do — "where
+ *  is this project?" has no second answer, only a later one. */
+export function questionCopy(q: SyncQuestion): {
+  text: string;
+  primary: string;
+  secondary: string | null;
+} {
+  switch (q.kind) {
+    case "duplicate":
+      return {
+        text:
+          `“${q.name}” arrived from another machine, and it is the same repository `
+          + `as a workspace you already have here. Joining them keeps this machine's `
+          + `folder and both machines' history; nothing is deleted either way.`,
+        primary: "Same project",
+        secondary: "Different projects",
+      };
+    case "needs-path":
+      return {
+        text: q.cloneFrom
+          ? `“${q.name}” came from another machine. It is ${q.cloneFrom} — say where `
+            + `that is on this machine, or clone it first and then say where.`
+          : `“${q.name}” came from another machine, and nothing here says where its `
+            + `folder is. Its memory is searchable meanwhile; a session cannot start `
+            + `until it is located.`,
+        primary: "Locate…",
+        secondary: null,
+      };
+    case "needs-board-path":
+      return {
+        text:
+          `“${q.name}” has a board in a folder outside the project, and that folder `
+          + `is on the other machine. The path could not travel — only the fact that `
+          + `there was one.`,
+        primary: "Locate the board…",
+        secondary: null,
+      };
+  }
+}
+
+/** How the amber dot and the section head count what is outstanding. Singular
+ *  where it is one, because "1 questions" reads as a bug rather than a count. */
+export function questionCountLabel(n: number): string {
+  return `${n} thing${n === 1 ? "" : "s"} to answer`;
 }

@@ -9,21 +9,36 @@
 // Not a screen either. A screen means a `ViewName`, the hidden-root rule and
 // the switch tests, and this is opened, read and closed.
 
+import { pickFolder } from "./dialog";
 import { openDialog } from "./dialog-shell";
 import {
+  listWorkspaces,
   onSyncState,
+  saveWorkspace,
   syncConnect,
   syncCreate,
   syncDisconnect,
+  syncKeepDistinct,
+  syncMergeWorkspaces,
   syncNow,
   syncPreflight,
   syncProbe,
+  syncQuestions,
   syncSummary,
   type GhAccount,
+  type SyncQuestion,
+  type Workspace,
   type SyncState,
   type SyncSummary,
 } from "./ipc";
-import { agoLabel, blockedCopy, faultCopy, repoCopy } from "./sync-copy";
+import {
+  agoLabel,
+  blockedCopy,
+  faultCopy,
+  questionCopy,
+  questionCountLabel,
+  repoCopy,
+} from "./sync-copy";
 
 /** The name offered when creating. Fixed rather than generated from anything
  *  local: it is the name the *second* machine will look for. */
@@ -130,6 +145,17 @@ function renderOn(body: HTMLElement, summary: SyncSummary, refresh: () => void) 
     + ` · last received ${agoLabel(summary.state.lastPull, now)}`;
   body.append(when);
 
+  // The questions a pull raised, in the one place that already reports what
+  // sync is doing. They were collected and shown nowhere before: the amber dot
+  // in the settings rail counted them and named none of them, which tells a
+  // person something is waiting and not what (#348).
+  //
+  // Filled after the fact rather than awaited, because the panel is worth
+  // drawing whether or not this answers — the same reasoning as the rail's dot.
+  const asks = el("div", "sync-asks");
+  body.append(asks);
+  void fillQuestions(asks, refresh);
+
   if (summary.state.fault) {
     const copy = faultCopy(summary.state.fault);
     const fault = el("div", "sync-fault");
@@ -155,6 +181,100 @@ function renderOn(body: HTMLElement, summary: SyncSummary, refresh: () => void) 
     "Stopping leaves the repository and everything in it alone; it only stops "
     + "this machine sending to it.";
   body.append(note);
+}
+
+/** Everything a pull could not decide, each with the action that decides it.
+ *
+ *  Silent when there is nothing outstanding: a heading over an empty list is a
+ *  worse report than no heading, because it looks like a feature that is broken
+ *  rather than one with nothing to say. */
+async function fillQuestions(host: HTMLElement, refresh: () => void): Promise<void> {
+  let asked: SyncQuestion[];
+  try {
+    asked = await syncQuestions();
+  } catch (e) {
+    // The panel's other facts are still worth having. A list that cannot be
+    // read says nothing rather than claiming there is nothing.
+    console.debug("sync questions unavailable", e);
+    return;
+  }
+  if (asked.length === 0) return;
+
+  host.append(el("p", "sync-asks-head", questionCountLabel(asked.length)));
+  for (const q of asked) {
+    const copy = questionCopy(q);
+    const row = el("div", "sync-ask");
+    row.append(el("p", "sync-ask-text", copy.text));
+
+    // A refusal is shown in the row that caused it and the question stays.
+    // Silently doing nothing would read as "answered", which is the one thing a
+    // failed merge must not look like.
+    const run = (primary: boolean) => {
+      void answer(q, primary)
+        .then(refresh)
+        .catch((e) => row.append(el("p", "sync-fault-text", String(e))));
+    };
+
+    const actions = el("div", "sync-row");
+    const primary = el("button", "modal-ok", copy.primary);
+    primary.onclick = () => run(true);
+    actions.append(primary);
+    if (copy.secondary) {
+      const secondary = el("button", "modal-cancel", copy.secondary);
+      secondary.onclick = () => run(false);
+      actions.append(secondary);
+    }
+    row.append(actions);
+    host.append(row);
+  }
+}
+
+/** Carry out one answer.
+ *
+ *  A cancelled folder picker is not an answer, and nothing is recorded for it —
+ *  the question stays, which is the honest outcome of closing a dialog. */
+async function answer(q: SyncQuestion, primary: boolean): Promise<void> {
+  switch (q.kind) {
+    case "duplicate":
+      // The arriving record folds into the local one: the local one is the one
+      // with a folder on this machine, and that is what the merge keeps.
+      await (primary
+        ? syncMergeWorkspaces(q.arrivingId, q.localId)
+        : syncKeepDistinct(q.arrivingId, q.localId));
+      return;
+    case "needs-path": {
+      const p = await pickFolder();
+      if (p) await locate(q.workspaceId, (w) => ({ ...w, path: p }));
+      return;
+    }
+    case "needs-board-path": {
+      const p = await pickFolder();
+      if (p) {
+        await locate(q.workspaceId, (w) => ({
+          ...w,
+          // One provider, replacing whatever arrived: the record travelled
+          // precisely because its board could not, so there is nothing here to
+          // preserve alongside the answer.
+          tracker: { providers: [{ type: "fs", root: { kind: "path", path: p } }] },
+        }));
+      }
+      return;
+    }
+  }
+}
+
+/** Read the workspace back, change it, and save it.
+ *
+ *  Read rather than carried in the question: the questions were listed before
+ *  the person went away to a folder picker, and saving a record from before that
+ *  would undo anything else that changed in between. */
+async function locate(
+  workspaceId: string,
+  change: (w: Workspace) => Workspace,
+): Promise<void> {
+  const found = (await listWorkspaces()).find((w) => w.id === workspaceId);
+  if (!found) return;
+  await saveWorkspace(change(found));
 }
 
 /** Sync is off. What it would do, and what stands in the way. */

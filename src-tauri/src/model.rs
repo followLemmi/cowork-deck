@@ -124,6 +124,38 @@ pub struct Workspace {
     /// truncate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracker: Option<TrackerConfig>,
+    /// What repository this workspace's folder is, remembered rather than
+    /// re-derived. Absent until something has looked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<WorkspaceRepo>,
+}
+
+/// The remote a workspace's folder points at, and where that was read.
+///
+/// Identity across machines is the workspace id, and the id is made locally:
+/// two machines that each added the same folder before sync was switched on
+/// never agreed on one. The remote URL is the one string that *is* the same on
+/// both, which is what makes it the thing a duplicate is recognised by
+/// (`sync::adopt`).
+///
+/// Remembered rather than asked for, because the alternative is a subprocess per
+/// workspace on a five-minute timer for a value that changes about once in a
+/// project's life. `from` is what keeps that safe: an answer is only good for
+/// the folder it was read in, so a workspace re-pointed elsewhere re-resolves
+/// instead of carrying the old project's identity to the new one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRepo {
+    /// The remote, as `git remote get-url origin` gave it.
+    ///
+    /// `None` is an answer, not a gap: this folder has no remote, and it is
+    /// worth writing down, or every cycle asks the same question again. A
+    /// workspace in that state has no cross-machine identity to offer and is
+    /// never a duplicate of anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The folder the answer was read in. This machine's disk, so it never
+    /// travels — see `sync::projection`.
+    pub from: String,
 }
 
 /// Where a workspace's cards were before its effective root last moved.
@@ -1031,6 +1063,7 @@ mod tests {
         let ws = Workspace {
             id: "w1".into(), name: "proj".into(), path: "/tmp/proj".into(),
             color: "#61afef".into(), github: None, tracker: None,
+            repo: None,
         };
         let json = serde_json::to_string(&ws).unwrap();
         assert!(!json.contains("github"), "старая форма файла должна остаться байт-в-байт: {json}");
@@ -1048,6 +1081,7 @@ mod tests {
                 ssh_key: None,
             }),
             tracker: None,
+            repo: None,
         };
         let json = serde_json::to_string(&ws).unwrap();
         assert!(json.contains(r#""gitName":"Evgeny""#), "{json}");

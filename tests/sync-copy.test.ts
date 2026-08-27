@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { agoLabel, blockedCopy, faultCopy, repoCopy } from "../src/sync-copy";
+import {
+  agoLabel,
+  blockedCopy,
+  faultCopy,
+  questionCopy,
+  questionCountLabel,
+  repoCopy,
+} from "../src/sync-copy";
 import { ghUnavailable } from "../src/gh-unavailable";
 
 describe("what sync says when it cannot start", () => {
@@ -106,5 +113,54 @@ describe("how long ago the last push was", () => {
 
   it("does not go backwards when a clock does", () => {
     expect(agoLabel(1000, 500)).toBe("just now");
+  });
+});
+
+describe("what a pull could not decide", () => {
+  it("names the project rather than the ids nobody can read", () => {
+    const c = questionCopy({
+      kind: "duplicate", arrivingId: "ws-a", localId: "ws-b", name: "cowork-deck",
+    });
+    expect(c.text).toContain("cowork-deck");
+    expect(c.text).not.toContain("ws-a");
+  });
+
+  it("offers both answers to a duplicate, and promises neither is destructive", () => {
+    const c = questionCopy({
+      kind: "duplicate", arrivingId: "ws-a", localId: "ws-b", name: "deck",
+    });
+    expect(c.primary).toBeTruthy();
+    expect(c.secondary).toBeTruthy();
+    // Merging means one of two memories stops being findable under the
+    // surviving id. Saying so is the whole reason this is asked at all.
+    expect(c.text).toMatch(/nothing is deleted/i);
+    expect(c.text).toMatch(/both machines' history/i);
+  });
+
+  it("says what a workspace with no folder here can still do meanwhile", () => {
+    const c = questionCopy({
+      kind: "needs-path", workspaceId: "ws-a", name: "deck", cloneFrom: null,
+    });
+    expect(c.text).toMatch(/memory is searchable/i);
+    expect(c.secondary).toBeNull();
+  });
+
+  it("names the repository when there is one, so it can be cloned first", () => {
+    const c = questionCopy({
+      kind: "needs-path", workspaceId: "ws-a", name: "deck",
+      cloneFrom: "https://github.com/me/deck.git",
+    });
+    expect(c.text).toContain("https://github.com/me/deck.git");
+  });
+
+  it("explains that a board path could not travel, rather than that it vanished", () => {
+    const c = questionCopy({ kind: "needs-board-path", workspaceId: "ws-a", name: "deck" });
+    expect(c.text).toMatch(/could not travel/i);
+    expect(c.primary).toMatch(/board/i);
+  });
+
+  it("counts in a way that does not read as a bug in the code", () => {
+    expect(questionCountLabel(1)).toBe("1 thing to answer");
+    expect(questionCountLabel(3)).toBe("3 things to answer");
   });
 });

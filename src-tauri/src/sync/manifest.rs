@@ -42,6 +42,11 @@ pub const ALLOWED: &[&str] = &[
     // "connect to an existing one" has nothing to check and would adopt
     // somebody's project (`activation::probe`).
     ".cowork-sync.json",
+    // Which records are one project and which only look alike. It has to
+    // travel: a merge withdraws the losing record, and the machine that owns
+    // that id would republish it on its next cycle if the repository could not
+    // say why it went (`sync::identity`).
+    "identity.json",
     // The workspace record, beside the memory it describes. Not `.md`, so the
     // sidecar's walk skips it while sitting in the same directory.
     "*/workspace.json",
@@ -147,6 +152,7 @@ mod tests {
         let expected: BTreeSet<String> = [
             ".gitignore",
             ".cowork-sync.json",
+            "identity.json",
             "ws-1/workspace.json",
             "ws-1/Facts.md",
             "ws-1/Sessions/2026-08/24-topic.md",

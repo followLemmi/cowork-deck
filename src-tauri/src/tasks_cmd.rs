@@ -1156,6 +1156,7 @@ mod tests {
             color: "#61afef".into(),
             github: None,
             tracker,
+            repo: None,
         }
     }
 
@@ -1738,6 +1739,7 @@ mod tests {
                 }),
                 version: TRACKER_CONFIG_VERSION,
             }),
+            repo: None,
         }
     }
 
