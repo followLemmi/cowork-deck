@@ -96,6 +96,29 @@ four things worth knowing about a session you are not watching.*
 Sessions are children of the app: there is no detached mode, and the scheduler only fires while the
 window is open. Missed runs are not lost — each scheduled scenario catches up once on the next launch.
 
+## Limits: what each AI has left, and where that number came from
+
+A dozen sessions draw on **one** budget, and when it runs out they stall together. A block at the foot
+of the panel says what each connected AI has left — one row apiece, a thin meter, and when it lifts.
+
+**The source of a number is part of the number**, and it is on the row beside it rather than in a
+tooltip:
+
+- **Reported** — the account's own accounting, the figure `/usage` draws. Obtained by asking `claude`
+  itself, the way this app asks `gh` about GitHub: it costs nothing from your budget and no password
+  passes through the app. Switch it off in Settings if you would rather nothing started a short-lived
+  process every few minutes to ask.
+- **Observed** — what the app can see for itself, from the sessions it runs. Real, and *narrower than
+  your account*: other terminals, other machines and anything outside this app are not in it. The
+  dialog says so in words, and no meter is drawn for it — the app knows what it spent, not what was
+  allowed, and it will not divide by a ceiling it invented.
+- **Unknown** — it says so, and offers the one command that would answer it, in a tile.
+
+The reading that matters most needs no percentage at all. When a session is refused, the app reads the
+limit banner on its way to the screen and the pill stops saying *3 waiting for input* — which is true
+and useless — and says **nothing moves until 19:00**. That survives a restart, and you are told again
+when it lifts.
+
 ## A GitHub account per workspace
 
 Bind a workspace to a `gh` account and every session it starts has that access already in place:
@@ -276,6 +299,12 @@ State tracking depends on Claude Code's hooks reporting back. On an older `claud
 to fire, the terminal is unaffected — you can type, scroll and work normally. The only symptom is a tile
 whose state label stays on `idle`.
 
+The limits block degrades the same way, and says which rung it is on. The reported figure is read out of
+`claude`'s own output, so a version that words it differently costs the *percentage* and nothing else:
+the block stays where it is, falls back to **Observed**, and labels itself. It never blanks, and it
+never passes the app's own counting off as your account's. See
+[ADR-0007](docs/adr/0007-the-source-of-a-usage-number-is-part-of-the-number.md).
+
 ## Roadmap
 
 Work is tracked in [GitHub issues](https://github.com/followLemmi/cowork-deck/issues); the epics below
@@ -292,7 +321,6 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 | | |
 |---|---|
 | **Activity** [#323](https://github.com/followLemmi/cowork-deck/issues/323) | A tile says what a session **costs**. It says nothing about what it **did**. A panel that answers which tools ran, which subagents ran them and how many times — read from the agent CLI's own session log, Claude Code [#325](https://github.com/followLemmi/cowork-deck/issues/325) first. |
-| **Limits** [#301](https://github.com/followLemmi/cowork-deck/issues/301) | Many sessions draw on one budget, and when it runs out they stall together. What each connected AI has left, where that number came from, and a reading that says "nothing moves until 19:00" rather than "3 waiting" [#305](https://github.com/followLemmi/cowork-deck/issues/305). |
 | **Frame rate** [#261](https://github.com/followLemmi/cowork-deck/issues/261) | Dragging a grip or resizing the window gives up three quarters of the display's frame rate. Measured, with the work that follows from the measurements. |
 
 ### Later
