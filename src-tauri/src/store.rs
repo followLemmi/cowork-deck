@@ -571,7 +571,7 @@ mod tests {
     fn empty_store_reads_empty_then_upserts_and_deletes() {
         let s = Store::new(tmp());
         assert!(s.workspaces().is_empty());
-        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into(), github: None, tracker: None };
+        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into(), github: None, tracker: None, repo: None };
         let after = s.upsert_workspace(w.clone()).unwrap();
         assert_eq!(after.len(), 1);
         // reload from disk
@@ -612,6 +612,7 @@ mod tests {
             color: "#111111".into(),
             github: None,
             tracker: None,
+            repo: None,
         };
         s.upsert_workspace(w1.clone()).unwrap();
 
@@ -635,6 +636,7 @@ mod tests {
             color: "#222222".into(),
             github: None,
             tracker: None,
+            repo: None,
         };
         let result = s.upsert_workspace(w2);
         assert!(
@@ -988,6 +990,7 @@ mod tests {
             .upsert_workspace(Workspace {
                 id: "w3".into(), name: "C".into(), path: "/c".into(), color: "#fff".into(),
                 github: None, tracker: None,
+                repo: None,
             })
             .expect_err("a file we could not parse must never be overwritten");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);

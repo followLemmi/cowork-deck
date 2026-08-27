@@ -344,6 +344,8 @@ fn main() {
             sync_cmd::sync_disconnect,
             sync_cmd::sync_now,
             sync_cmd::sync_questions,
+            sync_cmd::sync_merge_workspaces,
+            sync_cmd::sync_keep_distinct,
             sync_cmd::sync_blocked_kinds,
             sync_cmd::sync_fault,
             commands::start_command_session,

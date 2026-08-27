@@ -70,9 +70,38 @@ Look at the repository on github.com, not only at the local directory.
 
 ## The collision
 
-- [ ] On **B**, *before* connecting, create a workspace for a project that **A** also has.
-- [ ] Connect. The deck asks whether they are the same project rather than deciding.
-- [ ] Neither answer loses a note without saying so.
+The one failure that needs both machines to have had the project *first* — each
+added the folder before sync was switched on, so each made its own id (#348).
+Everything below is in **Memory sync** (the dialog, or Settings → Config
+repository), which lists what a pull could not decide.
+
+- [ ] On **B**, *before* connecting, create a workspace for the same repository **A** already has. Put it at a **different path** than on **A**, and give it a **different name** — identity is the remote, not either of those.
+- [ ] Connect, and let one cycle run. The panel lists **one** thing to answer, naming the project — not two silent workspaces, and not a bare id.
+- [ ] The amber dot beside "Config repository" is up, and the section it points at now names what it is waiting on.
+- [ ] Write a fact into the workspace on **A** and another into the one on **B** before answering, so there is history on both sides to lose.
+
+### Answering "same project"
+
+- [ ] Answer **Same project** on **B**. One workspace is left, pointed at **B**'s folder.
+- [ ] Its memory search finds **both** facts. Neither machine's history went.
+- [ ] Nothing is left to answer on **B**, and it stays that way on the next cycle.
+- [ ] Sync **A**. It ends with the same single workspace, still pointed at **A**'s own folder — not **B**'s.
+- [ ] **A** is not asked a question that has already been answered.
+- [ ] Sync **A** twice more. The workspace count does not oscillate and the two machines do not take turns republishing the record that lost.
+- [ ] The run history for that project still lists runs from before the merge, under the surviving workspace.
+
+### Answering "different projects"
+
+Do this on a second pair, or undo the first by hand — the answer is meant to stick.
+
+- [ ] Answer **Different projects**. Both workspaces stay.
+- [ ] The question does not come back on the next tick, or the one after.
+- [ ] Sync **A**. It is not asked either — the answer was about the projects, not about the machine.
+
+### What is not offered
+
+- [ ] A workspace whose folder has **no** git remote is never offered as a duplicate of anything, even when another workspace has the same name.
+- [ ] Two *different* repositories on the same account are never offered as duplicates of each other.
 
 ## Schedules
 

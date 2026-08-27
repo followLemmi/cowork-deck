@@ -19,7 +19,16 @@ export interface Workspace {
   id: string; name: string; path: string; color: string;
   github?: WorkspaceGithub | null;
   tracker?: TrackerConfig | null;
+  /** What repository this workspace's folder is, remembered so sync can tell
+   *  two records for one project apart from two projects. Written by the sync
+   *  cycle, never by this side — an editor that set it would be guessing at a
+   *  folder it has not read. */
+  repo?: WorkspaceRepo | null;
 }
+/** The remote a workspace's folder points at, and the folder that was read in.
+ *  Mirrors `model::WorkspaceRepo`; `url` absent means the folder was asked and
+ *  has none, which is an answer rather than a gap. */
+export interface WorkspaceRepo { url?: string | null; from: string }
 export type SchedulePreset =
   | { kind: "hourly"; minute: number }
   | { kind: "daily"; hour: number; minute: number }
@@ -208,6 +217,13 @@ export const syncConnect = (host: string, login: string, repo: string, url: stri
 export const syncDisconnect = () => invoke<void>("sync_disconnect");
 export const syncNow = () => invoke<SyncState>("sync_now");
 export const syncQuestions = () => invoke<SyncQuestion[]>("sync_questions");
+/** These two records are one project: fold `from` into `into`. Answers with the
+ *  workspaces that are left. */
+export const syncMergeWorkspaces = (from: string, into: string) =>
+  invoke<Workspace[]>("sync_merge_workspaces", { from, into });
+/** These two records are not one project, and the deck is to stop asking. */
+export const syncKeepDistinct = (a: string, b: string) =>
+  invoke<void>("sync_keep_distinct", { a, b });
 
 /** The loop pushes state after every cycle, so a panel left open does not have
  *  to poll to stay honest. */
