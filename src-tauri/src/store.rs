@@ -98,12 +98,15 @@ impl Store {
     /// for the io half.
     fn try_read_vec<T: serde::de::DeserializeOwned>(path: &PathBuf) -> std::io::Result<Vec<T>> {
         match std::fs::read_to_string(path) {
-            // An empty file is a first run, not a corrupt one: `write_vec`
-            // truncates before it writes, so this is what a crash mid-write
-            // leaves behind, and refusing it would wedge every save with no
-            // recovery inside the app. A *non-empty* file we cannot parse still
-            // refuses — half an array is evidence of records a save would
-            // destroy, and an empty one is evidence of nothing.
+            // An empty file is a first run, not a corrupt one, and refusing it
+            // would wedge every save with no recovery inside the app. Our own
+            // writes no longer produce one — `write_atomic` renames a complete
+            // file into place rather than truncating this one (#145) — but a
+            // build older than that fix, a filesystem that lost the bytes on a
+            // power cut, or a person with an editor can all still leave one, and
+            // the tolerance is what makes those recoverable. A *non-empty* file
+            // we cannot parse still refuses: half an array is evidence of records
+            // a save would destroy, and an empty one is evidence of nothing.
             Ok(s) if s.trim().is_empty() => Ok(Vec::new()),
             Ok(s) => serde_json::from_str(&s).map_err(|e| {
                 std::io::Error::new(
@@ -133,10 +136,79 @@ impl Store {
         }
     }
 
-    fn write_vec<T: serde::Serialize>(path: &PathBuf, items: &[T]) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(items)
+    /// Replace `path`'s contents without ever leaving it truncated.
+    ///
+    /// `fs::write` opens with `O_TRUNC`: the old records are gone before the new
+    /// ones reach the disk, so a crash, a kill or a full disk in between leaves a
+    /// **zero-byte file**. `try_read_vec` then reads that as an empty list — on
+    /// purpose, because refusing there would wedge every save with no recovery
+    /// from inside the app — and the next save writes the emptiness back as the
+    /// truth. That was the last open route to #117 (#145). Writing a sibling and
+    /// renaming it over the target closes it: `rename` is atomic within a
+    /// filesystem, so the target only ever holds a whole file, the old one or the
+    /// new one and never a prefix of either.
+    ///
+    /// The temp name carries a pid and a counter rather than being derived from
+    /// the target alone. `sessions.json` is written from more than one window,
+    /// and `merge_layout`'s own doc comment describes saves that race; two of
+    /// them sharing one temp file would let a rename publish half of the other
+    /// writer's bytes — a *non-empty* unparseable file, which since #117 the next
+    /// save refuses outright. That wedges the store instead of costing it one
+    /// tick, so it is a worse failure than the one being fixed. The leading dot
+    /// and the `.tmp` suffix keep whatever a crash leaves behind out of sight.
+    ///
+    /// `sync_all` before the rename, because the rename can otherwise reach the
+    /// disk before the bytes it publishes do — and what that leaves is exactly
+    /// the zero-byte file this function exists to make impossible.
+    ///
+    /// `tasks/fs.rs::write_atomic` is the same manoeuvre for cards. It stays
+    /// separate because it speaks `TaskError` and resolves temp files against the
+    /// board's root rather than the target's own directory.
+    fn write_atomic(path: &PathBuf, body: &str) -> std::io::Result<()> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let tmp = path.with_file_name(format!(
+            ".{name}.{}.{}.tmp",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let spill = || -> std::io::Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(body.as_bytes())?;
+            f.sync_all()
+        };
+        match spill().and_then(|()| std::fs::rename(&tmp, path)) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Nobody else will: the name is unique per call, so a temp file
+                // left by a failure here would stay for good.
+                let _ = std::fs::remove_file(&tmp);
+                Err(e)
+            }
+        }
+    }
+
+    /// Serialize `value` and put it in `path`, atomically.
+    ///
+    /// The one place a store file is serialized and written. Every save went
+    /// through its own copy of these three lines, which is how `ui_state.json`
+    /// came to have the truncation hazard that `write_vec`'s callers had, in a
+    /// function nothing pointed at.
+    fn write_json<T: serde::Serialize>(path: &PathBuf, value: &T) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(value)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(path, json)
+        Self::write_atomic(path, &json)
+    }
+
+    fn write_vec<T: serde::Serialize>(path: &PathBuf, items: &[T]) -> std::io::Result<()> {
+        Self::write_json(path, &items)
     }
 
     pub fn workspaces(&self) -> Vec<Workspace> { Self::read_vec(&self.ws_path()) }
@@ -187,9 +259,7 @@ impl Store {
         }
     }
     pub fn save_terminals(&self, layout: &TerminalLayout) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(layout)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(self.terminals_path(), json)
+        Self::write_json(&self.terminals_path(), layout)
     }
 
     fn ui_path(&self) -> PathBuf { self.dir.join("ui_state.json") }
@@ -241,9 +311,7 @@ impl Store {
         if let Some(rows) = patch.terminal_rows {
             st.terminal_rows = rows;
         }
-        let json = serde_json::to_string_pretty(&st)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(self.ui_path(), json)
+        Self::write_json(&self.ui_path(), &st)
     }
 
     fn schedule_state_path(&self) -> PathBuf { self.dir.join("schedule_state.json") }
@@ -275,9 +343,7 @@ impl Store {
         &self,
         st: &std::collections::HashMap<String, ScheduleRun>,
     ) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(st)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(self.schedule_state_path(), json)
+        Self::write_json(&self.schedule_state_path(), st)
     }
 
     /// The scenario run journal, beside `skills.json` and `schedule_state.json`.
@@ -289,11 +355,12 @@ impl Store {
 
     /// Append one event. **`OpenOptions::append`, never `write_vec`.**
     ///
-    /// `write_vec` truncates before it writes, and `try_read_vec`'s own comment
-    /// already records what that costs when a crash lands in the middle (#117).
-    /// A file written on every launch cannot afford that failure mode; a
-    /// half-written appended line is discarded by the reader and everything
-    /// before it stands.
+    /// Not because the whole-file write is unsafe any more — `write_atomic`
+    /// settled that (#145) — but because rewriting a journal that grows all day
+    /// in order to add one line to it is the wrong shape: every append would
+    /// read, fold and re-render every record before it. A half-written appended
+    /// line is discarded by the reader and everything before it stands, which is
+    /// the cheaper guarantee and the one this file needs.
     ///
     /// One `write` of one line, so two writers interleaving produce two whole
     /// lines rather than one spliced one — this is the guarantee `O_APPEND`
@@ -362,9 +429,10 @@ impl Store {
 
     /// Rewrite the journal from `keep`, atomically.
     ///
-    /// Temp file plus rename, so a crash mid-compaction leaves the old journal
+    /// Through `write_atomic`, so a crash mid-compaction leaves the old journal
     /// intact — the one place this file is *not* append-only is also the one
-    /// place it cannot afford to be truncated in.
+    /// place it cannot afford to be truncated in. This had its own temp-file
+    /// copy of that manoeuvre before the store's other writes needed one.
     fn rewrite_runs(&self, keep: &[RunRecord]) -> std::io::Result<()> {
         let mut body = String::new();
         for rec in keep {
@@ -376,9 +444,7 @@ impl Store {
                 body.push('\n');
             }
         }
-        let tmp = self.runs_path().with_extension("jsonl.tmp");
-        std::fs::write(&tmp, body)?;
-        std::fs::rename(&tmp, self.runs_path())
+        Self::write_atomic(&self.runs_path(), &body)
     }
 
     /// Drop everything past the retention limit. Returns how many records went.
@@ -979,9 +1045,12 @@ mod tests {
     /// That last one is not pedantry. `read_to_string` gives `Ok("")`,
     /// `from_str::<Vec<_>>("")` errors, and the refusal this task introduces would
     /// then make every write fail permanently with no way back from inside the
-    /// app. And a zero-byte `workspaces.json` is exactly what `write_vec`'s bare
-    /// `fs::write` leaves behind if the process dies between the truncate and the
-    /// write — the crash case this task's own reasoning names.
+    /// app. A zero-byte `workspaces.json` was exactly what `write_vec`'s bare
+    /// `fs::write` left behind if the process died between the truncate and the
+    /// write — the crash case this task's own reasoning named, and the one #145
+    /// closed by writing through `write_atomic`. The tolerance stays for the
+    /// files that fix cannot reach: written by an older build, or by something
+    /// that is not this app.
     ///
     /// **A truncated-but-non-empty file keeps the refusal**, and the difference is
     /// deliberate: empty carries no information, so treating it as "nothing yet"
@@ -1315,5 +1384,166 @@ mod tests {
         let runs = s.runs();
         assert_eq!(runs.iter().filter(|r| r.skill_id == "hourly").count(), RUNS_PER_SKILL);
         assert_eq!(runs.iter().filter(|r| r.skill_id == "nightly").count(), 1);
+    }
+
+    /// #145, and the mechanism rather than the crash: a save must publish a
+    /// *finished* file by renaming it over the target, never empty the target
+    /// and fill it back in. Provoking a real torn write is not something a unit
+    /// test can do, so what is pinned here is the property that makes one
+    /// harmless — there is no moment at which the target holds neither the old
+    /// records nor the new ones.
+    ///
+    /// The inode is the witness. `fs::write` truncates and refills the same
+    /// file, so the number is unchanged; a rename puts a different file at the
+    /// name. Nothing else distinguishes the two after the fact, which is why the
+    /// assertion is this and not a byte comparison.
+    ///
+    /// **Every write path in this file, not the one the issue was reported
+    /// against.** `write_vec`'s three callers were the reported ones, and
+    /// `ui_state.json` — named in the same report — never went through it at
+    /// all; a fix applied to some of them is a fix somebody will assume covers
+    /// the rest.
+    #[test]
+    fn every_save_replaces_the_file_rather_than_truncating_it() {
+        use std::os::unix::fs::MetadataExt;
+
+        let s = Store::new(tmp());
+        let ino = |p: &PathBuf| std::fs::metadata(p).unwrap().ino();
+        let replaced = |p: &PathBuf, before: u64, what: &str| {
+            assert_ne!(
+                before,
+                ino(p),
+                "{what} was written in place: between the truncate and the write \
+                 it holds neither the old records nor the new ones",
+            );
+        };
+
+        let ws = |id: &str| Workspace {
+            id: id.into(), name: id.into(), path: "/tmp/a".into(), color: "#fff".into(),
+            github: None, tracker: None,
+        };
+        s.save_workspaces(&[ws("w1")]).unwrap();
+        let before = ino(&s.ws_path());
+        s.save_workspaces(&[ws("w1"), ws("w2")]).unwrap();
+        replaced(&s.ws_path(), before, "workspaces.json");
+        assert_eq!(s.workspaces().len(), 2, "and the new records are the ones on disk");
+
+        let sk = |id: &str| Skill {
+            id: id.into(), name: id.into(), icon: "play".into(), prompt: "p".into(),
+            workspace_id: None, schedule: None,
+        };
+        s.save_skills(&[sk("s1")]).unwrap();
+        let before = ino(&s.sk_path());
+        s.save_skills(&[sk("s1"), sk("s2")]).unwrap();
+        replaced(&s.sk_path(), before, "skills.json");
+        assert_eq!(s.skills().len(), 2);
+
+        s.save_layout(MAIN_WINDOW, &[entry("t1", None)]).unwrap();
+        let before = ino(&s.layout_path());
+        s.save_layout(MAIN_WINDOW, &[entry("t1", None), entry("t2", None)]).unwrap();
+        replaced(&s.layout_path(), before, "sessions.json");
+        assert_eq!(s.layout().len(), 2);
+
+        s.save_ui_state(&UiStatePatch { active_workspace_id: Some("w1".into()), ..Default::default() })
+            .unwrap();
+        let before = ino(&s.ui_path());
+        s.save_ui_state(&UiStatePatch { active_workspace_id: Some("w2".into()), ..Default::default() })
+            .unwrap();
+        replaced(&s.ui_path(), before, "ui_state.json");
+        assert_eq!(s.ui_state().active_workspace_id, Some("w2".into()));
+
+        let drawer = |name: &str| TerminalLayout {
+            items: vec![TerminalEntry {
+                session_id: "t1".into(), cwd: "/tmp/a".into(), name: name.into(),
+                workspace_id: None,
+            }],
+            ..Default::default()
+        };
+        s.save_terminals(&drawer("zsh")).unwrap();
+        let before = ino(&s.terminals_path());
+        s.save_terminals(&drawer("bash")).unwrap();
+        replaced(&s.terminals_path(), before, "terminals.json");
+        assert_eq!(s.terminals().items[0].name, "bash");
+
+        let fired = |at: i64| {
+            let mut m = std::collections::HashMap::new();
+            m.insert("s1".to_string(), ScheduleRun {
+                last_attempt: at, last_run: Some(at), last_outcome: Some("launched".into()),
+                preset: None, version: SCHEDULE_STATE_VERSION,
+            });
+            m
+        };
+        s.save_schedule_state(&fired(1)).unwrap();
+        let before = ino(&s.schedule_state_path());
+        s.save_schedule_state(&fired(2)).unwrap();
+        replaced(&s.schedule_state_path(), before, "schedule_state.json");
+        assert_eq!(s.schedule_state()["s1"].last_attempt, 2);
+
+        // The journal's compaction, the one place it is not append-only. It had
+        // this manoeuvre before the rest of the file did; it now shares the
+        // implementation, so it is pinned here with everything else.
+        for i in 0..(RUNS_PER_SKILL + 2) {
+            s.append_run_event(&a_run(&format!("r{i}"), "s1", i as i64)).unwrap();
+        }
+        let before = ino(&s.runs_path());
+        assert!(s.compact_runs().unwrap() > 0, "the fixture must actually provoke a rewrite");
+        replaced(&s.runs_path(), before, "runs.jsonl");
+    }
+
+    /// The consequence, stated as the issue states it: a write that fails
+    /// cannot leave a zero-byte file where the records were.
+    ///
+    /// The failure is injected where the app cannot recover from it either — a
+    /// store directory that has become unwritable — because that is the one
+    /// point a test can reach. What the old code did here is worse than an
+    /// error: the target already exists and is writable, so `O_TRUNC` succeeds,
+    /// the save reports success, and the records are gone. Refusing is the
+    /// improvement, and the file surviving byte for byte is the point.
+    #[test]
+    fn a_save_that_fails_leaves_the_previous_records_byte_for_byte() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let s = Store::new(tmp());
+        let w = Workspace {
+            id: "w1".into(), name: "First".into(), path: "/tmp/a".into(), color: "#111111".into(),
+            github: None, tracker: None,
+        };
+        s.save_workspaces(std::slice::from_ref(&w)).unwrap();
+        let original = fs::read_to_string(s.ws_path()).unwrap();
+
+        let perms = fs::metadata(&s.dir).unwrap().permissions();
+        fs::set_permissions(&s.dir, fs::Permissions::from_mode(0o500)).unwrap();
+        // As root the mode bits do not stop the write, so the scenario cannot be
+        // exercised on this platform/user — skip rather than false-fail, the same
+        // way `upsert_refuses_to_truncate_on_non_not_found_read_error` does.
+        let still_writable = fs::write(s.dir.join("probe"), "x").is_ok();
+        if still_writable {
+            let _ = fs::remove_file(s.dir.join("probe"));
+            fs::set_permissions(&s.dir, perms).unwrap();
+            return;
+        }
+
+        let mut w2 = w.clone();
+        w2.name = "Renamed".into();
+        assert!(
+            s.save_workspaces(&[w2]).is_err(),
+            "a save that cannot be completed must report so, not half-happen",
+        );
+
+        fs::set_permissions(&s.dir, perms).unwrap();
+        assert_eq!(
+            fs::read_to_string(s.ws_path()).unwrap(),
+            original,
+            "the records that were there must still be there, in full",
+        );
+        // And no debris at the name the next save will use.
+        let leftovers: Vec<String> = fs::read_dir(&s.dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "a failed save left temp files behind: {leftovers:?}");
     }
 }
