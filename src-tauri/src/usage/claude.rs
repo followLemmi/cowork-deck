@@ -360,6 +360,39 @@ mod tests {
         assert!(w.note.unwrap().contains("does not parse"));
     }
 
+    /// The degradation #306 asked to have proven, at the level a person sees it.
+    ///
+    /// A Claude Code version that words `/usage` differently makes
+    /// `reported::parse_usage_text` return nothing — covered in that module — and
+    /// what has to happen *here* is that the window keeps its row, falls back to
+    /// the observed count, and says which tier it is on. Never a blank, never a
+    /// zero, never an error.
+    #[test]
+    fn a_reported_source_that_stopped_parsing_degrades_to_observed_and_says_so() {
+        let _g = clean();
+        let w = window(banner::SESSION, "Current session", None, None, NOW, 42_000);
+        assert_eq!(w.source, UsageSource::Observed, "it says which tier it fell to");
+        assert_eq!(w.label, "Current session", "and the row is still there");
+        assert_eq!(w.amount.as_ref().unwrap().used, 42_000, "with a real reading on it");
+        assert_eq!(w.state, LimitState::Unknown, "and no claim it cannot support");
+        assert!(w.note.unwrap().contains("Other terminals"), "and the caveat in words");
+    }
+
+    /// The other half of the same rule: a refusal already known survives the
+    /// reported source going away, because it was never the reported source's.
+    #[test]
+    fn a_watched_refusal_survives_the_reported_source_going_away() {
+        let _g = clean();
+        observed::note_output(
+            "t-claude-3",
+            b"You've hit your 5-hour limit \xc2\xb7 resets 4pm\r\n",
+            NOW,
+        );
+        let w = window(banner::SESSION, "Current session", None, None, NOW, 0);
+        assert_eq!(w.state, LimitState::Exhausted);
+        assert_eq!(w.source, UsageSource::Observed);
+    }
+
     #[test]
     fn the_declared_windows_are_the_two_the_epic_names() {
         let caps = ClaudeUsage::new(Arc::new(AtomicBool::new(true))).capabilities();
