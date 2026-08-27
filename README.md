@@ -235,8 +235,18 @@ you point it at one, and a schedule arrives switched off so a 03:00 job does not
 machines. Conflicts are not resolved for you — notes are prose, and an automatic merge produces a
 plausible paragraph nobody wrote.
 
+**When both machines already had the project:** each added the folder before sync was switched on, so
+each made its own id, and the arriving record looks like a second project. The deck recognises them by
+the folder's git remote — the one thing that is the same string on both machines — and asks whether
+they are the same project instead of deciding. Answering "same project" leaves one workspace with this
+machine's folder and both machines' history; answering "different projects" leaves both and does not
+ask again, on either machine. A workspace whose folder has no remote has nothing to be recognised by
+and is never offered as a duplicate, because a guess that is wrong merges two real projects.
+
 See [ADR-0006](docs/adr/0006-the-config-directory-is-the-sync-repository.md) for why the config
-directory *is* the repository.
+directory *is* the repository, and
+[ADR-0007](docs/adr/0007-a-workspaces-identity-across-machines-is-its-remote.md) for what a workspace's
+identity is across machines and what merging two records actually moves.
 
 ## Install
 

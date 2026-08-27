@@ -3836,6 +3836,20 @@ h6.md-head { font-size: var(--fs-sm); }
 }
 .sync-fault-text { margin: 0; }
 
+/* What a pull could not decide. Amber rather than red, and each one carries its
+   own actions: none of these is a failure, and every one of them is something
+   only a person can settle. */
+.sync-asks { display: flex; flex-direction: column; gap: 10px; }
+.sync-asks:empty { display: none; }
+.sync-asks-head { margin: 0; font-weight: 600; }
+.sync-ask {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--st-waiting);
+  background: color-mix(in srgb, var(--st-waiting) 8%, transparent);
+}
+.sync-ask-text { margin: 0; }
+
 /* The one unprompted mention of memory sync. Sits above the deck rather than
    over it: it must not cover a tile, and it must be possible to ignore. */
 .sync-offer {
