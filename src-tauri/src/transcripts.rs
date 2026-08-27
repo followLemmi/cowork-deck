@@ -43,6 +43,20 @@ pub fn get(session: &str) -> Option<String> {
     paths().lock().ok()?.get(session).cloned()
 }
 
+/// Every session's current transcript, as a list.
+///
+/// For the rolling burn in `usage::observed`, which asks a question no single
+/// session can answer: what has this deck spent, across all of it, in the last
+/// five hours. A snapshot rather than a guard held across the reads — the caller
+/// then does file I/O, and holding this lock through that would put a paint tick
+/// behind a dozen `read_to_string`s.
+pub fn all() -> Vec<(String, String)> {
+    match paths().lock() {
+        Ok(m) => m.iter().map(|(s, p)| (s.clone(), p.clone())).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Drop a closed session. Not a leak fix — one short string per session per app
 /// run — but a tile that is gone should not keep answering questions.
 pub fn forget(session: &str) {
