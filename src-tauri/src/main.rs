@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity;
 mod model;
 mod store;
 mod sync;
@@ -304,6 +305,7 @@ fn main() {
             commands::worktree_files,
             commands::config_paths,
             commands::session_snapshots,
+            activity::session_activity,
             commands::scheduler_ready,
             commands::schedule_ack,
             commands::load_schedule_state,
