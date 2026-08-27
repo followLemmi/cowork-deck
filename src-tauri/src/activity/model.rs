@@ -339,12 +339,6 @@ pub enum Source {
     Tree { dir: PathBuf, ext: String, cap: usize },
 }
 
-impl Source {
-    pub fn file(path: impl Into<PathBuf>) -> Source {
-        Source::File(path.into())
-    }
-}
-
 /// Unix seconds. One place, so a roll and its tests agree on what `read_at` is.
 pub fn now() -> i64 {
     std::time::SystemTime::now()

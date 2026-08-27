@@ -15,6 +15,7 @@
 pub mod claude;
 pub mod copilot;
 pub mod model;
+pub mod opencode;
 pub mod reader;
 pub mod registry;
 

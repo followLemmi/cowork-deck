@@ -9,14 +9,17 @@ use super::reader::ActivityReader;
 /// Nothing is an ordinary answer and the panel has a sentence for it: a CLI with
 /// no reader in this build is a different thing from a log that would not open,
 /// and #326 says so in different words.
-pub fn reader_for(cli: CliKind) -> Option<Box<dyn ActivityReader>> {
+pub fn reader_for(cli: CliKind, session: &str) -> Option<Box<dyn ActivityReader>> {
     match cli {
         CliKind::Claude => Some(Box::new(super::claude::ClaudeReader)),
         CliKind::Copilot => Some(Box::new(super::copilot::CopilotReader)),
-        // Every remaining arm is filled by the issue that measures that CLI's
-        // log. A panel opened on one of them says "no reader" rather than
-        // drawing zeroes.
-        CliKind::Opencode | CliKind::Codex => None,
+        // The session is passed because one reader genuinely needs it beyond
+        // locating the files: opencode's parts carry their `sessionID` inside
+        // the document, so the fold has to check it as well as the walk.
+        CliKind::Opencode => Some(Box::new(super::opencode::OpencodeReader::for_session(session))),
+        // Filled by the issue that measures that CLI's log. A panel opened on it
+        // says "no reader" rather than drawing zeroes.
+        CliKind::Codex => None,
     }
 }
 
@@ -35,7 +38,7 @@ const NOTHING: ReaderCapabilities = ReaderCapabilities { outcomes: false, agents
 /// this is shaped to avoid. #326 calls it on open and re-calls it on the tick
 /// only while a panel is on screen.
 pub fn roll_for(cli: CliKind, session: &str) -> ActivityRoll {
-    let Some(reader) = reader_for(cli) else {
+    let Some(reader) = reader_for(cli, session) else {
         return ActivityRoll::unavailable(cli, Unavailable::NoReader, NOTHING);
     };
     roll_with(reader.as_ref(), session)
@@ -57,6 +60,11 @@ pub fn roll_with(reader: &dyn ActivityReader, session: &str) -> ActivityRoll {
 
     let mut roll = ActivityRoll::empty(cli, caps);
     let mut read_any = false;
+    // The cap is a budget across the WHOLE read rather than a limit per source.
+    // A reader that answers with one tree per message would otherwise get its
+    // cap once per message, which is no bound at all — and the number a
+    // truncated roll reports has to be the number of files actually read.
+    let mut budget: Option<usize> = None;
     for src in &sources {
         match src {
             Source::File(path) => {
@@ -73,10 +81,16 @@ pub fn roll_with(reader: &dyn ActivityReader, session: &str) -> ActivityRoll {
                 }
             }
             Source::Tree { dir, ext, cap } => {
-                let (files, truncated) = walk(dir, ext, *cap);
+                let left = budget.get_or_insert(*cap);
+                if *left == 0 {
+                    roll.truncated = Some(*cap as u32);
+                    continue;
+                }
+                let (files, truncated) = walk(dir, ext, *left);
                 if truncated {
                     roll.truncated = Some(*cap as u32);
                 }
+                *left -= files.len();
                 for path in files {
                     if let Ok(buf) = std::fs::read_to_string(&path) {
                         read_any = true;
@@ -381,6 +395,29 @@ mod roll_tests {
         let roll = roll_with(&whole, "s1");
         assert_eq!(roll.calls, 6);
         assert_eq!(roll.truncated, None);
+    }
+
+    /// The cap bounds the WHOLE read, not each source. A reader that answers
+    /// with one tree per message — which is what the opencode reader does —
+    /// would otherwise get its cap once per message, which is no bound at all.
+    #[test]
+    fn the_cap_is_a_budget_across_every_tree_a_reader_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut sources = Vec::new();
+        for m in 0..4 {
+            let d = root.join(format!("msg_{m}"));
+            std::fs::create_dir_all(d.join("inner")).unwrap();
+            for i in 0..3 {
+                std::fs::write(d.join(format!("p{i}.json")), "main Bash\n").unwrap();
+            }
+            sources.push(Source::Tree { dir: d, ext: "json".into(), cap: 7 });
+        }
+        // Twelve files over four trees, a budget of seven.
+        let reader = Fake { sources, capabilities: caps(true, false) };
+        let roll = roll_with(&reader, "s1");
+        assert_eq!(roll.calls, 7, "the budget bounds the read across every tree");
+        assert_eq!(roll.truncated, Some(7), "and the roll says it was bounded");
     }
 
     #[test]
