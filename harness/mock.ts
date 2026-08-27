@@ -229,6 +229,12 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
       return out;
     }
 
+    /* What every connected AI has left. Answered unconditionally, `force` or
+       not: the harness has no cache to bypass, and a mock that refused the forced
+       read would hide the block whenever a limit signal arrived. */
+    case "usage_snapshot": return F.usage;
+    case "usage_clear_observed": return null;
+
     /* The tracker. */
     case "tasks_capabilities":
       return args.workspaceId === F.WS_HARBOR ? F.githubCaps

@@ -149,8 +149,12 @@ export class LimitsBlock {
         );
       } else if (win.resetsAt !== null) {
         foot.append(span("lim-reset", `resets ${formatReset(win.resetsAt, now)}`));
-      } else if (win.state === "unknown") {
-        foot.append(span("lim-reset", snap.error ?? "not known"));
+      } else if (snap.error) {
+        // An error, and only an error. An unknown row used to add "not known"
+        // here, which said the same thing the reading beside it already said —
+        // and two ways of saying nothing read as two facts. What that row needs
+        // is the action, and the action is the button next to it.
+        foot.append(span("lim-reset", snap.error));
       }
       if (foot.childNodes.length) open.append(foot);
     }

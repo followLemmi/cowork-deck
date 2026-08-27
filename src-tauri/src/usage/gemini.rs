@@ -97,10 +97,13 @@ impl UsageProvider for GeminiUsage {
         let caps = self.capabilities();
         let mut snap = AiUsage::unknown(self.id(), self.label(), &caps, now_ms);
         for w in &mut snap.windows {
+            // The window's own fact, and nothing more. Where to look instead is
+            // said once by the `needs_credential` hint the dialog already draws
+            // — a sentence repeated per window read as three separate problems
+            // on a two-window provider.
             w.note = Some(
                 "Gemini CLI does not report what is left, and this app has never seen it \
-                 say so on a terminal. Its own session view is the only place this can be \
-                 read."
+                 say so on a terminal."
                     .to_string(),
             );
         }

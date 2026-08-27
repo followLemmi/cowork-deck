@@ -104,6 +104,22 @@ describe("the limits block", () => {
     ]);
   });
 
+  /** Two ways of saying nothing read as two facts. An unknown row says it has no
+   *  reading once, and what it adds is the action rather than a second word for
+   *  the same absence. */
+  it("does not restate an absent reading in the row's foot", () => {
+    const { el, block } = mount();
+    block.render([snap({ probeCommand: "x", windows: [win()] })], NOW);
+    expect(el.querySelector(".lim-foot")).toBe(null);
+    expect(el.querySelector(".lim-reading")!.textContent).toBe("no reading");
+  });
+
+  it("does put an error in the foot, because that one is actionable", () => {
+    const { el, block } = mount();
+    block.render([snap({ error: "not signed in — run `claude auth login`", windows: [win()] })], NOW);
+    expect(el.querySelector(".lim-foot")!.textContent).toContain("claude auth login");
+  });
+
   it("offers no action when the provider named no command", () => {
     const { el, block } = mount();
     block.render([snap({ probeCommand: null, windows: [win()] })], NOW);
