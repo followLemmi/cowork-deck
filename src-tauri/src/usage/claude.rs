@@ -21,9 +21,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-const FIVE_HOURS_MS: i64 = 5 * 60 * 60 * 1000;
-const SEVEN_DAYS_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-
 /// The caveat that goes under every observed number, in words, on screen.
 /// One string so the two windows cannot drift into saying it differently.
 const OBSERVED_CAVEAT: &str =
@@ -113,6 +110,15 @@ impl UsageProvider for ClaudeUsage {
             None
         };
 
+        // One pass over every transcript, before the windows are built: it fills
+        // both burn figures and records a refusal if a transcript holds one, so
+        // the windows below see it. Skipped entirely when the reported source
+        // answered both windows — there is no burn figure to show then, and
+        // reading a dozen files to discard the result is the kind of work a
+        // screen refreshing every five minutes should not do.
+        let need_burn = rep.as_ref().is_none_or(|r| r.session.is_none() || r.week.is_none());
+        let burn = if need_burn { observed::scan(now_ms) } else { observed::Burn::default() };
+
         let mut windows = Vec::new();
         windows.push(window(
             banner::SESSION,
@@ -120,7 +126,7 @@ impl UsageProvider for ClaudeUsage {
             rep.as_ref().and_then(|r| r.session.clone()),
             None,
             now_ms,
-            now_ms - FIVE_HOURS_MS,
+            burn.session,
         ));
         windows.push(window(
             banner::WEEK,
@@ -130,7 +136,7 @@ impl UsageProvider for ClaudeUsage {
                 .filter(|r| r.model_scoped)
                 .map(|_| "This is a model-scoped weekly limit, which is the one binding first."),
             now_ms,
-            now_ms - SEVEN_DAYS_MS,
+            burn.week,
         ));
 
         let mut snap = AiUsage::from_windows(self.id(), self.label(), windows, now_ms);
@@ -162,7 +168,9 @@ fn window(
     rep: Option<reported::ReportedWindow>,
     extra_note: Option<&str>,
     now_ms: i64,
-    since_ms: i64,
+    // `burn` is what this deck spent in this window, already counted: passed in
+    // rather than read here, so one pass over the transcripts serves both.
+    burn: u64,
 ) -> LimitWindow {
     let refusal = observed::for_window(now_ms, "claude", id);
     let mut notes: Vec<String> = Vec::new();
@@ -178,7 +186,6 @@ fn window(
             reported::resolve(r.reset_text.as_deref()),
         ),
         None => {
-            let used = observed::burn_since(since_ms);
             notes.push(OBSERVED_CAVEAT.to_string());
             (
                 label.to_string(),
@@ -187,7 +194,7 @@ fn window(
                 // session of this deck has spent anything in the window. The
                 // `Unknown` state below is what stops it reading as "you are
                 // fine".
-                Some(Amount { used, limit: None, unit: "tokens".to_string() }),
+                Some(Amount { used: burn, limit: None, unit: "tokens".to_string() }),
                 UsageSource::Observed,
                 None,
             )
@@ -269,7 +276,7 @@ mod tests {
     #[test]
     fn a_reported_share_is_the_quantity_and_carries_its_own_tier() {
         let _g = clean();
-        let w = window(banner::SESSION, "Current session", rep(0.23), None, NOW, NOW - FIVE_HOURS_MS);
+        let w = window(banner::SESSION, "Current session", rep(0.23), None, NOW, 0);
         assert_eq!(w.source, UsageSource::Reported);
         assert_eq!(w.used_fraction, Some(0.23));
         assert_eq!(w.amount, None);
@@ -280,7 +287,7 @@ mod tests {
     #[test]
     fn a_reported_share_past_the_threshold_is_near_but_never_exhausted() {
         let _g = clean();
-        let w = window(banner::SESSION, "Current session", rep(0.97), None, NOW, NOW - FIVE_HOURS_MS);
+        let w = window(banner::SESSION, "Current session", rep(0.97), None, NOW, 0);
         assert_eq!(w.state, LimitState::Near);
     }
 
@@ -288,11 +295,14 @@ mod tests {
     #[test]
     fn an_observed_burn_leaves_the_state_unknown_rather_than_claiming_ok() {
         let _g = clean();
-        let w = window(banner::SESSION, "Current session", None, None, NOW, NOW - FIVE_HOURS_MS);
+        let w = window(banner::SESSION, "Current session", None, None, NOW, 1_250_000);
         assert_eq!(w.source, UsageSource::Observed);
         assert_eq!(w.used_fraction, None);
         assert_eq!(w.state, LimitState::Unknown);
-        assert_eq!(w.amount.as_ref().unwrap().limit, None);
+        let amount = w.amount.as_ref().unwrap();
+        assert_eq!(amount.used, 1_250_000);
+        assert_eq!(amount.limit, None, "a numerator with no denominator");
+        assert_eq!(amount.unit, "tokens");
         assert!(w.note.unwrap().contains("Other terminals"));
     }
 
@@ -307,7 +317,7 @@ mod tests {
             b"You've hit your 5-hour limit \xc2\xb7 resets 4pm\r\n",
             NOW,
         );
-        let w = window(banner::SESSION, "Current session", rep(0.42), None, NOW, NOW - FIVE_HOURS_MS);
+        let w = window(banner::SESSION, "Current session", rep(0.42), None, NOW, 0);
         assert_eq!(w.state, LimitState::Exhausted);
         assert_eq!(w.source, UsageSource::Reported, "the share is still the provider's");
         assert_eq!(w.used_fraction, Some(0.42));
@@ -328,7 +338,7 @@ mod tests {
             scoped,
             Some("This is a model-scoped weekly limit, which is the one binding first."),
             NOW,
-            NOW - SEVEN_DAYS_MS,
+            0,
         );
         assert_eq!(w.label, "Current week (Opus)");
         assert!(w.note.unwrap().contains("model-scoped"));
@@ -344,7 +354,7 @@ mod tests {
             b"You've hit your 5-hour limit, resets sometime later\r\n",
             NOW,
         );
-        let w = window(banner::SESSION, "Current session", None, None, NOW, NOW - FIVE_HOURS_MS);
+        let w = window(banner::SESSION, "Current session", None, None, NOW, 0);
         assert_eq!(w.state, LimitState::Exhausted);
         assert_eq!(w.resets_at, None);
         assert!(w.note.unwrap().contains("does not parse"));

@@ -42,6 +42,13 @@ const TAIL: usize = 4096;
 /// someone to look at a working deck, a false positive sends them away from one.
 const ASSUMED_MS: i64 = 5 * 60 * 60 * 1000;
 
+/// The two windows this app counts a rolling burn over. Here rather than in
+/// `claude.rs` because the scan below needs both in one pass: a request inside
+/// the five hours is also inside the week, and reading every transcript twice to
+/// discover that would double the file I/O of every fetch.
+pub const FIVE_HOURS_MS: i64 = 5 * 60 * 60 * 1000;
+pub const SEVEN_DAYS_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
 /// Raw bytes, not normalised text, and that is a performance decision rather
 /// than a shortcut: this is appended to for **every batch of every session's
 /// output**, so a build log scrolling past must not pay for a copy-and-lowercase
@@ -254,29 +261,107 @@ pub fn clear(provider: &str) {
     persist();
 }
 
-/// Total tokens this deck's own sessions have spent since `since_ms`.
-///
-/// Subagents included, for the same reason `transcript_spend` includes them: in
-/// one measured case a single subagent outspent the entire main chain, so leaving
-/// them out would understate the burn by up to two thirds.
-pub fn burn_since(since_ms: i64) -> u64 {
-    let mut seen_ids = HashSet::new();
-    let mut total = 0u64;
-    for (_, path) in crate::transcripts::all() {
-        let path = std::path::PathBuf::from(path);
-        if let Ok(main) = std::fs::read_to_string(&path) {
-            total += fold_usage_since(&main, since_ms, &mut seen_ids);
-        }
-        for sub in crate::commands::subagent_transcripts(&path) {
-            if let Ok(content) = std::fs::read_to_string(&sub) {
-                total += fold_usage_since(&content, since_ms, &mut seen_ids);
-            }
-        }
-    }
-    total
+/// What this deck's own sessions have spent, per window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Burn {
+    /// Tokens in the last five hours.
+    pub session: u64,
+    /// Tokens in the last seven days.
+    pub week: u64,
 }
 
-/// `commands::fold_usage_lines`, plus a clock.
+/// One pass over every transcript this app knows about: what was spent in each
+/// window, and whether the provider refused a request in one of them.
+///
+/// One function rather than two because it is one read. The transcripts of a
+/// dozen sessions are the most expensive thing a fetch does, and asking about
+/// the five hours and the week separately read all of them twice.
+///
+/// Subagents are included, for the same reason `transcript_spend` includes them:
+/// in one measured case a single subagent outspent the entire main chain, so
+/// leaving them out would understate the burn by up to two thirds.
+///
+/// A refusal found here is **recorded**, not returned: it belongs in the same
+/// persisted list a PTY banner lands in, so it survives a restart and expires by
+/// the same rule.
+pub fn scan(now_ms: i64) -> Burn {
+    let mut seen_ids = HashSet::new();
+    let mut burn = Burn::default();
+    let mut refusal: Option<ApiRefusal> = None;
+    let session_from = now_ms - FIVE_HOURS_MS;
+    let week_from = now_ms - SEVEN_DAYS_MS;
+    for (_, path) in crate::transcripts::all() {
+        let path = std::path::PathBuf::from(path);
+        let mut files = vec![path.clone()];
+        files.extend(crate::commands::subagent_transcripts(&path));
+        for file in files {
+            let Ok(content) = std::fs::read_to_string(&file) else { continue };
+            fold(&content, session_from, week_from, &mut seen_ids, &mut burn, &mut refusal);
+        }
+    }
+    // Newest wins, and only if it is recent enough to still be true: a 429 from
+    // three days ago must not put the block back into "spent".
+    if let Some(r) = refusal.filter(|r| now_ms - r.at < ASSUMED_MS) {
+        record(UsageExhaustion {
+            provider: "claude".to_string(),
+            // The transcript does not say which window, and this does not guess.
+            window: None,
+            resets_at: None,
+            at: r.at,
+            text: Some(r.text),
+        });
+    }
+    burn
+}
+
+/// A refused request, as a transcript records one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApiRefusal {
+    at: i64,
+    text: String,
+}
+
+/// Whether a transcript line is the provider refusing a request for want of
+/// budget — and nothing else.
+///
+/// The shape is measured rather than guessed. Claude Code writes an API failure
+/// as a line carrying `isApiErrorMessage: true`, a bare `error` string naming the
+/// kind, and `apiErrorStatus`:
+///
+/// ```text
+/// {"type":"assistant","timestamp":"…","error":"authentication_failed",
+///  "isApiErrorMessage":true,"apiErrorStatus":"403", …}
+/// ```
+///
+/// **Only that structured form is accepted.** Scanning for the bare token
+/// `rate_limit_error` anywhere in a line would match the agent writing about rate
+/// limits — this very repository's transcripts contain the string in prose — and
+/// a row that wrongly says "exhausted" sends somebody away from a working deck. A
+/// line Claude Code words differently is a miss, and a miss is the safe direction:
+/// the PTY banner is watching for the same event.
+fn api_refusal(v: &serde_json::Value) -> Option<ApiRefusal> {
+    if v["isApiErrorMessage"] != serde_json::Value::Bool(true) {
+        return None;
+    }
+    let kind = v["error"].as_str().unwrap_or_default();
+    // Either name for it. `429` is the status a budget refusal arrives with, and
+    // `rate_limit_error` is what the body calls it; a version that reports one
+    // without the other should still be read.
+    let status = v["apiErrorStatus"].as_str().unwrap_or_default();
+    if kind != "rate_limit_error" && status != "429" {
+        return None;
+    }
+    let at = parse_iso(v["timestamp"].as_str()?)?;
+    Some(ApiRefusal {
+        at,
+        text: format!(
+            "Claude Code recorded a refused request in a transcript: {}",
+            if kind.is_empty() { "HTTP 429" } else { kind },
+        ),
+    })
+}
+
+/// `commands::fold_usage_lines`, plus a clock and an eye for a refusal.
 ///
 /// The sibling of that function and it shares its one hard-won rule: **usage
 /// belongs to a request, not to a line.** A transcript writes one line per
@@ -290,19 +375,35 @@ pub fn burn_since(since_ms: i64) -> u64 {
 /// per-request time, and a line with no parseable timestamp has to be **left
 /// out** — counting it would put an unknown amount of history into a five-hour
 /// bucket and make the number grow without bound.
-fn fold_usage_since(content: &str, since_ms: i64, seen: &mut HashSet<String>) -> u64 {
-    let mut total = 0u64;
+///
+/// Both windows are filled in one pass, because a request inside the five hours
+/// is also inside the week and the alternative is reading every file twice.
+fn fold(
+    content: &str,
+    session_from: i64,
+    week_from: i64,
+    seen: &mut HashSet<String>,
+    burn: &mut Burn,
+    refusal: &mut Option<ApiRefusal>,
+) {
     for line in content.lines() {
         let v: serde_json::Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => continue,
         };
+        // Newest wins: a session refused at 14:00 and again at 14:05 is one
+        // window, and the later reading is the one that holds.
+        if let Some(r) = api_refusal(&v) {
+            if refusal.as_ref().is_none_or(|old| r.at > old.at) {
+                *refusal = Some(r);
+            }
+        }
         let usage = &v["message"]["usage"];
         if !usage.is_object() {
             continue;
         }
         let Some(ts) = v["timestamp"].as_str().and_then(parse_iso) else { continue };
-        if ts < since_ms {
+        if ts < week_from {
             continue;
         }
         if let Some(id) = v["message"]["id"].as_str() {
@@ -314,11 +415,15 @@ fn fold_usage_since(content: &str, since_ms: i64, seen: &mut HashSet<String>) ->
         // is metered on, and a deck of twelve sessions at >150k context is almost
         // entirely cache reads. Leaving them out would report a tenth of the
         // truth on exactly the workload this feature exists for.
+        let mut spent = 0u64;
         for f in ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] {
-            total += usage[f].as_u64().unwrap_or(0);
+            spent += usage[f].as_u64().unwrap_or(0);
+        }
+        burn.week += spent;
+        if ts >= session_from {
+            burn.session += spent;
         }
     }
-    total
 }
 
 fn parse_iso(s: &str) -> Option<i64> {
@@ -508,18 +613,45 @@ pub(crate) mod tests {
         )
     }
 
+    /// Fold one buffer, for the tests that are about the fold rather than about
+    /// the file walk. Both windows and the refusal, exactly as `scan` calls it.
+    fn fold_one(content: &str, session_from: i64, week_from: i64) -> (Burn, Option<ApiRefusal>) {
+        let mut seen = HashSet::new();
+        let mut burn = Burn::default();
+        let mut refusal = None;
+        fold(content, session_from, week_from, &mut seen, &mut burn, &mut refusal);
+        (burn, refusal)
+    }
+
+    const H06: &str = "2026-08-27T06:00:00.000Z";
+    const H11: &str = "2026-08-27T11:00:00.000Z";
+
     #[test]
     fn the_rolling_sum_buckets_requests_by_their_own_timestamps() {
         let _g = guard();
-        let content = [
-            line("msg_old", "2026-08-27T06:00:00.000Z", 100),
-            line("msg_new", "2026-08-27T11:00:00.000Z", 10),
-        ]
-        .join("\n");
-        let since = parse_iso("2026-08-27T09:00:00.000Z").unwrap();
+        let content = [line("msg_old", H06, 100), line("msg_new", H11, 10)].join("\n");
+        let session_from = parse_iso("2026-08-27T09:00:00.000Z").unwrap();
+        let week_from = parse_iso("2026-08-21T00:00:00.000Z").unwrap();
+        let (burn, _) = fold_one(&content, session_from, week_from);
+        // The five hours hold the newer request only; the week holds both. Both
+        // of each request's token fields are counted.
+        assert_eq!(burn.session, 11);
+        assert_eq!(burn.week, 112);
+    }
+
+    /// Two transcripts, one clock. The sum is per window and not per file.
+    #[test]
+    fn two_transcripts_land_in_the_right_windows() {
+        let _g = guard();
+        let session_from = parse_iso("2026-08-27T09:00:00.000Z").unwrap();
+        let week_from = parse_iso("2026-08-21T00:00:00.000Z").unwrap();
         let mut seen = HashSet::new();
-        // Only the newer request, and both of its token fields.
-        assert_eq!(fold_usage_since(&content, since, &mut seen), 11);
+        let mut burn = Burn::default();
+        let mut refusal = None;
+        fold(&line("msg_a", H06, 100), session_from, week_from, &mut seen, &mut burn, &mut refusal);
+        fold(&line("msg_b", H11, 10), session_from, week_from, &mut seen, &mut burn, &mut refusal);
+        assert_eq!(burn.session, 11, "only the one inside the five hours");
+        assert_eq!(burn.week, 112, "both, in the week");
     }
 
     /// The rule this shares with `fold_usage_lines`: one request, counted once,
@@ -527,10 +659,9 @@ pub(crate) mod tests {
     #[test]
     fn one_request_written_as_three_lines_is_counted_once() {
         let _g = guard();
-        let l = line("msg_dup", "2026-08-27T11:00:00.000Z", 10);
+        let l = line("msg_dup", H11, 10);
         let content = [l.clone(), l.clone(), l].join("\n");
-        let mut seen = HashSet::new();
-        assert_eq!(fold_usage_since(&content, 0, &mut seen), 11);
+        assert_eq!(fold_one(&content, 0, 0).0.session, 11);
     }
 
     /// A line with no usable timestamp is left out rather than counted, or a
@@ -539,8 +670,7 @@ pub(crate) mod tests {
     fn a_line_with_no_parseable_timestamp_is_left_out() {
         let _g = guard();
         let content = r#"{"message":{"id":"msg_nots","usage":{"input_tokens":99}}}"#;
-        let mut seen = HashSet::new();
-        assert_eq!(fold_usage_since(content, 0, &mut seen), 0);
+        assert_eq!(fold_one(content, 0, 0).0, Burn::default());
     }
 
     #[test]
@@ -548,9 +678,144 @@ pub(crate) mod tests {
         let _g = guard();
         let content = format!(
             "not json at all\n{{\"message\":{{\"role\":\"user\"}}}}\n{}",
-            line("msg_ok", "2026-08-27T11:00:00.000Z", 5),
+            line("msg_ok", H11, 5),
         );
-        let mut seen = HashSet::new();
-        assert_eq!(fold_usage_since(&content, 0, &mut seen), 6);
+        assert_eq!(fold_one(&content, 0, 0).0.session, 6);
+    }
+
+    /* --- the refusal a transcript records -------------------------------- */
+
+    /// The shape measured off a real transcript: `isApiErrorMessage`, a bare
+    /// `error` string, and `apiErrorStatus`.
+    fn api_error(kind: &str, status: &str, ts: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","error":"{kind}","isApiErrorMessage":true,"apiErrorStatus":"{status}"}}"#
+        )
+    }
+
+    #[test]
+    fn a_transcript_carrying_a_rate_limit_error_is_a_refusal() {
+        let _g = guard();
+        let (_, refusal) = fold_one(&api_error("rate_limit_error", "429", H11), 0, 0);
+        let r = refusal.expect("a refusal");
+        assert_eq!(r.at, parse_iso(H11).unwrap());
+        assert!(r.text.contains("rate_limit_error"));
+    }
+
+    /// Either name for it, so a version that reports one without the other is
+    /// still read.
+    #[test]
+    fn a_bare_429_counts_even_without_the_error_name() {
+        let _g = guard();
+        assert!(fold_one(&api_error("", "429", H11), 0, 0).1.is_some());
+    }
+
+    /// The false positive this is shaped to avoid. An agent writing *about* rate
+    /// limits — which the transcripts of this very repository do — must not be
+    /// read as the account being out.
+    #[test]
+    fn prose_about_rate_limits_is_not_a_refusal() {
+        let _g = guard();
+        for content in [
+            // The token in a message the model wrote.
+            format!(r#"{{"type":"assistant","timestamp":"{H11}","message":{{"content":"a rate_limit_error means 429"}}}}"#),
+            // The whole API error body, quoted inside prose.
+            format!(r#"{{"type":"assistant","timestamp":"{H11}","message":{{"content":"{{\"type\":\"error\",\"error\":{{\"type\":\"rate_limit_error\"}}}}"}}}}"#),
+            // A tool result carrying it.
+            format!(r#"{{"type":"user","timestamp":"{H11}","toolUseResult":"grep found rate_limit_error"}}"#),
+        ] {
+            assert_eq!(fold_one(&content, 0, 0).1, None, "{content}");
+        }
+    }
+
+    /// Another kind of API failure is not a budget refusal.
+    #[test]
+    fn a_different_api_error_is_not_a_refusal() {
+        let _g = guard();
+        assert_eq!(fold_one(&api_error("authentication_failed", "403", H11), 0, 0).1, None);
+        assert_eq!(fold_one(&api_error("overloaded_error", "529", H11), 0, 0).1, None);
+    }
+
+    #[test]
+    fn the_newest_refusal_in_a_transcript_is_the_one_that_holds() {
+        let _g = guard();
+        let content = [
+            api_error("rate_limit_error", "429", H06),
+            api_error("rate_limit_error", "429", H11),
+        ]
+        .join("\n");
+        assert_eq!(fold_one(&content, 0, 0).1.unwrap().at, parse_iso(H11).unwrap());
+    }
+
+    /// End to end, through the transcript map the rest of the app fills: a
+    /// refused request on disk becomes a refusal the windows can see, and it is
+    /// filed with no window named because the transcript does not say which.
+    #[test]
+    fn a_refusal_on_disk_reaches_the_windows_through_a_scan() {
+        let _g = guard();
+        reset_state();
+        let dir = std::env::temp_dir().join(format!("cowork-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t-scan.jsonl");
+        // Stamped relative to a now the test controls, because `scan` refuses a
+        // refusal older than the shortest real window.
+        let now = chrono::Utc::now().timestamp_millis();
+        let ts = chrono::DateTime::from_timestamp_millis(now - 60_000)
+            .unwrap()
+            .to_rfc3339();
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"type":"assistant","timestamp":"{ts}","error":"rate_limit_error","isApiErrorMessage":true,"apiErrorStatus":"429"}}"#
+            ),
+        )
+        .unwrap();
+        crate::transcripts::record("t-scan", &file.to_string_lossy());
+
+        scan(now);
+        let e = for_window(now, "claude", "session").expect("a refusal the session window can see");
+        assert_eq!(e.window, None, "the transcript did not say which window");
+        assert_eq!(e.resets_at, None, "and it did not say when it lifts");
+        assert!(e.text.unwrap().contains("rate_limit_error"));
+
+        crate::transcripts::forget("t-scan");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// And one that is too old to still be true is not resurrected.
+    #[test]
+    fn a_refusal_older_than_the_shortest_window_is_not_resurrected() {
+        let _g = guard();
+        reset_state();
+        let dir = std::env::temp_dir().join(format!("cowork-scan-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t-old.jsonl");
+        let now = chrono::Utc::now().timestamp_millis();
+        let ts = chrono::DateTime::from_timestamp_millis(now - ASSUMED_MS - 60_000)
+            .unwrap()
+            .to_rfc3339();
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"type":"assistant","timestamp":"{ts}","error":"rate_limit_error","isApiErrorMessage":true,"apiErrorStatus":"429"}}"#
+            ),
+        )
+        .unwrap();
+        crate::transcripts::record("t-old", &file.to_string_lossy());
+
+        scan(now);
+        assert!(live(now).is_empty(), "a 429 from days ago is not today's ceiling");
+
+        crate::transcripts::forget("t-old");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_refusal_with_no_timestamp_is_not_readable_and_is_left_alone() {
+        let _g = guard();
+        let content = r#"{"type":"assistant","error":"rate_limit_error","isApiErrorMessage":true}"#;
+        assert_eq!(fold_one(content, 0, 0).1, None);
     }
 }
