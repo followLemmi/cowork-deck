@@ -940,8 +940,10 @@ body {
 }
 /* The deck and the terminal drawer stack; `#stage` is still the row beside the
    sidebar. `min-height: 0` on both is what lets the drawer's fixed height win
-   against the deck's `flex: 1` instead of the column overflowing the window. */
-#workarea { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+   against the deck's `flex: 1` instead of the column overflowing the window.
+   `position: relative` makes this the containing block for a full-window terminal
+   drawer — see `.term-drawer.is-full`. Nothing else in here is positioned. */
+#workarea { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
 #deck { flex: 1; min-height: 0; display: grid; gap: var(--sp-3); padding: var(--sp-3); background: var(--bg-void); position: relative; }
 
 /* --- The deck with nothing on it -----------------------------------------------
@@ -3746,6 +3748,33 @@ h6.md-head { font-size: var(--fs-sm); }
 }
 .term-drawer[hidden] { display: none; }
 
+/* Full window, from the button in the bar — `is-full` in `drawer.ts`.
+   `flex-basis: 100%` was the other candidate and is wrong twice over. `#deck`
+   has `padding: var(--sp-3)`, and `box-sizing: border-box` floors a padded box
+   at its padding, so squeezing it leaves a 24px band of `--bg-void` above a
+   drawer that claims to fill the window; and a grid squeezed to nothing draws
+   its zoomed filmstrip and its `.bcast-panel` out of a box that no longer has
+   room for either.
+   Out of flow instead, over a deck that keeps its layout. What that buys is worth
+   stating because it was measured rather than hoped for: the deck grows to the
+   full column while it is covered, and not one tile changes size — the cards size
+   themselves (see `#deck.is-zoomed`), so the extra height goes to the grid and no
+   PTY behind the cover is resized in either direction. `z-index: 6` clears
+   `.bcast-panel`'s 5, the highest thing inside `#deck`.
+   "The window" is this column, not the app: the panel beside it has a collapse of
+   its own, and the topbar has to stay — `#ledger` is where a session that starts
+   waiting for input while it is covered says so.
+   This is the one time the drawer floats, and the exception proves the rule
+   above rather than breaking it: what the drawer must never be is the thing the
+   deck is drawn ON TOP OF, and here the drawer is on top, for as long as a
+   person asked for and no longer. */
+.term-drawer.is-full { position: absolute; inset: 0; z-index: 6; }
+/* The grip stays reachable while full — dragging it takes the drawer back into
+   flow under the pointer (see `setRows`) — but its negative margin would hang it
+   outside the cover, where it would be four pixels of drag surface over the
+   deck. */
+.term-drawer.is-full .term-grip { margin-top: 0; }
+
 /* The grab handle, and the whole of the drawer's resize affordance. Four pixels
    of surface with an eight-pixel hit area above it, which is the smallest that
    does not need aiming; focusable, because a drag is otherwise mouse-only and
@@ -3812,6 +3841,20 @@ h6.md-head { font-size: var(--fs-sm); }
 }
 .term-add:hover, .term-hide:hover { color: var(--fg); }
 .term-add:focus-visible, .term-hide:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* The full-window control. A drawn glyph where its two neighbours are text, and
+   that is the lesser of two mismatches: `+` and `✕` are characters that happen to
+   read as icons, while a maximise/restore pair has no character — every candidate
+   (`⤢`, `⤒`) is outside the coverage of the UI font stack on at least one of the
+   three platforms this ships to, and a tofu box in the terminal bar is a worse
+   inconsistency than two hands. `btn--icon` carries the colour, the 24px target
+   and the hover; only the rotation and the bar's rhythm are set here.
+   The rotation IS the state, so it is animated for the same reason `.ws-caret` is:
+   a glyph that flips between two frames with nothing in between reads as a
+   different glyph rather than the same one turning. */
+.term-full-btn { min-width: 26px; }
+.term-full-btn .icon { transform: rotate(-90deg); transition: transform var(--dur-2) var(--ease-out); }
+.term-full-btn.is-full .icon { transform: rotate(90deg); }
 
 /* One mount per tab, all of them kept: a terminal moved between parents loses
    its scrollback, so the inactive ones are hidden where they stand. */

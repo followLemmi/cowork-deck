@@ -2419,6 +2419,10 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
       { id: "clear", title: "Clear terminal", run: () => deck.clearActive() },
       { id: "toggle-terminals", title: "Terminals: show or hide the drawer", hotkey: hotkeyLabel("J"), run: () => { void terminals.toggle(); } },
+      /* The keyboard half of the button in the terminal bar, and the only half a
+         keyboard can use: xterm swallows Tab in both directions, so nothing in
+         `.term-bar` is reachable by tabbing once focus is in a terminal. */
+      { id: "expand-terminals", title: "Terminals: fill the window, or restore", hotkey: isMacPlatform() ? "Cmd+Shift+E" : "Ctrl+Shift+E", run: () => { void terminals.toggleFull(); } },
       { id: "new-terminal", title: "New terminal", run: () => { void terminals.newTerminal(); } },
       { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
       { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
@@ -2468,7 +2472,12 @@ export function startApp(role: WindowRole): Promise<void> {
    *  so without this focus inside the drawer reads as `"screen"` and F6 from a diff
    *  sends you to the sidebar, with no key at all going the other way. */
   function regions(): Region[] {
-    const cycle: Region[] = ["sidebar", "deck"];
+    const cycle: Region[] = ["sidebar"];
+    // The deck, unless the terminal drawer is covering it — the same rule as the
+    // diff drawer, applied the other way round: F6 onto a deck nobody can see
+    // would put the keyboard in an invisible tile, and the two presses back out
+    // of it would look like two presses that did nothing.
+    if (!terminals.isFull()) cycle.push("deck");
     // Only while it is up, for the same reason as the diff drawer: a region you
     // cannot see is a stop that appears to do nothing.
     if (terminals.isOpen()) cycle.push("terminals");
@@ -2664,6 +2673,7 @@ export function startApp(role: WindowRole): Promise<void> {
     "next-waiting": () => deck.focusNextWaiting(),
     "broadcast": () => deck.toggleBroadcast(),
     "toggle-terminals": () => { void terminals.toggle(); },
+    "expand-terminals": () => { void terminals.toggleFull(); },
     "zoom": () => deck.toggleZoomActive(),
     "next-region": () => cycleRegion(1),
     "prev-region": () => cycleRegion(-1),

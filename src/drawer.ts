@@ -7,13 +7,20 @@ import {
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { confirmModal, promptModal } from "./modal";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
+import { icon } from "./icons";
 
 /** Must agree with `default_terminal_rows` in `src-tauri/src/model.rs`, which is
  *  what a `ui_state.json` written before the drawer existed reports. */
 export const DEFAULT_TERMINAL_ROWS = 14;
 /** Below four rows a terminal shows a prompt and nothing else, which is not a
  *  terminal; above thirty the drawer has taken the deck's place, and the deck is
- *  what the window is for. */
+ *  what the window is for.
+ *
+ *  Full-window mode does take the deck's place, and this cap is why it is a mode
+ *  rather than a larger number here: no row count is "the whole window" — thirty
+ *  overshoots a small one and undershoots a large one — and a person who slid
+ *  into the deck's space with a drag would have to drag their way back out.
+ *  `setFull` is the explicit, reversible version, with a control that undoes it. */
 const MIN_ROWS = 4;
 const MAX_ROWS = 30;
 /** xterm's `lineHeight` in `terminal.ts`. A row's height in pixels is the font
@@ -105,8 +112,22 @@ export class TerminalDrawer {
    *  `setWorkspace`, which the app calls wherever the deck is switched. */
   private workspaceId: string | null = null;
   private rows = DEFAULT_TERMINAL_ROWS;
+  /** Whether the drawer is covering the deck.
+   *
+   *  **Per window, and nowhere else.** Not persisted, not per workspace, and
+   *  dropped by a workspace switch — which is the whole decision, so it is worth
+   *  saying what it rules out. Open/shut is a fact about a project and is filed
+   *  under a workspace id; this is a fact about the next few minutes. A drawer
+   *  that came back full-window after a restart would have hidden the deck
+   *  because of something a person did yesterday, and a workspace switch that
+   *  carried it over would hide a deck they have not looked at yet.
+   *
+   *  It is deliberately NOT `rows`: see `MAX_ROWS`. `terminalRows` is untouched
+   *  by the round trip, so collapsing returns the height the person chose. */
+  private full = false;
   private tabsEl!: HTMLElement;
   private bodiesEl!: HTMLElement;
+  private fullBtn!: HTMLButtonElement;
   private unlisten: UnlistenFn[] = [];
   private onScale = () => this.applyHeight();
 
@@ -148,6 +169,8 @@ export class TerminalDrawer {
    *  with the tab that was in front still in front. */
   setWorkspace(id: string | null): void {
     this.workspaceId = id;
+    // A momentary thing does not follow you between projects: see `full`.
+    this.full = false;
     const mine = this.visible();
     const remembered = this.activeByWorkspace.get(this.key());
     const front = mine.find((t) => t.session === remembered) ?? mine[0];
@@ -181,6 +204,14 @@ export class TerminalDrawer {
     add.onclick = () => { void this.newTerminal(); };
     const spacer = document.createElement("span");
     spacer.className = "term-spacer";
+    // Its two faces are written by `renderFull`, which is also what puts the
+    // class on the drawer — one writer, so the control cannot offer to expand a
+    // drawer that is already expanded.
+    this.fullBtn = document.createElement("button");
+    this.fullBtn.className = "btn--icon term-full-btn";
+    this.fullBtn.type = "button";
+    this.fullBtn.append(icon("chevron"));
+    this.fullBtn.onclick = () => { void this.toggleFull(); };
     const hide = document.createElement("button");
     hide.className = "term-hide";
     hide.type = "button";
@@ -188,7 +219,10 @@ export class TerminalDrawer {
     hide.setAttribute("aria-label", "Hide terminals");
     hide.textContent = "✕";
     hide.onclick = () => { void this.setOpen(false); };
-    bar.append(this.tabsEl, add, spacer, hide);
+    // Before `✕`, which stays the last thing in the bar: it is the one control
+    // here that puts the whole surface away.
+    bar.append(this.tabsEl, add, spacer, this.fullBtn, hide);
+    this.renderFull();
 
     this.bodiesEl = document.createElement("div");
     this.bodiesEl.className = "term-bodies";
@@ -238,12 +272,73 @@ export class TerminalDrawer {
 
   private setRows(rows: number) {
     this.rows = rows;
+    // A drag or an arrow key names a height, which is the question full-window
+    // mode was one answer to — so the gesture wins and the drawer comes back
+    // into flow under the pointer. Leaving both on would be a grip that moves
+    // nothing, because the stylesheet owns the height while `is-full` is set.
+    if (this.full) { this.setFull(false); return; }
     this.applyHeight();
   }
 
+  /** The height, in pixels, from the row count — and nothing at all while the
+   *  drawer is full, where the stylesheet owns it. Two numbers fighting over one
+   *  property is the failure this shape exists to avoid: `is-full` is a class,
+   *  and `styles.css` is the whole of what it means. */
   private applyHeight() {
-    this.el.style.height = `${drawerHeightPx(this.rows, currentScale(), this.barPx())}px`;
+    this.el.style.height = this.full
+      ? ""
+      : `${drawerHeightPx(this.rows, currentScale(), this.barPx())}px`;
+    // The refit is the load-bearing half, for the reason `setFontSize` gives:
+    // it is what recomputes the grid and pushes the new size to the PTY. Reading
+    // the box here sees the height just written — and the panel's own
+    // `ResizeObserver` is the backstop for the frame after.
     this.active()?.panel.fit();
+  }
+
+  /** The control's two faces, and the class the stylesheet answers.
+   *
+   *  No `aria-pressed`: the label already says which of the two it will do, and a
+   *  button announcing "Restore the terminals to their height, pressed" states
+   *  the mode twice and contradicts itself the second time. This is a
+   *  maximise/restore pair, which changes what it is rather than reporting
+   *  whether it is on. */
+  private renderFull() {
+    this.el.classList.toggle("is-full", this.full);
+    const label = this.full
+      ? "Restore the terminals to their height"
+      : "Fill the window with the terminals";
+    // The glyph is `chevron`, rotated by the stylesheet — up to fill, down to
+    // come back — which is the rule `icons.ts` states for every arrow in the app:
+    // one shape, direction from a CSS rotation. A dedicated pair was drawn and
+    // thrown away: two chevrons apart close into a diamond at 16px and two
+    // chevrons together close into an ✕, which is the button next to this one.
+    this.fullBtn.classList.toggle("is-full", this.full);
+    this.fullBtn.dataset.action = this.full ? "collapse" : "expand";
+    this.fullBtn.title = label;
+    this.fullBtn.setAttribute("aria-label", label);
+  }
+
+  /** Whether the drawer is covering the deck. Read by the app, which drops the
+   *  deck from the F6 cycle while it is: a region you cannot see is a stop that
+   *  appears to do nothing. */
+  isFull(): boolean { return this.full && this.isOpen(); }
+
+  /** Fill the window with the drawer, or give the deck back.
+   *
+   *  Asked of a drawer that is not up, it opens one first: the alternative is a
+   *  palette entry that does nothing, and "give me a full-window terminal" is
+   *  one intent whether or not a strip happens to be on screen. */
+  async toggleFull(): Promise<void> {
+    if (this.full) { this.setFull(false); return; }
+    if (!this.isOpen()) await this.toggle();
+    if (!this.isOpen()) return;
+    this.setFull(true);
+  }
+
+  private setFull(on: boolean) {
+    if (this.full === on) return;
+    this.full = on;
+    this.render();
   }
 
   /** Listeners of its own: the deck routes output by tile, and a drawer terminal
@@ -312,7 +407,10 @@ export class TerminalDrawer {
   /** Up or down for the workspace on screen, and only for it. */
   private setOpen(open: boolean) {
     if (open) this.openWorkspaces.add(this.key());
-    else this.openWorkspaces.delete(this.key());
+    // Putting the drawer away drops the mode with it: a drawer that came back
+    // full-window on the next `Cmd+J` would answer "show me the terminals" by
+    // hiding the deck.
+    else { this.openWorkspaces.delete(this.key()); this.full = false; }
     this.render();
   }
 
@@ -439,6 +537,7 @@ export class TerminalDrawer {
     }
     const up = this.isOpen();
     this.el.hidden = !up;
+    this.renderFull();
     if (up) this.applyHeight();
     else this.el.style.height = "";
   }

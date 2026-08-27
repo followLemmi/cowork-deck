@@ -47,6 +47,17 @@ export function matchHotkey(
   if (e.code === "BracketRight" && e.shiftKey) return "next-waiting";
   // Shift on both platforms: the plain letter belongs to the terminal.
   if (e.code === "KeyT" && e.shiftKey) return "new-task";
+  // The terminal drawer filling the window, and back. Shift on both platforms, so
+  // it reads Cmd+Shift+E and Ctrl+Shift+E — which is what makes it symmetric
+  // where a Shift variant of Cmd+J could not be: on Windows and Linux
+  // Ctrl+Shift+J is already the drawer itself.
+  //
+  // The cost is stated rather than discovered: the legacy encoding cannot express
+  // Shift with a control character, so Ctrl+Shift+E reaches a pty byte-identical
+  // to Ctrl+E — readline's end-of-line. That byte is what is being claimed, and
+  // it is the same trade every letter in the table below already makes; bare
+  // Ctrl+E is untouched. It clears `terminal-keys.ts`, which claims only Enter.
+  if (e.code === "KeyE" && e.shiftKey) return "expand-terminals";
 
   const letters: Record<string, string> = {
     KeyK: "palette", KeyN: "new-session", KeyW: "close-active",
