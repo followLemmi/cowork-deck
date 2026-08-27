@@ -188,6 +188,12 @@ before the first prompt, naming the folder, the branch, the account and the git 
 as. That line is the only way to check the identity: the binding is injected as `GIT_AUTHOR_*`, which
 outranks `.git/config`.
 
+The drawer can also take the deck's place for a moment: the chevron in its bar — or `Cmd+Shift+E`
+(`Ctrl+Shift+E` elsewhere) — gives the terminals the whole column and gives it back, at the exact
+height you had. It is deliberately momentary: switching workspace or putting the drawer away drops it,
+and nothing about it survives a restart. The counts in the topbar stay visible while it is up, so a
+session that starts waiting for you behind it still says so.
+
 **A workspace can have a window of its own.** Pull one out — a button on its row, or drag it out on
 macOS — and it gets a window holding that workspace and nothing else: no rail, no other projects, no
 app-wide settings to confuse for the project's. In the main window it stays where it was, marked as
