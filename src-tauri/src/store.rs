@@ -1424,7 +1424,7 @@ mod tests {
 
         let ws = |id: &str| Workspace {
             id: id.into(), name: id.into(), path: "/tmp/a".into(), color: "#fff".into(),
-            github: None, tracker: None,
+            github: None, tracker: None, repo: None,
         };
         s.save_workspaces(&[ws("w1")]).unwrap();
         let before = ino(&s.ws_path());
@@ -1511,7 +1511,7 @@ mod tests {
         let s = Store::new(tmp());
         let w = Workspace {
             id: "w1".into(), name: "First".into(), path: "/tmp/a".into(), color: "#111111".into(),
-            github: None, tracker: None,
+            github: None, tracker: None, repo: None,
         };
         s.save_workspaces(std::slice::from_ref(&w)).unwrap();
         let original = fs::read_to_string(s.ws_path()).unwrap();
