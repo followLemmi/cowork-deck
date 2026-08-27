@@ -12,6 +12,7 @@
 //! A log reader is retrospective. Open the panel on a session resumed from last
 //! week and the numbers are already there. See `docs/adr/` for the record.
 
+pub mod claude;
 pub mod model;
 pub mod reader;
 pub mod registry;

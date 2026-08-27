@@ -2929,7 +2929,7 @@ fn read_session_snapshot(session_id: &str) -> SessionSnapshot {
 ///
 /// The reported path is checked rather than trusted: it is a path from another
 /// program, and a transcript can be deleted between the hook and the tick.
-fn current_transcript(session_id: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn current_transcript(session_id: &str) -> Option<std::path::PathBuf> {
     if let Some(reported) = crate::transcripts::get(session_id) {
         let path = std::path::PathBuf::from(reported);
         if path.is_file() {
