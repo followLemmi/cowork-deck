@@ -1,3 +1,5 @@
+import type { Options } from "@tauri-apps/api/event";
+
 /** What a window label says about the window.
  *
  *  The other half of `src-tauri/src/windows.rs`, which mints these labels. Kept
@@ -56,4 +58,34 @@ export type WindowRole =
 export function roleOf(label: string): WindowRole {
   const workspaceId = workspaceIdOf(label);
   return workspaceId === null ? { kind: "main" } : { kind: "workspace", workspaceId };
+}
+
+/** Listen options that narrow a listener to what was addressed to `label`.
+ *
+ *  Needed because `emitTo` does not, on its own, mean "to that window". A bare
+ *  `listen()` registers with `EventTarget::Any` (the default in
+ *  `@tauri-apps/api/event`), and Tauri's delivery filter short-circuits on it:
+ *  `match_any_or_filter` in `tauri/src/event/listener.rs` answers true for an
+ *  `Any` listener *whatever* the emit was addressed to. So an addressed event
+ *  was in fact a broadcast, and every window holding a bare `listen` for it
+ *  acted on somebody else's mail.
+ *
+ *  What that cost (#349): deleting a workspace emits `workspace://gone` to that
+ *  workspace's window, and the main window — which holds the same listener, and
+ *  whose handler closes the window it is in — closed itself. No window, no
+ *  error, and a process still running, because the status pill kept the event
+ *  loop alive.
+ *
+ *  `kind: "Window"` rather than `"Webview"` or `"WebviewWindow"`: the emitting
+ *  side passes a bare label, which becomes `AnyLabel`, and `AnyLabel` matches
+ *  all three — so any of them would deliver. `Window` is what
+ *  `getCurrentWindow().listen` uses, and matching the API's own choice keeps one
+ *  shape in the app.
+ *
+ *  Only for events that are **addressed**. A broadcast still arrives: an
+ *  unfiltered emit — `emit()` here, `app.emit` in Rust — matches every listener
+ *  whatever its target, so narrowing one costs nothing it used to hear.
+ */
+export function addressedTo(label: string): Options {
+  return { target: { kind: "Window", label } };
 }

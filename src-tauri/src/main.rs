@@ -91,6 +91,14 @@ fn ready_to_quit(app: &tauri::AppHandle) -> bool {
     if work.is_empty() {
         return true;
     }
+    // Nobody left to ask. `app://quit-blocked` is a question the main window puts
+    // to the person, so with that window gone the refusal below could never be
+    // lifted: the app would be a running process with no interface, which is the
+    // half of #349 that outlived the vanishing window. Losing the question is the
+    // lesser harm, and every session dies at `RunEvent::Exit` either way.
+    if app.get_webview_window(windows::MAIN).is_none() {
+        return true;
+    }
     if state.quit_asked.swap(true, Ordering::SeqCst) {
         return true;
     }
@@ -252,6 +260,24 @@ fn main() {
                     "window://gone",
                     commands::WindowGonePayload { label: window.label().to_string() },
                 );
+                // And when the window that has gone is the main one, the app goes
+                // with it. Nothing did this before: the runtime exits when the
+                // *last* window is destroyed, and the status pill is never
+                // destroyed — so the main window closing left a process with no
+                // interface, holding its sync loop, its schedulers and its
+                // watchers, and a relaunch stacked a second instance beside it
+                // rather than replacing it (#349).
+                //
+                // Whatever ended the window, and not only a close the person
+                // asked for: a webview that died under the main window leaves
+                // exactly the same orphan, and this is the one handler both paths
+                // pass through. `CloseRequested` below already treats the main
+                // window closing as the app quitting — it kills every session in
+                // every workspace — so this is that decision carried out rather
+                // than a new one.
+                if window.label() == windows::MAIN {
+                    window.app_handle().exit(0);
+                }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // The label check is load-bearing and its absence is invisible
