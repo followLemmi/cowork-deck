@@ -36,6 +36,13 @@ vi.mock("../src/ipc", async (orig) => ({
   taskMigrationStatus: vi.fn().mockResolvedValue(null),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
   sessionSnapshots: vi.fn().mockResolvedValue({}),
+  // The limits block reads at boot and listens for a limit signal. Both are
+  // mocked here for the reason every other `on*` above is: an unmocked listener
+  // returns a promise nothing resolves, and a boot step that never settles is a
+  // boot that never reaches `releaseScheduler` — which is precisely what this
+  // file asserts about.
+  usageSnapshot: vi.fn().mockResolvedValue([]),
+  onUsageChanged: vi.fn().mockResolvedValue(() => {}),
 }));
 
 vi.mock("../src/updater", () => ({ offerUpdateIfAvailable: vi.fn().mockResolvedValue(undefined) }));
@@ -111,7 +118,17 @@ import { offerUpdateIfAvailable } from "../src/updater";
 import { listen } from "@tauri-apps/api/event";
 import type { WindowRole } from "../src/window-role";
 
-const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+/** Drain the boot chain.
+ *
+ *  A fixed count of microtasks is not enough on its own: every `await` inside
+ *  `runBoot` adds ticks, so the number had to grow every time a step was added
+ *  and the failure it produced named the LAST assertion in the list rather than
+ *  the step that had lengthened the chain. Yielding a macrotask at the end
+ *  drains whatever is left, whatever the length. */
+const flush = async () => {
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0));
+};
 
 /** Now that the bootstrap is a function, a test file can boot it more than once
  *  — which is the whole reason this file can exist. It was a side-effect module,
@@ -119,7 +136,7 @@ const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve()
 async function boot(role: WindowRole) {
   document.body.innerHTML =
     '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
-    + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
+    + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div><main id="deck"></main><div id="terminals"></div>'
     + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';

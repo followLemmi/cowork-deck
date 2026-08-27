@@ -96,6 +96,13 @@ export interface UiState {
   panelPx?: number;
   wspPx?: number;
   wspWidePx?: number;
+  /** Whether the reported source of usage limits may be asked. Default on.
+   *
+   *  Required rather than optional, for the same reason as `uiScale`: the Rust
+   *  side fills it from a `serde` default, so a reader treating it as
+   *  possibly-absent would guard a case that cannot happen and hide one that
+   *  can. Off means the limits block stays on the observed source and says so. */
+  usageReported: boolean;
   /** And the tool panel inside a zoomed tile. One width for the app, not one per
    *  tile: sizing it is sizing the tool, and every session's tools are the same
    *  tool. Its floor is the 80-column rule, which is enforced where the panel is
@@ -116,6 +123,7 @@ export interface UiStatePatch {
   syncOfferDismissed?: boolean;
   recordScenarioRuns?: boolean;
   terminalRows?: number;
+  usageReported?: boolean;
   panelPx?: number;
   wspPx?: number;
   wspWidePx?: number;
@@ -955,3 +963,87 @@ export const boardStepRewrite = (workspaceId: string, from: StepId, to: StepId, 
   invoke<RewriteReport>("board_step_rewrite", { workspaceId, from, to, config });
 export const boardStepUsage = (workspaceId: string) =>
   invoke<StepUsage[]>("board_step_usage", { workspaceId });
+
+/* --- What each connected AI has left ------------------------------------
+   The one command #301 is built on, and it is deliberately provider-agnostic:
+   the label, the window names, the caveats and the command that would answer an
+   unknown row all arrive **inside the snapshot**. Nothing here knows the word
+   "Claude", and #308's acceptance criterion is that adding a second AI does not
+   change that. */
+
+/** Where a number came from, and it is always on screen. See ADR-0007.
+ *
+ *  `reported` is the account's own accounting — what `/usage` draws. `observed`
+ *  is what this app can see for itself, from the sessions it runs: real, and
+ *  narrower than the account, because other terminals and other machines are
+ *  not in it. `estimated` says so. `unknown` is not zero, and the difference is
+ *  the whole point of the feature. */
+export type UsageSource = "reported" | "observed" | "estimated" | "unknown";
+
+/** How full a window is, in the only terms that change what a person does.
+ *
+ *  `exhausted` is a refusal, never arithmetic: a window at 100% has spent
+ *  everything, which is not the same as having been turned away. */
+export type LimitState = "ok" | "near" | "exhausted" | "unknown";
+
+/** Absolutes, where a source gives them. `limit: null` is the ordinary case for
+ *  an observed count — this app knows what it spent, not what was allowed. */
+export interface Amount { used: number; limit: number | null; unit: string }
+
+export interface LimitWindow {
+  id: string;
+  /** The provider's own words for this window, so the dialog reads the way the
+   *  provider's own report reads. */
+  label: string;
+  usedFraction: number | null;
+  amount: Amount | null;
+  /** Epoch ms. `null` is legitimate: a window known to be spent whose reset the
+   *  provider did not say, or did not say parseably. */
+  resetsAt: number | null;
+  state: LimitState;
+  /** Where the **quantity** came from. `state` is outside this — a refusal can
+   *  be known alongside a reported share. */
+  source: UsageSource;
+  /** The caveat, in words, for the dialog to print under the number. */
+  note: string | null;
+}
+
+export interface AiUsage {
+  /** The registry key. Never printed — see `label`. */
+  provider: string;
+  label: string;
+  account: string | null;
+  plan: string | null;
+  windows: LimitWindow[];
+  /** The **weakest** source among the windows, so it cannot over-claim. A row
+   *  that prints one number prints that window's own source, not this. */
+  source: UsageSource;
+  fetchedAt: number;
+  error: string | null;
+  /** The command that would answer this if a person ran it themselves — for the
+   *  action on an unknown row. Carried here rather than looked up by provider
+   *  name, so nothing in `src/` needs a table of them. */
+  probeCommand: string | null;
+  /** Whether answering would need a credential this app does not hold. */
+  needsCredential: boolean;
+}
+
+/** Every detected AI's limits. `force` is "read again", and the moment a limit
+ *  banner has just gone past on a PTY: the two cases where a cached "you are
+ *  fine" is a lie. Everything else is served from a TTL cache, so this is safe
+ *  to call on a view change — but never on the poll tick. */
+export const usageSnapshot = (force = false) =>
+  invoke<AiUsage[]>("usage_snapshot", { force });
+
+/** Forget the refusals this app watched happen, for one provider.
+ *
+ *  The escape hatch the observed source needs: a parser can be wrong, and an app
+ *  insisting the budget is spent while sessions are plainly running would be
+ *  worse than one that never said so. */
+export const usageClearObserved = (provider: string) =>
+  invoke<void>("usage_clear_observed", { provider });
+
+/** A limit signal reached the app through a PTY. Emitted from the backend only
+ *  when something changed, so the handler may re-read with `force`. */
+export const onUsageChanged = (cb: () => void): Promise<UnlistenFn> =>
+  listen("usage://changed", () => cb());

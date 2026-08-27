@@ -59,6 +59,12 @@ export interface SettingsInput {
   recording: boolean;
   /** Same contract as `onScale`: applied and persisted on the spot. */
   onRecording: (on: boolean) => void;
+  /** Whether the app may ask a connected AI what the account has left, as
+   *  opposed to only counting what it can see for itself. The capability flag
+   *  #306 landed behind; the value lives in `ui_state`. */
+  reportedLimits: boolean;
+  /** Same contract as `onScale`: applied and persisted on the spot. */
+  onReportedLimits: (on: boolean) => void;
   /** Which section to land on. Defaults to the first. */
   section?: SettingsSection;
 }
@@ -300,6 +306,32 @@ const SECTIONS: Section[] = [
       hint.textContent = "Switching this off stops new records. Everything already "
         + "written stays where it is and stays readable — nothing is erased.";
       body.append(hint);
+
+      /* The limits block's one setting, and it belongs in this window for the
+         same reason the switch above does: it is set once and left. It sits under
+         the journal rather than in a section of its own because both answer the
+         same shape of question — how much this app is allowed to find out and
+         write down about what it runs. */
+      body.append(sectionHead("Limits"));
+      const rep = document.createElement("input");
+      rep.type = "checkbox";
+      rep.checked = input.reportedLimits;
+      rep.dataset.fk = "reported-limits";
+      rep.onchange = () => input.onReportedLimits(rep.checked);
+      body.append(labeledCheck("Ask the AI what is left", rep,
+        "The account's own figure, which is the only one that counts what other "
+        + "terminals and other machines have spent. Asking costs nothing from your "
+        + "budget and hands over no password — the app asks the AI's own command, "
+        + "the way it asks gh about GitHub."));
+      const repHint = document.createElement("p");
+      repHint.className = "form-hint";
+      /* What switching it off actually costs, and what it does not: the block
+         does not disappear, which is the whole design (ADR-0007). */
+      repHint.textContent = "Off, the limits block stays where it is and says so: it "
+        + "then counts only what this app can see from the sessions it runs, which is "
+        + "less than the account has spent. Switching it off also stops the app "
+        + "starting a short-lived process every few minutes to ask.";
+      body.append(repHint);
     },
   },
   {

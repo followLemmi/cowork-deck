@@ -27,6 +27,13 @@ vi.mock("../src/ipc", async (orig) => ({
   taskMigrationStatus: vi.fn().mockResolvedValue(null),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
   sessionSnapshots: vi.fn().mockResolvedValue({}),
+  // The limits block reads at boot and listens for a limit signal. Both are
+  // mocked here for the reason every other `on*` above is: an unmocked listener
+  // returns a promise nothing resolves, and a boot step that never settles is a
+  // boot that never reaches `releaseScheduler` — which is precisely what this
+  // file asserts about.
+  usageSnapshot: vi.fn().mockResolvedValue([]),
+  onUsageChanged: vi.fn().mockResolvedValue(() => {}),
 }));
 
 /** The tree hooks `startApp` hands the workspaces panel — the app's only route
@@ -102,7 +109,7 @@ describe("the window hotkey handler and text entry", () => {
     vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
     document.body.innerHTML =
       '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
-      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div><main id="deck"></main><div id="terminals"></div>'
       + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';

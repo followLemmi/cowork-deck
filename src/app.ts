@@ -21,9 +21,13 @@ import {
   syncSummary,
   hostPlatform,
   configPaths,
+  usageSnapshot, onUsageChanged,
+  type AiUsage,
   type HandOffTile,
   type SessionState,
 } from "./ipc";
+import { LimitsBlock } from "./usage-block";
+import { deckLimit, LimitNotifier } from "./usage";
 import { offerUpdateIfAvailable } from "./updater";
 import { TerminalDrawer, DEFAULT_TERMINAL_ROWS } from "./drawer";
 import type { Skill, Workspace } from "./ipc";
@@ -62,6 +66,7 @@ import { resolveScheduledWorkspace } from "./schedule";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import { listen, emit, emitTo } from "@tauri-apps/api/event";
 import {
   allSessions, sumWaiting, windowOf,
@@ -630,6 +635,10 @@ export function startApp(role: WindowRole): Promise<void> {
    *  what being off looks like, rather than inside a text-size dialog whose own
    *  doc comment argues against growing it casually. */
   let recordingRuns = true;
+  /** Whether the app may ask a connected AI what is left, as opposed to only
+   *  counting what it can see. Mirrors `ui_state.usageReported`; the backend holds
+   *  the authoritative copy and applies it to the usage registry. */
+  let reportedLimits = true;
 
   const historyView = new HistoryView({
     onFilter: (f) => { runFilters = f; void refreshHistory(); },
@@ -1123,6 +1132,20 @@ export function startApp(role: WindowRole): Promise<void> {
             void quitCancelled();
           });
       }).then(() => {})] : []),
+      // The limits block: one read at boot, then a slow loop of its own, plus
+      // the one event that cannot wait for it.
+      //
+      // Sixty seconds, and it is not a poll of anything: the registry answers
+      // from a TTL cache, so this is how often the SCREEN may change, not how
+      // often a provider is asked. A limit banner going past a PTY is the case
+      // the loop is too slow for, and it arrives as an event instead — with
+      // `force`, because the cached answer is exactly the one that just became a
+      // lie.
+      () => onUsageChanged(() => { void readLimits(true); }).then(() => {}),
+      () => {
+        void readLimits();
+        setInterval(() => { void readLimits(); }, 60_000);
+      },
       // A record opened or closed. The sidebar's dot is repainted whatever screen
       // is showing — it is the one always-visible reader of the journal, and a
       // handful of events per run is not polling. The list re-reads only while it
@@ -1944,6 +1967,53 @@ export function startApp(role: WindowRole): Promise<void> {
     await w.setFocus().catch(() => {});
   }
 
+  /* --- What every connected AI has left -----------------------------------
+     The block lives in the panel of every window, including one pinned to a
+     workspace: a shared ceiling above twelve sessions is not a property of a
+     repository, and a person in a detached window needs it as much as anybody.
+
+     Read on a timer of its own and NOT on the five-second poll tick. The
+     registry behind it holds a TTL cache, so this interval is how often the
+     screen may change rather than how often a provider is asked — but putting a
+     provider that spawns a process anywhere near the tick is the mistake
+     `sessions.ts` already documents, so it gets its own slow loop. */
+  const limitsEl = document.querySelector<HTMLElement>("#limits")!;
+  const limits = new LimitsBlock(limitsEl, {
+    openCommandTile: (t, c, cwd) => deck.openCommandTile(t, c, cwd),
+    cwd: () => workspaces.active?.path ?? ".",
+  });
+  /** The last snapshot, so the pill's payload and the block agree on one reading
+   *  rather than each asking for its own. */
+  let lastUsage: AiUsage[] = [];
+  const limitNotifier = new LimitNotifier();
+
+  async function readLimits(force = false): Promise<void> {
+    try {
+      lastUsage = await usageSnapshot(force);
+    } catch (e) {
+      // A failed read leaves the previous answer on screen. Blanking the block
+      // would say "no limits" where the truth is "we could not ask".
+      console.debug("usage: could not read the limits", e);
+      return;
+    }
+    limits.render(lastUsage, Date.now());
+    announceLimit();
+  }
+
+  /** Tell the pill, and tell somebody who is not looking at the window.
+   *
+   *  Both go through `deckLimit`, so the pill's story and the notification's are
+   *  the same story — and the notifier holds its own state, once for the whole
+   *  deck, because twelve notifications about one ceiling is the bug #305 exists
+   *  to prevent. */
+  function announceLimit(): void {
+    if (!isMain) return;
+    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
+    const notice = limitNotifier.next(deckLimit(lastUsage));
+    // Through the deck, which owns the one permission request — see `canNotify`.
+    if (notice && deck.canNotify()) sendNotification({ title: notice.title, body: notice.body });
+  }
+
   /** Every window's sessions, as each of them last reported. Only the main
    *  window keeps this filled — it is the only participant that hears everybody
    *  and the only one that needs to. */
@@ -1952,9 +2022,10 @@ export function startApp(role: WindowRole): Promise<void> {
   const waitingListener = listen<WindowSessions>("session://waiting", (e) => {
     if (!isMain) return;
     sessionsByWindow.set(e.payload.label, e.payload.sessions);
-    // The pill's payload stays a bare number: it has one addressee and one job,
-    // and the adding is done here, where the whole picture is.
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow) });
+    // The count is added up here, where the whole picture is, and the ceiling
+    // travels with it: `pillLabel` decides which of the two stories to tell, and
+    // it cannot decide without both. See `pill-util.ts`.
+    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
     showElsewhere();
   });
 
@@ -1969,7 +2040,7 @@ export function startApp(role: WindowRole): Promise<void> {
   const windowGoneListener = listen<{ label: string }>("window://gone", (e) => {
     if (!isMain) return;
     if (!sessionsByWindow.delete(e.payload.label)) return;
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow) });
+    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
     showElsewhere();
   });
 
@@ -2286,6 +2357,18 @@ export function startApp(role: WindowRole): Promise<void> {
         saveUiState({ recordScenarioRuns: on })
           .catch((e) => console.debug("run recording save failed", e));
         if (currentPage === "history") void refreshHistory();
+      },
+      reportedLimits,
+      /* Persisted as a patch, like the switch above, and then re-read at once:
+         the backend applies the flag to the live registry before it writes the
+         file, so the very next read is on the new footing rather than the old
+         one. `force`, because the cached snapshot was taken under the other
+         answer. */
+      onReportedLimits: (on) => {
+        reportedLimits = on;
+        saveUiState({ usageReported: on })
+          .catch((e) => console.debug("reported limits save failed", e));
+        void readLimits(true);
       },
     });
   }
@@ -2657,6 +2740,10 @@ export function startApp(role: WindowRole): Promise<void> {
       // while the backend writes nothing — the one thing its empty state exists
       // to prevent.
       recordingRuns = ui.recordScenarioRuns;
+      // Read on the same pass, for the same reason: the settings window must not
+      // draw a switch in the wrong position, and the backend has already applied
+      // the stored value to its own registry at startup.
+      reportedLimits = ui.usageReported;
       // Read here rather than again inside `boot()`: one read of one file, and
       // the drawer's own restore step below runs after the deck's layout so its
       // height lands on a window that is already laid out. *Whether* it is up is

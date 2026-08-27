@@ -150,6 +150,17 @@ pub struct AiUsage {
     /// Set when something went wrong that the person can act on. A provider that
     /// simply cannot answer is not an error — it is `Unknown` windows.
     pub error: Option<String>,
+    /// The command that would answer this, if a person ran it themselves.
+    ///
+    /// Copied off the capabilities by the registry rather than filled in by each
+    /// provider, so a provider cannot forget it — and carried **on the snapshot**
+    /// rather than looked up on the frontend, because a table of provider names
+    /// in `src/` is precisely the coupling #308 measures for.
+    pub probe_command: Option<String>,
+    /// Whether answering would need a credential this app does not hold. On
+    /// screen, because "we could tell you if you signed in" and "we cannot tell
+    /// you" are different sentences and only one of them is worth acting on.
+    pub needs_credential: bool,
 }
 
 impl AiUsage {
@@ -176,6 +187,10 @@ impl AiUsage {
             source,
             fetched_at,
             error: None,
+            // Both stamped by the registry, which is the only layer that has the
+            // capabilities and the answer in the same place.
+            probe_command: None,
+            needs_credential: false,
         }
     }
 

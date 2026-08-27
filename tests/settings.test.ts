@@ -58,6 +58,7 @@ let revealed: string[] = [];
 let edited = 0;
 let scaled: number[] = [];
 let recorded: boolean[] = [];
+let reported: boolean[] = [];
 const open = (over: Partial<Parameters<typeof settingsDialog>[0]> = {}) =>
   settingsDialog({
     paths: PATHS, workspace: WS as never, taskSource: "cards in .cowork/tasks",
@@ -66,6 +67,8 @@ const open = (over: Partial<Parameters<typeof settingsDialog>[0]> = {}) =>
     onScale: (s) => scaled.push(s),
     recording: true,
     onRecording: (on) => recorded.push(on),
+    reportedLimits: true,
+    onReportedLimits: (on) => reported.push(on),
     ...over,
   });
 
@@ -74,6 +77,7 @@ beforeEach(() => {
   edited = 0;
   scaled = [];
   recorded = [];
+  reported = [];
   mounted = 0;
   disposed = 0;
   document.body.innerHTML = "";

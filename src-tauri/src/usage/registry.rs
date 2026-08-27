@@ -173,6 +173,10 @@ fn errored(
 ) -> AiUsage {
     let mut snap = AiUsage::unknown(p.id(), p.label(), caps, now_ms);
     snap.error = Some(e.message());
+    // Stamped here too: a row that failed is the row that most needs to offer the
+    // command a person could run instead.
+    snap.probe_command = caps.probe_command.clone();
+    snap.needs_credential = caps.needs_credential;
     snap
 }
 
@@ -193,7 +197,14 @@ fn normalise(snap: AiUsage, caps: &UsageCapabilities, now_ms: i64) -> AiUsage {
         }
     }
     let source = windows.iter().map(|w| w.source).min().unwrap_or(UsageSource::Unknown);
-    AiUsage { windows, source, fetched_at: now_ms, ..snap }
+    AiUsage {
+        windows,
+        source,
+        fetched_at: now_ms,
+        probe_command: caps.probe_command.clone(),
+        needs_credential: caps.needs_credential,
+        ..snap
+    }
 }
 
 #[cfg(test)]
