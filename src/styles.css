@@ -3889,11 +3889,18 @@ h6.md-head { font-size: var(--fs-sm); }
 /* Name, chip, bar, count. The bar is scaled to the largest row and is the reason
    a wall of 26 rows is readable at all — the shape of a session is in the
    proportions, not in the digits. */
-.act-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(48px, 84px) 3.5em; align-items: center; gap: var(--sp-2); padding: 3px var(--sp-2); border-radius: var(--r-sm); }
+/* `row-gap: 0` and the indent below are load-bearing rather than taste. The
+   outcome line spans the row's full width, so at the grid's own gap it sits
+   exactly as far from its own tool as the next tool sits from it — and reads as
+   a row of its own rather than as a note on the one above. */
+.act-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(48px, 84px) 3.5em; align-items: center; column-gap: var(--sp-2); row-gap: 0; padding: 3px var(--sp-2); border-radius: var(--r-sm); }
 .act-row:hover { background: var(--bg-hover); }
 .act-row-name { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act-row-count { font-size: var(--fs-xs); color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
-.act-row-outcome { grid-column: 1 / -1; font-size: var(--fs-xs); color: var(--st-error); }
+.act-row-outcome { grid-column: 1 / -1; font-size: 10px; line-height: 1.4; color: var(--st-error); padding-left: var(--sp-2); }
+/* And the list's own gap carries the separation between tools instead, so the
+   rhythm is one gap per tool however many lines a tool takes. */
+.act-section--tools .act-list { gap: var(--sp-1); }
 .act-bar { display: block; height: 4px; border-radius: var(--r-pill); background: var(--bg-void); overflow: hidden; }
 .act-bar-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--fg-dim); }
 /* The chip is the category, and the category is never the label. It is quiet on
