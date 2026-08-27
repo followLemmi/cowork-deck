@@ -35,6 +35,13 @@
         <aside id="sidebar">
           <div id="panel-head"></div>
           <div id="panel-stack"></div>
+          <!-- What every connected AI has left, and where each number came from.
+               A block in the panel rather than a page of it, and that is the whole
+               decision: a limit is something you glance at WHILE working, so a
+               screen you have to navigate to would be consulted once, on the day
+               you first found it, and never at the moment it matters. Empty here —
+               `app.ts` fills it, and draws nothing at all when no AI is detected. -->
+          <div id="limits"></div>
         </aside>
         <div id="workarea">
           <main id="deck"></main>

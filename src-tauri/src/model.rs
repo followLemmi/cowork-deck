@@ -577,6 +577,17 @@ pub struct UiState {
     /// text size, not however many fit in 260 pixels after the next change.
     #[serde(rename = "terminalRows", default = "default_terminal_rows")]
     pub terminal_rows: u32,
+    /// Whether the reported source of usage limits may be asked. **Default on.**
+    ///
+    /// The capability flag #306 asked for. On, because answering spends no quota
+    /// and reads no credential — it asks `claude` the way `gh.rs` asks `gh`. Off
+    /// is a legitimate answer all the same: it means "do not start a `claude`
+    /// process every five minutes on my machine", and the limits block stays on
+    /// screen on the observed source, saying so.
+    ///
+    /// `#[serde(default)]` for the reason spelled out above `ui_scale`.
+    #[serde(rename = "usageReported", default = "default_usage_reported")]
+    pub usage_reported: bool,
     /// How wide the panel is, in px, and how wide it is when it has taken the
     /// deck's width. Two numbers because they answer two questions: a column of
     /// names and a kanban do not want the same width, and a person who sizes one
@@ -609,6 +620,13 @@ pub struct UiState {
 /// On. A journal nobody switched on records nothing, and the first thing anyone
 /// would ask of a history screen is why it is empty.
 fn default_record_runs() -> bool {
+    true
+}
+
+/// On. See `UiState::usage_reported`: the cost of asking is a subprocess that
+/// spends no quota, and the alternative default is a screen that says "unknown"
+/// to somebody who never knew there was a switch.
+fn default_usage_reported() -> bool {
     true
 }
 
@@ -649,6 +667,7 @@ impl Default for UiState {
             sync_offer_dismissed: false,
             record_scenario_runs: default_record_runs(),
             terminal_rows: default_terminal_rows(),
+            usage_reported: default_usage_reported(),
             // None, and not a pixel figure: until a person drags one, the width
             // belongs to the stylesheet, which tracks the window and the text size.
             panel_px: None,
@@ -683,6 +702,8 @@ pub struct UiStatePatch {
     pub record_scenario_runs: Option<bool>,
     #[serde(rename = "terminalRows")]
     pub terminal_rows: Option<u32>,
+    #[serde(rename = "usageReported")]
+    pub usage_reported: Option<bool>,
     #[serde(rename = "panelPx")]
     pub panel_px: Option<u32>,
     #[serde(rename = "wspPx")]
@@ -749,6 +770,39 @@ pub struct GitChange {
 pub struct GitChanges {
     pub branch: Option<String>,
     pub files: Vec<GitChange>,
+}
+
+/// A limit this app watched a session be refused by, and when it lifts.
+///
+/// Persisted, and that is the whole reason it is a type rather than a field: a
+/// reset four hours out has to survive a restart. Without that, quitting the app
+/// while the budget is spent loses the one fact the person needs on the way back
+/// in — and the app cannot re-derive it, because the banner it read has scrolled
+/// off a terminal that no longer exists.
+///
+/// Written by `usage::observed`, read on boot, and discarded once `resets_at` has
+/// passed. See ADR-0009.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageExhaustion {
+    /// Which connected AI. `"claude"` today.
+    pub provider: String,
+    /// Which window, where the text said. `None` is a refusal whose window was
+    /// not named — kept as `None` rather than guessed, so the reader can say it
+    /// guessed.
+    #[serde(default)]
+    pub window: Option<String>,
+    /// Epoch ms, when it is known. `None` is a legitimate state: the app was
+    /// refused and was not told when that ends.
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+    /// Epoch ms when this app saw the refusal. What bounds the record's life when
+    /// `resets_at` is `None`.
+    pub at: i64,
+    /// What the terminal actually said, capped. On screen in the dialog, because
+    /// "this is the sentence we read" is the only way a person can check whether
+    /// this app understood it.
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]

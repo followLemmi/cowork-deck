@@ -118,6 +118,15 @@ pub struct AppState {
     /// checked before every write and resize. See `ownership::SessionOwners`
     /// for why the frontend cannot be the layer that decides this.
     pub session_owners: crate::ownership::SessionOwners,
+    /// Whether the reported source of usage limits may be asked. Shared with the
+    /// Claude provider inside `usage`, so `save_ui_state` can flip it without
+    /// rebuilding the registry. See `UiState::usage_reported`.
+    pub usage_reported: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// What each connected AI has left, with a TTL cache in front of it. An
+    /// `Arc` because `usage_snapshot` hands it to a blocking task: the providers
+    /// spawn subprocesses, and none of that may happen on the runtime's own
+    /// threads.
+    pub usage: std::sync::Arc<crate::usage::registry::Registry>,
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
@@ -584,7 +593,7 @@ pub fn claude_available() -> bool {
 /// probes run at most once per process; `start_session` reads the cache.
 static CLAUDE_CACHE: std::sync::OnceLock<which::Resolution> = std::sync::OnceLock::new();
 
-fn which_claude() -> Option<which::Resolution> {
+pub(crate) fn which_claude() -> Option<which::Resolution> {
     // Respect an explicit override, else run the shared discovery: PATH,
     // known install dirs, login shell. An npm/nvm-installed claude is a
     // `#!/usr/bin/env node` script, which is why the resolution's captured
@@ -1792,7 +1801,24 @@ pub fn start_session(
         env.push(("PATH".to_string(), path_env));
     }
 
+    // Read on the way past, not instead of: the terminal gets every byte, and
+    // this is a copy taken from the same batch. It is here rather than in the
+    // frontend because the PTY is the only place these bytes are still whole —
+    // xterm has consumed them by the time anything in `src/` could look.
+    //
+    // Only on a `claude` session, and deliberately not on a shell or command
+    // tile: "limit reached" from a build script is not this account's budget, and
+    // a parser that refuses to guess is worth more than the coverage.
+    let sess_watch = session.clone();
+    let app_watch = app.clone();
     let on_output = move |bytes: Vec<u8>| {
+        let now = chrono::Utc::now().timestamp_millis();
+        if crate::usage::observed::note_output(&sess_watch, &bytes, now) {
+            // Something the cache cannot know has just happened. The frontend
+            // answers this by re-reading with `force`, which is why nothing here
+            // needs a route to `AppState`.
+            let _ = app_watch.emit("usage://changed", ());
+        }
         let _ = sink.send(Response::new(bytes));
     };
 
@@ -2184,6 +2210,10 @@ pub fn close_session(state: State<AppState>, session: String) {
     state.pty.kill(&session);
     state.session_owners.release(&session);
     crate::transcripts::forget(&session);
+    // The trailing output buffer, for the same reason the transcript goes: a
+    // tile that is gone should not contribute a half-drawn banner to whatever
+    // reuses its id.
+    crate::usage::observed::forget(&session);
 }
 
 /// Quit, having been told to go ahead.
@@ -2388,7 +2418,52 @@ pub fn load_ui_state(state: State<AppState>) -> UiState {
 
 #[tauri::command]
 pub fn save_ui_state(state: State<AppState>, ui: UiStatePatch) -> Result<(), String> {
+    // Applied to the live flag as well as written to the file, and in that order
+    // of importance: the registry holds this `Arc` and the providers read it on
+    // every fetch, so a person turning the reported source off has it off before
+    // the next poll rather than after the next launch.
+    if let Some(on) = ui.usage_reported {
+        state.usage_reported.store(on, std::sync::atomic::Ordering::Relaxed);
+        state.usage.invalidate("claude");
+    }
     state.store.lock().unwrap().save_ui_state(&ui).map_err(|e| e.to_string())
+}
+
+/// How long the whole snapshot may take.
+///
+/// Generous, and it can be: this is never on the paint tick. The registry's TTL
+/// keeps it to once every five minutes per provider, and the frontend draws the
+/// block from the previous answer while this one is in flight. The number is set
+/// by the slowest thing inside it — a whole `claude` process, measured at about
+/// four seconds — with room for a machine under load.
+const USAGE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What every connected AI has left, and where each number came from.
+///
+/// `force` is "read again", and the moment a limit banner goes past on a PTY:
+/// the two cases where a cached "you are fine" is a lie.
+///
+/// A blocking body behind `command(async)`, which is how `config_paths` next
+/// door does it: every provider in here may start a process and read files, and
+/// Tauri runs an `(async)`-marked synchronous command on its thread pool. An
+/// `async fn` would put that work on the runtime's own threads and every other
+/// command behind it.
+#[tauri::command(async)]
+pub fn usage_snapshot(state: State<AppState>, force: bool) -> Vec<crate::usage::model::AiUsage> {
+    let now = chrono::Utc::now().timestamp_millis();
+    state.usage.snapshot(now, force, USAGE_DEADLINE)
+}
+
+/// Forget the refusals this app watched happen, for one provider.
+///
+/// The escape hatch the observed source needs: a parser can be wrong, and an app
+/// insisting the budget is spent while sessions are plainly running would be
+/// worse than one that never said so. Reached from the dialog, and it clears the
+/// cache too so the next read is not the same stale answer.
+#[tauri::command(async)]
+pub fn usage_clear_observed(state: State<AppState>, provider: String) {
+    crate::usage::observed::clear(&provider);
+    state.usage.invalidate(&provider);
 }
 
 /// Called by main during setup to emit state changes coming from the listener.
@@ -2432,7 +2507,7 @@ pub fn git_status(cwd: String) -> GitStatus {
 /// Settings has is "what does this app keep about me" — which includes the file
 /// that does not exist yet because they have never saved a scenario. A directory
 /// listing would quietly leave that one out.
-const CONFIG_FILES: [&str; 7] = [
+const CONFIG_FILES: [&str; 8] = [
     "workspaces.json",
     "skills.json",
     "sessions.json",
@@ -2440,6 +2515,7 @@ const CONFIG_FILES: [&str; 7] = [
     "ui_state.json",
     "schedule_state.json",
     "runs.jsonl",
+    "usage_state.json",
 ];
 
 /// Split from the command so it can be tested against a real directory: the rule

@@ -33,3 +33,21 @@ html, body {
   -webkit-user-select: none;
   user-select: none;
 }
+
+/* When what the pill is saying is a ceiling rather than a queue.
+   `#fb817a` is `--st-error` of the True Ink palette, copied by hand for the
+   reason the block above gives — this window loads no `:root`. It must be
+   updated with the palette, and `scripts/contrast.mjs` measures it on this
+   window's own ground rather than on the app's. */
+/* The border is measured, not picked: `#9c4b47` is 3.27:1 on the pill's own
+   chrome, where the `#6b3a38` this started at was 2.13 and failed 1.4.11. The
+   edge is the half of the change that carries across a screen — the ink is only
+   legible once you are already looking at it — so it is held to the
+   UI-component threshold rather than left as decoration.
+   Both declarations are read by `scripts/contrast.mjs`, whose reader wants a
+   plain block: a comment BETWEEN two declarations hides the one after it, which
+   is why this sits above the rule. */
+#pill.pill--limit {
+  color: #fb817a;
+  border-color: #9c4b47;
+}

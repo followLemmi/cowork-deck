@@ -16,6 +16,7 @@ mod runs;
 mod scheduler;
 mod tasks_cmd;
 mod transcripts;
+mod usage;
 mod which;
 mod ownership;
 mod windows;
@@ -147,6 +148,13 @@ fn main() {
             run_journal::init(dir.clone(), handle.clone());
             run_journal::sweep_and_compact();
 
+            // Same reasoning one line up, for the same kind of fact: a limit
+            // observed before the last quit has to be back before the first
+            // snapshot is asked for, or the block opens saying "unknown" about
+            // something the app already knew. Records whose reset has passed are
+            // dropped on the way in.
+            usage::observed::restore(dir.clone(), chrono::Utc::now().timestamp_millis());
+
             // Start the status listener on the tokio runtime Tauri provides.
             let handle_for_cb = handle.clone();
             let port = tauri::async_runtime::block_on(async move {
@@ -158,6 +166,12 @@ fn main() {
             });
 
             let scheduler_ready = std::sync::Arc::new(tokio::sync::Notify::new());
+            // One flag, held by both the state and the Claude provider inside the
+            // registry, so a settings change reaches the provider without
+            // rebuilding it.
+            let reported_flag = std::sync::Arc::new(AtomicBool::new(
+                store.ui_state().usage_reported,
+            ));
             app.manage(AppState {
                 store: Mutex::new(store),
                 pty: pty::PtyManager::new(),
@@ -174,6 +188,12 @@ fn main() {
                 issue_open_counts: Mutex::new(std::collections::HashMap::new()),
                 windows_ready: std::sync::Arc::new(windows::WindowReady::default()),
                 session_owners: ownership::SessionOwners::default(),
+                // On by default: it spends no quota and reads no credential (see
+                // `usage::reported`). The person's own setting is applied a moment
+                // later, once `ui_state.json` has been read — starting from the
+                // stored value would mean reading that file twice.
+                usage_reported: reported_flag.clone(),
+                usage: std::sync::Arc::new(usage::registry(reported_flag)),
             });
 
             // Scheduled scenarios: the backend decides *when* and emits
@@ -331,6 +351,8 @@ fn main() {
             commands::worktree_files,
             commands::config_paths,
             commands::session_snapshots,
+            commands::usage_snapshot,
+            commands::usage_clear_observed,
             activity::session_activity,
             commands::scheduler_ready,
             commands::schedule_ack,

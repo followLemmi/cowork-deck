@@ -110,7 +110,7 @@ describe("which stack each page belongs to", () => {
       '<div id="app"><header class="topbar"><div id="mark"></div>'
       + '<div id="ledger"></div><div id="topbar-actions"></div></header>'
       + '<div id="stage"><nav id="rail"></nav>'
-      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div>'
       + '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>'
       + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
       + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'

@@ -10,7 +10,8 @@
  */
 
 import type {
-  ActivityRoll, AgentTally, BoardConfig, GhStatus, MergeOptions, PrDetail, PrDiff, ProviderCapabilities,
+  ActivityRoll, AgentTally, AiUsage,
+  BoardConfig, GhStatus, MergeOptions, PrDetail, PrDiff, ProviderCapabilities,
   PullRequest, RunRecord, ScheduleRun, SessionEntry, SessionSnapshot, Skill, Task, UiState,
   Workspace,
 } from "../src/ipc";
@@ -841,8 +842,96 @@ export const mergeOptions: MergeOptions = {
 
 export const uiState: UiState = {
   activeWorkspaceId: WS_RELAY, uiScale: 1, prDiffCols: 96, recordScenarioRuns: true,
-  terminalRows: 12,
+  terminalRows: 12, usageReported: true,
 };
+
+/** The caveat both of Gemini's windows carry, written once so the fixture cannot
+ *  say it two ways — which is the same discipline the provider itself applies. */
+const NO_GEMINI_READING =
+  "Gemini CLI does not report what is left, and this app has never seen it say so on a terminal.";
+
+/** What every connected AI has left — one of each state the block can draw, so a
+ *  shot of the panel shows the whole vocabulary at once rather than three healthy
+ *  rows.
+ *
+ *  Claude is on the **reported** tier and nearly spent, which is the pair that
+ *  matters most: a share the provider vouches for, and a reset time to act on.
+ *  Gemini is the honest `unknown` row — detected, unreadable, and offering the
+ *  command that would answer it.
+ *
+ *  A refusal is deliberately not here. It is the state the block exists for, and
+ *  it is also the state a person should almost never see, so a fixture that led
+ *  with it would misrepresent the app. It renders — verified in this harness by
+ *  flipping this fixture, and covered permanently by `tests/usage-block.test.ts`. */
+export const usage: AiUsage[] = [
+  {
+    provider: "claude",
+    label: "Claude",
+    account: "you@example.com",
+    plan: "Max 20x",
+    source: "reported",
+    fetchedAt: NOW,
+    error: null,
+    probeCommand: 'claude -p "/usage"',
+    needsCredential: false,
+    windows: [
+      {
+        id: "session",
+        label: "Current session",
+        usedFraction: 0.87,
+        amount: null,
+        resetsAt: NOW + 74 * 60 * 1000,
+        state: "near",
+        source: "reported",
+        note: null,
+      },
+      {
+        id: "week",
+        label: "Current week (all models)",
+        usedFraction: 0.24,
+        amount: null,
+        resetsAt: NOW + 5 * 24 * 60 * 60 * 1000,
+        state: "ok",
+        source: "reported",
+        note: null,
+      },
+    ],
+  },
+  {
+    provider: "gemini",
+    label: "Gemini",
+    account: null,
+    plan: null,
+    source: "unknown",
+    fetchedAt: NOW,
+    error: null,
+    probeCommand: "gemini",
+    needsCredential: true,
+    windows: [
+      {
+        id: "rpm",
+        label: "Requests this minute",
+        usedFraction: null,
+        amount: null,
+        resetsAt: null,
+        state: "unknown",
+        source: "unknown",
+        note: NO_GEMINI_READING,
+      },
+      {
+        id: "rpd",
+        label: "Requests today",
+        usedFraction: null,
+        amount: null,
+        resetsAt: null,
+        state: "unknown",
+        source: "unknown",
+        note: NO_GEMINI_READING,
+      },
+    ],
+  },
+];
+
 
 /** What the terminal drawer reopens with.
  *

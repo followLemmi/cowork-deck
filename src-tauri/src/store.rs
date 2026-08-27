@@ -311,6 +311,9 @@ impl Store {
         if let Some(rows) = patch.terminal_rows {
             st.terminal_rows = rows;
         }
+        if let Some(on) = patch.usage_reported {
+            st.usage_reported = on;
+        }
         Self::write_json(&self.ui_path(), &st)
     }
 
@@ -344,6 +347,30 @@ impl Store {
         st: &std::collections::HashMap<String, ScheduleRun>,
     ) -> std::io::Result<()> {
         Self::write_json(&self.schedule_state_path(), st)
+    }
+
+    fn usage_state_path(&self) -> PathBuf { self.dir.join("usage_state.json") }
+
+    /// The limits this app has watched a session be refused by (#303).
+    ///
+    /// A `Vec` rather than a map, and read through `read_vec` like the workspaces
+    /// and the skills, because that path already has the rule this file needs: an
+    /// unparseable non-empty file refuses the read rather than reporting an
+    /// emptiness a save would then write back over it.
+    ///
+    /// Losing this file costs one fact — that the budget was spent — and the app
+    /// carries on saying "unknown" until the next banner goes past. That is why
+    /// there is no warning printed here where `schedule_state` prints one: this
+    /// degrades to the state the feature was designed to sit in anyway.
+    pub fn usage_state(&self) -> Vec<crate::model::UsageExhaustion> {
+        Self::read_vec(&self.usage_state_path())
+    }
+
+    pub fn save_usage_state(
+        &self,
+        items: &[crate::model::UsageExhaustion],
+    ) -> std::io::Result<()> {
+        Self::write_vec(&self.usage_state_path(), items)
     }
 
     /// The scenario run journal, beside `skills.json` and `schedule_state.json`.
@@ -796,6 +823,10 @@ mod tests {
         assert_eq!(UiState::default().terminal_rows, 14);
         // Off: nobody has been asked yet, so nobody has declined.
         assert!(!UiState::default().sync_offer_dismissed);
+        // On. Asking spends no quota and reads no credential, and the
+        // alternative default is a screen saying "unknown" to somebody who
+        // never knew there was a switch.
+        assert!(UiState::default().usage_reported);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
@@ -803,6 +834,7 @@ mod tests {
             sync_offer_dismissed: Some(true),
             record_scenario_runs: Some(false),
             terminal_rows: Some(20),
+            usage_reported: Some(false),
             panel_px: Some(340),
             wsp_px: Some(720),
             wsp_wide_px: None,

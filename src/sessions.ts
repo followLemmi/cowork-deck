@@ -500,6 +500,15 @@ export class Deck {
     return wireNotificationFocus(this.notify, (s) => this.focusTile(s));
   }
 
+  /** Whether an OS notification would actually be delivered.
+   *
+   *  Exposed because the limits block raises one too (#305) and the permission is
+   *  asked for exactly once, here, in `wireEvents`. A second module calling
+   *  `requestPermission` would be a second prompt for one answer. */
+  canNotify(): boolean {
+    return this.notifyOk;
+  }
+
   async wireEvents() {
     this.notifyOk = await isPermissionGranted();
     if (!this.notifyOk) this.notifyOk = (await requestPermission()) === "granted";

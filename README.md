@@ -130,6 +130,29 @@ Which CLIs can be read today: **Claude Code**, the **Copilot CLI**, and **openco
 deck launches is Claude Code — driving the others is a separate piece of work — but a log can be read
 for a session the deck did not start. A CLI with no reader says so rather than showing zeroes.
 
+## Limits: what each AI has left, and where that number came from
+
+A dozen sessions draw on **one** budget, and when it runs out they stall together. A block at the foot
+of the panel says what each connected AI has left — one row apiece, a thin meter, and when it lifts.
+
+**The source of a number is part of the number**, and it is on the row beside it rather than in a
+tooltip:
+
+- **Reported** — the account's own accounting, the figure `/usage` draws. Obtained by asking `claude`
+  itself, the way this app asks `gh` about GitHub: it costs nothing from your budget and no password
+  passes through the app. Switch it off in Settings if you would rather nothing started a short-lived
+  process every few minutes to ask.
+- **Observed** — what the app can see for itself, from the sessions it runs. Real, and *narrower than
+  your account*: other terminals, other machines and anything outside this app are not in it. The
+  dialog says so in words, and no meter is drawn for it — the app knows what it spent, not what was
+  allowed, and it will not divide by a ceiling it invented.
+- **Unknown** — it says so, and offers the one command that would answer it, in a tile.
+
+The reading that matters most needs no percentage at all. When a session is refused, the app reads the
+limit banner on its way to the screen and the pill stops saying *3 waiting for input* — which is true
+and useless — and says **nothing moves until 19:00**. That survives a restart, and you are told again
+when it lifts.
+
 ## A GitHub account per workspace
 
 Bind a workspace to a `gh` account and every session it starts has that access already in place:
@@ -245,7 +268,7 @@ and is never offered as a duplicate, because a guess that is wrong merges two re
 
 See [ADR-0006](docs/adr/0006-the-config-directory-is-the-sync-repository.md) for why the config
 directory *is* the repository, and
-[ADR-0007](docs/adr/0007-a-workspaces-identity-across-machines-is-its-remote.md) for what a workspace's
+[ADR-0009](docs/adr/0007-a-workspaces-identity-across-machines-is-its-remote.md) for what a workspace's
 identity is across machines and what merging two records actually moves.
 
 ## Install
@@ -320,6 +343,12 @@ State tracking depends on Claude Code's hooks reporting back. On an older `claud
 to fire, the terminal is unaffected — you can type, scroll and work normally. The only symptom is a tile
 whose state label stays on `idle`.
 
+The limits block degrades the same way, and says which rung it is on. The reported figure is read out of
+`claude`'s own output, so a version that words it differently costs the *percentage* and nothing else:
+the block stays where it is, falls back to **Observed**, and labels itself. It never blanks, and it
+never passes the app's own counting off as your account's. See
+[ADR-0009](docs/adr/0009-the-source-of-a-usage-number-is-part-of-the-number.md).
+
 ## Roadmap
 
 Work is tracked in [GitHub issues](https://github.com/followLemmi/cowork-deck/issues); the epics below
@@ -335,7 +364,6 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 
 | | |
 |---|---|
-| **Limits** [#301](https://github.com/followLemmi/cowork-deck/issues/301) | Many sessions draw on one budget, and when it runs out they stall together. What each connected AI has left, where that number came from, and a reading that says "nothing moves until 19:00" rather than "3 waiting" [#305](https://github.com/followLemmi/cowork-deck/issues/305). |
 | **Frame rate** [#261](https://github.com/followLemmi/cowork-deck/issues/261) | Dragging a grip or resizing the window gives up three quarters of the display's frame rate. Measured, with the work that follows from the measurements. |
 
 ### Later

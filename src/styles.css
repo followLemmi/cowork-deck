@@ -676,7 +676,12 @@ body {
      the widest thing a page could not shrink (a workspace row's controls) and the
      panel, at `overflow: hidden`, clipped the difference. At 1180px that was 31px
      of every row's right-hand end, including the button that deletes it. */
-  display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr);
+  /* Three rows now: the head, the stack of pages, and the limits block under
+     them. The third is declared rather than left implicit, so it is visible here
+     that the block is `auto` and the STACK is the one that takes the slack — an
+     implicit row would have worked and would have said nothing. `.panel-grip` is
+     absolutely positioned and stays out of this. */
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr);
   transition: width var(--dur-3) var(--ease-out);
   /* In `rem` rather than px, because this column exists to hold text and the text
      size is the person's to choose: at a fixed pixel width, raising the scale made
@@ -3936,3 +3941,86 @@ h6.md-head { font-size: var(--fs-sm); }
    panel of zeroes is indistinguishable from a session that did nothing. */
 .act-empty { color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-normal); margin: 0; }
 .act-note { color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-normal); margin: 0; }
+
+/* --- Limits: what each connected AI has left ------------------------------
+   Three hues and no more, and one of them is deliberately absent: there is no
+   green here. Green already means "working" on every rail in this window, and
+   spending it on "your quota is fine" would make a panel of healthy meters read
+   as twelve sessions doing something. A healthy window is NEUTRAL — the design
+   system's rule that hue belongs to state, applied rather than bent.
+
+   `--st-error` for a spent budget and `--st-waiting` for one nearly spent, which
+   is the same pair the ledger and the session rows use for the same two
+   meanings: something has stopped, and something is about to want you. A person
+   who has learned those two colours anywhere in this app has learned them here.
+   `npm run contrast` measures every pair below. */
+#limits { flex: none; }
+#limits[hidden] { display: none; }
+.lim-block { display: flex; flex-direction: column; gap: var(--sp-1); }
+/* A row is a button and, when there is nothing to read, a second one beside it.
+   Not one button containing another — that is invalid, and a screen reader
+   handed a nested control announces neither properly. */
+.lim-row { display: flex; align-items: stretch; gap: var(--sp-1); }
+.lim-open {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;
+  padding: var(--sp-2); border: 0; border-radius: var(--r-ctl);
+  background: transparent; color: var(--fg); text-align: left; cursor: pointer;
+  font: inherit;
+}
+.lim-open:hover { background: var(--bg-hover); }
+.lim-line { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
+.lim-name { flex: none; font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+/* The tier, at the same size as the number it qualifies. A tooltip would be a
+   footnote, and a footnote is what ADR-0009 exists to refuse: the source of a
+   number is part of the number. */
+.lim-src {
+  flex: none; font-size: var(--fs-xs); text-transform: uppercase;
+  letter-spacing: var(--ls-caps); color: var(--fg-dim);
+}
+/* Only the weakest tier is coloured, and it is coloured with the *quiet* step
+   rather than a hue: "unknown" is not a warning, it is an absence, and giving it
+   amber would put a fourth meaning on a colour that already has one. */
+.lim-src--reported { color: var(--fg-mid); }
+.lim-reading {
+  flex: 1; min-width: 0; font-size: var(--fs-xs); color: var(--fg-mid);
+  text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Thin, because it is a glance and not a chart. 4px reads as a level at every
+   text size the app offers without becoming a element in its own right. */
+.lim-meter {
+  display: block; height: 4px; border-radius: var(--r-pill);
+  background: var(--bg-inset); overflow: hidden;
+}
+.lim-fill { display: block; height: 100%; background: var(--fg-dim); }
+.lim-meter.lim-near .lim-fill { background: var(--st-waiting); }
+.lim-meter.lim-out .lim-fill { background: var(--st-error); }
+.lim-foot { display: flex; font-size: var(--fs-xs); color: var(--fg-dim); }
+.lim-out-text { color: var(--st-error); }
+/* The action a row nobody can read offers instead of a blank meter. */
+.lim-probe {
+  flex: none; align-self: center; padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-xs); color: var(--fg-mid);
+  background: var(--bg-inset); border: 1px solid var(--line);
+  border-radius: var(--r-ctl); cursor: pointer;
+}
+.lim-probe:hover { background: var(--bg-hover-2); color: var(--fg); }
+
+/* --- and the dialog behind a row ---------------------------------------- */
+.modal-box.lim-screen { width: min(520px, 94vw); }
+.lim-who { color: var(--fg-mid); font-size: var(--fs-sm); }
+.lim-error { color: var(--st-error); font-size: var(--fs-sm); }
+.lim-win {
+  display: flex; flex-direction: column; gap: var(--sp-1);
+  padding: var(--sp-3); background: var(--bg-inset); border-radius: var(--r-ctl);
+}
+.lim-win-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.lim-win-name { flex: 1; font-weight: var(--fw-medium); }
+.lim-win-reading { font-size: var(--fs-sm); color: var(--fg); }
+.lim-win-out { color: var(--st-error); font-size: var(--fs-sm); }
+.lim-win-reset { color: var(--fg-mid); font-size: var(--fs-sm); }
+/* What the tier means, then what the provider says about this number. Two
+   paragraphs, because they answer two questions — and the second is where "other
+   terminals and other machines are not in this" is finally written in words. */
+.lim-win-tier, .lim-win-note, .lim-hint { color: var(--fg-dim); font-size: var(--fs-xs); }
+/* The meter inside the dialog sits on the inset ground, not the island's. */
+.lim-win .lim-meter { background: var(--bg-hover-2); }
