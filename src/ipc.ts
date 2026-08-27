@@ -62,6 +62,13 @@ export interface SessionEntry {
    *  degrades into guessing "the previous run of this scenario" — wrong the
    *  moment a scenario ran twice in a day. */
   runId?: string;
+  /** Which agent CLI this session runs. **Absent means `claude`**, which is
+   *  every entry written before this field existed and every session in them —
+   *  `start_session` resolves `claude` and nothing else. Typed as `CliKind`
+   *  here and as a bare string on the Rust side, deliberately: an entry naming
+   *  a CLI an older build has never heard of must still restore its tile rather
+   *  than fail the whole parse. */
+  cliKind?: CliKind;
 }
 export type NameKind = "context" | "placeholder";
 export interface UiState {
@@ -766,6 +773,11 @@ export interface SessionSnapshot {
   tokens: SessionTokens | null;
   title: string | null;
   titleSource: TitleSource | null;
+  /** Tool calls in the whole conversation, subagents included — what the
+   *  activity button carries, so the panel is worth opening before it is. `null`
+   *  is the reading being unavailable and `0` is a session that has made no
+   *  calls; the panel says two different sentences for those. */
+  calls: number | null;
 }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
 
@@ -798,6 +810,86 @@ export const configPaths = () => invoke<ConfigPaths>("config_paths");
  *  twice. Every requested id comes back, including ids with no transcript. */
 export const sessionSnapshots = (sessionIds: string[]) =>
   invoke<Record<string, SessionSnapshot>>("session_snapshots", { sessionIds });
+
+/** Which CLI a session runs. `claude` is what every stored session is until the
+ *  deck can launch anything else, and what an unrecognised name reads back as. */
+export type CliKind = "claude" | "copilot" | "opencode" | "codex";
+
+/** A lens over native tool names, never a rename of them. A row shows the name
+ *  the CLI itself used; the category is what makes `shell` and `Bash`
+ *  comparable across two CLIs without either being relabelled. */
+export type ToolCategory =
+  | "run" | "read" | "edit" | "search" | "web"
+  | "mcp" | "delegate" | "task" | "ask" | "other";
+
+/** One tool, as invoked by one agent, counted. `errors` and `denials` are
+ *  separate because they are different events: a denied call never ran, and
+ *  rolling it into a failure rate would make a session that refused three
+ *  commands look like one that broke three times. */
+export interface ToolTally {
+  native: string;
+  category: ToolCategory;
+  /** The MCP server, for a name shaped `mcp__<server>__<tool>`. */
+  server: string | null;
+  calls: number;
+  errors: number;
+  denials: number;
+}
+
+export type AgentRole = "main" | "subagent";
+
+export interface AgentTally {
+  id: string;
+  kind: AgentRole;
+  /** `"Code Reviewer"`, where the log names it. A subagent whose metadata was
+   *  missing keeps its calls and loses only this. */
+  agentType: string | null;
+  description: string | null;
+  depth: number;
+  /** The tool-call id that started this agent. Absent for a teammate raised
+   *  with the session rather than delegated to from a call. */
+  spawnedBy: string | null;
+  tools: ToolTally[];
+  calls: number;
+}
+
+/** Why there is nothing to read. Four sentences, not one absence: a CLI with no
+ *  reader, a tile that is not an agent session, a log that was never there, and
+ *  a path that would not open are four different things to tell a person. */
+export type Unavailable = "noReader" | "notAnAgent" | "noLog" | "unreadable";
+
+/** What a reader can actually answer. Declared rather than inferred, in the
+ *  manner of `ProviderCapabilities`: a reader that cannot tell a failure from a
+ *  success says so, and the panel omits the column instead of drawing zeroes
+ *  that read as "nothing failed". */
+export interface ReaderCapabilities { outcomes: boolean; agents: boolean }
+
+/** What a session did. `unavailable` set is NOT `calls: 0` — the first is "there
+ *  is no log for this session", the second is "the log is here and this session
+ *  has made no calls", and the panel says them differently. */
+export interface ActivityRoll {
+  cli: CliKind;
+  agents: AgentTally[];
+  tools: ToolTally[];
+  calls: number;
+  capabilities: ReaderCapabilities;
+  readAt: number;
+  unavailable: Unavailable | null;
+  /** The read stopped at this many files rather than walking a tree without
+   *  end. `null` is "everything was read". Reported rather than absorbed: a
+   *  tally that quietly stopped counting is worse than one that says it did. */
+  truncated: number | null;
+}
+
+/** What each of these sessions did, read off the agent's own log.
+ *
+ *  **Not on the five-second poll.** The heaviest transcript measured is 3.1 MB
+ *  over 1728 lines and 47 files are past 1 MB; re-reading every open session's
+ *  log every five seconds to fill a panel nobody has opened is the cost this is
+ *  shaped to avoid. Called when a panel opens, and re-called on the tick only
+ *  while one is on screen. Every requested id comes back. */
+export const sessionActivity = (sessionIds: string[]) =>
+  invoke<Record<string, ActivityRoll>>("session_activity", { sessionIds });
 
 /** A step id and a kind id are whatever `board.json` says they are — the
  *  frontend never enumerates them, it reads them (see src/board-config.ts). */

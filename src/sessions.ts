@@ -1,6 +1,7 @@
 import { TerminalPanel } from "./terminal";
 import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionSnapshots, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
+import { gitStatus, sessionActivity, sessionSnapshots, type CliKind, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
+import { activityButton, localRoll, openActivityPanel, setActivityCount, type ActivityPanel } from "./activity";
 import { formatContext, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
@@ -30,6 +31,13 @@ interface Tile {
   panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
   workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  /** The button that opens the activity panel, carrying this session's call
+   *  count. Always in the DOM; the stylesheet hides it until the tile is
+   *  hovered, active or holds focus, as `tile-rename` documents. */
+  activityBtn: HTMLButtonElement;
+  /** The open panel, or nothing. Its presence is what makes the tick re-read
+   *  this session's log at all — closing the panel is what stops the reads. */
+  activityPanel: ActivityPanel | null;
   /** The branch the poll last read for this tile's directory, kept beside the
    *  badge that renders it because the sidebar row needs the same answer and
    *  reading it back out of the badge's text would be parsing our own markup. */
@@ -58,6 +66,11 @@ interface Tile {
    *  can hand them back to the journal rather than opening a record that
    *  forgets what it ran with. */
   params?: Record<string, string>;
+  /** Which agent CLI this tile runs. Always `claude` for now, and that is the
+   *  point: the field is what the activity registry dispatches on, and the
+   *  alternative was discovering at the second reader that the shape had
+   *  nowhere to live. */
+  cliKind?: CliKind;
 }
 
 /** The four things that can name a tile, in one place so no reader can hold a
@@ -453,6 +466,12 @@ export class Deck {
             t.tokenBadge.title = tokenTooltip(u);
             t.tokenBadge.classList.remove("hidden");
           }
+          // The count rides this batch rather than a second command: the poll
+          // has already read and parsed every line of this transcript, and
+          // walking the content blocks it parsed is cheap beside that parse.
+          // The BREAKDOWN does not ride it — that is `session_activity`, called
+          // only while a panel is open.
+          setActivityCount(t.activityBtn, snap.calls);
           // A missing title never clears the slot. Measured over 96 transcripts a
           // title is minted once and never revised, so a null here is either "not
           // yet" or "this read did not see it" — and blanking a name on the
@@ -464,6 +483,12 @@ export class Deck {
         }
       } catch (e) {
         console.debug("sessionSnapshots failed", e);
+      }
+      // Only the panels that are open, and one read each. A deck of twelve with
+      // no panel open makes no activity call at all, which is the point.
+      for (const t of tiles) {
+        if (!this.tiles.has(t.session)) continue;
+        void t.activityPanel?.refresh();
       }
       this.renderList();
     } catch (e) {
@@ -769,6 +794,9 @@ export class Deck {
      *  when a workspace arrives from another window. */
     attach?: { scrollback: string };
     command?: string;
+    /** Which agent CLI this tile runs. Absent is `claude` — every launch path,
+     *  and every entry restored from a layout written before the field. */
+    cliKind?: CliKind;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const grabAttention = opts.grabAttention ?? true;
@@ -803,6 +831,20 @@ export class Deck {
     gitBadge.className = "tile-git hidden";
     const tokenBadge = document.createElement("span");
     tokenBadge.className = "tile-tokens hidden";
+    // The badge already sits there and is already about this session's
+    // measurements, and its tooltip is currently the only home for the spend and
+    // the subagent count — a tooltip is where information goes to be missed. One
+    // surface, reached from either.
+    tokenBadge.setAttribute("role", "button");
+    tokenBadge.tabIndex = 0;
+    tokenBadge.onclick = () => this.openActivity(session);
+    tokenBadge.onkeydown = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      this.openActivity(session);
+    };
+    const activityBtn = activityButton();
+    activityBtn.onclick = () => this.openActivity(session);
     const label = document.createElement("span");
     label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
     // The pencil leads the action cluster because it is the least destructive of
@@ -823,7 +865,7 @@ export class Deck {
     authBadge.className = "tile-auth hidden";
     head.append(
       ...(schedMark ? [schedMark] : []),
-      title, gitBadge, authBadge, tokenBadge, label, renameBtn, clearBtn, close,
+      title, gitBadge, authBadge, tokenBadge, label, activityBtn, renameBtn, clearBtn, close,
     );
     const bcastCheck = document.createElement("input");
     bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
@@ -924,9 +966,14 @@ export class Deck {
     const tile: Tile = {
       session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label, tools,
       workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, authBadge, tokenBadge, branch: null, scheduledSkillId: opts.scheduledSkillId,
+      gitBadge, authBadge, tokenBadge, activityBtn, activityPanel: null,
+      branch: null, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
       skillId: opts.skillId, params: opts.params,
+      // A command tile runs a shell command, not an agent, so it names no CLI
+      // at all — which is a different thing from naming the default one, and
+      // the panel says so in its own sentence.
+      cliKind: isCommand ? undefined : opts.cliKind ?? "claude",
     };
     this.applyName(tile);
     this.tiles.set(session, tile);
@@ -989,6 +1036,56 @@ export class Deck {
     const name = resolveTileName(tile.names);
     tile.nameEl.textContent = name;
     tile.nameEl.title = name;
+  }
+
+  /** Open the activity panel for one session.
+   *
+   *  One panel per tile: pressing the button again while it is open closes it,
+   *  the way a toggle should, rather than stacking a second read of the same log
+   *  behind the first.
+   *
+   *  The reads start here and stop when the panel closes. That is the whole cost
+   *  argument: the log is the source of truth precisely because it is
+   *  retrospective, and the price of that is a file read — the heaviest
+   *  transcript measured is 3.1 MB — which must not be on the five-second poll
+   *  for twelve tiles nobody is looking at. */
+  openActivity(session: string) {
+    const t = this.tiles.get(session);
+    if (!t) return;
+    if (t.activityPanel) {
+      t.activityPanel.close();
+      t.activityPanel = null;
+      return;
+    }
+    // A command tile is not an agent session and never will have a log. The
+    // frontend is where a tile's kind is known, so the sentence is decided here
+    // rather than by asking the backend to look for a transcript that cannot
+    // exist.
+    const isCommand = t.kind === "command";
+    const panel = openActivityPanel({
+      session,
+      name: resolveTileName(t.names),
+      initial: localRoll(isCommand ? "notAnAgent" : "noLog"),
+      tokens: () => this.usage.get(session) ?? null,
+      read: isCommand
+        ? undefined
+        : async () => {
+            const rolls = await sessionActivity([session]);
+            return rolls[session] ?? null;
+          },
+    });
+    // The close comes from four places — the button, Escape, the backdrop and
+    // this method — and all four have to clear the slot, or the tick keeps
+    // reading a log for a panel that is gone.
+    const clear = panel.close;
+    panel.close = () => {
+      clear();
+      if (this.tiles.get(session)?.activityPanel === panel) {
+        const tile = this.tiles.get(session);
+        if (tile) tile.activityPanel = null;
+      }
+    };
+    t.activityPanel = panel;
   }
 
   /** Turn the header's name into an input, in place.
@@ -1086,6 +1183,12 @@ export class Deck {
           titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
           prompt: null, resume: true,
           scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
+          // A layout entry with no `cliKind`, or with one this build has never
+          // heard of, restores as `claude` and the tile behaves exactly as
+          // before. An unrecognised CLI is a session the deck can still show,
+          // which is why the field is a string on the way to disk and never an
+          // enum that could fail the parse and drop the tile.
+          cliKind: e.cliKind ?? "claude",
           // Only a tile that was itself launched from a scenario gets a record.
           // A restored card session or bare "+ session" stays out of the
           // journal, which answers "what did my scenarios do" and nothing wider.
@@ -1515,6 +1618,10 @@ export class Deck {
   releaseTile(session: string) {
     const tile = this.tiles.get(session);
     if (!tile) return;
+    // The session carries on in the window that claimed it; this window's panel
+    // does not, or it would keep reading a log this deck no longer shows.
+    tile.activityPanel?.close();
+    tile.activityPanel = null;
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
@@ -1564,6 +1671,10 @@ export class Deck {
         titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
         prompt: null, resume: false,
         scheduledSkillId: e.scheduledSkillId, taskId: e.taskId, skillId: e.skillId,
+        // A layout entry with no `cliKind`, or with one this build does not
+        // know, restores as `claude` — the tile behaves exactly as before, and
+        // an unrecognised CLI is a session the deck can still show.
+        cliKind: e.cliKind ?? "claude",
         attach: { scrollback: e.scrollback },
         grabAttention: false,
       });
@@ -1574,6 +1685,10 @@ export class Deck {
     const tile = this.tiles.get(session);
     if (!tile) return;
     void closeSession(session);
+    // Before the tile leaves the map, or the panel outlives the session it is
+    // describing and keeps reading a log for a tile that is gone.
+    tile.activityPanel?.close();
+    tile.activityPanel = null;
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
@@ -1599,6 +1714,7 @@ export class Deck {
       nameKind: t.names.context === null ? "placeholder" : "context",
       skillId: t.skillId,
       runId: t.runId,
+      cliKind: t.cliKind,
     })));
     // Skip a write that would change nothing. Not something the naming needs —
     // it is here because it lives in the function this change touches, and it
@@ -1959,6 +2075,7 @@ export function serializeTiles(
     nameKind?: NameKind;
     skillId?: string;
     runId?: string;
+    cliKind?: CliKind;
   }[],
 ): SessionEntry[] {
   return tiles
@@ -1974,6 +2091,10 @@ export function serializeTiles(
       ...(t.userName ? { userName: t.userName } : {}),
       ...(t.skillId ? { skillId: t.skillId } : {}),
       ...(t.runId ? { runId: t.runId } : {}),
+      // Written only when it is not the default, so a layout file does not grow
+      // a key that says what its absence already says. Every entry on disk today
+      // is a Claude session, and this keeps them byte-identical.
+      ...(t.cliKind && t.cliKind !== "claude" ? { cliKind: t.cliKind } : {}),
       nameKind: t.nameKind ?? "context",
     }));
 }

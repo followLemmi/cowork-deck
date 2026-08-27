@@ -145,6 +145,13 @@ pub struct RunStarted {
     /// side of the crash a result came from.
     #[serde(rename = "continuesRunId", default, skip_serializing_if = "Option::is_none")]
     pub continues_run_id: Option<String>,
+    /// Which agent CLI ran this run.
+    ///
+    /// So history can say what ran a run and not only that something did. Absent
+    /// on every record written before this field existed, which reads back as
+    /// `Claude` — the only thing the deck has ever launched.
+    #[serde(rename = "cliKind", default, skip_serializing_if = "Option::is_none")]
+    pub cli_kind: Option<String>,
 }
 
 /// Where this run's transcript is *now*.
@@ -259,6 +266,11 @@ pub struct RunRecord {
     pub tokens: Option<TokenUsage>,
     #[serde(rename = "resultSource")]
     pub result_source: ResultSource,
+    /// Which agent CLI ran this. `None` on every record written before the
+    /// field existed; a reader answers `Claude` for it, which is what those runs
+    /// were — the deck has never launched anything else.
+    #[serde(rename = "cliKind", default, skip_serializing_if = "Option::is_none")]
+    pub cli_kind: Option<String>,
 }
 
 impl RunRecord {
@@ -279,6 +291,7 @@ impl RunRecord {
             params: e.params,
             prompt: e.prompt,
             continues_run_id: e.continues_run_id,
+            cli_kind: e.cli_kind,
             transcript_path: None,
             cleared: false,
             result: None,
@@ -311,6 +324,7 @@ impl RunRecord {
             params: self.params.clone(),
             prompt: self.prompt.clone(),
             continues_run_id: self.continues_run_id.clone(),
+            cli_kind: self.cli_kind.clone(),
         })];
         if let Some(path) = &self.transcript_path {
             out.push(RunEvent::Transcript(RunTranscript {
@@ -550,6 +564,7 @@ mod tests {
             params: HashMap::new(),
             prompt: Some("do the thing".into()),
             continues_run_id: None,
+            cli_kind: Some("claude".into()),
         })
     }
 
@@ -584,6 +599,37 @@ mod tests {
         assert_eq!(recs[0].started_at, 10);
         assert_eq!(recs[0].closed_at, Some(20));
         assert_eq!(recs[0].result.as_deref(), Some("done"));
+    }
+
+    /// A record says what ran it, and a record written before it could say so
+    /// reads back as the only thing the deck has ever launched.
+    #[test]
+    fn a_record_carries_the_cli_that_ran_it_and_survives_one_that_does_not() {
+        let recs = fold_events(&journal(&[started("r1", "s1", 10)]));
+        assert_eq!(recs[0].cli_kind.as_deref(), Some("claude"));
+
+        // A line written before the field existed. It must not fail the parse:
+        // that would cost the whole record, not just the field.
+        let old = r#"{"v":1,"t":"started","runId":"r0","at":5,"trigger":"manual","skillId":"s1","name":"Triage","icon":"bolt","cwd":"/p"}"#;
+        let recs = fold_events(old);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].cli_kind, None, "absent, and a reader answers Claude for it");
+    }
+
+    /// Compaction rewrites a record as the events that reproduce it, so a field
+    /// left out of `to_events` is a field a compaction silently deletes.
+    #[test]
+    fn the_cli_survives_the_round_trip_through_compaction() {
+        let recs = fold_events(&journal(&[started("r1", "s1", 10), closed("r1", 20, RunStatus::Ended)]));
+        let replayed = fold_events(
+            &recs[0]
+                .to_events()
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        assert_eq!(replayed[0].cli_kind.as_deref(), Some("claude"));
     }
 
     #[test]

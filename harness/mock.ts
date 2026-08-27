@@ -224,7 +224,20 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
       // a mock that dropped the unknown ones would hide the bug it exists to show.
       const out: Record<string, unknown> = {};
       for (const id of args.sessionIds as string[]) {
-        out[id] = F.snapshots[id] ?? { tokens: null, title: null, titleSource: null };
+        out[id] = F.snapshots[id] ?? { tokens: null, title: null, titleSource: null, calls: null };
+      }
+      return out;
+    }
+    case "session_activity": {
+      // Every requested id gets an entry, as the Rust command promises. An id
+      // with no fixture gets `noLog` — a sentence, never a roll of zeroes.
+      const out: Record<string, unknown> = {};
+      for (const id of args.sessionIds as string[]) {
+        out[id] = F.activity[id] ?? {
+          cli: "claude", agents: [], tools: [], calls: 0,
+          capabilities: { outcomes: false, agents: false },
+          readAt: Math.floor(Date.now() / 1000), unavailable: "noLog", truncated: null,
+        };
       }
       return out;
     }

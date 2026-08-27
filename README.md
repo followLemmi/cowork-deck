@@ -92,9 +92,43 @@ four things worth knowing about a session you are not watching.*
   with it rather than outliving the app.
 - **Restart resumes the conversation** (`claude --resume`), and yesterday's tiles come back on launch.
 - **Broadcast** types one thing into several sessions at once.
+- **What a session actually did.** The token badge says what it cost; the chart button beside it, or a
+  click on the badge, says what it ran — see below.
 
 Sessions are children of the app: there is no detached mode, and the scheduler only fires while the
 window is open. Missed runs are not lost — each scheduled scenario catches up once on the next launch.
+
+### Activity: which tools a session ran
+
+A tile's `ctx 83.7k` badge says what a session **costs**. The chart button next to it — and a click on
+the badge itself — opens what it **did**: a count per tool, and three ways to read it.
+
+- **By tool.** The name the CLI itself used, never a renamed one, with a quiet category chip beside it
+  and a bar scaled to the busiest row. `Bash 334` and nothing else is a different session from twenty
+  tools over a hundred calls, and the shape is visible before the digits are read.
+- **By agent.** The main conversation, then a row per subagent reading `agent type — description`,
+  indented by how deep it was delegated. This is the section the terminal cannot give you: a session
+  whose work was mostly delegated looks idle in its own scrollback.
+- **By MCP server.** Shown only when there were MCP calls. Half the distinct tool names in a measured
+  project were MCP across just two servers, and without the grouping the list is a wall of one prefix.
+
+Failures and refusals are counted **separately** and shown only when there are any. A refused call never
+ran; a session that declined three commands is not a session that broke three times.
+
+**The numbers come from the agent's own log, not from anything the deck records.** Two things follow,
+and both are the point rather than a limitation:
+
+- They cover the **whole conversation**, including the part that happened before this window was open.
+  Restart a tile, resume it tomorrow, `/clear` in the middle — the counts follow the conversation.
+- They are **only as fresh as the log**, exactly as the token badge already is.
+
+The panel reads that log when you open it and while it stays open, and not otherwise — a deck of twelve
+with no panel open reads nothing. The reasoning is in
+[ADR-0008](docs/adr/0008-session-activity-is-read-from-the-agents-log-not-from-our-hooks.md).
+
+Which CLIs can be read today: **Claude Code**, the **Copilot CLI**, and **opencode**. Every session the
+deck launches is Claude Code — driving the others is a separate piece of work — but a log can be read
+for a session the deck did not start. A CLI with no reader says so rather than showing zeroes.
 
 ## A GitHub account per workspace
 
@@ -301,7 +335,6 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 
 | | |
 |---|---|
-| **Activity** [#323](https://github.com/followLemmi/cowork-deck/issues/323) | A tile says what a session **costs**. It says nothing about what it **did**. A panel that answers which tools ran, which subagents ran them and how many times — read from the agent CLI's own session log, Claude Code [#325](https://github.com/followLemmi/cowork-deck/issues/325) first. |
 | **Limits** [#301](https://github.com/followLemmi/cowork-deck/issues/301) | Many sessions draw on one budget, and when it runs out they stall together. What each connected AI has left, where that number came from, and a reading that says "nothing moves until 19:00" rather than "3 waiting" [#305](https://github.com/followLemmi/cowork-deck/issues/305). |
 | **Frame rate** [#261](https://github.com/followLemmi/cowork-deck/issues/261) | Dragging a grip or resizing the window gives up three quarters of the display's frame rate. Measured, with the work that follows from the measurements. |
 

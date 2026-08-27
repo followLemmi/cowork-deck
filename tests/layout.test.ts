@@ -59,6 +59,26 @@ describe("serializeTiles", () => {
     ]);
     expect(result.map((e) => e.nameKind)).toEqual(["context", "placeholder"]);
   });
+  // The field the activity registry dispatches on. Written only when it is not
+  // the default, so every layout file on disk stays byte-identical: an absent
+  // key already says "claude", and a key that repeats it is a key to keep in
+  // step.
+  it("leaves the default CLI out of the file, since its absence already says it", () => {
+    const result = serializeTiles([
+      { session: "s1", workspacePath: "/a", name: "N", cliKind: "claude" },
+      { session: "s2", workspacePath: "/a", name: "N" },
+    ]);
+    expect(Object.keys(result[0])).not.toContain("cliKind");
+    expect(Object.keys(result[1])).not.toContain("cliKind");
+  });
+
+  it("persists a CLI that is not the default", () => {
+    const result = serializeTiles([
+      { session: "s1", workspacePath: "/a", name: "N", cliKind: "copilot" },
+    ]);
+    expect(result[0].cliKind).toBe("copilot");
+  });
+
   it("omits a hand-typed name that was cleared", () => {
     const result = serializeTiles([
       { session: "s1", workspacePath: "/a", name: "session · relay", userName: null },

@@ -2614,6 +2614,54 @@ pub fn fold_usage_lines(
     }
 }
 
+/// How many tool calls this buffer holds, deduplicated by `tool_use.id` across
+/// every buffer a session's read touches.
+///
+/// The number on the activity button, and the reason it rides here rather than
+/// in a second command: the poll already reads and JSON-parses every line of
+/// every open session's transcript, and walking the `content[]` of the assistant
+/// lines it has already parsed is cheap beside that parse. The **breakdown** does
+/// not ride the poll — `session_activity` is called when the panel opens.
+///
+/// Deliberately not shaped like `fold_usage_lines` next door, which dedupes by
+/// `message.id` because a transcript writes one line per content block and every
+/// one repeats the identical usage object. The repetition is in the usage, not
+/// in the blocks: 1673 `tool_use` blocks across 27 measured files carried 1673
+/// distinct ids. `seen` is threaded through anyway, so a session's own
+/// transcript and its subagents deduplicate against one shared set.
+pub fn fold_tool_calls(
+    content: &str,
+    seen: &mut std::collections::HashSet<String>,
+) -> u32 {
+    let mut calls = 0;
+    for line in content.lines() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // Measured: `message.content` is a string on some lines. Skip those the
+        // way the usage fold skips a line without usage.
+        let Some(blocks) = v["message"]["content"].as_array() else { continue };
+        for b in blocks {
+            if b["type"].as_str() != Some("tool_use") {
+                continue;
+            }
+            match b["id"].as_str() {
+                Some(id) => {
+                    if seen.insert(id.to_string()) {
+                        calls += 1;
+                    }
+                }
+                // A block with no id is a shape we have not seen, so count it
+                // rather than silently drop it — the rule the usage fold follows
+                // for a line without `message.id`.
+                None => calls += 1,
+            }
+        }
+    }
+    calls
+}
+
 /// Tokens resident in the context window: the prompt of the last request **plus
 /// the response it produced**. This is the figure Claude Code prints for the
 /// session, and it reproduces exactly — verified against a terminal reading
@@ -2865,6 +2913,15 @@ pub struct SessionSnapshot {
     pub title: Option<String>,
     #[serde(rename = "titleSource")]
     pub title_source: Option<TitleSource>,
+    /// Tool calls in this session's whole conversation, subagents included — the
+    /// number the activity button carries, so the panel is worth opening before
+    /// it is opened.
+    ///
+    /// `Option` for the reason `tokens` is: `None` is "there is nothing to read",
+    /// and `Some(0)` is "the log is here and this session has made no calls".
+    /// Those are two different sentences and one number cannot carry both — the
+    /// distinction this whole feature is drawn around.
+    pub calls: Option<u32>,
 }
 
 /// One read, one pass, both results — for every requested session at once.
@@ -2929,7 +2986,7 @@ fn read_session_snapshot(session_id: &str) -> SessionSnapshot {
 ///
 /// The reported path is checked rather than trusted: it is a path from another
 /// program, and a transcript can be deleted between the hook and the tick.
-fn current_transcript(session_id: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn current_transcript(session_id: &str) -> Option<std::path::PathBuf> {
     if let Some(reported) = crate::transcripts::get(session_id) {
         let path = std::path::PathBuf::from(reported);
         if path.is_file() {
@@ -2949,13 +3006,18 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
     };
     let mut seen = std::collections::HashSet::new();
     let mut spend = TokenUsage::default();
+    // Two sets, because the two folds deduplicate on different ids — see the
+    // note on `fold_tool_calls`.
+    let mut seen_calls = std::collections::HashSet::new();
     fold_usage_lines(main, &mut seen, &mut spend);
+    let mut calls = fold_tool_calls(main, &mut seen_calls);
     let mut counted = 0;
     for sub in subagents {
         // One unreadable subagent understates the bill; it should not discard
         // the main chain's figure along with it.
         if let Ok(content) = std::fs::read_to_string(sub) {
             fold_usage_lines(&content, &mut seen, &mut spend);
+            calls += fold_tool_calls(&content, &mut seen_calls);
             counted += 1;
         }
     }
@@ -2963,6 +3025,7 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
         tokens: Some(SessionTokens { context: last_context(main), spend, subagents: counted }),
         title,
         title_source,
+        calls: Some(calls),
     }
 }
 
@@ -3697,6 +3760,35 @@ branch refs/heads/feature/y\n";
 
     /// The layout the app has to walk: a session's own file, and its subagents
     /// in a directory named after it rather than beside it.
+    /// A tool call is counted once per id, and a line the fold does not
+    /// understand costs nothing.
+    #[test]
+    fn tool_calls_are_counted_once_per_id_across_a_sessions_buffers() {
+        let mut seen = std::collections::HashSet::new();
+        let main = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read"}]}}"#, "\n",
+            r#"{"type":"user","message":{"content":"a sentence, not an array"}}"#, "\n",
+            "not json at all", "\n",
+        );
+        assert_eq!(fold_tool_calls(main, &mut seen), 2);
+
+        // A subagent's own calls add to the same total against the same set.
+        let sub = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Grep"}]}}"#, "\n",
+        );
+        assert_eq!(fold_tool_calls(sub, &mut seen), 1);
+    }
+
+    /// `None` is not zero. A snapshot with no transcript says nothing about
+    /// calls; one off an empty transcript says there have been none.
+    #[test]
+    fn no_transcript_leaves_the_call_count_unsaid_rather_than_at_zero() {
+        assert_eq!(SessionSnapshot::default().calls, None);
+        assert_eq!(snapshot_from_main("", &[]).calls, Some(0));
+    }
+
     #[test]
     fn subagent_transcripts_are_found_in_the_directory_named_after_the_session() {
         let root = tempfile::tempdir().unwrap();

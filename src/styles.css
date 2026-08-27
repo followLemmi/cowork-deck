@@ -3860,3 +3860,79 @@ h6.md-head { font-size: var(--fs-sm); }
 }
 .sync-offer-text { margin: 0; flex: 1 1 320px; }
 .sync-offer-actions { display: flex; gap: 8px; }
+
+/* --- The activity panel: what a session actually did --- */
+
+/* The button leads the action cluster's read-only half — it changes nothing, so
+   it sits before the pencil, which is the least destructive of the ones that do.
+   Always in the DOM, hidden until the tile is worked with, exactly as
+   `.tile-rename` above and for the same two reasons: the tab order and touch. */
+.tile-activity { opacity: 0; gap: 3px; padding: 0 4px; color: var(--fg-dim); transition: opacity var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
+.tile:hover .tile-activity,
+.tile.is-active .tile-activity,
+.tile-head:focus-within .tile-activity { opacity: 1; }
+.tile-activity-count { font-size: var(--fs-xs); font-variant-numeric: tabular-nums; line-height: 1; }
+.tile-activity-count.hidden { display: none; }
+/* The badge opens the same panel, so it has to look like something you can
+   press. A cursor and a hover step, not a border: it is a measurement first and
+   a control second, and a bordered chip in the head would read as a third badge. */
+.tile-tokens[role="button"] { cursor: pointer; }
+.tile-tokens[role="button"]:hover { background: var(--bg-hover); color: var(--fg); }
+.tile-tokens[role="button"]:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Wider than a prompt and shorter than the screen. A session with 21 distinct
+   tools was measured, so the list scrolls and the head stays put while it does —
+   which is why the box is a column with a fixed head and a scrolling body rather
+   than one scrolling block. */
+.modal-box.act-box { width: min(560px, 94vw); max-height: min(680px, 88vh); gap: var(--sp-3); }
+.act-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--sp-4); }
+.act-head { display: flex; flex-direction: column; gap: var(--sp-2); position: sticky; top: 0; background: var(--bg-island); padding-bottom: var(--sp-2); z-index: 1; }
+.act-title { color: var(--fg); font-family: var(--font-display); font-size: var(--fs-lg); font-weight: var(--fw-bold); letter-spacing: -0.01em; line-height: var(--lh-tight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-facts { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.act-fact { font-size: var(--fs-xs); color: var(--fg-dim); white-space: nowrap; padding: 1px 6px; border-radius: var(--r-pill); background: var(--bg-void); font-variant-numeric: tabular-nums; }
+.act-fact--cli { color: var(--fg-mid); }
+.act-fact--bad { color: var(--st-error); }
+.act-foot { display: flex; justify-content: flex-end; }
+.act-foot button { padding: 7px var(--sp-4); min-height: 32px; border-radius: var(--r-ctl); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-bold); cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
+.act-foot button:hover { background: var(--accent-press); }
+
+.act-section { display: flex; flex-direction: column; gap: var(--sp-2); }
+.act-section-title { color: var(--fg-mid); font-size: var(--fs-xs); font-weight: var(--fw-bold); letter-spacing: 0.06em; text-transform: uppercase; }
+.act-list { display: flex; flex-direction: column; gap: 2px; }
+
+/* Name, chip, bar, count. The bar is scaled to the largest row and is the reason
+   a wall of 26 rows is readable at all — the shape of a session is in the
+   proportions, not in the digits. */
+/* `row-gap: 0` and the indent below are load-bearing rather than taste. The
+   outcome line spans the row's full width, so at the grid's own gap it sits
+   exactly as far from its own tool as the next tool sits from it — and reads as
+   a row of its own rather than as a note on the one above. */
+.act-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(48px, 84px) 3.5em; align-items: center; column-gap: var(--sp-2); row-gap: 0; padding: 3px var(--sp-2); border-radius: var(--r-sm); }
+.act-row:hover { background: var(--bg-hover); }
+.act-row-name { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-row-count { font-size: var(--fs-xs); color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
+.act-row-outcome { grid-column: 1 / -1; font-size: 10px; line-height: 1.4; color: var(--st-error); padding-left: var(--sp-2); }
+/* And the list's own gap carries the separation between tools instead, so the
+   rhythm is one gap per tool however many lines a tool takes. */
+.act-section--tools .act-list { gap: var(--sp-1); }
+.act-bar { display: block; height: 4px; border-radius: var(--r-pill); background: var(--bg-void); overflow: hidden; }
+.act-bar-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--fg-dim); }
+/* The chip is the category, and the category is never the label. It is quiet on
+   purpose: the native name is what a row is about, and a coloured taxonomy beside
+   it would compete with the state colours the deck spends its hue on. */
+.act-chip { font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--fg-dim); background: var(--bg-void); border-radius: var(--r-pill); padding: 0 5px; white-space: nowrap; }
+.act-chip--mcp, .act-chip--delegate { color: var(--fg-mid); }
+
+/* Indented by depth, so a delegation tree reads as one. `--act-depth` is set per
+   row; the main chain is 0 and sits flush. */
+.act-agent { display: grid; grid-template-columns: minmax(0, 1fr) 3.5em; align-items: baseline; gap: var(--sp-2); padding: 3px var(--sp-2); padding-left: calc(var(--sp-2) + var(--act-depth, 0) * 14px); border-radius: var(--r-sm); }
+.act-agent:hover { background: var(--bg-hover); }
+.act-agent-name { font-size: var(--fs-sm); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-agent-top { grid-column: 1 / -1; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: calc(var(--act-depth, 0) * 14px); }
+.act-server { display: grid; grid-template-columns: minmax(0, 1fr) 3.5em; align-items: baseline; gap: var(--sp-2); padding: 3px var(--sp-2); border-radius: var(--r-sm); }
+.act-server:hover { background: var(--bg-hover); }
+
+/* A sentence, never a table of zeroes. Which sentence is the whole point: a
+   panel of zeroes is indistinguishable from a session that did nothing. */
+.act-empty { color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-normal); margin: 0; }
+.act-note { color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-normal); margin: 0; }
