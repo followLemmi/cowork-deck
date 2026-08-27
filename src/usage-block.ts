@@ -117,7 +117,7 @@ export class LimitsBlock {
     if (win) {
       // The tier, beside the number and in the same size as it. Not a tooltip
       // and not a footnote: two numbers that look alike and mean different
-      // things are worse than one number and a blank (ADR-0007).
+      // things are worse than one number and a blank (ADR-0009).
       line.append(span(`lim-src lim-src--${win.source}`, sourceLabel(win.source)));
       line.append(span("lim-reading", readingOf(win)));
     }

@@ -3,7 +3,7 @@
 //! The deck runs many sessions at once and they all draw on one budget; when it
 //! runs out they stall together. This module is the app's answer to "can I keep
 //! working", and its organising decision is that **the source of a number is part
-//! of the number** — see ADR-0007 and the note at the top of `model.rs`.
+//! of the number** — see ADR-0009 and the note at the top of `model.rs`.
 //!
 //! Nothing outside `claude.rs` and `gemini.rs` knows the name of a provider, and
 //! nothing in `src/` knows one at all: the label, the window names, the caveats

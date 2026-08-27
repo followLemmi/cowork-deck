@@ -124,6 +124,38 @@ pub struct Workspace {
     /// truncate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracker: Option<TrackerConfig>,
+    /// What repository this workspace's folder is, remembered rather than
+    /// re-derived. Absent until something has looked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<WorkspaceRepo>,
+}
+
+/// The remote a workspace's folder points at, and where that was read.
+///
+/// Identity across machines is the workspace id, and the id is made locally:
+/// two machines that each added the same folder before sync was switched on
+/// never agreed on one. The remote URL is the one string that *is* the same on
+/// both, which is what makes it the thing a duplicate is recognised by
+/// (`sync::adopt`).
+///
+/// Remembered rather than asked for, because the alternative is a subprocess per
+/// workspace on a five-minute timer for a value that changes about once in a
+/// project's life. `from` is what keeps that safe: an answer is only good for
+/// the folder it was read in, so a workspace re-pointed elsewhere re-resolves
+/// instead of carrying the old project's identity to the new one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRepo {
+    /// The remote, as `git remote get-url origin` gave it.
+    ///
+    /// `None` is an answer, not a gap: this folder has no remote, and it is
+    /// worth writing down, or every cycle asks the same question again. A
+    /// workspace in that state has no cross-machine identity to offer and is
+    /// never a duplicate of anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The folder the answer was read in. This machine's disk, so it never
+    /// travels — see `sync::projection`.
+    pub from: String,
 }
 
 /// Where a workspace's cards were before its effective root last moved.
@@ -459,6 +491,25 @@ pub struct SessionEntry {
     /// second word to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// Which agent CLI this session runs.
+    ///
+    /// **Absent means `Claude`**, which is every layout written before this
+    /// field existed and every session in them: `start_session` resolves
+    /// `claude` and nothing else, so a session with no recorded kind is a Claude
+    /// session by construction rather than by assumption.
+    ///
+    /// A `String` rather than the enum, and that is the decision: an entry
+    /// naming a CLI this build has never heard of must still restore its tile,
+    /// and `#[serde(deny_unknown_variants)]` is not a thing — a `CliKind` here
+    /// would fail the whole `SessionEntry` parse on a value from a newer
+    /// version, dropping the tile rather than the field. `CliKind::parse` reads
+    /// it back and answers `Claude` for anything it does not recognise.
+    ///
+    /// Read the NOTE on `task_id` before touching the rename: without an
+    /// explicit one serde writes `cli_kind` while TS reads `cliKind`, and the
+    /// activity reader would dispatch on a field that is never there.
+    #[serde(rename = "cliKind", default, skip_serializing_if = "Option::is_none")]
+    pub cli_kind: Option<String>,
 }
 
 /// Which of the two kinds of launch name `SessionEntry::name` holds.
@@ -730,7 +781,7 @@ pub struct GitChanges {
 /// off a terminal that no longer exists.
 ///
 /// Written by `usage::observed`, read on boot, and discarded once `resets_at` has
-/// passed. See ADR-0007.
+/// passed. See ADR-0009.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UsageExhaustion {
     /// Which connected AI. `"claude"` today.
@@ -941,7 +992,7 @@ mod tests {
         let entry = SessionEntry {
             session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
             task_id: None, scheduled_skill_id: None, user_name: None, name_kind: None,
-            skill_id: None, run_id: None, owner: None,
+            skill_id: None, run_id: None, owner: None, cli_kind: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
@@ -977,7 +1028,7 @@ mod tests {
             session_id: "s3".into(), cwd: "/c".into(), name: "session · deck".into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: Some("relay".into()), name_kind: Some(NameKind::Placeholder),
-            skill_id: None, run_id: None, owner: None,
+            skill_id: None, run_id: None, owner: None, cli_kind: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""userName":"relay""#), "got {json}");
@@ -989,6 +1040,46 @@ mod tests {
         let json = serde_json::to_string(&bare).unwrap();
         assert!(!json.contains("userName"), "None userName must be omitted, got {json}");
         assert!(!json.contains("nameKind"), "None nameKind must be omitted, got {json}");
+    }
+
+    /// The four directions again, for the field the activity registry
+    /// dispatches on. The rename is the whole risk: serde would write `cli_kind`
+    /// while TS reads `cliKind`, and every session would silently dispatch as
+    /// the default forever with nothing reported anywhere.
+    #[test]
+    fn session_entry_cli_kind_is_backward_compatible() {
+        // Every layout written before the field exists has no key for it.
+        let old = r#"[{"sessionId":"s1","cwd":"/a","name":"session · deck"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(old).unwrap();
+        assert_eq!(v[0].cli_kind, None, "absent is read as Claude by the registry");
+
+        // A new file carries it under the camelCase name TS writes.
+        let new = r#"[{"sessionId":"s2","cwd":"/b","name":"n","cliKind":"copilot"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(new).unwrap();
+        assert_eq!(v[0].cli_kind.as_deref(), Some("copilot"));
+
+        // **A CLI this build has never heard of does not drop the tile.** This is
+        // the reason the field is a `String` and not the enum: a `CliKind` here
+        // would fail the whole `SessionEntry` parse on a value from a newer
+        // version, costing the tile rather than the field.
+        let future = r#"[{"sessionId":"s3","cwd":"/c","name":"n","cliKind":"some-cli-from-2027"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(future).unwrap();
+        assert_eq!(v[0].session_id, "s3");
+        assert_eq!(v[0].cli_kind.as_deref(), Some("some-cli-from-2027"));
+
+        // The key serde writes is the key TS reads, and `None` is omitted so a
+        // layout of Claude sessions stays byte-identical to what it was.
+        let entry = SessionEntry {
+            session_id: "s4".into(), cwd: "/d".into(), name: "n".into(),
+            workspace_id: None, task_id: None, scheduled_skill_id: None,
+            user_name: None, name_kind: None, skill_id: None, run_id: None,
+            owner: None, cli_kind: Some("copilot".into()),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""cliKind":"copilot""#), "got {json}");
+        assert!(!json.contains("cli_kind"), "snake_case would never be read back, got {json}");
+        let bare = SessionEntry { cli_kind: None, ..entry };
+        assert!(!serde_json::to_string(&bare).unwrap().contains("cliKind"));
     }
 
     /// The record stays visible: one unreadable *provider* must not cost the
@@ -1085,6 +1176,7 @@ mod tests {
         let ws = Workspace {
             id: "w1".into(), name: "proj".into(), path: "/tmp/proj".into(),
             color: "#61afef".into(), github: None, tracker: None,
+            repo: None,
         };
         let json = serde_json::to_string(&ws).unwrap();
         assert!(!json.contains("github"), "старая форма файла должна остаться байт-в-байт: {json}");
@@ -1102,6 +1194,7 @@ mod tests {
                 ssh_key: None,
             }),
             tracker: None,
+            repo: None,
         };
         let json = serde_json::to_string(&ws).unwrap();
         assert!(json.contains(r#""gitName":"Evgeny""#), "{json}");

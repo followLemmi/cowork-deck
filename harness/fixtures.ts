@@ -10,7 +10,7 @@
  */
 
 import type {
-  AiUsage,
+  ActivityRoll, AgentTally, AiUsage,
   BoardConfig, GhStatus, MergeOptions, PrDetail, PrDiff, ProviderCapabilities,
   PullRequest, RunRecord, ScheduleRun, SessionEntry, SessionSnapshot, Skill, Task, UiState,
   Workspace,
@@ -206,6 +206,7 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 48_300, output: 6_120, cacheCreation: 12_400, cacheRead: 214_000 },
     },
     title: "Refund webhook retries", titleSource: "ai",
+    calls: 148,
   },
   [S_WAIT]: {
     tokens: {
@@ -213,6 +214,7 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 12_900, output: 1_840, cacheCreation: 3_100, cacheRead: 61_500 },
     },
     title: null, titleSource: null,
+    calls: 0,
   },
   [S_DONE]: {
     tokens: {
@@ -220,6 +222,7 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 91_700, output: 9_430, cacheCreation: 20_800, cacheRead: 412_000 },
     },
     title: "Dependency sweep", titleSource: "custom",
+    calls: 334,
   },
   [S_ERR]: {
     tokens: {
@@ -227,6 +230,7 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 4_200, output: 610, cacheCreation: 900, cacheRead: 8_100 },
     },
     title: null, titleSource: null,
+    calls: 3,
   },
   [S_AUTO]: {
     tokens: {
@@ -234,7 +238,123 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 21_600, output: 2_950, cacheCreation: 5_400, cacheRead: 88_200 },
     },
     title: "Trace the retry budget through the gateway", titleSource: "prompt",
+    calls: 27,
   },
+};
+
+/* --- Activity: what each session actually did ----------------------------- */
+
+/** A tool row, with the two counters that are never rolled into one. */
+const tool = (
+  native: string,
+  category: ActivityRoll["tools"][number]["category"],
+  calls: number,
+  extra: { server?: string; errors?: number; denials?: number } = {},
+) => ({
+  native, category,
+  server: extra.server ?? null,
+  calls,
+  errors: extra.errors ?? 0,
+  denials: extra.denials ?? 0,
+});
+
+const main = (tools: ActivityRoll["tools"]): AgentTally => ({
+  id: "main", kind: "main", agentType: null, description: null,
+  depth: 0, spawnedBy: null, tools,
+  calls: tools.reduce((n, t) => n + t.calls, 0),
+});
+
+const sub = (
+  agentType: string, description: string, depth: number, tools: ActivityRoll["tools"],
+): AgentTally => ({
+  id: `agent-a${agentType.length}${description.length}`, kind: "subagent",
+  agentType, description, depth, spawnedBy: "toolu_01MgqZuTcGXhsy8Vags6FLMa", tools,
+  calls: tools.reduce((n, t) => n + t.calls, 0),
+});
+
+const roll = (agents: AgentTally[], over: Partial<ActivityRoll> = {}): ActivityRoll => {
+  // The by-tool list is folded from the agents, exactly as `ActivityRoll::finish`
+  // does it in Rust — so a fixture cannot show two totals that disagree, which is
+  // the one thing a screenshot of this panel must never do.
+  const folded = new Map<string, ActivityRoll["tools"][number]>();
+  for (const a of agents) {
+    for (const t of a.tools) {
+      const row = folded.get(t.native);
+      if (row) {
+        row.calls += t.calls; row.errors += t.errors; row.denials += t.denials;
+      } else {
+        folded.set(t.native, { ...t });
+      }
+    }
+  }
+  const tools = [...folded.values()].sort((a, b) => b.calls - a.calls || a.native.localeCompare(b.native));
+  return {
+    cli: "claude",
+    agents,
+    tools,
+    calls: tools.reduce((n, t) => n + t.calls, 0),
+    capabilities: { outcomes: true, agents: true },
+    readAt: Math.floor(NOW / 1000),
+    unavailable: null,
+    truncated: null,
+    ...over,
+  };
+};
+
+/** What `session_activity` answers with.
+ *
+ *  Between them the five cover every branch the panel has: a heavy delegated
+ *  session with MCP calls and both counters, a session that has been talked to
+ *  and has run nothing, one CLI whose reader does not attribute agents, and a
+ *  transcript that is gone. */
+export const activity: Record<string, ActivityRoll> = {
+  // The one to screenshot: MCP over two servers, real delegation, and errors and
+  // refusals that are told apart.
+  [S_WORK]: roll([
+    main([
+      tool("Bash", "run", 61, { errors: 3 }),
+      tool("Read", "read", 24),
+      tool("Edit", "edit", 18, { errors: 1 }),
+      tool("Agent", "delegate", 2),
+      tool("mcp__gitnexus__impact", "mcp", 6, { server: "gitnexus" }),
+      tool("mcp__playwright__browser_navigate", "mcp", 4, { server: "playwright" }),
+      tool("mcp__playwright__browser_snapshot", "mcp", 3, { server: "playwright" }),
+      tool("Grep", "search", 9, { denials: 1 }),
+      tool("WebSearch", "web", 2),
+    ]),
+    sub("Code Reviewer", "Review the retry budget change", 1, [
+      tool("Read", "read", 11),
+      tool("Grep", "search", 5),
+    ]),
+    sub("Explore", "Find every call site of chargeRetry", 1, [
+      tool("Grep", "search", 2),
+      tool("Read", "read", 1),
+    ]),
+  ]),
+  // Talked to, and has run nothing. `calls: 0` with no `unavailable` — the
+  // distinction the whole panel is drawn around.
+  [S_WAIT]: roll([main([])]),
+  // Call-heavy and narrow: 334 calls over five tools, which is a real measured
+  // shape and the one the bar chart exists for.
+  [S_DONE]: roll([
+    main([
+      tool("Bash", "run", 291, { errors: 11 }),
+      tool("Read", "read", 22),
+      tool("Edit", "edit", 14),
+      tool("Glob", "search", 5),
+      tool("Write", "edit", 2),
+    ]),
+  ]),
+  // The transcript is gone from under the session. Not zeroes — a sentence.
+  [S_ERR]: roll([], { unavailable: "unreadable", agents: [], tools: [], calls: 0 }),
+  // A CLI whose log does not attribute delegated work, so the by-agent section
+  // is omitted rather than drawn as a one-row tree.
+  [S_AUTO]: roll([main([
+    tool("bash", "run", 14, { errors: 2 }),
+    tool("view", "read", 9),
+    tool("edit", "edit", 3),
+    tool("report_intent", "other", 1),
+  ])], { cli: "copilot", capabilities: { outcomes: true, agents: false } }),
 };
 
 /* --- Terminal scrollback -------------------------------------------------- */

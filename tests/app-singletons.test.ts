@@ -106,8 +106,11 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn().mockResolvedValue(undefined),
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
+/** The label of the window being booted. Varied by `boot`, because a window's
+ *  own label is what narrows its addressed listeners — see the third describe. */
+let currentLabel = "main";
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ label: "main", onCloseRequested: async () => () => {}, destroy: async () => {}, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
+  getCurrentWindow: () => ({ label: currentLabel, onCloseRequested: async () => () => {}, destroy: async () => {}, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
 }));
 
 import {
@@ -141,6 +144,7 @@ async function boot(role: WindowRole) {
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';
   pinnedCalls.length = 0;
+  currentLabel = role.kind === "main" ? "main" : `workspace-${role.workspaceId}`;
   const { startApp } = await import("../src/app");
   startApp(role);
   await flush();
@@ -274,5 +278,62 @@ describe("the shape of a window pinned to one workspace", () => {
 
     await boot({ kind: "workspace", workspaceId: "w" });
     expect(pinnedCalls).toEqual(["w"]);
+  });
+});
+
+/** The third thing this boundary decides: which events this window is allowed to
+ *  act on.
+ *
+ *  Here rather than in a file of its own because it is the same seam the two
+ *  describes above hold — what `startApp(role)` wires — and because standing the
+ *  app up in jsdom costs the two hundred lines of mocks at the top of this file.
+ *
+ *  The defect (#349): `listen` registers with `EventTarget::Any` by default, and
+ *  Tauri delivers every addressed emit to an `Any` listener whatever label it was
+ *  addressed to. So `emitTo(workspaceLabel(id), "workspace://gone")` reached the
+ *  main window too, whose handler closes the window it is in — deleting a
+ *  workspace took the main window with it, with no error anywhere and a process
+ *  left running behind the status pill.
+ */
+describe("the events a window may act on", () => {
+  /** Every event one window addresses to another, and what each would do in a
+   *  window it was not meant for. */
+  const ADDRESSED = [
+    ["workspace://gone", "closes the window it is in"],
+    ["session://focus", "raises the window and steals the keyboard"],
+    ["workspace://take", "adopts tiles belonging to somebody else"],
+  ] as const;
+
+  const targetOf = (event: string) =>
+    vi.mocked(listen).mock.calls.find(([e]) => e === event)?.[2]?.target;
+
+  it("narrows every addressed one to this window, in the main window", async () => {
+    await boot({ kind: "main" });
+    for (const [event, harm] of ADDRESSED) {
+      expect(targetOf(event), `${event} would otherwise ${harm}`)
+        .toEqual({ kind: "Window", label: "main" });
+    }
+  });
+
+  /** The same in a pinned window, and with its own label: a narrowing that named
+   *  the wrong window would be worse than none — the listener would go deaf to
+   *  what is genuinely addressed to it. */
+  it("narrows them to the pinned window's own label", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" });
+    for (const [event] of ADDRESSED) {
+      expect(targetOf(event), event).toEqual({ kind: "Window", label: "workspace-w" });
+    }
+  });
+
+  /** And the other direction, which the narrowing must not touch. A broadcast is
+   *  addressed to nobody, and Tauri delivers it to every listener whatever its
+   *  target — so these stay unnarrowed to say plainly that they are broadcasts,
+   *  and a future narrowing of one would be a window that stops hearing the app.
+   */
+  it("leaves the broadcasts alone", async () => {
+    await boot({ kind: "main" });
+    for (const event of ["session://waiting", "window://gone", "ui://scale"]) {
+      expect(targetOf(event), event).toBeUndefined();
+    }
   });
 });

@@ -326,7 +326,7 @@ const SECTIONS: Section[] = [
       const repHint = document.createElement("p");
       repHint.className = "form-hint";
       /* What switching it off actually costs, and what it does not: the block
-         does not disappear, which is the whole design (ADR-0007). */
+         does not disappear, which is the whole design (ADR-0009). */
       repHint.textContent = "Off, the limits block stays where it is and says so: it "
         + "then counts only what this app can see from the sessions it runs, which is "
         + "less than the account has spent. Switching it off also stops the app "

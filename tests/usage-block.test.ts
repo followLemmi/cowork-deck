@@ -154,7 +154,7 @@ describe("the limits block", () => {
   });
 
   /** The tier is on the row itself, at the same size as the number. Not a
-   *  tooltip, not a title attribute — see ADR-0007. */
+   *  tooltip, not a title attribute — see ADR-0009. */
   it("prints the tier of the number it is showing", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok", source: "reported" })] })], NOW);

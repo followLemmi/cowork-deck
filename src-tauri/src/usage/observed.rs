@@ -16,7 +16,7 @@
 //! deliberately produces **no share**. The rolling sum is a numerator with no
 //! denominator — nothing here knows what the ceiling is — and dividing by a
 //! guessed ceiling would make an estimate wear an observed label, which is the
-//! one thing ADR-0007 forbids. So the burn goes on screen as an absolute, with
+//! one thing ADR-0009 forbids. So the burn goes on screen as an absolute, with
 //! the caveat in words beside it.
 
 use crate::model::UsageExhaustion;

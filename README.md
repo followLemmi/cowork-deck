@@ -92,9 +92,43 @@ four things worth knowing about a session you are not watching.*
   with it rather than outliving the app.
 - **Restart resumes the conversation** (`claude --resume`), and yesterday's tiles come back on launch.
 - **Broadcast** types one thing into several sessions at once.
+- **What a session actually did.** The token badge says what it cost; the chart button beside it, or a
+  click on the badge, says what it ran — see below.
 
 Sessions are children of the app: there is no detached mode, and the scheduler only fires while the
 window is open. Missed runs are not lost — each scheduled scenario catches up once on the next launch.
+
+### Activity: which tools a session ran
+
+A tile's `ctx 83.7k` badge says what a session **costs**. The chart button next to it — and a click on
+the badge itself — opens what it **did**: a count per tool, and three ways to read it.
+
+- **By tool.** The name the CLI itself used, never a renamed one, with a quiet category chip beside it
+  and a bar scaled to the busiest row. `Bash 334` and nothing else is a different session from twenty
+  tools over a hundred calls, and the shape is visible before the digits are read.
+- **By agent.** The main conversation, then a row per subagent reading `agent type — description`,
+  indented by how deep it was delegated. This is the section the terminal cannot give you: a session
+  whose work was mostly delegated looks idle in its own scrollback.
+- **By MCP server.** Shown only when there were MCP calls. Half the distinct tool names in a measured
+  project were MCP across just two servers, and without the grouping the list is a wall of one prefix.
+
+Failures and refusals are counted **separately** and shown only when there are any. A refused call never
+ran; a session that declined three commands is not a session that broke three times.
+
+**The numbers come from the agent's own log, not from anything the deck records.** Two things follow,
+and both are the point rather than a limitation:
+
+- They cover the **whole conversation**, including the part that happened before this window was open.
+  Restart a tile, resume it tomorrow, `/clear` in the middle — the counts follow the conversation.
+- They are **only as fresh as the log**, exactly as the token badge already is.
+
+The panel reads that log when you open it and while it stays open, and not otherwise — a deck of twelve
+with no panel open reads nothing. The reasoning is in
+[ADR-0008](docs/adr/0008-session-activity-is-read-from-the-agents-log-not-from-our-hooks.md).
+
+Which CLIs can be read today: **Claude Code**, the **Copilot CLI**, and **opencode**. Every session the
+deck launches is Claude Code — driving the others is a separate piece of work — but a log can be read
+for a session the deck did not start. A CLI with no reader says so rather than showing zeroes.
 
 ## Limits: what each AI has left, and where that number came from
 
@@ -224,8 +258,18 @@ you point it at one, and a schedule arrives switched off so a 03:00 job does not
 machines. Conflicts are not resolved for you — notes are prose, and an automatic merge produces a
 plausible paragraph nobody wrote.
 
+**When both machines already had the project:** each added the folder before sync was switched on, so
+each made its own id, and the arriving record looks like a second project. The deck recognises them by
+the folder's git remote — the one thing that is the same string on both machines — and asks whether
+they are the same project instead of deciding. Answering "same project" leaves one workspace with this
+machine's folder and both machines' history; answering "different projects" leaves both and does not
+ask again, on either machine. A workspace whose folder has no remote has nothing to be recognised by
+and is never offered as a duplicate, because a guess that is wrong merges two real projects.
+
 See [ADR-0006](docs/adr/0006-the-config-directory-is-the-sync-repository.md) for why the config
-directory *is* the repository.
+directory *is* the repository, and
+[ADR-0009](docs/adr/0007-a-workspaces-identity-across-machines-is-its-remote.md) for what a workspace's
+identity is across machines and what merging two records actually moves.
 
 ## Install
 
@@ -303,7 +347,7 @@ The limits block degrades the same way, and says which rung it is on. The report
 `claude`'s own output, so a version that words it differently costs the *percentage* and nothing else:
 the block stays where it is, falls back to **Observed**, and labels itself. It never blanks, and it
 never passes the app's own counting off as your account's. See
-[ADR-0007](docs/adr/0007-the-source-of-a-usage-number-is-part-of-the-number.md).
+[ADR-0009](docs/adr/0009-the-source-of-a-usage-number-is-part-of-the-number.md).
 
 ## Roadmap
 
@@ -320,7 +364,6 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 
 | | |
 |---|---|
-| **Activity** [#323](https://github.com/followLemmi/cowork-deck/issues/323) | A tile says what a session **costs**. It says nothing about what it **did**. A panel that answers which tools ran, which subagents ran them and how many times — read from the agent CLI's own session log, Claude Code [#325](https://github.com/followLemmi/cowork-deck/issues/325) first. |
 | **Frame rate** [#261](https://github.com/followLemmi/cowork-deck/issues/261) | Dragging a grip or resizing the window gives up three quarters of the display's frame rate. Measured, with the work that follows from the measurements. |
 
 ### Later

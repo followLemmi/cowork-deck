@@ -5,11 +5,15 @@ deciders:
   - evgenykharetski
 ---
 
-# ADR-0007 — The source of a usage number is part of the number
+# ADR-0009 — The source of a usage number is part of the number
 
-> Numbered 0007, not 0003. The issue that commissioned this record (#307) called
+> Numbered 0009, not 0003. The issue that commissioned this record (#307) called
 > it ADR-0003; that number was taken by *Memory is a ported indexer in a sidecar*
-> before this epic was written. The content is the one #307 asked for.
+> before this epic was written. It was then drafted as 0007, and 0007 and 0008
+> were both claimed on `dev` while this branch was in flight — by the sync
+> identity record and by the activity epic. The content is the one #307 asked
+> for; only the number moved, twice, which is what a monotonic counter on a shared
+> trunk does to a long branch.
 
 ## Context
 

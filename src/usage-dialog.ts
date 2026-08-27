@@ -5,7 +5,7 @@
  *  vouches for and a percentage this app inferred from watching its own terminals
  *  are different claims, and a one-line row has no room to say how they differ.
  *  So every window here carries its tier, what that tier means, and the
- *  provider's own caveat about the number underneath it (ADR-0007).
+ *  provider's own caveat about the number underneath it (ADR-0009).
  *
  *  Shaped like `github-screen.ts`, and it borrows that file's one hard rule:
  *  everything reaches the DOM through `textContent`. Account names, plans, error

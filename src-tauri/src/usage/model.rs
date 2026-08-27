@@ -7,7 +7,7 @@
 //! nothing downstream has to learn which provider it is drawing.
 //!
 //! The other half of the shape is the part that is easy to leave out: **the
-//! source of a number is part of the number** (ADR-0007). A percentage the
+//! source of a number is part of the number** (ADR-0009). A percentage the
 //! provider vouches for and a percentage this app inferred from watching its own
 //! terminals are different claims, and printing them in the same typeface with no
 //! label is the failure mode this module is designed against. So `UsageSource`
@@ -167,7 +167,7 @@ impl AiUsage {
     /// Build a snapshot and derive its source from the windows in it.
     ///
     /// The minimum rather than the maximum, and that is the whole argument of
-    /// ADR-0007 compressed into one line: a snapshot is worth what its least
+    /// ADR-0009 compressed into one line: a snapshot is worth what its least
     /// trustworthy number is worth. Taking the maximum would let one reported
     /// window put a "Reported" badge over a row whose other number this app
     /// guessed from a terminal.

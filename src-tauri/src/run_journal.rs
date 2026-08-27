@@ -233,6 +233,10 @@ pub fn open(
         params,
         prompt,
         continues_run_id: continues,
+        // Every session the deck launches is `claude` today — `start_session`
+        // resolves nothing else — and recording it is what lets a history read
+        // back later say what ran a run rather than only that something did.
+        cli_kind: Some(crate::activity::model::CliKind::Claude.as_str().to_string()),
     }));
     if let Ok(mut m) = open_runs().lock() {
         m.insert(session.to_string(), OpenRun {
@@ -380,6 +384,10 @@ pub fn failed_to_launch(skill_id: &str, workspace_id: Option<&str>, reason: &str
             .unwrap_or_default(),
         prompt: None,
         continues_run_id: None,
+        // Nothing was launched, so nothing ran this. Naming a CLI here would put
+        // a fiction in the record, which is the rule this function already
+        // follows for the scenario's own name.
+        cli_kind: None,
     }));
     append(RunEvent::Closed(RunClosed {
         version: RUN_JOURNAL_VERSION,
