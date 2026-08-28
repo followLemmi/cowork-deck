@@ -35,9 +35,30 @@ pub enum Question {
     /// stops being findable under the surviving id, and that is a loss of
     /// history rather than a tidy-up. What it means when somebody *does* answer
     /// it is `sync::identity`.
-    Duplicate { arriving_id: String, local_id: String, name: String },
+    ///
+    /// `basis` is what matched, because the two cases read differently to the
+    /// person answering: one record arrived from another machine carrying the
+    /// same repository, or two records here point at one folder. Saying
+    /// "repository" for a folder match would be describing something that is not
+    /// on screen.
+    Duplicate {
+        arriving_id: String,
+        local_id: String,
+        name: String,
+        basis: DuplicateBasis,
+    },
     /// A folder-based board whose folder is on the other machine.
     NeedsBoardPath { workspace_id: String, name: String },
+}
+
+/// Which identity made two records one project (`identity_key`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DuplicateBasis {
+    /// The same remote URL, normalised — the identity that crosses machines.
+    Repository,
+    /// One folder on this machine, for a project that has no repository at all.
+    Folder,
 }
 
 #[derive(Debug, Default)]
@@ -120,10 +141,12 @@ pub fn adopt(root: &Path, local: &[Workspace], local_skills: &[Skill]) -> Adopte
     // disappears for no reason a person could follow.
     let mut cands: Vec<Candidate> = Vec::new();
     for (i, (wire, merged)) in arrived.iter().enumerate() {
-        if let Some(key) = identity_key(wire.repo.as_deref().or_else(|| repo_url(merged)), &merged.path)
+        if let Some((key, basis)) =
+            identity_key(wire.repo.as_deref().or_else(|| repo_url(merged)), &merged.path)
         {
             cands.push(Candidate {
                 key,
+                basis,
                 id: merged.id.clone(),
                 name: merged.name.clone(),
                 located: !merged.path.trim().is_empty(),
@@ -137,9 +160,10 @@ pub fn adopt(root: &Path, local: &[Workspace], local_skills: &[Skill]) -> Adopte
         if on_the_wire.contains(id.as_str()) {
             continue;
         }
-        if let Some(key) = identity_key(repo_url(w), &w.path) {
+        if let Some((key, basis)) = identity_key(repo_url(w), &w.path) {
             cands.push(Candidate {
                 key,
+                basis,
                 id,
                 name: w.name.clone(),
                 located: !w.path.trim().is_empty(),
@@ -175,6 +199,7 @@ pub fn adopt(root: &Path, local: &[Workspace], local_skills: &[Skill]) -> Adopte
                 arriving_id: cands[i].id.clone(),
                 local_id: cands[keep].id.clone(),
                 name: cands[i].name.clone(),
+                basis: cands[i].basis,
             });
         }
     }
@@ -221,8 +246,11 @@ pub fn adopt(root: &Path, local: &[Workspace], local_skills: &[Skill]) -> Adopte
 /// Both sides of the comparison in one shape: a record that arrived, and a local
 /// one that has not reached the repository yet.
 struct Candidate {
-    /// The normalised repository, which is what makes two of these one project.
+    /// What makes two of these one project: a normalised repository, or the
+    /// folder both point at. Prefixed apart, so the two never compare equal.
     key: String,
+    /// Which of the two it was, for the sentence the person reads.
+    basis: DuplicateBasis,
     id: String,
     name: String,
     /// Whether this machine knows where the folder is. The located record is the
@@ -257,11 +285,11 @@ struct Candidate {
 ///
 /// The two kinds are prefixed apart. A repository that happened to read like a
 /// path must not match a folder that happened to read like a repository.
-fn identity_key(repo: Option<&str>, path: &str) -> Option<String> {
+fn identity_key(repo: Option<&str>, path: &str) -> Option<(String, DuplicateBasis)> {
     if let Some(url) = repo.map(str::trim).filter(|r| !r.is_empty()) {
-        return Some(format!("repo:{}", normalise_repo(url)));
+        return Some((format!("repo:{}", normalise_repo(url)), DuplicateBasis::Repository));
     }
-    canonical_folder(path).map(|p| format!("path:{p}"))
+    canonical_folder(path).map(|p| (format!("path:{p}"), DuplicateBasis::Folder))
 }
 
 /// One spelling of a folder: symlinks resolved and the trailing slash gone.
@@ -432,8 +460,10 @@ mod tests {
         assert!(
             a.questions.iter().any(|q| matches!(
                 q,
-                Question::Duplicate { arriving_id, local_id, .. }
-                    if arriving_id == "ws-remote" && local_id == "ws-local"
+                Question::Duplicate { arriving_id, local_id, basis, .. }
+                    if arriving_id == "ws-remote"
+                        && local_id == "ws-local"
+                        && *basis == DuplicateBasis::Repository
             )),
             "two spellings of one repository must compare equal: {:?}",
             a.questions
@@ -517,7 +547,10 @@ mod tests {
 
         let a = adopt(&r, &[here, also_here], &[]);
         assert!(
-            a.questions.iter().any(|q| matches!(q, Question::Duplicate { .. })),
+            a.questions.iter().any(|q| matches!(
+                q,
+                Question::Duplicate { basis: DuplicateBasis::Folder, .. }
+            )),
             "one folder, two spellings, no repository anywhere: {:?}",
             a.questions
         );
@@ -550,8 +583,8 @@ mod tests {
             "the repository decides, whatever the folder is called"
         );
         assert_ne!(
-            identity_key(Some("/here/deck"), ""),
-            identity_key(None, "/here/deck"),
+            identity_key(Some("/here/deck"), "").map(|(k, _)| k),
+            identity_key(None, "/here/deck").map(|(k, _)| k),
             "a repository that reads like a path is still not that folder"
         );
         assert_eq!(identity_key(None, "   "), None, "nothing to compare is not a key");
@@ -559,6 +592,14 @@ mod tests {
             identity_key(Some(""), "/here/deck"),
             identity_key(None, "/here/deck"),
             "an empty repository is no repository, and the folder still answers"
+        );
+        assert_eq!(
+            identity_key(Some("git@github.com:me/deck.git"), "/here/deck").map(|(_, b)| b),
+            Some(DuplicateBasis::Repository)
+        );
+        assert_eq!(
+            identity_key(None, "/here/deck").map(|(_, b)| b),
+            Some(DuplicateBasis::Folder)
         );
     }
 

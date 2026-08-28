@@ -126,10 +126,13 @@ export function questionCopy(q: SyncQuestion): {
   switch (q.kind) {
     case "duplicate":
       return {
-        text:
-          `“${q.name}” arrived from another machine, and it is the same repository `
-          + `as a workspace you already have here. Joining them keeps this machine's `
-          + `folder and both machines' history; nothing is deleted either way.`,
+        text: q.basis === "folder"
+          ? `“${q.name}” and another workspace here point at the same folder on this `
+            + `machine, and it has no git remote to tell them apart by. Joining them `
+            + `keeps one workspace and both histories; nothing is deleted either way.`
+          : `“${q.name}” arrived from another machine, and it is the same repository `
+            + `as a workspace you already have here. Joining them keeps this machine's `
+            + `folder and both machines' history; nothing is deleted either way.`,
         primary: "Same project",
         secondary: "Different projects",
       };

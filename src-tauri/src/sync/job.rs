@@ -518,8 +518,10 @@ mod wire {
             arriving_id: "a".into(),
             local_id: "b".into(),
             name: "deck".into(),
+            basis: crate::sync::adopt::DuplicateBasis::Folder,
         };
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&q).unwrap()).unwrap();
         assert!(v.get("arrivingId").is_some() && v.get("localId").is_some(), "got {v}");
+        assert_eq!(v["basis"], "folder", "the sentence the person reads depends on it: {v}");
     }
 }

@@ -120,6 +120,7 @@ describe("what a pull could not decide", () => {
   it("names the project rather than the ids nobody can read", () => {
     const c = questionCopy({
       kind: "duplicate", arrivingId: "ws-a", localId: "ws-b", name: "cowork-deck",
+      basis: "repository",
     });
     expect(c.text).toContain("cowork-deck");
     expect(c.text).not.toContain("ws-a");
@@ -128,6 +129,7 @@ describe("what a pull could not decide", () => {
   it("offers both answers to a duplicate, and promises neither is destructive", () => {
     const c = questionCopy({
       kind: "duplicate", arrivingId: "ws-a", localId: "ws-b", name: "deck",
+      basis: "repository",
     });
     expect(c.primary).toBeTruthy();
     expect(c.secondary).toBeTruthy();
@@ -135,6 +137,21 @@ describe("what a pull could not decide", () => {
     // surviving id. Saying so is the whole reason this is asked at all.
     expect(c.text).toMatch(/nothing is deleted/i);
     expect(c.text).toMatch(/both machines' history/i);
+  });
+
+  /** #359: a pair recognised by its folder is not "the same repository", and
+   *  neither record arrived from anywhere — both are on this machine. Saying
+   *  otherwise describes something that is not on screen. */
+  it("does not claim a repository for a pair recognised by its folder", () => {
+    const c = questionCopy({
+      kind: "duplicate", arrivingId: "ws-a", localId: "ws-b", name: "claude-config",
+      basis: "folder",
+    });
+    expect(c.text).toContain("claude-config");
+    expect(c.text).toMatch(/same folder/i);
+    expect(c.text).not.toMatch(/repository/i);
+    expect(c.text).not.toMatch(/another machine/i);
+    expect(c.text).toMatch(/nothing is deleted/i);
   });
 
   it("says what a workspace with no folder here can still do meanwhile", () => {
