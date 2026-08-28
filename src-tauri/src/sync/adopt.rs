@@ -27,7 +27,9 @@ pub enum Question {
     NeedsPath { workspace_id: String, name: String, clone_from: Option<String> },
     /// Two records for what looks like one project: this machine made a
     /// workspace before sync was switched on, and now the other machine's
-    /// record for the same repository has arrived under a different id.
+    /// record for the same repository has arrived under a different id — or two
+    /// records here point at one folder, which for a project with no repository
+    /// is the only identity there is (`identity_key`).
     ///
     /// Never resolved automatically. Merging means one of the two memories
     /// stops being findable under the surviving id, and that is a loss of
@@ -57,10 +59,11 @@ pub struct Adopted {
 /// Read a synced root and merge it over what is already here.
 ///
 /// How this machine recognises that two records are the same project: the
-/// remote URL, normalised — it is the same string on every machine, which a
-/// path and a name are not. It is read off the local record rather than asked
-/// for here, because asking means a subprocess per workspace and this runs on
-/// a five-minute timer (`identity::refresh` is what fills it in).
+/// remote URL, normalised — it is the same string on every machine, which a name
+/// is not. It is read off the local record rather than asked for here, because
+/// asking means a subprocess per workspace and this runs on a five-minute timer
+/// (`identity::refresh` is what fills it in). Where there is no repository, the
+/// folder on this disk stands in — see `identity_key`.
 pub fn adopt(root: &Path, local: &[Workspace], local_skills: &[Skill]) -> Adopted {
     let ledger = Ledger::load(root);
     let mut out = Adopted::default();
@@ -105,9 +108,10 @@ pub fn adopt(root: &Path, local: &[Workspace], local_skills: &[Skill]) -> Adopte
         arrived.push((wire, merged));
     }
 
-    // Same project, different id. Only for records that name a repository: a
-    // workspace with no remote has no cross-machine identity to offer, and
-    // guessing from the name would merge two real projects.
+    // Same project, different id. Never from the name: two real projects are
+    // often called the same thing, and merging them is a loss of history. Only
+    // from a repository, or — for a project that has none — from the folder both
+    // records point at (`identity_key`).
     //
     // Over everything this machine knows about, not only over what arrived: the
     // local record is normally on the wire too, because the cycle publishes
@@ -116,7 +120,8 @@ pub fn adopt(root: &Path, local: &[Workspace], local_skills: &[Skill]) -> Adopte
     // disappears for no reason a person could follow.
     let mut cands: Vec<Candidate> = Vec::new();
     for (i, (wire, merged)) in arrived.iter().enumerate() {
-        if let Some(key) = repo_key(wire, merged) {
+        if let Some(key) = identity_key(wire.repo.as_deref().or_else(|| repo_url(merged)), &merged.path)
+        {
             cands.push(Candidate {
                 key,
                 id: merged.id.clone(),
@@ -132,7 +137,7 @@ pub fn adopt(root: &Path, local: &[Workspace], local_skills: &[Skill]) -> Adopte
         if on_the_wire.contains(id.as_str()) {
             continue;
         }
-        if let Some(key) = repo_url(w).map(str::trim).filter(|r| !r.is_empty()).map(normalise_repo) {
+        if let Some(key) = identity_key(repo_url(w), &w.path) {
             cands.push(Candidate {
                 key,
                 id,
@@ -229,21 +234,55 @@ struct Candidate {
     wire: Option<usize>,
 }
 
-/// What this record's project is called, in the one spelling every machine
-/// agrees on.
+/// What this record's project *is*, in the one spelling both sides of a
+/// comparison agree on. `None` is a record with nothing to compare — never
+/// equal to anything, including another `None`.
 ///
-/// The wire first, because that is the only thing a record from a machine that
-/// has never been here can offer. The local cache second, for the record this
-/// machine has located but not published yet — the cycle publishes before it
-/// pulls, so that window is one `sync_questions` call wide, and closing it costs
-/// one line.
-fn repo_key(wire: &WireWorkspace, merged: &Workspace) -> Option<String> {
-    wire.repo
-        .as_deref()
-        .or_else(|| repo_url(merged))
-        .map(str::trim)
-        .filter(|r| !r.is_empty())
-        .map(normalise_repo)
+/// A repository first: it is the same string on every machine, which is what
+/// makes it the only identity that crosses one. For an arriving record the wire
+/// carries it; for a record this machine has located but not published yet the
+/// local cache does — the cycle publishes before it pulls, so that window is one
+/// `sync_questions` call wide, and closing it costs one line.
+///
+/// The folder second, and only where there is no repository at all. Two records
+/// pointing at one directory on this disk are one project, and no remote is
+/// needed to see it: a config folder, a scratch checkout, anything somebody
+/// keeps without a repository (#359). Canonicalised, because `~/.claude/` and
+/// `~/.claude` are the same folder and a plain string comparison says otherwise.
+///
+/// This never travels. A path is one machine's disk (#313) and is stripped on
+/// the way out; both records in a path comparison are ones this machine holds,
+/// and what it produces is a question, answered by a person, whose *answer*
+/// travels as a pair of ids.
+///
+/// The two kinds are prefixed apart. A repository that happened to read like a
+/// path must not match a folder that happened to read like a repository.
+fn identity_key(repo: Option<&str>, path: &str) -> Option<String> {
+    if let Some(url) = repo.map(str::trim).filter(|r| !r.is_empty()) {
+        return Some(format!("repo:{}", normalise_repo(url)));
+    }
+    canonical_folder(path).map(|p| format!("path:{p}"))
+}
+
+/// One spelling of a folder: symlinks resolved and the trailing slash gone.
+///
+/// A path that is not there is kept as written rather than dropped — it is still
+/// this machine's answer for that record, and two records that were located from
+/// the same typed-in path are still the same project after the folder is
+/// renamed out from under them.
+fn canonical_folder(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(trimmed)
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| trimmed.trim_end_matches('/').to_string());
+    Some(match canonical.is_empty() {
+        true => "/".to_string(),
+        false => canonical,
+    })
 }
 
 /// Two spellings of one repository — `git@host:o/r.git` and
@@ -418,9 +457,11 @@ mod tests {
     }
 
     /// Name plus something else is a guess, and guessing wrong merges two real
-    /// projects. A folder with no remote is fairly left unrecognised.
+    /// projects. With no repository and no folder on this machine — which is
+    /// every record that arrived and has not been located yet — there is nothing
+    /// left to compare, and the pair is fairly left unrecognised.
     #[test]
-    fn a_workspace_with_no_remote_is_not_offered_as_a_duplicate_of_anything() {
+    fn a_workspace_with_no_remote_and_no_folder_here_is_not_offered_as_a_duplicate() {
         let r = root("noremote");
         publish(&r, &ws("ws-remote", "deck", "/elsewhere/deck"));
 
@@ -456,6 +497,69 @@ mod tests {
         );
         assert_eq!(a.workspaces.len(), 1, "the arriving record is still adopted");
         assert!(a.withdrawn.is_empty(), "declining withdraws nothing");
+    }
+
+    /// The pair on this machine that no remote can explain: one project kept
+    /// without a repository, added twice, and the two records differ by a
+    /// trailing slash and a colour (#359).
+    #[test]
+    fn two_records_on_one_folder_are_one_project_without_any_repository() {
+        let r = root("onefolder");
+        let dir = r.join("config");
+        fs::create_dir_all(&dir).unwrap();
+        let with_slash = format!("{}/", dir.display());
+
+        publish(&r, &ws("ws-remote", "claude-config", &with_slash));
+        let mut here = ws("ws-remote", "claude-config", &with_slash);
+        here.repo = Some(WorkspaceRepo { url: None, from: with_slash.clone() });
+        let mut also_here = ws("ws-local", "claude-config", &dir.display().to_string());
+        also_here.repo = Some(WorkspaceRepo { url: None, from: dir.display().to_string() });
+
+        let a = adopt(&r, &[here, also_here], &[]);
+        assert!(
+            a.questions.iter().any(|q| matches!(q, Question::Duplicate { .. })),
+            "one folder, two spellings, no repository anywhere: {:?}",
+            a.questions
+        );
+    }
+
+    #[test]
+    fn two_folders_with_no_repository_are_two_projects() {
+        let r = root("twofolders");
+        publish(&r, &ws("ws-remote", "notes", "/here/notes"));
+        let mut here = ws("ws-remote", "notes", "/here/notes");
+        here.repo = Some(WorkspaceRepo { url: None, from: "/here/notes".into() });
+        let mut other = ws("ws-local", "notes", "/here/other-notes");
+        other.repo = Some(WorkspaceRepo { url: None, from: "/here/other-notes".into() });
+
+        let a = adopt(&r, &[here, other], &[]);
+        assert!(
+            !a.questions.iter().any(|q| matches!(q, Question::Duplicate { .. })),
+            "same name is not identity: {:?}",
+            a.questions
+        );
+    }
+
+    /// A repository and a folder are different kinds of claim, and one must never
+    /// be read as the other.
+    #[test]
+    fn a_repository_and_a_folder_are_never_the_same_identity() {
+        assert_eq!(
+            identity_key(Some("git@github.com:me/deck.git"), "/here/deck"),
+            identity_key(Some("https://github.com/Me/deck/"), "/elsewhere/deck"),
+            "the repository decides, whatever the folder is called"
+        );
+        assert_ne!(
+            identity_key(Some("/here/deck"), ""),
+            identity_key(None, "/here/deck"),
+            "a repository that reads like a path is still not that folder"
+        );
+        assert_eq!(identity_key(None, "   "), None, "nothing to compare is not a key");
+        assert_eq!(
+            identity_key(Some(""), "/here/deck"),
+            identity_key(None, "/here/deck"),
+            "an empty repository is no repository, and the folder still answers"
+        );
     }
 
     /// The other machine answered. This one has to arrive at the same single
