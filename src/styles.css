@@ -775,11 +775,11 @@ body {
   font-size: var(--fs-xs); line-height: var(--lh-body);
 }
 
-#ws-page, #sk-page {
+#ws-page, #sk-page, #mem-page {
   display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3);
   overflow: auto;
 }
-#ws-page.hidden, #sk-page.hidden { display: none; }
+#ws-page.hidden, #sk-page.hidden, #mem-page.hidden { display: none; }
 
 /* --- The workspace's own panel -------------------------------------------
    The board and the pull requests, on the right of the deck.

@@ -34,6 +34,7 @@ function mount(): PanelElements & {
     '<div id="ws-page" class="panel-page"></div>' +
     '<div id="history" class="panel-page hidden"></div>' +
     '<div id="sk-page" class="panel-page hidden"></div>' +
+    '<div id="mem-page" class="panel-page hidden"></div>' +
     '</div></aside>' +
     '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>' +
     '<aside id="wspanel" hidden><div id="wsp-head"></div>' +
@@ -59,6 +60,7 @@ function mount(): PanelElements & {
   return {
     pages: {
       sessions: pick("#ws-page"), history: pick("#history"), scenarios: pick("#sk-page"),
+      memory: pick("#mem-page"),
     },
     buttons,
     deck: pick("#deck"),
@@ -105,7 +107,7 @@ describe("applyPanel", () => {
    *  getComputedStyle is what makes this checkable — and also what makes the
    *  grouping trap real, since it applies a group's highest specificity to every
    *  selector in it. */
-  it.each(["sessions", "scenarios"] as PanelPage[])(
+  it.each(["sessions", "scenarios", "memory"] as PanelPage[])(
     "hides #%s against the real stylesheet",
     (page) => {
       applyPanel(el, "history");

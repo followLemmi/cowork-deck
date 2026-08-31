@@ -18,9 +18,9 @@
  *  they belonged to one screen out of four. There is one stage now and it is
  *  always the deck, so the drawer under it always belongs.
  */
-export type PanelPage = "sessions" | "history" | "scenarios";
+export type PanelPage = "sessions" | "history" | "scenarios" | "memory";
 
-export const PANEL_PAGES: PanelPage[] = ["sessions", "history", "scenarios"];
+export const PANEL_PAGES: PanelPage[] = ["sessions", "history", "scenarios", "memory"];
 
 /** What each page is called in the panel's own head. The rail says it in an
  *  accessible name; the head says it in words, because a rail of icons cannot. */
@@ -28,6 +28,11 @@ export const PANEL_TITLE: Record<PanelPage, string> = {
   sessions: "Workspaces and sessions",
   history: "Journal",
   scenarios: "Scenarios",
+  /* Not "Session notes", which is what the settings section is called: that one
+     is the switch that decides whether closing a tile writes one, and this is
+     everything ever written. The two would read as one thing under one name, and
+     the settings section is where a person goes to change a setting. */
+  memory: "Memory",
 };
 
 /** The two pages that are NOT the app's — see `WORKSPACE_TITLE`. */

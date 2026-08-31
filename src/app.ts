@@ -197,9 +197,28 @@ export function startApp(role: WindowRole): Promise<void> {
   scenariosPage.className = "panel-page hidden";
   scenariosPage.append(skMount);
 
+  /* The fourth page, and the corpus's own. Memory had three doors and no home — a
+     search dialog, a captures dialog and a settings section — which is how two
+     doors to one set of facts come to disagree. It is app-wide rather than one
+     workspace's for the same reason the journal is: the diaries are global and the
+     notes span projects, so it belongs on this rail and not in `#wspanel`.
+
+     Empty here. What fills it is the corpus listed (#381, #382), read on the
+     document surface (#383), searched (#384) and written into (#385, #386) — and
+     the page exists first so none of that is blocked on the plumbing. */
+  const memMount = document.createElement("div");
+  memMount.className = "island";
+  const memHead = document.createElement("h3");
+  memHead.textContent = PANEL_TITLE.memory;
+  memMount.append(memHead);
+  const memoryPage = document.createElement("div");
+  memoryPage.id = "mem-page";
+  memoryPage.className = "panel-page hidden";
+  memoryPage.append(memMount);
+
   const boardEl = document.querySelector<HTMLElement>("#board")!;
   panelStack.prepend(sessionsPage);
-  panelStack.append(scenariosPage);
+  panelStack.append(scenariosPage, memoryPage);
 
   /* --- The rail -----------------------------------------------------------
      Five icons, and pressing one changes what the PANEL holds. It does not change
@@ -221,17 +240,23 @@ export function startApp(role: WindowRole): Promise<void> {
      five are already "focus session N", which shipped first and is the more
      frequent act. The palette carries every page instead. */
   const railEl = document.querySelector<HTMLElement>("#rail")!;
-  /* Three, not five. The board and the pull requests left this rail because they
-     are not the app's: each belongs to one repository, and a global switch that
-     silently changed what it was about every time the workspace changed was the
-     old tab bar's defect wearing a new shape. They are children of their workspace
-     in the tree now — see `WorkspacesPanel.render`. What stays here is what is
-     genuinely app-wide: the tree itself, the journal of every run, and the
-     scenarios, which belong to a workspace but are listed across all of them. */
+  /* Four, not five, and never the five it started with. The board and the pull
+     requests left this rail because they are not the app's: each belongs to one
+     repository, and a global switch that silently changed what it was about every
+     time the workspace changed was the old tab bar's defect wearing a new shape.
+     They are children of their workspace in the tree now — see
+     `WorkspacesPanel.render`. What stays here is what is genuinely app-wide: the
+     tree itself, the journal of every run, the scenarios, which belong to a
+     workspace but are listed across all of them, and the corpus, whose diaries are
+     global and whose notes span projects. */
   const RAIL: { page: PanelPage; icon: IconName }[] = [
     { page: "sessions", icon: "terminal" },
     { page: "history", icon: "clock" },
     { page: "scenarios", icon: "bolt" },
+    /* Four. The fourth is the corpus — every note ever written, this project's and
+       every project's — which is app-wide by the same test the other three pass:
+       it does not change subject when the workspace does. */
+    { page: "memory", icon: "book" },
   ];
   /* The mark that travels between the icons. What makes a column of five read as
      one control with a position is that the mark MOVES — five icons one of which is
@@ -242,10 +267,10 @@ export function startApp(role: WindowRole): Promise<void> {
   const railBtns = {} as Record<PanelPage, HTMLButtonElement>;
 
   /* --- and none of it in a window pinned to one workspace ------------------
-     Three of the four things on this rail are about the app rather than about a
+     Four of the five things on this rail are about the app rather than about a
      workspace — the journal of every run, the scenarios listed across all of
-     them, and the settings — and a window pulled out to hold `relay` is about
-     `relay`. Shipping them there put the app's own navigation inside a window
+     them, the corpus of notes, and the settings — and a window pulled out to hold
+     `relay` is about `relay`. Shipping them there put the app's own navigation inside a window
      that is a project, which is how the settings in that window came to look like
      that project's settings.
      Not built, rather than built and hidden: a control that exists is a control
@@ -876,7 +901,10 @@ export function startApp(role: WindowRole): Promise<void> {
     // Choosing a page is asking to see it.
     if (sidebar.classList.contains("is-collapsed")) setCollapsed(false);
     applyPanel({
-      pages: { sessions: sessionsPage, history: historyEl, scenarios: scenariosPage },
+      pages: {
+        sessions: sessionsPage, history: historyEl, scenarios: scenariosPage,
+        memory: memoryPage,
+      },
       buttons: railBtns,
     }, page);
     moveRailInk();
@@ -2536,7 +2564,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  a palette entry is a way in, and leaving one for a page with no way out is
    *  worse than the button this window already does not have. */
   const APP_WIDE_COMMANDS = new Set([
-    "panel", "sessions", "history", "scenarios", "settings", "sync",
+    "panel", "sessions", "history", "scenarios", "memory", "settings", "sync",
   ]);
 
   function paletteCommands(): Command[] {
@@ -2571,6 +2599,7 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "wsp-close", title: "Workspace panel: close", run: () => closeWorkspacePanel() },
       { id: "history", title: "Panel: the journal", run: () => setPanel("history") },
       { id: "scenarios", title: "Panel: scenarios", run: () => setPanel("scenarios") },
+      { id: "memory", title: "Panel: memory", run: () => setPanel("memory") },
       { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
       { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
       // The two steps are direct commands because stepping is what a person wants
@@ -2828,6 +2857,7 @@ export function startApp(role: WindowRole): Promise<void> {
     "prs": () => openWorkspacePage("pr"),
     "history": () => setPanel("history"),
     "scenarios": () => setPanel("scenarios"),
+    "memory": () => setPanel("memory"),
     "new-task": () => { void captureTask(); },
     "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
   };

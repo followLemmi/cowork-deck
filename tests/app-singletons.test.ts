@@ -249,8 +249,8 @@ describe("the singletons a second window must not run", () => {
  *  "what may this window do once" but "what is this window ABOUT".
  *
  *  A window pulled out to hold one workspace is that workspace's, so the app's own
- *  navigation is not built in it — the rail carries the journal, the scenarios and
- *  the settings, and all three are about the app. The confusion this ends is a
+ *  navigation is not built in it — the rail carries the journal, the scenarios, the
+ *  corpus of notes and the settings, and all four are about the app. The confusion this ends is a
  *  concrete one: the settings opened from inside a project window read as that
  *  project's settings, and they are not.
  */
@@ -261,7 +261,7 @@ describe("the shape of a window pinned to one workspace", () => {
     await boot({ kind: "main" });
     expect(rail().hidden).toBe(false);
     expect([...rail().querySelectorAll(".rail-btn")].map((b) => b.getAttribute("title")))
-      .toEqual(["Workspaces and sessions", "Journal", "Scenarios", "Settings"]);
+      .toEqual(["Workspaces and sessions", "Journal", "Scenarios", "Memory", "Settings"]);
   });
 
   /* Not built rather than hidden: a control that exists is one the palette can

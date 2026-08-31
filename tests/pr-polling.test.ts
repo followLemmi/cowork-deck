@@ -135,13 +135,13 @@ describe("pull request polling", () => {
     await flush();
 
     // A rail of icons names itself for a reader rather than for the eye, so the
-    // accessible name is what there is to assert. Three PAGES, and the two that are
+    // accessible name is what there is to assert. Four PAGES, and the two that are
     // absent are absent on purpose: a board and a list of pull requests belong to
     // one repository, so each is a child of its workspace in the tree rather than
     // an app-wide switch whose subject changes under it.
     const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn[data-page]")];
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
-      "Workspaces and sessions", "Journal", "Scenarios",
+      "Workspaces and sessions", "Journal", "Scenarios", "Memory",
     ]);
     // And one control at the foot that is not a page: it opens a window about the
     // app rather than changing what the panel holds, which is what the gap above it

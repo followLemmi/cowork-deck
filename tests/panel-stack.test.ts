@@ -105,7 +105,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 
 describe("which stack each page belongs to", () => {
-  it("puts the app's three behind the rail and the repository's two beside the deck", async () => {
+  it("puts the app's four behind the rail and the repository's two beside the deck", async () => {
     document.body.innerHTML =
       '<div id="app"><header class="topbar"><div id="mark"></div>'
       + '<div id="ledger"></div><div id="topbar-actions"></div></header>'
@@ -123,10 +123,11 @@ describe("which stack each page belongs to", () => {
     const parentOf = (id: string) =>
       document.querySelector(`#${id}`)?.parentElement?.id ?? "(nowhere)";
 
-    // The rail's three.
+    // The rail's four.
     expect(parentOf("ws-page")).toBe("panel-stack");
     expect(parentOf("history")).toBe("panel-stack");
     expect(parentOf("sk-page")).toBe("panel-stack");
+    expect(parentOf("mem-page")).toBe("panel-stack");
     // The workspace panel's two.
     expect(parentOf("board")).toBe("wsp-body");
     expect(parentOf("pr")).toBe("wsp-body");
@@ -134,7 +135,7 @@ describe("which stack each page belongs to", () => {
     /* The order the keyboard walks them in, which is the order the rail lists them:
        the pages overlap in one grid cell, so nothing else makes this visible. */
     expect([...document.querySelectorAll("#panel-stack > .panel-page")].map((e) => e.id))
-      .toEqual(["ws-page", "history", "sk-page"]);
+      .toEqual(["ws-page", "history", "sk-page", "mem-page"]);
   });
 
   /** Each of the three is a raised surface, and the journal was the odd one out —
@@ -143,7 +144,7 @@ describe("which stack each page belongs to", () => {
    *  here, so their own `h3` is their module's business, but where their mount sits
    *  and what it is called is this file's. */
   it("gives every page in the stack an island of its own", async () => {
-    for (const id of ["ws-page", "history", "sk-page"]) {
+    for (const id of ["ws-page", "history", "sk-page", "mem-page"]) {
       expect(document.querySelector(`#${id} .island`), id).not.toBeNull();
     }
   });
