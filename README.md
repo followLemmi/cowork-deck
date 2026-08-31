@@ -286,11 +286,23 @@ configured and both are yours to rewrite.
 record of truth. Facts are appended and marked superseded rather than edited, so a wrong one
 can be corrected without losing what it said.
 
-Two limits worth knowing today. Sessions on Claude Code get notes; Copilot, opencode and
-Codex sessions do not yet, and the deck says so rather than quietly skipping them. And
-nothing searches the corpus yet — that is the next piece
-([#35](https://github.com/followLemmi/cowork-deck/issues/35)), and until it lands the notes
-are files you can read, grep and sync like any others.
+**Searching them.** **Search your notes…** in the command palette takes a sentence rather
+than a keyword: the notes are indexed by meaning, so "why did the cross build pick the wrong
+architecture" finds the session that answered it. A result opens the note beside the list.
+Searching needs a 479 MB embedding model, downloaded once per machine and offered rather
+than fetched behind your back — it runs on your machine and the index never leaves it.
+Everything is on your disk; nothing about a search reaches a network.
+
+**Your sessions can search them too.** A launched session is given a `search_memory` tool
+of its own and told when to reach for it: before changing code in an area it has not seen,
+and before settling a question somebody here has already settled. It reads; it never writes.
+A session sees its own project's notes and every project's lessons, and nothing of anybody
+else's project.
+
+One limit worth knowing today: sessions on Claude Code get notes, and Copilot, opencode and
+Codex ones do not yet — the deck says so rather than quietly skipping them. Since the deck
+only launches Claude Code so far, that matters when you point it at a log rather than when
+you start a session.
 
 ## The same setup on your other machine
 
@@ -409,7 +421,7 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 
 | | |
 |---|---|
-| **Project memory** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | Semantic search over what earlier sessions actually did and decided — for you, and for the agents through an MCP tool of their own. **The corpus now fills itself**: a closing session writes its own note, consented at the close and paid for on your own account (see [Session notes](#session-notes) above). What is left is reading it back — the indexer under `crates/cowork-memory` is built and tested, and the app does not yet spawn it, so nothing searches the notes yet. Local, like everything else here: the embedding model runs on your machine and the index never leaves it. |
+| **Project memory** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | **Working, and being finished.** A closing session writes its own note, you can search them by meaning from the palette, and a session gets a `search_memory` tool of its own — see [Session notes](#session-notes) above. What is left is the panel that shows what a capture cost and which jobs failed, and reading the other CLIs' logs so their sessions get notes too. Local throughout: the embedding model runs on your machine and the index never leaves it. |
 
 ### After that
 

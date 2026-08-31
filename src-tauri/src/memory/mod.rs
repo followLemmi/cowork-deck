@@ -419,6 +419,97 @@ fn reindexing() -> &'static std::sync::atomic::AtomicBool {
     &REINDEXING
 }
 
+/// What a launched session is told about memory: the MCP server to run, and the
+/// sentence saying when to reach for it.
+///
+/// Empty when there is nothing to offer — no sidecar staged — and an empty list
+/// adds no arguments, so the launch path needs no branch of its own.
+///
+/// # Only Claude, and by construction rather than by choice
+///
+/// `--mcp-config` and `--append-system-prompt` are Claude Code's flags. That is
+/// not a limitation this function has to guard, because `commands::start_session`
+/// resolves `which_claude()` unconditionally: **the deck launches Claude Code and
+/// nothing else today.** `CliKind` exists because the *activity* readers and the
+/// stored layout anticipate other CLIs, and the README's roadmap says so plainly
+/// — "read first … then run".
+///
+/// When the running half of #330 lands, this is where the per-CLI question
+/// arrives, and it will not be "which flags" but "is there any way to tell this
+/// CLI at all" — with an answer that has to be legible rather than a session
+/// quietly having no memory.
+///
+/// # What one of these costs
+///
+/// A process per session, measured at **5.6 MB RSS** idle — it loads no model
+/// until a tool call needs one. Six tiles is some 33 MB, which sounds like a lot
+/// against the app's own ~100 MB until you notice that each of those six tiles
+/// also has a Node runtime behind it, an order of magnitude larger. So it is
+/// registered unconditionally rather than gated on the corpus having anything in
+/// it: gating would need the index's state on the launch path, and #35 is
+/// explicit that memory stays off it.
+pub fn session_args(workspace_id: Option<&str>) -> Vec<String> {
+    let Some(s) = indexer() else { return Vec::new() };
+    if !s.is_staged() {
+        return Vec::new();
+    }
+    let Some(root) = dir().get() else { return Vec::new() };
+    mcp_flags(s.program(), root, workspace_id)
+}
+
+/// The flags themselves, given what they name.
+///
+/// Split from [`session_args`] so the shape can be asserted without a wired-up
+/// process: everything above it is a `OnceLock` and a `stat`, and everything
+/// interesting is here.
+fn mcp_flags(
+    program: &std::path::Path,
+    root: &std::path::Path,
+    workspace_id: Option<&str>,
+) -> Vec<String> {
+    let mut args =
+        vec!["--root".to_string(), root.to_string_lossy().into_owned(), "mcp".to_string()];
+    // Omitted for a session with no workspace, which the server reads as "the
+    // global diaries and no project notes" — the honest scope for a tile that
+    // belongs to no project.
+    if let Some(id) = workspace_id.filter(|w| !w.trim().is_empty()) {
+        args.push("--scope".to_string());
+        args.push(id.to_string());
+    }
+    let config = serde_json::json!({
+        "mcpServers": {
+            "cowork-memory": {
+                "command": program.to_string_lossy(),
+                "args": args,
+            }
+        }
+    });
+
+    vec![
+        // Additive. Deliberately **not** with `--strict-mcp-config`, which would
+        // switch off every MCP server the person configured for themselves —
+        // this adds one, it does not take over.
+        "--mcp-config".to_string(),
+        config.to_string(),
+        "--append-system-prompt".to_string(),
+        MEMORY_INSTRUCTION.to_string(),
+    ]
+}
+
+/// What a session is told, and the shortest useful version of it.
+///
+/// #35 settled that this is needed at all — "MCP plus a system-prompt instruction
+/// to consult the lessons before writing code" — because a tool an agent has and
+/// is never told to reach for is a tool it does not reach for.
+///
+/// Two sentences, and they say **when** rather than what. This text competes for
+/// attention with the person's own `CLAUDE.md` and their project's rules, and a
+/// paragraph about a feature is a paragraph taken from the work. #35 also ruled
+/// out the alternative of injecting search results at `SessionStart`: "an agent
+/// that asks right before making a change phrases its query better than anything
+/// guessable at startup."
+pub const MEMORY_INSTRUCTION: &str = "This deck keeps a searchable memory of what earlier sessions in this project did and decided, plus lessons carried across every project, reachable through the `search_memory` tool. Consult it before changing code in an area you have not seen yet, and before settling a question that looks like one somebody here has already settled.";
+
 /// One note, read back out of the corpus.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Note {
@@ -625,6 +716,79 @@ mod tests {
         std::fs::create_dir_all(root.join("ws-1/Sessions/2026-08")).unwrap();
         std::fs::write(root.join("ws-1/Sessions/2026-08/31-a-note.md"), "# a note\n").unwrap();
         root
+    }
+
+    // ----- what a session is told -----
+
+    fn flags(workspace: Option<&str>) -> Vec<String> {
+        mcp_flags(
+            std::path::Path::new("/apps/cowork/cowork_memory"),
+            std::path::Path::new("/home/dev/.config/cowork-deck"),
+            workspace,
+        )
+    }
+
+    fn config_of(flags: &[String]) -> serde_json::Value {
+        let at = flags.iter().position(|f| f == "--mcp-config").expect("the flag");
+        serde_json::from_str(&flags[at + 1]).expect("a JSON config")
+    }
+
+    #[test]
+    fn a_session_is_told_where_the_server_is_and_which_project_it_is_for() {
+        let f = flags(Some("ws-1"));
+        let server = &config_of(&f)["mcpServers"]["cowork-memory"];
+        assert_eq!(server["command"], "/apps/cowork/cowork_memory");
+        let args: Vec<&str> =
+            server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            vec!["--root", "/home/dev/.config/cowork-deck", "mcp", "--scope", "ws-1"],
+        );
+    }
+
+    /// A tile that belongs to no project still reaches the shared lessons, and
+    /// the server reads a missing `--scope` as exactly that.
+    #[test]
+    fn a_session_with_no_workspace_is_given_no_scope() {
+        for none in [None, Some(""), Some("   ")] {
+            let f = flags(none);
+            let args = config_of(&f)["mcpServers"]["cowork-memory"]["args"].clone();
+            let args: Vec<&str> =
+                args.as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+            assert_eq!(args, vec!["--root", "/home/dev/.config/cowork-deck", "mcp"], "{none:?}");
+        }
+    }
+
+    /// This adds a server; it does not take over. `--strict-mcp-config` would
+    /// switch off every MCP server the person configured for themselves.
+    #[test]
+    fn it_never_switches_off_the_persons_own_mcp_servers() {
+        assert!(!flags(Some("ws-1")).iter().any(|f| f == "--strict-mcp-config"));
+    }
+
+    /// The tool is only half of it: #35's decision is "MCP **plus** a
+    /// system-prompt instruction", because a tool an agent is never told to reach
+    /// for is a tool it does not reach for.
+    #[test]
+    fn a_session_is_also_told_when_to_use_it() {
+        let f = flags(Some("ws-1"));
+        let at = f.iter().position(|x| x == "--append-system-prompt").expect("the flag");
+        let text = &f[at + 1];
+        assert!(text.contains("search_memory"), "it names the tool: {text}");
+        assert!(text.contains("before changing code"), "and says when: {text}");
+    }
+
+    /// It competes for attention with the person's own `CLAUDE.md` and their
+    /// project's rules, and a paragraph about a feature is a paragraph taken from
+    /// the work.
+    #[test]
+    fn the_instruction_stays_short() {
+        assert!(
+            MEMORY_INSTRUCTION.len() < 400,
+            "{} characters is a paragraph, not a sentence",
+            MEMORY_INSTRUCTION.len(),
+        );
+        assert!(!MEMORY_INSTRUCTION.contains('\n'), "one paragraph, no headings");
     }
 
     #[test]

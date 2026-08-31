@@ -160,6 +160,22 @@ The one the queue exists for.
       is that the absence is deliberate rather than a session quietly losing its
       memory.
 
+## Your sessions can search too
+
+The half that makes the corpus worth filling. Needs the model downloaded.
+
+- [ ] Start a session. Ask it: *"use your search_memory tool to find what this
+      project has learned about packaging"*. It answers from a note rather than
+      saying it has no such tool.
+- [ ] `/mcp` inside that session lists **cowork-memory** as connected.
+- [ ] Ask it to read a note by the path a result gave. It comes back.
+- [ ] Ask it to read a note belonging to **another** workspace, by its exact
+      path. It is refused — "belongs to another project".
+- [ ] Restart the session (the ⟳ button). The tool is still there: memory reaches
+      the `--resume` path as well as the first launch.
+- [ ] With the model **not** downloaded, the tool still exists and answers with
+      what is missing rather than with silence.
+
 ## What must not travel
 
 - [ ] `<config dir>/wrapup.jsonl` is **not** tracked by the sync repository, if
