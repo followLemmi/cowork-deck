@@ -188,9 +188,19 @@ pub fn sync_now(app: tauri::AppHandle, state: State<AppState>) -> Result<SyncSta
     Ok(st)
 }
 
-/// The workspace ids, in order, for the one comparison this module makes.
+/// The workspace ids, sorted, for the one comparison this module makes.
+///
+/// Sorted rather than left in file order, because the two writers of that file
+/// disagree about it: a pull saves what `adopt` produced, which is in sorted
+/// path order, while a workspace added on this machine is appended. So the first
+/// cycle after any local addition rewrites the file with the same records in a
+/// different order. Compared positionally that reads as a change, and the
+/// announcement then costs every window exactly the tree rebuild this comparison
+/// exists to avoid.
 fn ids(workspaces: &[crate::model::Workspace]) -> Vec<String> {
-    workspaces.iter().map(|w| w.id.clone()).collect()
+    let mut out: Vec<String> = workspaces.iter().map(|w| w.id.clone()).collect();
+    out.sort();
+    out
 }
 
 /// Tell every window the store's workspace list is not what it read at boot.
@@ -212,10 +222,22 @@ fn ids(workspaces: &[crate::model::Workspace]) -> Vec<String> {
 /// tree — and with it the containers the deck's session rows live in — every five
 /// minutes for nothing.
 fn announce_if_changed(app: &tauri::AppHandle, before: &[String]) {
-    let after = app
-        .try_state::<AppState>()
-        .and_then(|st| st.store.lock().ok().map(|s| ids(&s.workspaces())));
-    // A store that cannot be read says nothing. The alternative is announcing a
+    // `try_workspaces`, not `workspaces`: a store that cannot be read has to be
+    // able to say so. The best-effort read answers an unparseable file with an
+    // empty list, and an empty list here is indistinguishable from "the pull
+    // deleted every workspace" — which every pinned window answers by handing
+    // its sessions back and closing. A fault must not be able to close windows.
+    let after = app.try_state::<AppState>().and_then(|st| {
+        let store = st.store.lock().ok()?;
+        match store.try_workspaces() {
+            Ok(items) => Some(ids(&items)),
+            Err(e) => {
+                eprintln!("warning: sync could not re-read the workspace list ({e}); saying nothing");
+                None
+            }
+        }
+    });
+    // Nothing to compare against says nothing. The alternative is announcing a
     // change that may not have happened, which costs every window a re-read.
     let Some(after) = after else { return };
     if after != before {
@@ -892,5 +914,38 @@ mod tests {
         assert_eq!(st, SyncState::default());
         assert!(!dir.join("ws-1").exists(), "nothing is written before sync is on");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The comparison behind `workspaces://changed` (#369): a set, not an order.
+    ///
+    /// The order genuinely differs between the file's two writers — a pull saves
+    /// `adopt`'s sorted output, a local addition appends — so a positional
+    /// comparison announces a change after the first cycle following any local
+    /// addition, and every window pays for it with a tree rebuild.
+    #[test]
+    fn ids_ignore_the_order_the_file_happens_to_be_in() {
+        let a = [ws("w-2", "Q", "/q"), ws("w-1", "P", "/p")];
+        let b = [ws("w-1", "P", "/p"), ws("w-2", "Q", "/q")];
+        assert_eq!(ids(&a), ids(&b), "the same two workspaces are not a change");
+    }
+
+    /// And a record actually leaving still is one — the case the whole event
+    /// exists for.
+    #[test]
+    fn ids_notice_a_workspace_that_left() {
+        let before = ids(&[ws("w-1", "P", "/p"), ws("w-2", "Q", "/q")]);
+        let after = ids(&[ws("w-1", "P", "/p")]);
+        assert_ne!(before, after);
+    }
+
+    /// A name changing is not a change this event reports: it is the store
+    /// answering for something a window already did, and re-reading on it would
+    /// rebuild every window's tree — and the containers the deck's session rows
+    /// live in — on a five-minute timer for nothing.
+    #[test]
+    fn ids_ignore_a_renamed_workspace() {
+        let before = ids(&[ws("w-1", "P", "/p")]);
+        let after = ids(&[ws("w-1", "renamed", "/elsewhere")]);
+        assert_eq!(before, after);
     }
 }

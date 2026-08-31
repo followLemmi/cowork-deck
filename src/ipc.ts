@@ -155,6 +155,13 @@ export interface ScheduleRun {
   nextRunMs?: number | null;
 }
 
+/** The workspace list.
+ *
+ *  **Rejects** for a `workspaces.json` it cannot read, rather than resolving
+ *  empty. It resolved empty until #369, when an unreadable list cost a stale
+ *  sidebar and nothing else; a window pinned to a workspace now closes itself
+ *  when this stops listing it, so an empty answer is a decision and a fault must
+ *  not be able to make it. Every caller has to survive the rejection. */
 export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");
 export const saveWorkspace = (ws: Workspace) => invoke<Workspace[]>("save_workspace", { ws });
 export const removeWorkspace = (id: string) => invoke<Workspace[]>("remove_workspace", { id });

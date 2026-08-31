@@ -1161,7 +1161,20 @@ export function startApp(role: WindowRole): Promise<void> {
         void skills.refreshRuns();
         if (currentPage === "history") void refreshHistory();
       }).then(() => {}),
-      () => workspaces.load(),
+      // The list, and the one question a pinned window has to ask of it before
+      // anything is drawn from it. See `closeIfPinnedWorkspaceGone` for why the
+      // backend's refusal does not cover this on its own.
+      //
+      // A list that could not be read is caught here rather than left to
+      // `onError`, and the two halves of that are both deliberate. Boot goes on:
+      // an unreadable list costs a sidebar, while stopping the remaining steps
+      // would cost the deck and every session waiting in it — the app has to stay
+      // the place those are recovered from. And the pinned question is not asked,
+      // because a store that would not parse deleted nothing.
+      () => workspaces.load().then(
+        () => closeIfPinnedWorkspaceGone().then(() => {}),
+        (e: unknown) => { console.error("the workspace list could not be read at boot", e); },
+      ),
       () => skills.load(),
       () => onTasksChanged((workspaceId) => {
         if (boardVisible && workspaces.active?.id === workspaceId) void refreshBoard();
@@ -2180,17 +2193,47 @@ export function startApp(role: WindowRole): Promise<void> {
    *  answers for, so the window falls back to the first workspace there is — the
    *  same choice `load()` makes on a cold start. */
   async function rereadWorkspaces(): Promise<void> {
-    await workspaces.load();
-    if (pinnedTo !== null && !workspaces.all.some((w) => w.id === pinnedTo)) {
-      await getCurrentWindow().close();
+    try {
+      await workspaces.load();
+    } catch (e) {
+      // `list_workspaces` refuses a list it cannot read rather than answering
+      // "none" (#369), and refusing is what has to stop this: the *absence* of a
+      // record is what closes a pinned window, and a store that would not parse
+      // deleted nothing. Keeping the list this window already has is the only
+      // honest reading of a failed read.
+      console.error("re-reading the workspace list failed; keeping the list this window has", e);
       return;
     }
+    if (await closeIfPinnedWorkspaceGone()) return;
     if (workspaces.active === null) {
       const first = workspaces.all[0]?.id ?? null;
       if (first) workspaces.activate(first);
       else activateWorkspace(null);
     }
+    // Paired with `refreshCounts` everywhere the workspace set changes, and for
+    // the reason `AppState.watchers` gives: a record that arrived in a pull has
+    // no tracker watcher until something re-points them, so its open-task count
+    // would sit still until the next restart. Main only, exactly as at boot —
+    // every window hears this event and holds the same list, so the other copies
+    // of the call would re-point the same backend watchers at the same roots.
+    if (isMain) void taskWatchSync();
     void refreshCounts();
+  }
+
+  /** Close this window if the workspace it is pinned to is not in the store.
+   *
+   *  Answers whether it did, because everything a caller does next is work for a
+   *  window that is staying.
+   *
+   *  Asked on the announcement and again once at boot. `open_workspace_window`
+   *  refuses an id the store does not have, but it answers *before* the window
+   *  exists: a pull landing in the gap between that answer and this window's
+   *  first read leaves it pinned to nothing with the announcement it would have
+   *  heard already sent, which is #369 again with no way out of it. */
+  async function closeIfPinnedWorkspaceGone(): Promise<boolean> {
+    if (pinnedTo === null || workspaces.all.some((w) => w.id === pinnedTo)) return false;
+    await getCurrentWindow().close();
+    return true;
   }
 
   /** Every launch path needs an active workspace. Saying so beats a button that

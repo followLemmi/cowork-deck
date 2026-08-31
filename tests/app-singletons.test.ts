@@ -23,6 +23,19 @@ const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
  *  record while a window pinned to it is open, which is the whole of #369. Reset
  *  by `boot`. */
 let panelItems: (typeof WS)[] = [WS];
+/** Which of them is active, held separately from the list for the reason the real
+ *  panel holds it separately: a pull can take the active record out of the list
+ *  without naming a replacement, and `active` is then null while `all` is not
+ *  empty. A mock that derived `active` from `panelItems[0]` could not express
+ *  that, which is the state `startApp` falls back to the first workspace in. */
+let panelActiveId: string | null = WS.id;
+/** What the panel was asked to activate. The fallback names a workspace rather
+ *  than clearing the active one, so the assertion is on the argument. */
+const activateSpy = vi.hoisted(() => vi.fn((id: string) => id));
+/** Set to make the next `load()` reject, the way `listWorkspaces` does for a
+ *  `workspaces.json` it cannot read — which is not the same answer as a list
+ *  without this workspace in it. Reset by `boot`. */
+let loadRejects: Error | null = null;
 
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
@@ -64,9 +77,9 @@ const pinnedCalls: string[] = [];
 
 vi.mock("../src/workspaces", () => ({
   WorkspacesPanel: class {
-    get active() { return panelItems[0] ?? null; }
+    get active() { return panelItems.find((w) => w.id === panelActiveId) ?? null; }
     get all() { return panelItems; }
-    load = vi.fn().mockResolvedValue(undefined);
+    load = vi.fn(() => (loadRejects ? Promise.reject(loadRejects) : Promise.resolve(undefined)));
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
     // The tree's half of the panel: the workspace row is this panel's and the
@@ -83,7 +96,7 @@ vi.mock("../src/workspaces", () => ({
     showWaiting = vi.fn();
     showExpanded = vi.fn();
     focusActive = vi.fn();
-    activate = vi.fn().mockReturnValue(true);
+    activate = vi.fn((id: string) => { activateSpy(id); panelActiveId = id; return true; });
   },
 }));
 
@@ -146,7 +159,7 @@ const flush = async () => {
 /** Now that the bootstrap is a function, a test file can boot it more than once
  *  — which is the whole reason this file can exist. It was a side-effect module,
  *  and a side-effect module imports once per file. */
-async function boot(role: WindowRole) {
+async function boot(role: WindowRole, items: (typeof WS)[] = [WS]) {
   document.body.innerHTML =
     '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
     + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div><main id="deck"></main><div id="terminals"></div>'
@@ -154,7 +167,9 @@ async function boot(role: WindowRole) {
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';
   pinnedCalls.length = 0;
-  panelItems = [WS];
+  panelItems = items;
+  panelActiveId = WS.id;
+  loadRejects = null;
   currentLabel = role.kind === "main" ? "main" : `workspace-${role.workspaceId}`;
   const { startApp } = await import("../src/app");
   startApp(role);
@@ -407,6 +422,47 @@ describe("a workspace that leaves the store", () => {
   it("never closes the main window, whatever the store lost", async () => {
     await boot({ kind: "main" });
     panelItems = [];
+    announce();
+    await flush();
+    expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  /* The announcement can arrive before the window that needs it exists.
+     `open_workspace_window` refuses an id the store does not have, but it answers
+     before the window is built — so a pull landing in that gap leaves a window
+     whose first read is already of a list without it, with nothing further coming
+     to tell it. Asked once at boot for exactly that. */
+  it("closes a pinned window whose workspace was already gone at boot", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" }, []);
+    expect(closeSpy).toHaveBeenCalled();
+  });
+
+  it("boots the main window normally with an empty store", async () => {
+    await boot({ kind: "main" }, []);
+    expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  /* The other state a stale list hid, and the one the main window is in when the
+     record that went was the one it was showing: the panel has no active
+     workspace while the deck goes on filtering its tiles to an id nothing answers
+     for. The fallback is the first workspace there is — not a close, and not
+     nothing. */
+  it("falls back to the first workspace when the active one has gone", async () => {
+    await boot({ kind: "main" });
+    panelItems = [{ id: "w2", name: "Q", path: "/q", color: "#eee" }];
+    announce();
+    await flush();
+    expect(activateSpy).toHaveBeenCalledWith("w2");
+    expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  /* A list that could not be read is not a list without the workspace in it.
+     `list_workspaces` refuses rather than answering "none" (#369), and the refusal
+     has to stop the close: a store that would not parse deleted nothing. */
+  it("keeps a pinned window when the list could not be read", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" });
+    loadRejects = new Error("workspaces.json is not readable as JSON");
+    panelItems = []; // what a best-effort read would have answered instead
     announce();
     await flush();
     expect(closeSpy).not.toHaveBeenCalled();

@@ -105,6 +105,7 @@ for a session whose workspace was deleted, and with no workspace row there was n
 - [ ] Do the same with a **deletion** rather than a fold: delete that workspace on **A**, sync **A**, then sync **B**. The pulled-out window on **B** closes the same way, on the tick that pulls it.
 - [ ] After either, **B**'s tree has no row for the record that went, without restarting the app.
 - [ ] Press the pull-out control on a row for a workspace that has just gone (before the next cycle, if you can catch it): it says the workspace is no longer in the store rather than opening a window, and the row disappears.
+- [ ] The row for a workspace whose window is **already open** still raises that window, even after the store has lost the record. Raising needs no record — the window is on screen — and this is the one path that recovers a window which died without saying so.
 
 ### Answering "different projects"
 
