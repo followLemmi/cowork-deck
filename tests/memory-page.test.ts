@@ -546,14 +546,21 @@ describe("the writing controls", () => {
  *  was already right — the debounce, the readiness reported before a keystroke,
  *  and the label read off the path. */
 describe("searching from the page", () => {
-  const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  /** Type without asking for anything: what a person does before pressing Enter. */
   const type = async (text: string) => {
     const field = fk("memory-search") as HTMLInputElement;
     field.value = text;
-    field.dispatchEvent(new Event("input"));
-    await tick(320);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
   };
+  /** And the gesture that costs a process. */
+  const enter = async () => {
+    fk("memory-search")!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await flush();
+  };
+  const ask = async (text: string) => { await type(text); await enter(); };
 
   beforeEach(() => {
     notes.mockReset();
@@ -570,7 +577,7 @@ describe("searching from the page", () => {
     await flush();
     expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
 
-    await type("cross build");
+    await ask("cross build");
     // Everything, not this project plus the lessons: the list under the field is
     // the whole corpus by project, and a search answering from a narrower one
     // would be the page disagreeing with itself.
@@ -584,25 +591,49 @@ describe("searching from the page", () => {
     expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
   });
 
-  it("does not search until typing has stopped", async () => {
+  /** The change that matters most here: a search is a process and a cold model
+   *  load (#389), so typing must not start one. */
+  it("does not search while a query is being typed", async () => {
     const view = mount();
     await view.refresh();
     await flush();
-    const field = fk("memory-search") as HTMLInputElement;
-    for (const s of ["c", "cr", "cro", "cross"]) {
-      field.value = s;
-      field.dispatchEvent(new Event("input"));
-    }
-    await tick(320);
+    for (const s of ["c", "cr", "cro", "cross"]) await type(s);
+    expect(search).not.toHaveBeenCalled();
+
+    await enter();
     expect(search).toHaveBeenCalledTimes(1);
     expect(search).toHaveBeenCalledWith("cross", undefined, 12);
   });
 
-  it("does not search an empty query", async () => {
+  /** The gesture has to be visible, or a field that does nothing as you type is
+   *  a field somebody thinks is broken. */
+  it("says how it is run, where there is no button to say it", () => {
+    mount();
+    expect((fk("memory-search") as HTMLInputElement).placeholder).toContain("Enter");
+  });
+
+  /** Seconds of silence after a keypress is a keypress somebody repeats. */
+  it("says that it is searching while it is", async () => {
+    let release: ((v: unknown) => void) | null = null;
+    search.mockImplementationOnce(() => new Promise((r) => { release = r; }));
     const view = mount();
     await view.refresh();
     await flush();
-    await type("   ");
+
+    await ask("cross build");
+    expect(fk("memory-readiness")!.textContent).toBe("Searching…");
+    expect(fk("memory-readiness")!.hidden).toBe(false);
+
+    release!([hit()]);
+    await flush();
+    expect(fk("memory-readiness")!.hidden).toBe(true);
+  });
+
+  it("does not search an empty query, even asked to", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    await ask("   ");
     expect(search).not.toHaveBeenCalled();
   });
 
@@ -610,7 +641,7 @@ describe("searching from the page", () => {
     const view = mount();
     await view.refresh();
     await flush();
-    await type("cross build");
+    await ask("cross build");
     const row = document.querySelector(".mem-row")!;
     expect(row.textContent).toContain("the staging script");
     expect(row.textContent).toContain("2026-08-31");
@@ -624,7 +655,7 @@ describe("searching from the page", () => {
     const view = mount();
     await view.refresh();
     await flush();
-    await type("packaging");
+    await ask("packaging");
     expect(document.querySelector(".mem-row")!.textContent).toContain("a lesson, any project");
   });
 
@@ -633,7 +664,7 @@ describe("searching from the page", () => {
     const view = mount();
     await view.refresh();
     await flush();
-    await type("something absent");
+    await ask("something absent");
     expect(document.querySelector(".mem-empty")!.textContent).toContain("Nothing matched");
   });
 
@@ -644,7 +675,7 @@ describe("searching from the page", () => {
     const view = mount();
     await view.refresh();
     await flush();
-    await type("cross build");
+    await ask("cross build");
 
     expect(search).not.toHaveBeenCalled();
     expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
@@ -657,7 +688,7 @@ describe("searching from the page", () => {
     const view = mount();
     await view.refresh();
     await flush();
-    await type("cross build");
+    await ask("cross build");
     expect(fk("memory-readiness")!.textContent).toContain("not installed");
   });
 
@@ -671,7 +702,7 @@ describe("searching from the page", () => {
     document.body.replaceChildren(view.mount);
     await view.refresh();
     await flush();
-    await type("cross build");
+    await ask("cross build");
 
     document.querySelector<HTMLButtonElement>(".mem-row")!.click();
     expect(opened).toEqual(["ws-1/Sessions/2026-08/31-the-staging-script.md"]);
@@ -684,13 +715,12 @@ describe("searching from the page", () => {
     const view = mount();
     await view.refresh();
     await flush();
-    await type("cross build");
+    await ask("cross build");
 
     const field = fk("memory-search") as HTMLInputElement;
     const seen: string[] = [];
     document.addEventListener("keydown", (e) => seen.push(e.key));
     field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await tick(320);
     await flush();
 
     expect(field.value).toBe("");
@@ -710,12 +740,13 @@ describe("searching from the page", () => {
     await view.refresh();
     await flush();
 
-    await type("first");
+    await ask("first");
     expect(search).toHaveBeenCalledTimes(1);
 
-    // Two more queries arrive while the first is still running.
-    await type("second");
-    await type("third");
+    // Two more asked for while the first is still running — Enter pressed again
+    // is exactly what a slow search invites.
+    await ask("second");
+    await ask("third");
     expect(search).toHaveBeenCalledTimes(1);
 
     release!([]);
@@ -734,19 +765,21 @@ describe("searching from the page", () => {
     await flush();
     const reads = status.mock.calls.length;
 
-    await type("one");
-    await type("two");
-    await type("three");
+    await ask("one");
+    await ask("two");
+    await ask("three");
     expect(status.mock.calls.length).toBe(reads);
   });
 
   /** Clearing the field asks the sidecar nothing: browsing needs neither the
    *  model nor a process. */
-  it("goes back to browsing without a call", async () => {
+  /** Clearing is the one direction that is free: the list is in memory already,
+   *  so it does not wait for Enter and asks nothing of the sidecar. */
+  it("goes back to browsing as the field empties, without a call", async () => {
     const view = mount();
     await view.refresh();
     await flush();
-    await type("cross build");
+    await ask("cross build");
     const calls = search.mock.calls.length;
 
     await type("");

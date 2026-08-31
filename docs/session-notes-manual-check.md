@@ -215,6 +215,8 @@ offers. The search is the field at the top of the memory page; the palette's
       browsing needs neither the model nor the sidecar.
 - [ ] Download it. Progress counts up; quitting mid-download and starting again
       **resumes** rather than restarting from zero.
+- [ ] Typing into the field searches nothing. Enter is what searches, and while
+      it runs the page says so.
 - [ ] With a note captured, search for something in it by meaning rather than by
       its words — "why did the build pick the wrong architecture", not the
       filename. It comes back.

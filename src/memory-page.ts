@@ -50,10 +50,22 @@
 // What came across from the dialog unchanged, because it was already right:
 // `labelHit` (a hit carries no heading, so its name is read from the path, which
 // is ours), `excerpt` (the passage is the only thing on a result saying WHY it
-// matched), the 250ms debounce (a search spawns a process and embeds the query,
-// so a character is not a request), and reporting readiness before a keystroke
-// (otherwise "no results" reads as an answer about the notes rather than about
-// the machine).
+// matched), and reporting readiness before a keystroke (otherwise "no results"
+// reads as an answer about the notes rather than about the machine).
+//
+// # Enter searches; typing does not
+//
+// What did NOT survive the move is the dialog's 250ms debounce, and it took two
+// tries to see why. A debounce bounds how often a query is sent — it does not
+// make a query cheap, and this one is not: every search spawns `cowork_memory`
+// and loads a 479 MB model from cold (#389). Serialising them stopped the
+// stutter of several model loads at once, and left a field that still spent
+// seconds of somebody's machine on a half-typed word.
+//
+// So the query is sent when it is asked for. Clearing the field still goes back
+// to browsing instantly, because that direction costs nothing at all — it is a
+// list already in memory. The asymmetry is the honest one: the expensive
+// direction is deliberate and the free one is not.
 
 import {
   memoryNotes, memorySearch, memoryStatus,
@@ -62,13 +74,6 @@ import {
 import { searchReadiness } from "./memory-model";
 import { addFactForm, addLessonForm, APPEND_ONLY_NOTICE, replaceFactForm } from "./memory-write";
 import { mountCaptureRecord } from "./memory-jobs";
-
-/** How long after a keystroke the query is sent.
- *
- *  A search spawns a process and embeds the query, so a character is not a
- *  request. Long enough that typing a sentence costs one search, short enough
- *  that stopping feels like an answer. */
-const DEBOUNCE_MS = 250;
 
 /** What a hit is called, where it came from and when — read out of its path. */
 export interface HitLabel {
@@ -329,8 +334,11 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
      every row is a button a person presses. */
   const field = el("input", "mem-search");
   field.type = "search";
-  field.placeholder = "Search your notes…";
-  field.setAttribute("aria-label", "Search your notes");
+  /* The placeholder carries the gesture, because there is no button beside the
+     field to carry it and a search field that does nothing as you type is a
+     search field somebody thinks is broken. */
+  field.placeholder = "Search your notes — press Enter";
+  field.setAttribute("aria-label", "Search your notes, press Enter to search");
   field.dataset.fk = "memory-search";
   const head = el("p", "mem-head");
   head.dataset.fk = "memory-head";
@@ -405,7 +413,6 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
   /** Whether a search is in flight, and the query waiting behind it. */
   let running = false;
   let pending: string | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null;
   /** Which search is the current one: a slow answer must not land on a query
    *  somebody has already replaced. */
   let seq = 0;
@@ -591,6 +598,11 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     }
     if (running) { pending = query; return; }
     running = true;
+    /* Said, because it is not instant and the person pressed a key expecting an
+       answer. A search that takes four seconds in silence is a search somebody
+       presses Enter on again. */
+    readiness.textContent = "Searching…";
+    readiness.hidden = false;
     try {
       await runQuery(query);
       // Whatever arrived while that one ran, and only the last of it.
@@ -602,16 +614,29 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
       pending = null;
     } finally {
       running = false;
+      // Whatever the run left on it stays; an untouched "Searching…" does not.
+      if (readiness.textContent === "Searching…") {
+        readiness.textContent = "";
+        readiness.hidden = true;
+      }
     }
   };
 
   const runQuery = async (query: string) => {
-    const ready = await readinessNow();
-    if (ready === null || !searchReadiness(ready).ready) {
-      // The list stays on the corpus rather than emptying: browsing works, the
-      // sentence above says what searching would need, and blanking what does
-      // work would say the opposite.
+    const state = await readinessNow();
+    const r = state === null ? null : searchReadiness(state);
+    if (r === null || !r.ready) {
+      // The list stays on the corpus rather than emptying: browsing works, and
+      // blanking what does work to report a model that is absent would say the
+      // opposite of what is true.
       if (hits !== null) { hits = null; paint(); }
+      /* Written here rather than left to `sayReadiness`, which the cache above
+         may have skipped: the line has to say what is missing whether or not the
+         status was read this second. Without this it kept whatever was on it —
+         "Searching…" — and the finally below then cleared that, so a search with
+         no model reported nothing at all. */
+      readiness.textContent = r?.reason
+        ?? "Searching your notes is not available on this build.";
       readiness.hidden = false;
       return;
     }
@@ -634,21 +659,28 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     paint();
   };
 
+  /* Emptying the field goes back to the corpus at once. Only this direction is
+     free: the list is already in memory and no process is asked for. */
   field.oninput = () => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => void search(), DEBOUNCE_MS);
+    if (field.value.trim() === "" && hits !== null) { hits = null; paint(); }
   };
-  /* Escape clears the field and gives the corpus back — the one gesture the
-     dialog had that a page still owes, since there is no longer anything to
-     close. It stops there rather than bubbling to the window's own Escape, which
-     would put the deck back from under a note somebody is reading. */
   field.onkeydown = (e) => {
+    if (e.key === "Enter") {
+      // The whole gesture. A query is a process and a model load, so it is run
+      // when it is asked for rather than while it is being written.
+      e.preventDefault();
+      void search();
+      return;
+    }
+    /* Escape clears the field and gives the corpus back — the one gesture the
+       dialog had that a page still owes, since there is no longer anything to
+       close. It stops there rather than bubbling to the window's own Escape,
+       which would put the deck back from under a note somebody is reading. */
     if (e.key !== "Escape" || field.value === "") return;
     e.preventDefault();
     e.stopPropagation();
     field.value = "";
-    if (timer) clearTimeout(timer);
-    void search();
+    if (hits !== null) { hits = null; paint(); }
   };
 
   /** A fact belongs to a project; a lesson does not.

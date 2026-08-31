@@ -312,7 +312,10 @@ reads it there, and one control gives the deck back.
 **Searching them.** The field at the top of that page — or **Search your notes…** in the
 command palette, which lands on it — takes a sentence rather than a keyword: the notes are
 indexed by meaning, so "why did the cross build pick the wrong architecture" finds the
-session that answered it. A result opens the same way a listed note does.
+session that answered it. Press Enter to search: a search embeds your sentence against the
+model, which is work worth asking for rather than doing on every keystroke. Emptying the
+field goes back to the whole corpus at once. A result opens the same way a listed note
+does.
 Searching needs a 479 MB embedding model, downloaded once per machine and offered rather
 than fetched behind your back — it runs on your machine and the index never leaves it.
 Everything is on your disk; nothing about a search reaches a network.
