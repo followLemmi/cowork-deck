@@ -326,6 +326,13 @@ transcript path here.
 **Your sessions can search them too.** A launched session is given a `search_memory` tool
 of its own and told when to reach for it: before changing code in an area it has not seen,
 and before settling a question somebody here has already settled. It reads; it never writes.
+
+**And they are handed what memory has, with the question.** A rule in the system prompt
+about every question in general loses to context about *this* one, so a question long
+enough to be a question arrives with the closest few passages already attached. Short
+instructions, slash commands and pasted code pay for nothing. When the corpus has nothing
+on it, it says so plainly rather than offering passages that did not match — a confident
+empty answer is worse than none.
 A session sees its own project's notes and every project's lessons, and nothing of anybody
 else's project.
 

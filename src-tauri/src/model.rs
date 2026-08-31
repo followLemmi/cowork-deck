@@ -889,6 +889,20 @@ pub struct ReporterEvent {
     /// hence `default`.
     #[serde(rename = "transcriptPath", default)]
     pub transcript_path: Option<String>,
+    /// Which workspace the session was launched in, on the one kind that asks a
+    /// question rather than reporting a fact (`memory`, #388). A dash from the
+    /// reporter — a session launched outside a workspace — reads as absent here,
+    /// so a scope of "everything" is what it means rather than a fallback.
+    #[serde(default, deserialize_with = "dash_is_none")]
+    pub workspace: Option<String>,
+}
+
+fn dash_is_none<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<String>::deserialize(d)?;
+    Ok(v.filter(|s| s != "-" && !s.trim().is_empty()))
 }
 
 /// Map a reporter `kind` (+ optional notification type) to a session state.

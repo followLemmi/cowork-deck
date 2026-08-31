@@ -1758,7 +1758,13 @@ pub fn start_session(
     }
     let resolved = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let program = resolved.program;
-    let settings = build_settings_json(&state.reporter_path, state.listener_port, &session, &state.task_bin_path);
+    let settings = build_settings_json(
+        &state.reporter_path,
+        state.listener_port,
+        &session,
+        &state.task_bin_path,
+        workspace_id.as_deref(),
+    );
     // Off the store lock and off any network: `session_args` stats one file and
     // formats a JSON string. #35's rule that memory stays off the session launch
     // path is about the *index* and the model, neither of which is touched here.

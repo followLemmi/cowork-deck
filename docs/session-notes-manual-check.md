@@ -240,6 +240,22 @@ At the foot of the memory page, folded.
       failure.
 - [ ] A long failure reason is trimmed in the row and whole on hover.
 
+## What a session is handed with its prompt
+
+Needs the model downloaded and at least one note indexed. Nothing below is
+visible in the transcript — the block goes into the model's context, not onto
+the screen — so the check is what the session *knows*.
+
+- [ ] Start a session in a project with notes. Ask a real question about past
+      work, in a sentence. It answers from a note without being told to search.
+- [ ] Ask something the corpus has nothing on. It says memory has nothing on it
+      rather than offering unrelated notes.
+- [ ] Type a short instruction — "fix this indent". Nothing is searched: the
+      answer comes at the speed of a session with no memory at all.
+- [ ] A slash command and a pasted code block search nothing either.
+- [ ] With the model absent, sessions behave exactly as they did before this
+      existed — no line about a download above every message.
+
 ## Your sessions can search too
 
 The half that makes the corpus worth filling. Needs the model downloaded.

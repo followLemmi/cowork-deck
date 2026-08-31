@@ -26,6 +26,7 @@
 
 pub mod capture;
 pub mod corpus;
+pub mod prompt;
 pub mod queue;
 pub mod rooms;
 pub mod sidecar;
@@ -669,6 +670,39 @@ pub fn memory_save_note(file: String, markdown: String) -> Result<(), String> {
     corpus::Corpus::new(root.clone()).save_note(&file, &markdown).map_err(|e| e.to_string())?;
     wrote();
     Ok(())
+}
+
+/// The block a session is handed with its prompt, or nothing.
+///
+/// Called from the listener, on the connection the `UserPromptSubmit` hook
+/// opened. Everything about *whether* to search is decided here rather than in
+/// the hook, because the corpus's state is known here and nowhere else — see
+/// [`prompt`] for why the gate is a requirement rather than a refinement.
+///
+/// Blocking: a search spawns the sidecar. The caller runs it off the runtime.
+pub fn prompt_context(workspace: Option<&str>, payload: &str) -> Option<String> {
+    let query = prompt::prompt_of(payload)?;
+    if !prompt::worth_searching(&query) {
+        return None;
+    }
+    let indexer = indexer()?;
+    if !indexer.is_staged() {
+        return None;
+    }
+    /* Silent when memory cannot search at all. A session cannot act on "download
+       the model", and a line about it above every message is the noise this
+       feature is one bad decision away from becoming — the memory page and the
+       settings block say it where somebody can do something about it. */
+    match indexer.status() {
+        Ok(s) if s.chunks > 0 && s.model.state == "present" => {}
+        _ => return None,
+    }
+    let scope = match workspace {
+        Some(id) if !id.trim().is_empty() => sidecar::Scope::Workspace(id.to_string()),
+        _ => sidecar::Scope::Everything,
+    };
+    let hits = indexer.search(&query, &scope, prompt::TOP).ok()?;
+    Some(prompt::context_block(&scope, &hits))
 }
 
 /// What every hand-written line owes afterwards: say the corpus moved, and bring

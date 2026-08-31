@@ -2,7 +2,7 @@ use crate::model::{event_kind_to_state, ReporterEvent};
 use crate::model::SessionState;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 /// Next accept-retry backoff: 50ms first, then doubling up to a 1s cap.
@@ -40,9 +40,49 @@ where
             };
             let cb = cb.clone();
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stream).lines();
+                // Split before reading: one connection in five hundred wants a
+                // reply, and the reader cannot own the stream if the writer is
+                // to have it.
+                let (rd, mut wr) = stream.into_split();
+                let mut lines = BufReader::new(rd).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     if let Ok(ev) = serde_json::from_str::<ReporterEvent>(&line) {
+                        /* The one kind that asks a question rather than
+                           reporting a fact: the `UserPromptSubmit` hook wanting
+                           what memory has on this prompt (#388). Its payload is
+                           the rest of the connection — a prompt is arbitrary
+                           text, and a length in the header would be a length the
+                           reporter had to count in bytes of somebody's UTF-8.
+                           So: read to end-of-stream, answer, and this connection
+                           is done. */
+                        if ev.kind == "memory" {
+                            let mut payload = String::new();
+                            while let Ok(Some(more)) = lines.next_line().await {
+                                if !payload.is_empty() {
+                                    payload.push('\n');
+                                }
+                                payload.push_str(&more);
+                            }
+                            let workspace = ev.workspace.clone();
+                            /* Off the runtime: a search spawns the sidecar and
+                               loads the model, and doing that on a worker thread
+                               would stall every other session's events behind
+                               one prompt. */
+                            let answer = tokio::task::spawn_blocking(move || {
+                                crate::memory::prompt_context(workspace.as_deref(), &payload)
+                            })
+                            .await
+                            .ok()
+                            .flatten();
+                            if let Some(text) = answer {
+                                let _ = wr.write_all(text.as_bytes()).await;
+                            }
+                            // Closed either way: the hook waits for end-of-stream
+                            // and nothing printed is a turn without memory, which
+                            // is where this feature started rather than a fault.
+                            let _ = wr.shutdown().await;
+                            return;
+                        }
                         // Recorded here rather than handed to a second callback:
                         // every event carries it, and a caller that forgot to
                         // wire it up would leave a tile reading the transcript
@@ -125,6 +165,38 @@ mod tests {
             crate::transcripts::get("sess-clear").as_deref(),
             Some("/home/u/.claude/projects/-p/new.jsonl"),
         );
+    }
+
+    /// The one kind that asks a question rather than reporting a fact (#388).
+    ///
+    /// Memory is not wired up in a test binary, so what this asserts is the
+    /// framing rather than the answer: the header is one line, the payload is
+    /// everything after it, the connection is closed from this end, and nothing
+    /// about it changes a session's state or leaves the connection hanging. A
+    /// prompt that goes on without memory is where this feature started.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_memory_request_is_answered_and_closed_without_touching_the_state() {
+        let (tx, rx) = mpsc::channel::<(String, SessionState)>();
+        let port = start_listener(move |sess, state| { let _ = tx.send((sess, state)); })
+            .await
+            .unwrap();
+
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(
+                b"{\"session\":\"sess-m\",\"kind\":\"memory\",\"workspace\":\"ws-1\"}\n                  {\"prompt\":\"why did the cross build pick the wrong architecture\"}",
+            )
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        stream.shutdown().await.unwrap();
+
+        // Read to end-of-stream, which is what the reporter waits for.
+        let mut reply = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut reply).await.unwrap();
+
+        // No state was reported: asking is not working.
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
     /// A line from an older reporter has no such field, and must still map to a
