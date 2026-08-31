@@ -230,6 +230,55 @@ describe("the page", () => {
     expect(fk("memory-head")!.textContent).toContain("could not be read");
   });
 
+  /** Arrows move the selection and the document follows, so moving between notes
+   *  does not mean going back to the list first. */
+  it("steps between notes with the arrows, opening each", async () => {
+    notes.mockResolvedValue([note(), note({ file: "ws-1/Facts.md", kind: "facts", when: "", title: "Facts" })]);
+    const opened: string[] = [];
+    const view = mountMemory({
+      workspace: () => ({ id: "ws-1", name: "deck" }),
+      names: () => new Map(),
+      onOpen: (n) => opened.push(n.file),
+    });
+    document.body.replaceChildren(view.mount);
+    await view.refresh();
+    await flush();
+
+    const list = fk("memory-list")!;
+    const down = () => list.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+    );
+    down();
+    down();
+    expect(opened).toEqual([
+      "ws-1/Sessions/2026-08/31-the-staging-script.md",
+      "ws-1/Facts.md",
+    ]);
+  });
+
+  /** A collapsed group is folded away deliberately: stepping into one would put
+   *  the reader on a note with no row on screen, and the selection would appear
+   *  to vanish. */
+  it("does not step into a group somebody has folded away", async () => {
+    notes.mockResolvedValue([note(), lesson()]);
+    const opened: string[] = [];
+    const view = mountMemory({
+      workspace: () => ({ id: "ws-1", name: "deck" }),
+      names: () => new Map(),
+      onOpen: (n) => opened.push(n.file),
+    });
+    document.body.replaceChildren(view.mount);
+    await view.refresh();
+    await flush();
+
+    fk("memory-group-lessons")!.click();
+    const list = fk("memory-list")!;
+    for (let i = 0; i < 3; i++) {
+      list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    }
+    expect(new Set(opened)).toEqual(new Set(["ws-1/Sessions/2026-08/31-the-staging-script.md"]));
+  });
+
   it("hands the chosen note to whoever opens it", async () => {
     notes.mockResolvedValue([note()]);
     const opened: string[] = [];

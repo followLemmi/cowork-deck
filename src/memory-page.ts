@@ -145,6 +145,27 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
   readiness.dataset.fk = "memory-readiness";
   const list = el("div", "mem-list");
   list.dataset.fk = "memory-list";
+  /* Arrows move between notes and the document follows, so moving from one note
+     to the next does not mean going back to the list first. On the container
+     rather than on each row: a row is added and removed on every repaint, and a
+     listener per row would be a listener per note in a corpus of hundreds.
+
+     Only the rows a person can see. A collapsed group is folded away deliberately,
+     and stepping into one would put the reader on a note with no row on screen —
+     the selection would appear to vanish. */
+  list.onkeydown = (e) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const rows = [...list.querySelectorAll<HTMLButtonElement>(".mem-row")]
+      .filter((r) => !(r.closest(".mem-rows") as HTMLElement | null)?.hidden);
+    if (rows.length === 0) return;
+    const at = rows.findIndex((r) => r === document.activeElement);
+    e.preventDefault();
+    const next = at < 0
+      ? rows[0]
+      : rows[(at + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length];
+    next.focus();
+    next.click();
+  };
   mount.append(head, readiness, list);
 
   const folded: Fold = { mine: false, lessons: false, others: true };

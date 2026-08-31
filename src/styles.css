@@ -2053,6 +2053,66 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* --- A note read where the deck was --------------------------------------
+   #346's precedent, applied to a document: "the terminals take the deck's place,
+   from a control that gives it back". A note's body is markdown with headings and
+   sections, and the panel it is listed in is 280–384px wide — so reading happens
+   on the only surface in this window with the width a document wants.
+
+   Out of flow over the deck, exactly as `.term-drawer.is-full` is, and for the
+   same measured reason: a deck squeezed to nothing draws its zoomed filmstrip out
+   of a box with no room for it, and its padding floors it at a band of empty
+   ground. Covering also makes giving the deck back exact — nothing was taken, so
+   there is no layout to restore, no zoom to remember and no PTY resized in either
+   direction.
+
+   `z-index: 6` is the drawer's, and this comes after `#terminals` in the DOM, so
+   whichever of the two was asked for last is the one on top. The topbar and the
+   panel stay: `#ledger` is where a session that starts waiting while the deck is
+   covered says so. */
+.note-reader {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-void);
+}
+.note-reader[hidden] { display: none; }
+.note-reader-head {
+  flex: 0 0 auto; display: flex; align-items: flex-start; gap: var(--sp-3);
+  justify-content: space-between;
+  padding: var(--sp-3); border-bottom: 1px solid var(--line);
+  background: var(--bg-island);
+}
+.note-reader-named { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.note-reader-title {
+  color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+.note-reader-where {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: baseline;
+  color: var(--fg-mid); font-size: var(--fs-sm);
+}
+.note-reader-when { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.note-reader-path { color: var(--fg-dim); font-size: var(--fs-xs); word-break: break-all; }
+.note-reader-acts { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-2); }
+.note-reader-back {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 26px; min-height: 26px; padding: 0;
+  background: none; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  color: var(--fg-dim); cursor: pointer;
+}
+.note-reader-back:hover { color: var(--fg); border-color: var(--line-strong); background: var(--bg-hover-2); }
+.note-reader-back:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The measure is the point of the surface. A note is prose, and prose set to the
+   full width of a wide window is prose nobody reads to the end of. */
+.note-reader-body {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: var(--sp-4) var(--sp-3);
+  color: var(--fg); font-size: var(--fs-base); line-height: var(--lh-body);
+}
+.note-reader-body > * { max-width: 78ch; margin-inline: auto; }
+.note-reader-wait, .note-reader-fault { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); }
+.note-reader-fault { color: var(--st-error); }
+
 /* A row of mutually exclusive choices that are not sizes. Same control, and it
    shares `.settings-size` for the buttons themselves — what differs is only that
    the group is not a set of numbers, so the name of the group had to. */

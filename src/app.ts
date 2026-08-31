@@ -2,6 +2,7 @@ import { WorkspacesPanel } from "./workspaces";
 import { openNoteSearch } from "./memory-search";
 import { openMemoryJobs } from "./memory-jobs";
 import { mountMemory } from "./memory-page";
+import { NoteReader } from "./note-reader";
 import { SkillsPanel } from "./skills";
 import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
 import {
@@ -211,6 +212,17 @@ export function startApp(role: WindowRole): Promise<void> {
   memMount.className = "island";
   const memHead = document.createElement("h3");
   memHead.textContent = PANEL_TITLE.memory;
+  /* The document surface, over the deck rather than instead of it — #346's
+     precedent, and the reason giving the deck back is exact: it was covered, not
+     resized. Built in every window, pinned or not: the rail is what a pinned
+     window does not get, and this is reached from the page behind that rail. */
+  const noteReader = new NoteReader({
+    host: document.querySelector<HTMLElement>("#workarea")!,
+    describe: (note) => {
+      if (note.kind === "diary") return note.room ? `${note.room} — lessons` : "Lessons";
+      return workspaces.all.find((w) => w.id === note.scope)?.name ?? note.scope;
+    },
+  });
   /* Asked for the workspace each render rather than handed one: the page outlives
      every workspace switch, and "this project" has to mean whichever project the
      panel's head is naming at the time. */
@@ -220,6 +232,7 @@ export function startApp(role: WindowRole): Promise<void> {
       return ws ? { id: ws.id, name: ws.name } : null;
     },
     names: () => new Map(workspaces.all.map((w) => [w.id, w.name])),
+    onOpen: (note) => { void noteReader.open(note); },
   });
   memMount.append(memHead, memoryView.mount);
   const memoryPage = document.createElement("div");
@@ -1233,6 +1246,11 @@ export function startApp(role: WindowRole): Promise<void> {
          page reads unconditionally anyway. */
       () => onMemoryChanged(() => {
         if (currentPage === "memory") void memoryView.refresh();
+        /* Whatever page the panel is on: the note being READ can be rewritten
+           under it — by a capture draining, or by an edit (#386) — and stale
+           markdown left on a surface somebody is reading is the one failure this
+           costs nothing to avoid. */
+        void noteReader.reread();
       }).then(() => {}),
       // The list, and the one question a pinned window has to ask of it before
       // anything is drawn from it. See `closeIfPinnedWorkspaceGone` for why the
@@ -2903,6 +2921,14 @@ export function startApp(role: WindowRole): Promise<void> {
     // Without this, Cmd+N spawned a session and Cmd+W closed the tile while the
     // caret sat in the tile's search box or the broadcast bar.
     if (isTextEntry(e.target)) return;
+    /* The reader is the thing on top, so it takes Escape first. A person reading
+       a note over a zoomed tile means "put the note away" by it — leaving the
+       zoom, which is behind the cover and unchanged, exactly as they left it. */
+    if (e.key === "Escape" && noteReader.isOpen()) {
+      e.preventDefault();
+      noteReader.close();
+      return;
+    }
     if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
     const id = matchHotkey(e, isMacPlatform());
     if (!id) return;
