@@ -611,6 +611,66 @@ pub fn memory_add_lesson(
     Ok(())
 }
 
+/// Write a note by hand.
+///
+/// Takes the three parts rather than markdown, so the shape the indexer reads —
+/// the frontmatter, the H1, the exact `## TL;DR` heading — is written for the
+/// person rather than by them. A note assembled here cannot be missing the one
+/// section that decides whether it is findable.
+///
+/// Returns the path it landed on, relative to the corpus root, so the caller can
+/// open the note it just wrote.
+#[tauri::command]
+pub fn memory_write_note(
+    workspace_id: String,
+    title: String,
+    tldr: String,
+    body: String,
+) -> Result<String, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    if title.trim().is_empty() {
+        return Err("a note needs a title".to_string());
+    }
+    if tldr.trim().is_empty() {
+        return Err("a note needs a TL;DR — it is what a search reads first".to_string());
+    }
+    let note = corpus::Note {
+        title: title.clone(),
+        tldr,
+        sections: if body.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![corpus::Section { heading: "Notes".into(), body }]
+        },
+    };
+    let path = corpus::Corpus::new(root.clone())
+        .write_note_by_hand(&workspace_id, corpus::today(), &title, &note)
+        .map_err(|e| e.to_string())?;
+    wrote();
+    Ok(path
+        .strip_prefix(root)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .replace('\\', "/"))
+}
+
+/// Save an edited note over itself.
+///
+/// Atomically, and refusing a path that is not a note or markdown with no
+/// `## TL;DR` — both checked here rather than only in the interface that hides
+/// the button, because a command that trusted its caller would be one any window
+/// could ask to flatten a year of facts.
+#[tauri::command]
+pub fn memory_save_note(file: String, markdown: String) -> Result<(), String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    // The same containment check reading takes: canonicalised, then required to
+    // still be inside the root (#375).
+    note_under(root, &file)?;
+    corpus::Corpus::new(root.clone()).save_note(&file, &markdown).map_err(|e| e.to_string())?;
+    wrote();
+    Ok(())
+}
+
 /// What every hand-written line owes afterwards: say the corpus moved, and bring
 /// the index up to date.
 ///

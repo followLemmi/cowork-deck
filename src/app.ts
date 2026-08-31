@@ -221,6 +221,9 @@ export function startApp(role: WindowRole): Promise<void> {
       if (note.kind === "diary") return note.room ? `${note.room} — lessons` : "Lessons";
       return workspaces.all.find((w) => w.id === note.scope)?.name ?? note.scope;
     },
+    // A note written or saved on that surface is a corpus that moved, and the
+    // navigator beside it is a walk over the corpus.
+    onWrote: () => { void memoryView.refresh(); },
   });
   /* Asked for the workspace each render rather than handed one: the page outlives
      every workspace switch, and "this project" has to mean whichever project the
@@ -232,6 +235,10 @@ export function startApp(role: WindowRole): Promise<void> {
     },
     names: () => new Map(workspaces.all.map((w) => [w.id, w.name])),
     onOpen: (note) => { void noteReader.open(note); },
+    onCompose: () => {
+      const ws = workspaces.active;
+      if (ws) noteReader.compose({ workspaceId: ws.id, workspaceName: ws.name });
+    },
   });
   memMount.append(memHead, memoryView.mount);
   const memoryPage = document.createElement("div");
@@ -2929,7 +2936,10 @@ export function startApp(role: WindowRole): Promise<void> {
        zoom, which is behind the cover and unchanged, exactly as they left it. */
     if (e.key === "Escape" && noteReader.isOpen()) {
       e.preventDefault();
-      noteReader.close();
+      /* Never out from under an unsaved edit. A keystroke that discards what
+         somebody has written is the one thing this surface must not do by
+         accident — Discard is the way out, and it asks. */
+      if (!noteReader.isEditing()) noteReader.close();
       return;
     }
     if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }

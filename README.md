@@ -286,8 +286,16 @@ configured and both are yours to rewrite.
 record of truth. Facts are appended and marked superseded rather than edited, so a wrong one
 can be corrected without losing what it said.
 
-**Writing into it yourself.** The memory page records a fact, replaces one that has stopped
-being true, and files a lesson into a room you pick rather than one a model picks. A fact is
+**Writing into it yourself.** The memory page writes a note by hand, records a fact,
+replaces one that has stopped being true, and files a lesson into a room you pick rather
+than one a model picks. A note is written and edited where it is read — its raw markdown,
+because that is what a note is on disk — and it keeps its `## TL;DR`: that is what a search
+reads first, so a note without one does not come back from one. Saving is atomic, and a
+capture never overwrites what you are writing.
+
+**Editing a note makes a sync conflict likelier, and that is accepted rather than solved.**
+Two machines editing one note stops the sync cycle and names the file: notes are prose, and
+an automatic merge produces a plausible paragraph nobody wrote. A fact is
 one line — the date and the `[active]` marker are written for you — and replacing one marks
 the old line and puts the new one under it, so the corpus can still answer when it changed
 and to what. A single short line is on disk and listed immediately, but is not searchable on

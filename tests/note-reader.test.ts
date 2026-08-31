@@ -9,15 +9,21 @@
  *  put back. This file asserts that, against the real stylesheet. */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import styles from "../src/styles.css?raw";
-import { NoteReader } from "../src/note-reader";
+import { hasTldr, NoteReader, NOT_EDITABLE_NOTICE, TLDR_REQUIRED } from "../src/note-reader";
 import type { MemoryNoteEntry } from "../src/ipc";
 
 const readNote = vi.fn();
 const reveal = vi.fn();
+const saveNote = vi.fn();
+const writeNote = vi.fn();
 vi.mock("../src/ipc", () => ({
   memoryReadNote: (f: string) => readNote(f),
   revealPath: (p: string) => reveal(p),
+  memorySaveNote: (f: string, m: string) => saveNote(f, m),
+  memoryWriteNote: (ws: string, t: string, l: string, b: string) => writeNote(ws, t, l, b),
 }));
+const confirm = vi.fn();
+vi.mock("../src/modal", () => ({ confirmModal: (m: string) => confirm(m) }));
 
 const note = (over: Partial<MemoryNoteEntry> = {}): MemoryNoteEntry => ({
   file: "ws-1/Sessions/2026-08/31-the-staging-script.md",
@@ -47,12 +53,20 @@ function mount(): { reader: NoteReader; workarea: HTMLElement; deck: HTMLElement
   return { reader, workarea, deck: document.querySelector<HTMLElement>("#deck")! };
 }
 
+const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+
 const fk = (name: string) => document.querySelector<HTMLElement>(`[data-fk="${name}"]`);
 
 describe("reading a note", () => {
   beforeEach(() => {
     readNote.mockReset();
     reveal.mockReset();
+    saveNote.mockReset();
+    writeNote.mockReset();
+    confirm.mockReset();
+    saveNote.mockResolvedValue(undefined);
+    writeNote.mockResolvedValue("ws-1/Sessions/2026-08/31-a-note.md");
+    confirm.mockResolvedValue(true);
     reveal.mockResolvedValue(undefined);
     readNote.mockResolvedValue({ path: "/corpus/ws-1/Sessions/2026-08/31.md", markdown: MARKDOWN });
   });
@@ -172,5 +186,155 @@ describe("reading a note", () => {
 
     expect(document.querySelector(".note-reader-body .md-head")!.textContent).toBe("second");
     expect(reader.current()).toBe("ws-1/Facts.md");
+  });
+});
+
+/** Writing and editing a note (#386). The editor is raw markdown because a note
+ *  IS markdown on disk (ADR-0004); composing one takes three fields, because the
+ *  shape a search reads is written by `memory_write_note` rather than typed. */
+describe("editing a note", () => {
+  beforeEach(() => {
+    readNote.mockReset();
+    saveNote.mockReset();
+    writeNote.mockReset();
+    confirm.mockReset();
+    saveNote.mockResolvedValue(undefined);
+    confirm.mockResolvedValue(true);
+    readNote.mockResolvedValue({ path: "/corpus/a.md", markdown: MARKDOWN });
+  });
+
+  it("opens the note's own markdown, and saves it back through the command", async () => {
+    const { reader } = mount();
+    await reader.open(note());
+    fk("note-reader-edit")!.click();
+
+    const area = fk("note-reader-editor") as HTMLTextAreaElement;
+    expect(reader.isEditing()).toBe(true);
+    expect(area.value).toBe(MARKDOWN);
+
+    area.value = `${MARKDOWN}\n## And more\n- a line\n`;
+    fk("note-reader-save")!.click();
+    await flush();
+
+    expect(saveNote).toHaveBeenCalledWith(
+      "ws-1/Sessions/2026-08/31-the-staging-script.md",
+      `${MARKDOWN}\n## And more\n- a line\n`,
+    );
+    expect(reader.isEditing()).toBe(false);
+  });
+
+  /** The `## TL;DR` is the indexer's priority chunk, and above the big-file
+   *  threshold very nearly the only thing indexed at all. Deleting it makes the
+   *  note unfindable without being told. */
+  it("refuses a save that would leave the note without a TL;DR", async () => {
+    const { reader } = mount();
+    await reader.open(note());
+    fk("note-reader-edit")!.click();
+    (fk("note-reader-editor") as HTMLTextAreaElement).value = "# a note\n\njust prose\n";
+    fk("note-reader-save")!.click();
+    await flush();
+
+    expect(saveNote).not.toHaveBeenCalled();
+    expect(reader.isEditing()).toBe(true);
+    expect(fk("note-reader-edit-fault")!.textContent).toBe(TLDR_REQUIRED);
+  });
+
+  it("knows the heading whichever way it is written, and its absence", () => {
+    expect(hasTldr("## TL;DR\ntext")).toBe(true);
+    expect(hasTldr("## tl;dr  \n")).toBe(true);
+    expect(hasTldr("### TL;DR\n")).toBe(false);
+    expect(hasTldr("some ## TL;DR inline\n")).toBe(false);
+  });
+
+  /** The rule is the file's, not the interface's — but the interface still owes
+   *  a sentence where the button would have been. */
+  it("offers no editor on a fact file or a diary, and says why", async () => {
+    const { reader } = mount();
+    await reader.open(note({ file: "ws-1/Facts.md", kind: "facts", when: "", title: "Facts" }));
+    expect(document.querySelector('[data-fk="note-reader-edit"]')).toBeNull();
+    expect(document.querySelector(".note-reader-head")!.textContent)
+      .toContain(NOT_EDITABLE_NOTICE);
+
+    await reader.open(note({ file: "Diaries/reviewer/2026-08.md", kind: "diary", room: "reviewer" }));
+    expect(document.querySelector('[data-fk="note-reader-edit"]')).toBeNull();
+  });
+
+  it("asks before discarding changes, and not when there are none", async () => {
+    const { reader } = mount();
+    await reader.open(note());
+    fk("note-reader-edit")!.click();
+    fk("note-reader-discard")!.click();
+    await flush();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(reader.isEditing()).toBe(false);
+
+    fk("note-reader-edit")!.click();
+    (fk("note-reader-editor") as HTMLTextAreaElement).value = "## TL;DR\nsomething else";
+    fk("note-reader-discard")!.click();
+    await flush();
+    expect(confirm).toHaveBeenCalled();
+    expect(reader.isEditing()).toBe(false);
+  });
+
+  /** A capture draining underneath, or a sync landing: re-reading under an open
+   *  editor would replace what somebody has written with what is on disk. */
+  it("does not re-read the note under an open editor", async () => {
+    const { reader } = mount();
+    await reader.open(note());
+    fk("note-reader-edit")!.click();
+    const calls = readNote.mock.calls.length;
+    await reader.reread();
+    expect(readNote.mock.calls).toHaveLength(calls);
+    expect(reader.isEditing()).toBe(true);
+  });
+
+  it("keeps the editor open and says why when the save is refused", async () => {
+    saveNote.mockRejectedValue("only a note can be edited");
+    const { reader } = mount();
+    await reader.open(note());
+    fk("note-reader-edit")!.click();
+    fk("note-reader-save")!.click();
+    await flush();
+    expect(reader.isEditing()).toBe(true);
+    expect(fk("note-reader-edit-fault")!.textContent).toContain("only a note can be edited");
+  });
+});
+
+describe("writing a note by hand", () => {
+  beforeEach(() => {
+    readNote.mockReset();
+    writeNote.mockReset();
+    readNote.mockResolvedValue({ path: "/corpus/a.md", markdown: MARKDOWN });
+    writeNote.mockResolvedValue("ws-1/Sessions/2026-08/31-a-note.md");
+  });
+
+  it("takes three fields and opens what it wrote", async () => {
+    const wrote: string[] = [];
+    const { workarea } = mount();
+    const reader = new NoteReader({ host: workarea, onWrote: (f) => wrote.push(f) });
+    reader.compose({ workspaceId: "ws-1", workspaceName: "deck" });
+
+    (fk("note-compose-title") as HTMLInputElement).value = "reading the corpus";
+    (fk("note-compose-tldr") as HTMLTextAreaElement).value = "the listing is a walk";
+    (fk("note-compose-body") as HTMLTextAreaElement).value = "- and it skips dotfiles";
+    fk("note-compose-save")!.click();
+    await flush();
+
+    expect(writeNote).toHaveBeenCalledWith(
+      "ws-1", "reading the corpus", "the listing is a walk", "- and it skips dotfiles",
+    );
+    expect(wrote).toEqual(["ws-1/Sessions/2026-08/31-a-note.md"]);
+    expect(readNote).toHaveBeenCalledWith("ws-1/Sessions/2026-08/31-a-note.md");
+  });
+
+  it("writes nothing without a title and a TL;DR", async () => {
+    const { workarea } = mount();
+    const reader = new NoteReader({ host: workarea });
+    reader.compose({ workspaceId: "ws-1", workspaceName: "deck" });
+    (fk("note-compose-title") as HTMLInputElement).value = "a title alone";
+    fk("note-compose-save")!.click();
+    await flush();
+    expect(writeNote).not.toHaveBeenCalled();
+    expect(fk("note-compose-fault")!.textContent).toContain("title and a TL;DR");
   });
 });

@@ -187,6 +187,35 @@ pub struct Section {
     pub body: String,
 }
 
+/// Who wrote a note.
+///
+/// The corpus holds both in one directory, deliberately: a note is a note to the
+/// indexer, to a search and to the page that lists them. What differs is what the
+/// frontmatter may claim — a note somebody typed is not a record of a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wrote {
+    /// A capture, from a session that was closed.
+    Capture,
+    /// A person, at the keyboard, with nothing closed.
+    ByHand,
+}
+
+impl Wrote {
+    fn tag(self) -> &'static str {
+        match self {
+            Wrote::Capture => "session",
+            Wrote::ByHand => "note",
+        }
+    }
+
+    fn saved(self) -> &'static str {
+        match self {
+            Wrote::Capture => "auto",
+            Wrote::ByHand => "hand",
+        }
+    }
+}
+
 /// A session note, assembled rather than accepted.
 ///
 /// Capture (#365) hands over a title, a TL;DR and some sections; the
@@ -226,6 +255,18 @@ impl Note {
     /// A blank line before it, a BOM, or `--- \n` and every key below is indexed
     /// as prose.
     pub fn render(&self, workspace_id: &str, date: NaiveDate) -> String {
+        self.render_by(workspace_id, date, Wrote::Capture)
+    }
+
+    /// The same note, saying who wrote it.
+    ///
+    /// The `saved` line has been in the frontmatter since #363 with nothing
+    /// reading it — "what distinguishes a note this app wrote from one a person
+    /// wrote by hand in the same directory" — and #386 is what makes the
+    /// distinction real. The tag moves with it: a note somebody typed is not a
+    /// record of a session, and calling it one would make every later reader of
+    /// the corpus wrong about what happened.
+    pub fn render_by(&self, workspace_id: &str, date: NaiveDate, by: Wrote) -> String {
         let mut s = String::new();
         s.push_str("---\n");
         s.push_str(&format!("date: {}\n", day(date)));
@@ -233,15 +274,15 @@ impl Note {
         // A list, as the reference writes it. `parse_frontmatter` skips lines
         // beginning with a dash, so `tags` arrives with an empty value and the
         // block still terminates where it should.
-        s.push_str("tags:\n  - session\n");
+        s.push_str(&format!("tags:\n  - {}\n", by.tag()));
         // What distinguishes a note this app wrote from one a person wrote by
-        // hand in the same directory. Nothing reads it yet; a corpus that
-        // cannot tell the two apart later cannot be cleaned up either.
-        s.push_str("saved: auto\n");
+        // hand in the same directory. A corpus that cannot tell the two apart
+        // later cannot be cleaned up either.
+        s.push_str(&format!("saved: {}\n", by.saved()));
         s.push_str("---\n\n");
 
         let title = one_line(&self.title);
-        let title = if title.is_empty() { "session".to_string() } else { title };
+        let title = if title.is_empty() { by.tag().to_string() } else { title };
         s.push_str(&format!("# {} — {}\n\n", day(date), title));
 
         s.push_str("## TL;DR\n");
@@ -337,8 +378,41 @@ impl Corpus {
         topic: &str,
         note: &Note,
     ) -> io::Result<PathBuf> {
+        self.write_note(workspace_id, date, topic, note, Wrote::Capture)
+    }
+
+    /// A note somebody wrote themselves, in the same shape and the same place.
+    ///
+    /// The same shape because the layout IS the scope: `sync::manifest::ALLOWED`
+    /// fixes three, `scan::detect_scope` reads the first segment, and a fourth
+    /// shape would be written, not synced, not indexed, and silent about all
+    /// three. What differs is the frontmatter, which no longer calls it a
+    /// session (`Wrote::ByHand`) — nothing was closed.
+    ///
+    /// The collision suffix is the same one too, which is what answers "can a
+    /// capture overwrite what somebody is writing": it cannot. A same-day,
+    /// same-topic capture takes `-2` rather than the file being edited, and
+    /// `write_session_note` never appends one summary into another's note.
+    pub fn write_note_by_hand(
+        &self,
+        workspace_id: &str,
+        date: NaiveDate,
+        topic: &str,
+        note: &Note,
+    ) -> io::Result<PathBuf> {
+        self.write_note(workspace_id, date, topic, note, Wrote::ByHand)
+    }
+
+    fn write_note(
+        &self,
+        workspace_id: &str,
+        date: NaiveDate,
+        topic: &str,
+        note: &Note,
+        by: Wrote,
+    ) -> io::Result<PathBuf> {
         if note.tldr.trim().is_empty() {
-            return Err(invalid("a session note without a TL;DR is not written"));
+            return Err(invalid("a note without a TL;DR is not written"));
         }
         let rel = session_note_rel(workspace_id, date, topic)?;
         let first = self.root.join(&rel);
@@ -348,7 +422,7 @@ impl Corpus {
             .to_path_buf();
         let stem = format!("{:02}-{}", date.day(), slug(topic));
 
-        let text = note.render(workspace_id, date);
+        let text = note.render_by(workspace_id, date, by);
         for n in 1..=MAX_SAME_NAME {
             let name = if n == 1 {
                 format!("{stem}.md")
@@ -560,6 +634,74 @@ impl Corpus {
         // no reason they can see.
         out.sort_by(|a, b| b.mtime.total_cmp(&a.mtime).then_with(|| a.file.cmp(&b.file)));
         out
+    }
+}
+
+/// Whether a path in the corpus is a note — the one shape an editor is offered
+/// on.
+///
+/// `Facts.md` and a diary are append-only line records: a fact is marked rather
+/// than rewritten (ADR-0004), and a free-text editor over either would quietly
+/// undo that. So the rule is enforced where the write happens rather than only in
+/// the interface that hides the button, because a command that trusted its caller
+/// would be a command any window could ask to flatten a year of facts.
+pub fn is_note(rel: &str) -> bool {
+    let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 || parts[0] == DIARIES {
+        return false;
+    }
+    if parts.len() == 2 && parts[1] == FACTS {
+        return false;
+    }
+    rel.ends_with(".md")
+}
+
+/// Whether markdown carries the section the indexer needs.
+///
+/// The `## TL;DR` is the priority chunk: the only one allowed to be terser than
+/// the letter floor, and above the big-file threshold very nearly the only thing
+/// indexed at all. Somebody who deletes it has made their note unfindable without
+/// being told — `write_session_note` refuses a note without one, and an editor
+/// has to refuse rather than silently write it.
+///
+/// The heading only, not its prose: an empty TL;DR is a note somebody is still
+/// writing, and refusing to save it would lose the rest.
+pub fn has_tldr(markdown: &str) -> bool {
+    markdown.lines().any(|l| {
+        let l = l.trim_end();
+        l.eq_ignore_ascii_case("## TL;DR") || l.eq_ignore_ascii_case("##TL;DR")
+    })
+}
+
+impl Corpus {
+    /// Save an edited note over itself, atomically.
+    ///
+    /// Through [`write_atomic`], whose dotted `.tmp` name is invisible to both
+    /// walks for two independent reasons (#363) — so a save interrupted halfway
+    /// leaves the old note, never half of the new one.
+    ///
+    /// Refuses two things, and neither is the interface's job alone: a path that
+    /// is not a note, and markdown with no `## TL;DR`.
+    pub fn save_note(&self, rel: &str, markdown: &str) -> io::Result<PathBuf> {
+        if !is_note(rel) {
+            return Err(invalid(
+                "only a note can be edited — facts and diaries are appended, never rewritten",
+            ));
+        }
+        if !has_tldr(markdown) {
+            return Err(invalid(
+                "a note needs its `## TL;DR` heading: it is what the index reads first, \
+                 and a note without one does not come back from a search",
+            ));
+        }
+        let path = self.root.join(rel);
+        if !path.is_file() {
+            return Err(invalid("that note is not there"));
+        }
+        let mut text = markdown.to_string();
+        ensure_trailing_newline(&mut text);
+        write_atomic(&path, &text)?;
+        Ok(path)
     }
 }
 
@@ -819,6 +961,128 @@ mod tests {
             tldr: tldr.into(),
             sections: vec![Section { heading: "What we did".into(), body: "- read the script".into() }],
         }
+    }
+
+    // ----- a note written and edited by hand -----
+
+    /// The same shape and the same place, because the layout IS the scope — but
+    /// the frontmatter no longer calls it a session, since nothing was closed.
+    #[test]
+    fn a_hand_written_note_does_not_call_itself_a_session() {
+        let root = tmp("note-by-hand");
+        let c = Corpus::new(root.clone());
+        let path = c
+            .write_note_by_hand("ws-1", d(2026, 8, 31), "reading the corpus", &note("Read it."))
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+
+        assert!(text.contains("tags:\n  - note\n"), "{text}");
+        assert!(text.contains("saved: hand\n"), "{text}");
+        assert!(!text.contains("- session"), "{text}");
+        // Still where a session note goes: a fourth shape would be written, not
+        // synced, not indexed, and silent about all three.
+        assert!(path.ends_with("ws-1/Sessions/2026-08/31-reading-the-corpus.md"));
+    }
+
+    /// The question #386 asked to be confirmed rather than assumed: a capture
+    /// draining while somebody is editing a same-day, same-topic note.
+    #[test]
+    fn a_capture_cannot_overwrite_a_note_somebody_wrote_by_hand() {
+        let root = tmp("note-collision");
+        let c = Corpus::new(root.clone());
+        let mine = c
+            .write_note_by_hand("ws-1", d(2026, 8, 31), "the wrapup queue", &note("Mine."))
+            .unwrap();
+        let theirs = c
+            .write_session_note("ws-1", d(2026, 8, 31), "the wrapup queue", &note("Theirs."))
+            .unwrap();
+
+        assert_ne!(mine, theirs);
+        assert!(theirs.ends_with("31-the-wrapup-queue-2.md"));
+        // Untouched, and not appended to: one chunk set spanning two unrelated
+        // pieces of work is exactly the noise summarising exists to avoid.
+        let text = std::fs::read_to_string(&mine).unwrap();
+        assert!(text.contains("Mine."));
+        assert!(!text.contains("Theirs."));
+    }
+
+    #[test]
+    fn an_edited_note_is_saved_over_itself_atomically() {
+        let root = tmp("note-save");
+        let c = Corpus::new(root.clone());
+        let path = c
+            .write_note_by_hand("ws-1", d(2026, 8, 31), "the queue", &note("Before."))
+            .unwrap();
+        let rel = "ws-1/Sessions/2026-08/31-the-queue.md";
+
+        c.save_note(rel, "# the queue\n\n## TL;DR\nAfter.").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# the queue\n\n## TL;DR\nAfter.\n",
+            "a trailing newline is added rather than left to the editor",
+        );
+        // Nothing left behind: `write_atomic`'s temp file is dotted, and the
+        // walk skips it either way — but a leaked one would still be a file in
+        // somebody's corpus.
+        let dir = path.parent().unwrap();
+        let names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["31-the-queue.md"]);
+    }
+
+    /// The `## TL;DR` is the indexer's priority chunk and above the big-file
+    /// threshold very nearly the only thing indexed at all. Deleting it makes a
+    /// note unfindable, which is why a save without one is refused rather than
+    /// written.
+    #[test]
+    fn a_save_that_would_lose_the_tldr_is_refused() {
+        let root = tmp("note-save-tldr");
+        let c = Corpus::new(root.clone());
+        c.write_note_by_hand("ws-1", d(2026, 8, 31), "the queue", &note("Before.")).unwrap();
+        let rel = "ws-1/Sessions/2026-08/31-the-queue.md";
+
+        let err = c.save_note(rel, "# the queue\n\njust prose now\n").unwrap_err();
+        assert!(err.to_string().contains("TL;DR"), "{err}");
+        // And the note on disk is the one that was there.
+        let text = std::fs::read_to_string(root.join(rel)).unwrap();
+        assert!(text.contains("## TL;DR"));
+
+        // An empty TL;DR is a note somebody is still writing, not a note without
+        // one: refusing it would lose the rest of what they typed.
+        c.save_note(rel, "# the queue\n\n## TL;DR\n").unwrap();
+    }
+
+    /// `Facts.md` and a diary are append-only line records (ADR-0004). The rule
+    /// is enforced where the write happens, not only in the interface that hides
+    /// the button.
+    #[test]
+    fn only_a_note_can_be_edited() {
+        let root = tmp("note-save-shape");
+        let c = Corpus::new(root.clone());
+        c.append_facts("ws-1", d(2026, 8, 31), &["a — b — c".to_string()]).unwrap();
+        c.append_diary(
+            "reviewer",
+            d(2026, 8, 31),
+            &DiaryEntry {
+                workspace: "cowork-deck".into(),
+                severity: "low".into(),
+                category: "c".into(),
+                what: "w".into(),
+                avoid: "a".into(),
+            },
+        )
+        .unwrap();
+
+        for rel in ["ws-1/Facts.md", "Diaries/reviewer/2026-08.md"] {
+            let err = c.save_note(rel, "## TL;DR\nflattened\n").unwrap_err();
+            assert!(err.to_string().contains("appended, never rewritten"), "{rel}: {err}");
+        }
+        assert!(is_note("ws-1/Sessions/2026-08/31-a.md"));
+        assert!(is_note("ws-1/scratch.md"));
+        assert!(!is_note("loose.md"));
     }
 
     // ----- the facts a person can replace -----

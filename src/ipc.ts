@@ -738,6 +738,15 @@ export const memoryAddLesson = (lesson: {
   what: string;
   avoid: string;
 }) => invoke<void>("memory_add_lesson", lesson);
+/** Write a note by hand. Takes the three parts rather than markdown, so the shape
+ *  a search reads — the frontmatter, the H1, the `## TL;DR` — is written for the
+ *  person. Resolves the path it landed on, relative to the corpus root. */
+export const memoryWriteNote = (workspaceId: string, title: string, tldr: string, body: string) =>
+  invoke<string>("memory_write_note", { workspaceId, title, tldr, body });
+/** Save an edited note over itself, atomically. Refuses a path that is not a note
+ *  and markdown with no `## TL;DR`. */
+export const memorySaveNote = (file: string, markdown: string) =>
+  invoke<void>("memory_save_note", { file, markdown });
 /** Everything ever written down, newest first.
  *
  *  A directory walk rather than a search, which is why the memory page is useful

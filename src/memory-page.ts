@@ -248,6 +248,9 @@ export interface MemoryPageOptions {
   /** A note was chosen. #383 puts it on the document surface; until then the row
    *  is still a control, so the keyboard has somewhere to land. */
   onOpen?: (note: MemoryNoteEntry) => void;
+  /** Write a note by hand. On the document surface rather than in a form here: a
+   *  note is the shape with a body, and this column is 280–384px. */
+  onCompose?: () => void;
 }
 
 export interface MemoryView {
@@ -319,7 +322,12 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
   const lessonBtn = el("button", "rooms-add", "File a lesson");
   lessonBtn.type = "button";
   lessonBtn.dataset.fk = "memory-add-lesson";
-  writeActs.append(factBtn, replaceBtn, lessonBtn);
+  /* The one of the four that is not a form. A note has a body, and a body wants
+     the surface a note is read on — see `NoteReader.compose`. */
+  const noteBtn = el("button", "rooms-add", "Write a note");
+  noteBtn.type = "button";
+  noteBtn.dataset.fk = "memory-write-note";
+  writeActs.append(noteBtn, factBtn, replaceBtn, lessonBtn);
   const writeNote = el("p", "mem-write-note", APPEND_ONLY_NOTICE);
   const writeScope = el("p", "mem-write-note");
   writeScope.dataset.fk = "memory-write-scope";
@@ -563,11 +571,14 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     const ws = opts.workspace();
     factBtn.hidden = ws === null;
     replaceBtn.hidden = ws === null;
+    // A note belongs to a project too — it is written under that project's
+    // `Sessions/`, which is what gives it a scope at all.
+    noteBtn.hidden = ws === null;
     writeScope.hidden = ws !== null;
     if (ws === null) {
       writeScope.textContent =
-        "A fact belongs to a project, and this window has none active. A lesson is "
-        + "global and can be filed from here.";
+        "A note and a fact belong to a project, and this window has none active. A "
+        + "lesson is global and can be filed from here.";
     }
   };
 
@@ -579,6 +590,7 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     await refresh();
   };
 
+  noteBtn.onclick = () => { opts.onCompose?.(); };
   factBtn.onclick = () => {
     const ws = opts.workspace();
     if (ws) void addFactForm({ workspaceId: ws.id, workspaceName: ws.name }).then(wrote);

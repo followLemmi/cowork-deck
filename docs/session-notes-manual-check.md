@@ -190,7 +190,18 @@ From the memory page, under the list.
       why; filing a lesson still works.
 - [ ] Retire every diary room in **Settings → Session notes**, then file a lesson:
       it says where rooms come back from rather than offering an empty picker.
-- [ ] Each of the three says a freshly written short line is not searchable yet —
+- [ ] **Write a note** opens the document surface: a title, a TL;DR and a body.
+      It appears in the navigator immediately, and its frontmatter says
+      `saved: hand` rather than `saved: auto`.
+- [ ] **Edit** on a note loads its raw markdown; saving writes it back and the
+      page re-reads. Deleting the `## TL;DR` heading is refused with a reason.
+- [ ] Discarding an edit you changed asks first; discarding one you did not
+      changes nothing.
+- [ ] Escape while editing does **not** give the deck back — Discard is the way
+      out.
+- [ ] A note and `Facts.md` side by side: the fact file offers no Edit, and says
+      why instead.
+- [ ] Each of the three forms says a freshly written short line is not searchable yet —
       and the page lists it immediately all the same.
 
 ## Searching them yourself

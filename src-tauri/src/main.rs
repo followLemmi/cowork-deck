@@ -390,6 +390,8 @@ fn main() {
             memory::memory_add_fact,
             memory::memory_supersede_fact,
             memory::memory_add_lesson,
+            memory::memory_write_note,
+            memory::memory_save_note,
             memory::memory_download_model,
             memory::memory_rooms,
             memory::memory_save_room,

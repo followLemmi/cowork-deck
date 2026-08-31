@@ -2146,6 +2146,39 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   color: var(--fg); font-size: var(--fs-base); line-height: var(--lh-body);
 }
 .note-reader-body > * { max-width: 78ch; margin-inline: auto; }
+/* Editing a note: the raw markdown, over the same surface. Raw because a note IS
+   markdown on disk (ADR-0004) and the indexer reads its headings — an editor that
+   produced markdown by inference would produce a `## TL;DR` that was nearly
+   right, which is the one way to make a note quietly unfindable. */
+.note-reader-edit {
+  display: block; width: 100%; max-width: 78ch; margin-inline: auto;
+  min-height: 60vh; box-sizing: border-box; resize: vertical;
+  padding: var(--sp-3);
+  background: var(--bg-inset); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm); line-height: var(--lh-body);
+}
+.note-reader-edit:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+/* Writing one: three fields, because the shape around them is written by
+   `memory_write_note` rather than by the person. */
+.note-reader-compose {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  max-width: 78ch; margin-inline: auto;
+}
+.note-reader-row { display: flex; flex-direction: column; gap: 4px; }
+.note-reader-label { color: var(--fg-mid); font-size: var(--fs-sm); }
+.note-reader-field {
+  width: 100%; box-sizing: border-box; padding: var(--sp-2);
+  background: var(--bg-inset); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font: inherit; font-size: var(--fs-sm); resize: vertical;
+}
+.note-reader-field--tall { min-height: 30vh; font-family: var(--font-mono); }
+.note-reader-field:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+/* A rule a person cannot see being obeyed, written where it applies — the same
+   choice `.panel-hint` records. */
+.note-reader-rule { color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body); }
 .note-reader-wait, .note-reader-fault { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); }
 .note-reader-fault { color: var(--st-error); }
 

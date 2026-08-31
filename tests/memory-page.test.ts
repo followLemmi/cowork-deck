@@ -450,10 +450,13 @@ describe("the writing controls", () => {
     await view.refresh();
     await flush();
 
+    // A note is written under a project's `Sessions/`, which is what gives it a
+    // scope at all — so it goes with the two facts.
+    expect(fk("memory-write-note")!.hidden).toBe(true);
     expect(fk("memory-add-fact")!.hidden).toBe(true);
     expect(fk("memory-replace-fact")!.hidden).toBe(true);
     expect(fk("memory-add-lesson")!.hidden).toBe(false);
-    expect(fk("memory-write-scope")!.textContent).toContain("A fact belongs to a project");
+    expect(fk("memory-write-scope")!.textContent).toContain("belong to a project");
   });
 
   /** Why the two shapes get forms and a note gets an editor, said where somebody
