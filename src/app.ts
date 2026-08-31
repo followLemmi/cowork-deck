@@ -15,7 +15,8 @@ import {
 } from "./ui-scale";
 import type { PanelPage, WorkspacePage } from "./view";
 import {
-  claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
+  claudeAvailable, closeSession, deleteSkillHistory, listRuns, loadLayout, loadUiState,
+  memoryForgetCaptureAnswer, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
   revealPath, saveUiState, scheduleAck, schedulerReady, openWorkspaceWindow, onSessionOwner,
   syncSummary,
@@ -645,6 +646,11 @@ export function startApp(role: WindowRole): Promise<void> {
    *  counting what it can see. Mirrors `ui_state.usageReported`; the backend holds
    *  the authoritative copy and applies it to the usage registry. */
   let reportedLimits = true;
+  /** Whether closing a session writes a note about it. Mirrors
+   *  `ui_state.captureOnClose`, and `undefined` is "never asked" — which is not
+   *  `false`, because a default either way would answer a question about spending
+   *  somebody's money on their behalf. */
+  let captureAnswer: boolean | undefined = undefined;
 
   const historyView = new HistoryView({
     onFilter: (f) => { runFilters = f; void refreshHistory(); },
@@ -1131,7 +1137,21 @@ export function startApp(role: WindowRole): Promise<void> {
           .map((w) => `${terminals.nameOf(w.session) ?? deck.nameOf(w.session)} (${w.processes} running)`)
           .join(", ");
         void confirmModal(`Still running: ${named}. Quit anyway and stop it?`)
-          .then((go) => (go ? quitConfirmed() : quitCancelled()))
+          .then(async (go) => {
+            if (!go) return quitCancelled();
+            /* Notes for whatever was still open, queued before the exit and run
+               at the next start by #364's recovery. No second question: a quit is
+               not the moment to ask about spending money, so this follows the
+               answer already given and does nothing at all when there is none.
+               `close_session` is what queues them, and it is called here rather
+               than left to the teardown because the teardown does not know about
+               consent. */
+            for (const { session, capture } of deck.captureOnQuit()) {
+              await closeSession(session, capture)
+                .catch((e) => console.debug("queueing a note at quit failed", e));
+            }
+            return quitConfirmed();
+          })
           .catch((e) => {
             // An answer that never arrives leaves the app up with no explanation.
             console.error("quit question failed:", e);
@@ -2376,6 +2396,19 @@ export function startApp(role: WindowRole): Promise<void> {
           .catch((e) => console.debug("reported limits save failed", e));
         void readLimits(true);
       },
+      captureOnClose: captureAnswer,
+      /* Three states and two routes, which is why this is not a patch field
+         alone: a patch says "set this" and an omitted field says "leave it
+         alone", so there is no value left to spell "back to asking". Forgetting
+         is its own command. */
+      onCaptureOnClose: (value) => {
+        captureAnswer = value;
+        deck.setCaptureAnswer(value);
+        const done = value === undefined
+          ? memoryForgetCaptureAnswer()
+          : saveUiState({ captureOnClose: value });
+        done.catch((e) => console.debug("session note answer save failed", e));
+      },
     });
   }
 
@@ -2453,6 +2486,7 @@ export function startApp(role: WindowRole): Promise<void> {
       /* The window's own section rather than the standalone dialog: two doors to
          one set of facts is how they drift. The dialog stays for the first-run
          offer, which is a flow of its own with its own copy. */
+      { id: "notes", title: "Session notes…", run: () => void openSettings("notes") },
       { id: "sync", title: "Memory sync…", run: () => void openSettings("config") },
     ];
     return pinnedTo === null ? all : all.filter((c) => !APP_WIDE_COMMANDS.has(c.id));
@@ -2760,6 +2794,12 @@ export function startApp(role: WindowRole): Promise<void> {
       // draw a switch in the wrong position, and the backend has already applied
       // the stored value to its own registry at startup.
       reportedLimits = ui.usageReported;
+      // The remembered answer to the note question, on the same pass and for a
+      // sharper version of the same reason: read late, the first close of the
+      // session would ask somebody who had already answered, which is exactly the
+      // reflex-click failure the remembered answer exists to avoid.
+      captureAnswer = ui.captureOnClose;
+      deck.setCaptureAnswer(captureAnswer);
       // Read here rather than again inside `boot()`: one read of one file, and
       // the drawer's own restore step below runs after the deck's layout so its
       // height lands on a window that is already laid out. *Whether* it is up is

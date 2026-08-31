@@ -308,12 +308,31 @@ impl Store {
         if let Some(on) = patch.record_scenario_runs {
             st.record_scenario_runs = on;
         }
+        // An answer given, never one withdrawn: a patch that omits the field
+        // leaves it alone, exactly like every field above. Forgetting the answer
+        // is `clear_capture_on_close`, because "leave it alone" and "put it back
+        // to never-asked" cannot both be spelled `None` here.
+        if let Some(on) = patch.capture_on_close {
+            st.capture_on_close = Some(on);
+        }
         if let Some(rows) = patch.terminal_rows {
             st.terminal_rows = rows;
         }
         if let Some(on) = patch.usage_reported {
             st.usage_reported = on;
         }
+        Self::write_json(&self.ui_path(), &st)
+    }
+
+    /// Forget the remembered answer to the capture question, so the next close
+    /// asks again.
+    ///
+    /// Its own method rather than a patch field: a patch says "set this" and an
+    /// omitted field says "leave it alone", so there is no value of
+    /// `Option<bool>` left to mean "back to never asked".
+    pub fn clear_capture_on_close(&self) -> std::io::Result<()> {
+        let mut st = self.ui_state();
+        st.capture_on_close = None;
         Self::write_json(&self.ui_path(), &st)
     }
 
@@ -827,12 +846,17 @@ mod tests {
         // alternative default is a screen saying "unknown" to somebody who
         // never knew there was a switch.
         assert!(UiState::default().usage_reported);
+        // Never asked, which is a third state and not `false`. A default either
+        // way would answer a question about spending somebody's money on their
+        // behalf — see the field's own note.
+        assert_eq!(UiState::default().capture_on_close, None);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
             pr_diff_cols: Some(80),
             sync_offer_dismissed: Some(true),
             record_scenario_runs: Some(false),
+            capture_on_close: Some(true),
             terminal_rows: Some(20),
             usage_reported: Some(false),
             panel_px: Some(340),

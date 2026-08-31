@@ -173,6 +173,116 @@ pub fn announce() {
     }
 }
 
+/// Whether closing this session could produce a note, and why not when it could
+/// not.
+///
+/// Asked *before* the question is put to anybody, because consent to spend money
+/// on something that cannot work is worse than no offer at all. Two things have
+/// to be true and neither is knowable from the frontend: this build must have a
+/// reader for the CLI that wrote the log (#371, #372), and the app must know
+/// where that log is.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CaptureOffer {
+    pub available: bool,
+    /// Why not, in a sentence a person could be shown. `None` when it is
+    /// available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The offer for one session.
+///
+/// The "nothing to summarise" half of #366 is deliberately **not** decided here.
+/// Reading a transcript to find out whether it holds a conversation would put a
+/// file read of up to a few megabytes on the path of closing a tile, and it would
+/// buy nothing: `capture::run` checks it again before the model call, so a
+/// session that turns out to be empty costs a queue entry and no tokens. What
+/// this rules out is what would otherwise cost a *question* — a CLI whose log
+/// cannot be read at all, and a session the app never saw a log for.
+#[tauri::command]
+pub fn memory_capture_offer(session: String, cli_kind: Option<String>) -> CaptureOffer {
+    let cli = crate::activity::model::CliKind::parse(cli_kind.as_deref().unwrap_or_default());
+    if transcript::digester_for(cli).is_none() {
+        return CaptureOffer {
+            available: false,
+            reason: Some(format!(
+                "Notes are not available for {} sessions in this build.",
+                cli.as_str(),
+            )),
+        };
+    }
+    if crate::transcripts::get(&session).is_none() {
+        return CaptureOffer {
+            available: false,
+            // The ordinary case by far: a tile that never got as far as running
+            // anything reported no transcript, so there is nothing to read.
+            reason: Some("This session has not written a transcript yet.".to_string()),
+        };
+    }
+    CaptureOffer { available: true, reason: None }
+}
+
+/// Put a closing session's note on the queue.
+///
+/// Called from `close_session` rather than from the frontend, and that is the
+/// guarantee rather than a convenience: the enqueue has to happen before
+/// `transcripts::forget`, and an ordering that lives inside one function cannot
+/// be got wrong by a caller.
+///
+/// Returns whether anything was queued. `false` is ordinary — a session with no
+/// transcript on record — and never a reason to fail a close.
+pub fn enqueue_on_close(
+    session: &str,
+    workspace_id: &str,
+    cli_kind: Option<String>,
+    session_name: Option<String>,
+) -> bool {
+    let Some(q) = wrapup_queue() else { return false };
+    // The second of the two guards `decideCapture` documents. A remembered "yes"
+    // arrives here without having consulted `memory_capture_offer`, so a session
+    // whose CLI this build cannot read would otherwise be queued and then fail —
+    // on every close of such a tile, forever, for somebody who agreed to notes
+    // once and about something else.
+    let cli = crate::activity::model::CliKind::parse(cli_kind.as_deref().unwrap_or_default());
+    if transcript::digester_for(cli).is_none() {
+        return false;
+    }
+    let Some(path) = crate::transcripts::get(session) else { return false };
+
+    let req = queue::EnqueueRequest {
+        session_id: session.to_string(),
+        workspace_id: workspace_id.to_string(),
+        cli_kind,
+        transcript_path: path,
+        session_name,
+    };
+    match q.enqueue(&req) {
+        Ok(_) => {
+            announce();
+            // What turns a queued job into a note. On its own thread, so a close
+            // never waits on a model.
+            spawn_drain();
+            true
+        }
+        Err(e) => {
+            // Warned, never propagated. The person asked for a tile to go away; a
+            // queue that could not be written is a summary that will not exist,
+            // and that is not a reason to keep the tile on screen.
+            eprintln!("warning: could not queue a note for a closing session ({e})");
+            false
+        }
+    }
+}
+
+/// Forget the remembered answer, so the next close asks again.
+#[tauri::command]
+pub fn memory_forget_capture_answer() -> Result<(), String> {
+    let Some(dir) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    crate::store::Store::new(dir.clone())
+        .clear_capture_on_close()
+        .map_err(|e| e.to_string())
+}
+
 /// Every wrapup job, oldest first.
 ///
 /// Read-only, and the frontend has nothing that writes the queue: a job is put

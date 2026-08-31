@@ -25,6 +25,11 @@ vi.mock("../src/ipc", () => ({
   prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
   describeExit: vi.fn().mockReturnValue(null),
   closeSession: vi.fn(),
+  // The close path asks whether a note is even possible before it asks
+  // anybody anything; unavailable is the quiet answer, so these tests see
+  // no dialog and no note.
+  memoryCaptureOffer: vi.fn().mockResolvedValue({ available: false }),
+  saveUiState: vi.fn().mockResolvedValue(undefined),
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
   sessionSnapshots: vi.fn().mockResolvedValue({}),
@@ -88,7 +93,10 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     emitState(first, "done");
     await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
 
-    expect(vi.mocked(closeSession)).toHaveBeenCalledWith(first);
+    // `null`, and the second argument is the point: replacing a finished run is
+    // not somebody deciding to end a session, so it never writes a note and never
+    // asks about one.
+    expect(vi.mocked(closeSession)).toHaveBeenCalledWith(first, null);
     expect(deckEl.querySelectorAll(".tile")).toHaveLength(1);
   });
 

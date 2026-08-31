@@ -2201,7 +2201,19 @@ fn session_io_error(e: std::io::Error) -> String {
     }
 }
 #[tauri::command]
-pub fn close_session(state: State<AppState>, session: String) {
+pub fn close_session(
+    state: State<AppState>,
+    session: String,
+    capture: Option<CaptureOnClose>,
+) {
+    // First of all, and it is a parameter of this command rather than a call the
+    // frontend makes beforehand for exactly that reason. The note needs the
+    // transcript path, `transcripts::forget` below takes it away, and an ordering
+    // that lives inside one function cannot be got wrong by a caller — the same
+    // reasoning as the `run_journal::close` line under it, one step earlier.
+    if let Some(c) = capture {
+        crate::memory::enqueue_on_close(&session, &c.workspace_id, c.cli_kind, c.session_name);
+    }
     // Before the kill, so the result is read off the transcript this session was
     // still reporting. `run_journal::close` takes the record out of its own map,
     // so the PTY's `on_exit` arriving a moment later finds nothing to close and
@@ -2214,6 +2226,25 @@ pub fn close_session(state: State<AppState>, session: String) {
     // tile that is gone should not contribute a half-drawn banner to whatever
     // reuses its id.
     crate::usage::observed::forget(&session);
+}
+
+/// A closing session's note, when the person has agreed to one.
+///
+/// `Option<CaptureOnClose>` on `close_session` rather than a flag, because the
+/// three fields are meaningless apart: a consent with no workspace has nowhere
+/// to file the note, and one with no CLI cannot say which reader understands the
+/// log. Absent means "close it and write nothing", which is what every close
+/// before #366 meant.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CaptureOnClose {
+    #[serde(rename = "workspaceId")]
+    pub workspace_id: String,
+    #[serde(rename = "cliKind", default)]
+    pub cli_kind: Option<String>,
+    /// What the tile was called, so a failed job can name something a person
+    /// recognises rather than an id.
+    #[serde(rename = "sessionName", default)]
+    pub session_name: Option<String>,
 }
 
 /// Quit, having been told to go ahead.

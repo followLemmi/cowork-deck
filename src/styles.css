@@ -1986,6 +1986,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .settings-size:hover { background: var(--bg-hover-2); color: var(--fg); border-color: var(--line-strong); }
 .settings-size.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
 .settings-size:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* A row of mutually exclusive choices that are not sizes. Same control, and it
+   shares `.settings-size` for the buttons themselves — what differs is only that
+   the group is not a set of numbers, so the name of the group had to. */
+.settings-choice { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
 
 /* Checkbox beside its label rather than under it, and not the 13px system size.
    accent-color themes the native control — no custom rendering needed here. */

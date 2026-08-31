@@ -568,6 +568,24 @@ pub struct UiState {
     /// active workspace silently forgotten rather than an error.
     #[serde(rename = "recordScenarioRuns", default = "default_record_runs")]
     pub record_scenario_runs: bool,
+    /// Whether closing a session writes a note about it — the remembered answer
+    /// to the question #366 asks.
+    ///
+    /// **Three states, and that is the point.** `None` is "never asked", which is
+    /// not the same as "no": a default of `false` would silently decide the
+    /// question in the app's favour, and a default of `true` would start spending
+    /// the person's money on the first close. Only an answer they gave sets it.
+    ///
+    /// An `Option` rather than the `default`-with-a-value shape every field above
+    /// uses, for the same reason: those have a right answer to fall back on and
+    /// this one has a question.
+    ///
+    /// Local by nature, like `sync_offer_dismissed` and for the same reason:
+    /// `ui_state.json` is not on the sync allowlist, so consenting on the laptop
+    /// says nothing about the desktop. Consent to spend money is exactly the kind
+    /// of answer that should not travel.
+    #[serde(rename = "captureOnClose", default, skip_serializing_if = "Option::is_none")]
+    pub capture_on_close: Option<bool>,
     /// How tall the drawer is, **in rows of the terminal's own type** rather
     /// than in pixels. One value for the app, unlike whether the drawer is up
     /// (`TerminalLayout::open`): the height is how much of this window a person
@@ -666,6 +684,10 @@ impl Default for UiState {
             pr_diff_cols: default_pr_diff_cols(),
             sync_offer_dismissed: false,
             record_scenario_runs: default_record_runs(),
+            // Never asked. Not `false`, which would decide the question in the
+            // app's favour, and not `true`, which would start spending somebody's
+            // money on their first close.
+            capture_on_close: None,
             terminal_rows: default_terminal_rows(),
             usage_reported: default_usage_reported(),
             // None, and not a pixel figure: until a person drags one, the width
@@ -696,6 +718,11 @@ pub struct UiStatePatch {
     pub ui_scale: Option<f32>,
     #[serde(rename = "prDiffCols")]
     pub pr_diff_cols: Option<u32>,
+    /// `Some(_)` sets the remembered answer; `None` leaves it alone, like every
+    /// other field of a patch. Clearing it back to "never asked" therefore needs
+    /// its own route — see `clear_capture_on_close`.
+    #[serde(rename = "captureOnClose")]
+    pub capture_on_close: Option<bool>,
     #[serde(rename = "syncOfferDismissed")]
     pub sync_offer_dismissed: Option<bool>,
     #[serde(rename = "recordScenarioRuns")]

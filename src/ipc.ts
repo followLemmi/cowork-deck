@@ -92,6 +92,11 @@ export interface UiState {
    *  and deletes nothing already written, and reads keep working. Required for
    *  the same reason as the two above: Rust fills it from a `serde` default. */
   recordScenarioRuns: boolean;
+  /** Whether closing a session writes a note about it, once the person has said.
+   *  `undefined` is "never asked", which is deliberately not "no": a default
+   *  either way would answer a question about spending their money on their
+   *  behalf. Local to this machine — `ui_state.json` does not travel. */
+  captureOnClose?: boolean;
   /** How tall the drawer is, **in rows of the terminal's own type** — not
    *  pixels, and for a sharper version of `prDiffCols`' reason: the thing being
    *  sized is a grid of characters, so "show me twenty rows" has to keep meaning
@@ -134,6 +139,9 @@ export interface UiState {
  *  size. An absent key here means "leave it alone". */
 export interface UiStatePatch {
   activeWorkspaceId?: string;
+  /** Sets the remembered answer. Omitted leaves it alone, like every other field
+   *  here — putting it back to "never asked" is `memoryForgetCaptureAnswer`. */
+  captureOnClose?: boolean;
   uiScale?: number;
   prDiffCols?: number;
   syncOfferDismissed?: boolean;
@@ -547,7 +555,37 @@ export const startCommandSession = (
 export const writeSession = (session: string, data: string) => invoke<void>("write_session", { session, data });
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
-export const closeSession = (session: string) => invoke<void>("close_session", { session });
+/** What a closing session needs for its note, when the person has agreed to one.
+ *
+ *  The three fields are meaningless apart: consent with no workspace has nowhere
+ *  to file the note, and consent with no CLI cannot say which reader understands
+ *  the log. */
+export interface CaptureOnClose {
+  workspaceId: string;
+  cliKind?: CliKind;
+  sessionName?: string;
+}
+/** Close a session, and write a note about it when `capture` says to.
+ *
+ *  The note is an argument of the close rather than a call before it, and that is
+ *  the guarantee: `close_session` calls `transcripts::forget`, so the transcript
+ *  path is gone the instant the close goes through. An ordering inside one
+ *  command cannot be got wrong by a caller. */
+export const closeSession = (session: string, capture?: CaptureOnClose | null) =>
+  invoke<void>("close_session", { session, capture: capture ?? null });
+/** Whether closing this session could produce a note at all — a CLI this build
+ *  can read, and a log it knows the location of. Asked before anybody is asked,
+ *  because consent to spend money on something that cannot work is worse than no
+ *  offer. */
+export const memoryCaptureOffer = (session: string, cliKind?: CliKind) =>
+  invoke<CaptureOffer>("memory_capture_offer", { session, cliKind: cliKind ?? null });
+/** Forget the remembered answer, so the next close asks again. */
+export const memoryForgetCaptureAnswer = () =>
+  invoke<void>("memory_forget_capture_answer");
+export interface CaptureOffer {
+  available: boolean;
+  reason?: string;
+}
 /** One tile as it crosses between windows: everything `sessions.json` records
  *  about it, plus what was on its screen.
  *

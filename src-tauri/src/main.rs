@@ -375,6 +375,8 @@ fn main() {
             commands::delete_skill_history,
             commands::reveal_path,
             memory::memory_jobs,
+            memory::memory_capture_offer,
+            memory::memory_forget_capture_answer,
             sync_cmd::sync_summary,
             sync_cmd::sync_preflight,
             sync_cmd::sync_probe,
