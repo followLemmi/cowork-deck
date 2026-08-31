@@ -5,23 +5,29 @@
 // and until now nothing asked it. The cost went to stderr, which is not where
 // anybody looks for a number they are paying.
 //
-// # A dialog rather than a fourth rail page
+// # A section of the memory page, and no longer a dialog
 //
-// The rail's three pages are places you work: the deck, the journal you browse,
-// the scenarios you keep. This is a status readout you open, read and close — and
-// a rail page costs an icon, the ink, a keyboard stop and its own tests to say the
-// same four things. Said plainly rather than quietly downgraded: if it turns out
-// to be somewhere people live, it should become a page.
+// #378 shipped this as a dialog and said what would retire it: "a rail page costs
+// an icon, the ink, a keyboard stop and its own tests to say the same four
+// things… if it turns out to be somewhere people live, it should become a page."
+// #380 gave memory a page for its own reasons, and a second door onto one set of
+// facts is how they drift — so this moved rather than staying beside it.
+//
+// **Collapsed on arrival.** What somebody opens the memory page for is their
+// notes; a list of jobs above them would put the plumbing in front of the point.
+// So it sits below both the corpus and the controls that write into it, folded,
+// with its own count on the header.
 //
 // # Retrying spends money
 //
 // The same sentence the close-time question owes, owed again here. A person who
 // has fixed whatever broke should not have to close another tile to find out, and
-// should not press a button that costs them something without being told.
+// should not press a button that costs them something without being told. It
+// survives the move, as does the second sentence beside it: the queue is THIS
+// machine's, because a queued job names a transcript path here.
 
-import { openDialog } from "./dialog-shell";
 import {
-  memoryJobs, memoryRetryJob, memoryStatus, onMemoryChanged, revealPath,
+  memoryJobs, memoryRetryJob, memoryStatus, revealPath,
   type MemoryJob, type MemoryStatus,
 } from "./ipc";
 import { megabytes } from "./memory-model";
@@ -121,54 +127,92 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return n;
 }
 
-/** Open it. */
-export function openMemoryJobs(): void {
-  let gone = false;
-  let unlisten: (() => void) | null = null;
-  const { box, close } = openDialog({
-    // Every way out goes through `finish`, so the subscription is dropped
-    // whichever way the dialog was left — Escape, the backdrop, or the button.
-    onCancel: () => finish(),
-    // Enter accepts nothing here: there is no field and no decision, only rows
-    // with their own buttons.
-    onAccept: () => {},
-    labelledBy: "memory-jobs-title",
-  });
-  const finish = () => {
-    gone = true;
-    unlisten?.();
-    close();
+/** The two sentences the move must not lose.
+ *
+ *  Both were in the dialog and both are easy to drop when a layout changes. The
+ *  first is the one a button that spends somebody's money owes; the second
+ *  answers "why is this list different on my other machine" before it is asked —
+ *  a queued job names a transcript path here.
+ *
+ *  Said once, at the foot, rather than beside every button: it is the same fact
+ *  each time, and a repeated warning is a warning nobody reads. */
+export const RETRY_NOTICE =
+  "Trying a job again runs the summary once more, on your own Claude account. "
+  + "This machine only — each machine keeps its own queue.";
+
+export interface CaptureRecord {
+  /** The section, for the memory page to append. */
+  readonly mount: HTMLElement;
+  /** Re-read the queue and repaint. Driven by the page rather than by a
+   *  subscription of its own: the page already re-reads on `memory://changed`
+   *  while it is on screen, and a second listener would repaint a section nobody
+   *  is looking at. */
+  refresh: () => Promise<void>;
+  /** Unfold it, for the palette entry that used to open the dialog. */
+  reveal: () => void;
+}
+
+/** Build the section. */
+export function mountCaptureRecord(): CaptureRecord {
+  /* Not `.mem-group`: it borrows that class's HEADER, because unfolding is the
+     same act, but it is not one of the note groups — and a selector counting the
+     groups on the page must not count the plumbing among them. */
+  const mount = el("section", "mem-jobs");
+  const toggle = el("button", "mem-group-head");
+  toggle.type = "button";
+  toggle.dataset.fk = "jobs-toggle";
+  const label = el("span", "mem-group-title", "What has been captured");
+  const count = el("span", "mem-group-count", "");
+  toggle.append(label, count);
+  const body = el("div", "mem-jobs-body");
+  // Collapsed on arrival: the notes are the point, and the plumbing is what you
+  // go looking for when something did not happen.
+  body.hidden = true;
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.onclick = () => {
+    body.hidden = !body.hidden;
+    toggle.setAttribute("aria-expanded", String(!body.hidden));
   };
 
-  const title = el("div", "modal-title", "What has been captured");
-  title.id = "memory-jobs-title";
-  const summary = el("p", "form-hint");
+  const summary = el("p", "mem-write-note");
   summary.dataset.fk = "jobs-summary";
-  const stale = el("p", "form-hint");
+  const stale = el("p", "mem-write-note");
   stale.dataset.fk = "jobs-stale";
-  const list = el("div", "notes-list");
+  const list = el("div", "mem-rows");
   list.dataset.fk = "jobs-list";
-  // Said once, at the bottom, rather than beside every button: it is the same
-  // fact each time and a repeated warning is a warning nobody reads.
-  const cost = el(
-    "p",
-    "form-hint",
-    "Trying a job again runs the summary once more, on your own Claude account. "
-      + "This machine only — each machine keeps its own queue.",
-  );
+  const notice = el("p", "mem-write-note", RETRY_NOTICE);
+  body.append(summary, stale, list, notice);
+  mount.append(toggle, body);
 
+  /** One job, in as many lines as the column has room for.
+   *
+   *  Stacked rather than crowded: this column is 280–384px, and a job already
+   *  carries a name, a state, a token count and up to two buttons. The honest
+   *  answer to that is fewer facts per line, not a smaller type size. */
   const row = (job: MemoryJob) => {
-    const wrap = el("div", "notes-row");
+    const wrap = el("div", "notes-row mem-job");
     wrap.dataset.job = job.jobId;
-    const head = el("div", "notes-row-head");
-    head.append(el("span", "notes-row-title", jobLine(job)));
+    wrap.append(el("div", "notes-row-title", jobLine(job)));
     if (job.cost) {
       const c = job.cost;
       const money = typeof c.usd === "number" ? `, $${c.usd.toFixed(4)}` : "";
-      head.append(
-        el("span", "notes-row-when", `${c.inputTokens} in, ${c.outputTokens} out${money}`),
+      wrap.append(
+        el("div", "notes-row-when", `${c.inputTokens} in, ${c.outputTokens} out${money}`),
       );
     }
+    /* The reason, as detail. It can hold model output — bounded at 2000
+       characters and kept because a parse failure is otherwise a mystery — so it
+       goes under the line that says which job, trimmed, rather than becoming the
+       row's headline. Whole on hover. */
+    if (job.lastError) {
+      const reason = job.lastError.length > REASON_HEAD
+        ? `${job.lastError.slice(0, REASON_HEAD)}…`
+        : job.lastError;
+      const detail = el("div", "notes-row-text", reason);
+      detail.title = job.lastError;
+      wrap.append(detail);
+    }
+    const acts = el("div", "mem-job-acts");
     if (job.state === "failed") {
       const again = el("button", "rooms-add", "Try again");
       again.type = "button";
@@ -180,7 +224,7 @@ export function openMemoryJobs(): void {
           wrap.append(el("p", "rooms-fault", String(e)));
         });
       };
-      head.append(again);
+      acts.append(again);
     }
     if (job.notePath) {
       const show = el("button", "rooms-add", "Show the note");
@@ -191,50 +235,41 @@ export function openMemoryJobs(): void {
           wrap.append(el("p", "rooms-fault", String(e)));
         });
       };
-      head.append(show);
+      acts.append(show);
     }
-    wrap.append(head);
-    /* The reason, as detail. It can hold model output — bounded at 2000
-       characters and kept because a parse failure is otherwise a mystery — so it
-       goes under the line that says which job, trimmed, rather than becoming the
-       row's headline. */
-    if (job.lastError) {
-      const reason = job.lastError.length > REASON_HEAD
-        ? `${job.lastError.slice(0, REASON_HEAD)}…`
-        : job.lastError;
-      const detail = el("div", "notes-row-text", reason);
-      detail.title = job.lastError;
-      wrap.append(detail);
-    }
+    if (acts.childElementCount > 0) wrap.append(acts);
     return wrap;
   };
 
-  const render = async () => {
-    if (gone) return;
+  const refresh = async () => {
     let jobs: MemoryJob[];
     try {
       jobs = await memoryJobs();
     } catch (e) {
-      if (gone) return;
       summary.textContent = `The queue could not be read (${e}).`;
+      count.textContent = "";
       return;
     }
-    if (gone) return;
     summary.textContent = spendLine(spend(jobs));
+    /* The count on the header, so a folded section still says whether anything
+       needs a person. Failures rather than jobs: the number worth seeing without
+       unfolding is the one that means something did not happen. */
+    const failed = jobs.filter((j) => j.state === "failed").length;
+    count.textContent = failed > 0 ? `${failed} failed` : String(jobs.length);
+    toggle.classList.toggle("has-fault", failed > 0);
 
     // Newest first: what just happened is what somebody opened this to see.
     const shown = [...jobs].reverse();
     list.replaceChildren();
     if (shown.length === 0) {
       list.append(
-        el("p", "form-hint", "No sessions have been closed with a note on this machine yet."),
+        el("p", "mem-write-note", "No sessions have been closed with a note on this machine yet."),
       );
     }
     for (const job of shown) list.append(row(job));
 
     try {
       const status = await memoryStatus();
-      if (gone) return;
       const line = staleLine(status);
       stale.textContent = line ?? "";
       stale.hidden = line === null;
@@ -245,17 +280,16 @@ export function openMemoryJobs(): void {
     }
   };
 
-  box.append(title, summary, stale, list, cost);
-  void render();
-  try {
-    void onMemoryChanged(() => void render())
-      .then((un) => {
-        if (gone) un();
-        else unlisten = un;
-      })
-      .catch((e) => console.debug("memory job updates unavailable", e));
-  } catch (e) {
-    console.debug("memory job updates unavailable", e);
-  }
-
+  return {
+    mount,
+    refresh,
+    reveal: () => {
+      body.hidden = false;
+      toggle.setAttribute("aria-expanded", "true");
+      // Guarded: jsdom has no layout and no `scrollIntoView`, and this is a
+      // convenience — losing it must not cost the unfolding it accompanies.
+      toggle.scrollIntoView?.({ block: "nearest" });
+      toggle.focus();
+    },
+  };
 }

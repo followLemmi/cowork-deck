@@ -2089,6 +2089,21 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   margin: 0; color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body);
 }
 
+/* The capture record, folded at the foot of the page. Its header is the group
+   header the note groups use — the same control, because it is the same act. */
+.mem-jobs {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding-top: var(--sp-3); border-top: 1px solid var(--line);
+}
+.mem-jobs-body { display: flex; flex-direction: column; gap: var(--sp-2); }
+.mem-group-head.has-fault .mem-group-count { color: var(--st-error); }
+/* A job in a 280–384px column carries a name, a state, a token count and up to
+   two buttons. The honest answer to that is fewer facts per LINE — stacked —
+   rather than a smaller type size. */
+.mem-job { display: flex; flex-direction: column; gap: 2px; }
+.mem-job .notes-row-title { display: block; overflow-wrap: anywhere; }
+.mem-job-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-1); }
+
 /* --- A note read where the deck was --------------------------------------
    #346's precedent, applied to a document: "the terminals take the deck's place,
    from a control that gives it back". A note's body is markdown with headings and

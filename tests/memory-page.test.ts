@@ -251,7 +251,10 @@ describe("the page", () => {
     await flush();
 
     expect(fk("memory-head")!.textContent).toBe("3 notes across 2 projects and 1 diary room.");
-    const counts = [...document.querySelectorAll(".mem-group-count")].map((e) => e.textContent);
+    // Scoped to the list: the capture record at the foot of the page borrows the
+    // same header, and it is not one of the note groups (#387).
+    const counts = [...fk("memory-list")!.querySelectorAll(".mem-group-count")]
+      .map((e) => e.textContent);
     expect(counts).toEqual(["1", "1", "1"]);
     expect(document.querySelectorAll(".mem-row")).toHaveLength(3);
   });
@@ -278,7 +281,8 @@ describe("the page", () => {
     await view.refresh();
     await flush();
 
-    const titles = [...document.querySelectorAll(".mem-group-title")].map((e) => e.textContent);
+    const titles = [...fk("memory-list")!.querySelectorAll(".mem-group-title")]
+      .map((e) => e.textContent);
     expect(titles).toEqual(["Lessons, from every project"]);
   });
 
@@ -287,7 +291,7 @@ describe("the page", () => {
     const view = mount();
     await view.refresh();
     await flush();
-    expect(document.querySelector(".mem-group-title")!.textContent).toBe("deck");
+    expect(fk("memory-list")!.querySelector(".mem-group-title")!.textContent).toBe("deck");
   });
 
   it("says what fills an empty corpus", async () => {

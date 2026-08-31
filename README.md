@@ -315,6 +315,12 @@ Searching needs a 479 MB embedding model, downloaded once per machine and offere
 than fetched behind your back — it runs on your machine and the index never leaves it.
 Everything is on your disk; nothing about a search reaches a network.
 
+**What it has cost.** The foot of the memory page keeps the record: which sessions were
+summarised, which failed and why, and what the model calls came to. It is folded away until
+you go looking for it. A retry runs the summary again on your own Claude account, and the
+queue is this machine's — each machine keeps its own, because a queued job names a
+transcript path here.
+
 **Your sessions can search them too.** A launched session is given a `search_memory` tool
 of its own and told when to reach for it: before changing code in an area it has not seen,
 and before settling a question somebody here has already settled. It reads; it never writes.

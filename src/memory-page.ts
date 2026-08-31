@@ -50,6 +50,7 @@ import {
 } from "./ipc";
 import { searchReadiness } from "./memory-model";
 import { addFactForm, addLessonForm, APPEND_ONLY_NOTICE, replaceFactForm } from "./memory-write";
+import { mountCaptureRecord } from "./memory-jobs";
 
 /** How long after a keystroke the query is sent.
  *
@@ -256,8 +257,12 @@ export interface MemoryPageOptions {
 export interface MemoryView {
   /** The element to put in the panel's page. */
   readonly mount: HTMLElement;
-  /** Re-read the corpus and repaint. */
+  /** Re-read the corpus and repaint. The capture record with it: one read per
+   *  `memory://changed`, rather than a subscription per section. */
   refresh: () => Promise<void>;
+  /** Unfold the capture record. Where the palette's "Memory: what has been
+   *  captured…" lands, now that there is no dialog for it to open. */
+  revealCaptures: () => void;
   /** Put the caret in the search field. Where the palette's "Search your notes…"
    *  lands, which is the whole of what the dialog it replaces was. */
   focusSearch: () => void;
@@ -332,7 +337,11 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
   const writeScope = el("p", "mem-write-note");
   writeScope.dataset.fk = "memory-write-scope";
   write.append(writeActs, writeNote, writeScope);
-  mount.append(field, head, readiness, list, write);
+  /* The record of what the corpus cost, last and folded: what somebody opens this
+     page for is their notes, and a list of jobs above them would put the plumbing
+     in front of the point (#387). */
+  const jobs = mountCaptureRecord();
+  mount.append(field, head, readiness, list, write, jobs.mount);
 
   const folded: Fold = { mine: false, lessons: false, others: true };
   let notes: MemoryNoteEntry[] = [];
@@ -623,11 +632,13 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     paint();
     paintWrite();
     await sayReadiness();
+    await jobs.refresh();
   };
 
   return {
     mount,
     refresh,
     focusSearch: () => { field.focus(); field.select(); },
+    revealCaptures: jobs.reveal,
   };
 }

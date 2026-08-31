@@ -1,5 +1,4 @@
 import { WorkspacesPanel } from "./workspaces";
-import { openMemoryJobs } from "./memory-jobs";
 import { mountMemory } from "./memory-page";
 import { NoteReader } from "./note-reader";
 import { SkillsPanel } from "./skills";
@@ -2611,7 +2610,8 @@ export function startApp(role: WindowRole): Promise<void> {
    *  a palette entry is a way in, and leaving one for a page with no way out is
    *  worse than the button this window already does not have. */
   const APP_WIDE_COMMANDS = new Set([
-    "panel", "sessions", "history", "scenarios", "memory", "notes-search", "settings", "sync",
+    "panel", "sessions", "history", "scenarios", "memory", "notes-search", "notes-jobs",
+    "settings", "sync",
   ]);
 
   function paletteCommands(): Command[] {
@@ -2659,9 +2659,9 @@ export function startApp(role: WindowRole): Promise<void> {
       /* The window's own section rather than the standalone dialog: two doors to
          one set of facts is how they drift. The dialog stays for the first-run
          offer, which is a flow of its own with its own copy. */
-      /* Its own dialog rather than a mode of the palette: the palette filters
-         command titles, and this takes a sentence and shows prose. */
-      { id: "notes-jobs", title: "Memory: what has been captured…", run: () => openMemoryJobs() },
+      /* Both land on the memory page now. It is the one door to everything about
+         the corpus, and two doors onto one set of facts is how they drift. */
+      { id: "notes-jobs", title: "Memory: what has been captured…", run: () => { setPanel("memory"); memoryView.revealCaptures(); } },
       /* The page with the field focused, rather than a dialog of its own. Two
          doors to one set of facts is how they drift, and the page is where the
          result opens anyway — the dialog's preview pane was approximating the

@@ -226,8 +226,14 @@ offers. The search is the field at the top of the memory page; the palette's
 
 ## What has been captured
 
-- [ ] **Memory: what has been captured…** in the palette lists the sessions
-      closed with a note, newest first, with what each one cost.
+At the foot of the memory page, folded.
+
+- [ ] It arrives **collapsed** — the notes are what the page is for — and its
+      header says how many jobs, or how many failed.
+- [ ] Unfolded, it lists the sessions closed with a note, newest first, with what
+      each one cost.
+- [ ] **Memory: what has been captured…** in the palette lands on the page with
+      the section already unfolded. There is no dialog.
 - [ ] It says the retry spends money and that the queue is this machine's.
 - [ ] A failed job has **Try again**; pressing it re-runs the summary.
 - [ ] A job that succeeded with nothing worth writing reads as that, not as a

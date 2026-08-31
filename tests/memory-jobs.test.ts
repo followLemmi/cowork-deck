@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
-  jobLine, openMemoryJobs, spend, spendLine, staleLine,
+  jobLine, mountCaptureRecord, spend, spendLine, staleLine,
 } from "../src/memory-jobs";
 import type { MemoryJob, MemoryStatus } from "../src/ipc";
 
@@ -9,17 +9,11 @@ const jobs = vi.fn();
 const retry = vi.fn();
 const status = vi.fn();
 const reveal = vi.fn();
-let changed: (() => void) | null = null;
-const unlisten = vi.fn();
 vi.mock("../src/ipc", () => ({
   memoryJobs: () => jobs(),
   memoryRetryJob: (id: string) => retry(id),
   memoryStatus: () => status(),
   revealPath: (p: string) => reveal(p),
-  onMemoryChanged: (fn: () => void) => {
-    changed = fn;
-    return Promise.resolve(unlisten);
-  },
 }));
 
 const TOTAL = 479_383_128;
@@ -131,14 +125,22 @@ describe("staleness", () => {
   });
 });
 
-describe("the dialog", () => {
+/** A section of the memory page, and no longer a dialog (#387). #378 said what
+ *  would retire it — "if it turns out to be somewhere people live, it should
+ *  become a page" — and #380 gave memory one. What moved is the host; the
+ *  behaviour, and both of the sentences it must not lose, came with it. */
+describe("the capture record", () => {
   const settled = () => new Promise((r) => setTimeout(r, 0));
-  const box = () => document.querySelector(".modal-box") as HTMLElement;
-  const fk = <T extends HTMLElement>(n: string) => box().querySelector<T>(`[data-fk="${n}"]`)!;
+  const fk = <T extends HTMLElement>(n: string) =>
+    document.querySelector<T>(`[data-fk="${n}"]`)!;
+  const show = () => {
+    const view = mountCaptureRecord();
+    document.body.replaceChildren(view.mount);
+    return view;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
-    changed = null;
     document.body.innerHTML = "";
     jobs.mockResolvedValue([job()]);
     status.mockResolvedValue(ready());
@@ -146,49 +148,69 @@ describe("the dialog", () => {
     reveal.mockResolvedValue(undefined);
   });
 
+  /** What a person opens the memory page for is their notes. */
+  it("arrives collapsed, and unfolds when asked", async () => {
+    const view = show();
+    await view.refresh();
+    expect(fk("jobs-toggle").getAttribute("aria-expanded")).toBe("false");
+    expect(document.querySelector<HTMLElement>(".mem-jobs-body")!.hidden).toBe(true);
+
+    fk("jobs-toggle").click();
+    expect(fk("jobs-toggle").getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector<HTMLElement>(".mem-jobs-body")!.hidden).toBe(false);
+  });
+
+  /** The count is on the header, so a folded section still says whether
+   *  something needs a person. */
+  it("says on the header when a job failed, without being unfolded", async () => {
+    jobs.mockResolvedValue([job({ state: "failed", notePath: null, lastError: "claude timed out" })]);
+    const view = show();
+    await view.refresh();
+    expect(document.querySelector(".mem-group-count")!.textContent).toBe("1 failed");
+    expect(fk("jobs-toggle").classList.contains("has-fault")).toBe(true);
+  });
+
   it("shows the spend and each job", async () => {
-    openMemoryJobs();
-    await settled();
+    const view = show();
+    await view.refresh();
     expect(fk("jobs-summary").textContent).toContain("1 note written");
     expect(fk("jobs-list").textContent).toContain("relay");
     expect(fk("jobs-list").textContent).toContain("756 in, 4704 out, $0.0257");
   });
 
-  /** Newest first: what just happened is what somebody opened this to see. */
+  /** Newest first: what just happened is what somebody came here to see. */
   it("puts the newest job first", async () => {
     jobs.mockResolvedValue([job({ jobId: "old", sessionName: "older" }), job({ jobId: "new", sessionName: "newer" })]);
-    openMemoryJobs();
-    await settled();
+    const view = show();
+    await view.refresh();
     const rows = [...fk("jobs-list").querySelectorAll("[data-job]")];
     expect(rows[0].getAttribute("data-job")).toBe("new");
   });
 
   it("says so when nothing has been captured on this machine", async () => {
     jobs.mockResolvedValue([]);
-    openMemoryJobs();
-    await settled();
+    const view = show();
+    await view.refresh();
     expect(fk("jobs-list").textContent).toContain("No sessions have been closed with a note");
   });
 
-  /** The one thing a person must be told before pressing it. */
+  /** The two sentences the move must not lose. */
   it("says a retry spends money, and that the queue is this machine's", async () => {
-    openMemoryJobs();
-    await settled();
-    const text = box().textContent ?? "";
+    const view = show();
+    await view.refresh();
+    const text = view.mount.textContent ?? "";
     expect(text).toContain("your own Claude account");
     expect(text).toContain("This machine only");
   });
 
   it("offers a retry only on a failed job", async () => {
-    jobs.mockResolvedValue([job({ state: "done" })]);
-    openMemoryJobs();
-    await settled();
-    expect(box().querySelector('[data-fk="job-retry-j-1"]')).toBeNull();
+    const done = show();
+    await done.refresh();
+    expect(document.querySelector('[data-fk="job-retry-j-1"]')).toBeNull();
 
-    document.body.innerHTML = "";
     jobs.mockResolvedValue([job({ state: "failed", notePath: null, lastError: "claude timed out" })]);
-    openMemoryJobs();
-    await settled();
+    const failed = show();
+    await failed.refresh();
     fk<HTMLButtonElement>("job-retry-j-1").click();
     await settled();
     expect(retry).toHaveBeenCalledWith("j-1");
@@ -199,36 +221,27 @@ describe("the dialog", () => {
   it("shows a long reason as trimmed detail, with the whole of it on hover", async () => {
     const long = "x".repeat(500);
     jobs.mockResolvedValue([job({ state: "failed", notePath: null, lastError: long })]);
-    openMemoryJobs();
-    await settled();
-    const detail = box().querySelector(".notes-row-text") as HTMLElement;
+    const view = show();
+    await view.refresh();
+    const detail = document.querySelector(".notes-row-text") as HTMLElement;
     expect(detail.textContent!.length).toBeLessThan(200);
     expect(detail.textContent!.endsWith("…")).toBe(true);
     expect(detail.title).toBe(long);
     // And the row still leads with which job it was.
-    expect(box().querySelector(".notes-row-title")!.textContent).toContain("relay");
+    expect(document.querySelector(".notes-row-title")!.textContent).toContain("relay");
   });
 
   it("reveals a note that was written", async () => {
-    openMemoryJobs();
-    await settled();
+    const view = show();
+    await view.refresh();
     fk<HTMLButtonElement>("job-note-j-1").click();
     expect(reveal).toHaveBeenCalledWith("/r/ws-1/Sessions/2026-08/31-a.md");
   });
 
-  it("re-reads when the queue moves, so a running job does not sit stale", async () => {
-    openMemoryJobs();
-    await settled();
-    expect(jobs).toHaveBeenCalledTimes(1);
-    changed!();
-    await settled();
-    expect(jobs).toHaveBeenCalledTimes(2);
-  });
-
   it("reports a queue it could not read rather than an empty list", async () => {
     jobs.mockRejectedValue("memory is not wired up");
-    openMemoryJobs();
-    await settled();
+    const view = show();
+    await view.refresh();
     expect(fk("jobs-summary").textContent).toContain("could not be read");
   });
 
@@ -236,17 +249,17 @@ describe("the dialog", () => {
    *  where it is offered. */
   it("survives a status it could not read", async () => {
     status.mockRejectedValue("no sidecar");
-    openMemoryJobs();
-    await settled();
+    const view = show();
+    await view.refresh();
     expect(fk("jobs-list").textContent).toContain("relay");
     expect(fk("jobs-stale").hidden).toBe(true);
   });
 
-  it("stops listening when it closes", async () => {
-    openMemoryJobs();
-    await settled();
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-    expect(unlisten).toHaveBeenCalled();
-    expect(document.querySelector(".modal-box")).toBeNull();
+  /** Where the palette entry that used to open the dialog now lands. */
+  it("unfolds itself for the palette", async () => {
+    const view = show();
+    await view.refresh();
+    view.reveal();
+    expect(fk("jobs-toggle").getAttribute("aria-expanded")).toBe("true");
   });
 });
