@@ -1,5 +1,4 @@
 import { WorkspacesPanel } from "./workspaces";
-import { openNoteSearch } from "./memory-search";
 import { openMemoryJobs } from "./memory-jobs";
 import { mountMemory } from "./memory-page";
 import { NoteReader } from "./note-reader";
@@ -2605,7 +2604,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  a palette entry is a way in, and leaving one for a page with no way out is
    *  worse than the button this window already does not have. */
   const APP_WIDE_COMMANDS = new Set([
-    "panel", "sessions", "history", "scenarios", "memory", "settings", "sync",
+    "panel", "sessions", "history", "scenarios", "memory", "notes-search", "settings", "sync",
   ]);
 
   function paletteCommands(): Command[] {
@@ -2656,7 +2655,11 @@ export function startApp(role: WindowRole): Promise<void> {
       /* Its own dialog rather than a mode of the palette: the palette filters
          command titles, and this takes a sentence and shows prose. */
       { id: "notes-jobs", title: "Memory: what has been captured…", run: () => openMemoryJobs() },
-      { id: "notes-search", title: "Search your notes…", run: () => openNoteSearch({ workspaceId: workspaces.active?.id ?? null }) },
+      /* The page with the field focused, rather than a dialog of its own. Two
+         doors to one set of facts is how they drift, and the page is where the
+         result opens anyway — the dialog's preview pane was approximating the
+         document surface. */
+      { id: "notes-search", title: "Search your notes…", run: () => { setPanel("memory"); memoryView.focusSearch(); } },
       { id: "notes", title: "Session notes…", run: () => void openSettings("notes") },
       { id: "sync", title: "Memory sync…", run: () => void openSettings("config") },
     ];

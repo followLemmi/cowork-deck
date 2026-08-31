@@ -1,14 +1,27 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { corpusLine, group, mountMemory, rowScope, rowTitle } from "../src/memory-page";
-import type { MemoryNoteEntry, MemoryStatus } from "../src/ipc";
+import {
+  corpusLine, excerpt, group, hitAsNote, labelHit, mountMemory, rowScope, rowTitle,
+} from "../src/memory-page";
+import type { MemoryHit, MemoryNoteEntry, MemoryStatus } from "../src/ipc";
 
 const notes = vi.fn();
 const status = vi.fn();
+const search = vi.fn();
 vi.mock("../src/ipc", () => ({
   memoryNotes: () => notes(),
   memoryStatus: () => status(),
+  memorySearch: (q: string, ws?: string, top?: number) => search(q, ws, top),
 }));
+
+const hit = (over: Partial<MemoryHit> = {}): MemoryHit => ({
+  score: 0.7,
+  file: "ws-1/Sessions/2026-08/31-the-staging-script.md",
+  scope: "ws-1",
+  room: null,
+  text: "# a note\n\n## TL;DR\nit read the host triple instead of the tauri one",
+  ...over,
+});
 
 const TOTAL = 479_383_128;
 const ready = (over: Partial<MemoryStatus> = {}): MemoryStatus => ({
@@ -116,6 +129,88 @@ describe("what a row is called", () => {
   });
 });
 
+/* A hit carries a score, a path, a scope, a room and a passage — and no heading.
+   So its name comes from the PATH, which `memory::corpus` writes, rather than from
+   the passage, which is the model's chunking. Parsing our own layout is a thing we
+   can be right about. Moved here with the search itself (#384): one label, not
+   two, or a note would be called one thing browsing and another searching. */
+describe("what a hit is called", () => {
+  it("reads a session note's day and topic out of its path", () => {
+    expect(labelHit(hit())).toEqual({
+      title: "the staging script",
+      when: "2026-08-31",
+      global: false,
+    });
+  });
+
+  it("names a diary by its room, and says it is not this project's", () => {
+    const l = labelHit(hit({ file: "Diaries/reviewer/2026-08.md", scope: "lessons", room: "reviewer" }));
+    expect(l.title).toBe("reviewer — lessons");
+    expect(l.when).toBe("2026-08");
+    expect(l.room).toBe("reviewer");
+    expect(l.global).toBe(true);
+  });
+
+  it("names a workspace's facts", () => {
+    expect(labelHit(hit({ file: "ws-1/Facts.md" }))).toEqual({
+      title: "Facts", when: "", global: false,
+    });
+  });
+
+  /* A corpus is a directory of markdown and somebody may have put a file in it.
+     Showing it by name beats dropping it — the same answer `Corpus::notes` gives
+     on the other side of the IPC. */
+  it("falls back to a filename for a shape it does not know", () => {
+    expect(labelHit(hit({ file: "notes/scratch.md" })).title).toBe("scratch");
+    expect(labelHit(hit({ file: "loose.md" })).title).toBe("loose");
+  });
+
+  it("does not invent a date from a filename that has none", () => {
+    expect(labelHit(hit({ file: "ws-1/Sessions/2026-08/no-day-here.md" })).when).toBe("2026-08");
+  });
+});
+
+/** One row renderer for two sources, which is what makes them agree. */
+describe("a hit as a note", () => {
+  it("gives a hit the shape a listed note has", () => {
+    expect(hitAsNote(hit())).toEqual({
+      file: "ws-1/Sessions/2026-08/31-the-staging-script.md",
+      scope: "ws-1",
+      room: null,
+      kind: "session",
+      when: "2026-08-31",
+      title: "the staging script",
+      size: 0,
+      mtime: 0,
+    });
+  });
+
+  it("reads the kind of every shape the corpus writes", () => {
+    expect(hitAsNote(hit({ file: "ws-1/Facts.md" })).kind).toBe("facts");
+    expect(hitAsNote(hit({ file: "Diaries/reviewer/2026-08.md", room: "reviewer" })).kind).toBe("diary");
+    expect(hitAsNote(hit({ file: "ws-1/scratch.md" })).kind).toBe("other");
+  });
+});
+
+describe("the excerpt", () => {
+  it("flattens a passage's markdown into one line", () => {
+    expect(excerpt("# a note\n\n## TL;DR\nit  read   the triple"))
+      .toBe("a note TL;DR it read the triple");
+  });
+
+  it("trims on a word rather than mid-word", () => {
+    const long = `${"alpha ".repeat(40)}omega`;
+    const out = excerpt(long, 40);
+    expect(out.endsWith("…")).toBe(true);
+    expect(out).not.toMatch(/alph…$/);
+    expect(out.length).toBeLessThanOrEqual(41);
+  });
+
+  it("leaves a short passage alone", () => {
+    expect(excerpt("short enough")).toBe("short enough");
+  });
+});
+
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 
 const mount = (workspace: { id: string; name: string } | null = { id: "ws-1", name: "deck" }) => {
@@ -133,7 +228,9 @@ describe("the page", () => {
   beforeEach(() => {
     notes.mockReset();
     status.mockReset();
+    search.mockReset();
     status.mockResolvedValue(ready());
+    search.mockResolvedValue([hit()]);
   });
 
   it("lists every note the corpus holds, grouped and counted", async () => {
@@ -279,6 +376,15 @@ describe("the page", () => {
     expect(new Set(opened)).toEqual(new Set(["ws-1/Sessions/2026-08/31-the-staging-script.md"]));
   });
 
+  it("does not offer a search on a build with no sidecar", async () => {
+    notes.mockResolvedValue([note()]);
+    status.mockRejectedValue(new Error("memory is not wired up"));
+    const view = mount();
+    await view.refresh();
+    await flush();
+    expect((fk("memory-search") as HTMLInputElement).disabled).toBe(true);
+  });
+
   it("hands the chosen note to whoever opens it", async () => {
     notes.mockResolvedValue([note()]);
     const opened: string[] = [];
@@ -294,5 +400,169 @@ describe("the page", () => {
     document.querySelector<HTMLButtonElement>(".mem-row")!.click();
     expect(opened).toEqual(["ws-1/Sessions/2026-08/31-the-staging-script.md"]);
     expect(document.querySelector(".mem-row")!.classList.contains("selected")).toBe(true);
+  });
+});
+
+/** Search moved onto the page and its dialog went (#384). One list, two sources:
+ *  typing switches it from browsing the corpus to showing results, and clearing
+ *  the field gives the corpus back. What came across unchanged is the part that
+ *  was already right — the debounce, the readiness reported before a keystroke,
+ *  and the label read off the path. */
+describe("searching from the page", () => {
+  const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const type = async (text: string) => {
+    const field = fk("memory-search") as HTMLInputElement;
+    field.value = text;
+    field.dispatchEvent(new Event("input"));
+    await tick(320);
+    await flush();
+  };
+
+  beforeEach(() => {
+    notes.mockReset();
+    status.mockReset();
+    search.mockReset();
+    notes.mockResolvedValue([note(), lesson()]);
+    status.mockResolvedValue(ready());
+    search.mockResolvedValue([hit()]);
+  });
+
+  it("switches the list to results, and back when the field is cleared", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
+
+    await type("cross build");
+    expect(search).toHaveBeenCalledWith("cross build", "ws-1", 12);
+    // One list: no groups while searching, because results are ordered by how
+    // well they match and cutting them up would reorder them for no reason.
+    expect(document.querySelectorAll(".mem-group")).toHaveLength(0);
+    expect(document.querySelectorAll(".mem-row")).toHaveLength(1);
+
+    await type("");
+    expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
+  });
+
+  it("does not search until typing has stopped", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    const field = fk("memory-search") as HTMLInputElement;
+    for (const s of ["c", "cr", "cro", "cross"]) {
+      field.value = s;
+      field.dispatchEvent(new Event("input"));
+    }
+    await tick(320);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search).toHaveBeenCalledWith("cross", "ws-1", 12);
+  });
+
+  it("does not search an empty query", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    await type("   ");
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("carries the passage on a result, which is what says why it matched", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    await type("cross build");
+    const row = document.querySelector(".mem-row")!;
+    expect(row.textContent).toContain("the staging script");
+    expect(row.textContent).toContain("2026-08-31");
+    expect(row.textContent).toContain("host triple");
+  });
+
+  /** A lesson from another project turning up is the feature working, not a
+   *  leak — and a result has no group header above it to have said so. */
+  it("says when a result is a lesson rather than this project's note", async () => {
+    search.mockResolvedValue([hit({ file: "Diaries/reviewer/2026-08.md", scope: "lessons", room: "reviewer" })]);
+    const view = mount();
+    await view.refresh();
+    await flush();
+    await type("packaging");
+    expect(document.querySelector(".mem-row")!.textContent).toContain("a lesson, any project");
+  });
+
+  it("says nothing matched only when nothing matched", async () => {
+    search.mockResolvedValue([]);
+    const view = mount();
+    await view.refresh();
+    await flush();
+    await type("something absent");
+    expect(document.querySelector(".mem-empty")!.textContent).toContain("Nothing matched");
+  });
+
+  /** Browsing needs no model and searching does, so the field is the only part
+   *  that goes quiet — and it says why rather than emptying a list that works. */
+  it("keeps the corpus on screen when searching is not ready, and says what it needs", async () => {
+    status.mockResolvedValue(ready({ model: { dir: "/r/.model", state: "absent", have: 0, total: TOTAL } }));
+    const view = mount();
+    await view.refresh();
+    await flush();
+    await type("cross build");
+
+    expect(search).not.toHaveBeenCalled();
+    expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
+    expect(fk("memory-readiness")!.hidden).toBe(false);
+    expect(fk("memory-readiness")!.textContent).toContain("479 MB");
+  });
+
+  it("shows a failed search rather than an empty list", async () => {
+    search.mockRejectedValue("the memory sidecar is not installed");
+    const view = mount();
+    await view.refresh();
+    await flush();
+    await type("cross build");
+    expect(fk("memory-readiness")!.textContent).toContain("not installed");
+  });
+
+  it("opens a result on the document surface, as a listed note does", async () => {
+    const opened: string[] = [];
+    const view = mountMemory({
+      workspace: () => ({ id: "ws-1", name: "deck" }),
+      names: () => new Map(),
+      onOpen: (n) => opened.push(n.file),
+    });
+    document.body.replaceChildren(view.mount);
+    await view.refresh();
+    await flush();
+    await type("cross build");
+
+    document.querySelector<HTMLButtonElement>(".mem-row")!.click();
+    expect(opened).toEqual(["ws-1/Sessions/2026-08/31-the-staging-script.md"]);
+  });
+
+  /** Escape clears the field and gives the corpus back — the one gesture the
+   *  dialog had that a page still owes. It must not bubble: the window's own
+   *  Escape puts the deck back from under a note somebody is reading. */
+  it("clears the field on Escape without letting it reach the window", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    await type("cross build");
+
+    const field = fk("memory-search") as HTMLInputElement;
+    const seen: string[] = [];
+    document.addEventListener("keydown", (e) => seen.push(e.key));
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await tick(320);
+    await flush();
+
+    expect(field.value).toBe("");
+    expect(seen).toEqual([]);
+    expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
+  });
+
+  it("puts the caret in the field when the palette asks for it", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    view.focusSearch();
+    expect(document.activeElement).toBe(fk("memory-search"));
   });
 });

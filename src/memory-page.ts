@@ -24,9 +24,130 @@
 // Measured: the rail's column is `clamp(17.5rem, 19vw, 24rem)`. A title, a date
 // and a room is already most of it. A snippet does not fit, and a note's body is
 // read on the document surface instead (#383).
+//
+// # One list, two sources
+//
+// Searching was a dialog because there was nowhere to put it. There is now, and
+// two doors to one set of facts is how they drift — the settings window's own
+// words about why its sync section is not a second copy of the sync dialog. So
+// the field at the top of this page switches the SAME list between browsing the
+// corpus and showing results, and a hit is turned into the same shape a listed
+// note has (`hitAsNote`) rather than getting a second kind of row. Two row
+// renderers would disagree about some note, and the one people notice would be
+// the one that disagreed about theirs.
+//
+// What came across from the dialog unchanged, because it was already right:
+// `labelHit` (a hit carries no heading, so its name is read from the path, which
+// is ours), `excerpt` (the passage is the only thing on a result saying WHY it
+// matched), the 250ms debounce (a search spawns a process and embeds the query,
+// so a character is not a request), and reporting readiness before a keystroke
+// (otherwise "no results" reads as an answer about the notes rather than about
+// the machine).
 
-import { memoryNotes, memoryStatus, type MemoryNoteEntry, type MemoryStatus } from "./ipc";
+import {
+  memoryNotes, memorySearch, memoryStatus,
+  type MemoryHit, type MemoryNoteEntry, type MemoryStatus,
+} from "./ipc";
 import { searchReadiness } from "./memory-model";
+
+/** How long after a keystroke the query is sent.
+ *
+ *  A search spawns a process and embeds the query, so a character is not a
+ *  request. Long enough that typing a sentence costs one search, short enough
+ *  that stopping feels like an answer. */
+const DEBOUNCE_MS = 250;
+
+/** What a hit is called, where it came from and when — read out of its path. */
+export interface HitLabel {
+  title: string;
+  /** `2026-08-31` for a session note, `2026-08` for a diary, empty otherwise. */
+  when: string;
+  /** The room, for a diary. */
+  room?: string;
+  /** Whether this is a diary rather than one project's note. */
+  global: boolean;
+}
+
+/** Describe a hit from its path.
+ *
+ *  The sidecar returns a score, a path, a scope, a room and the matching passage.
+ *  None of that is a heading — so the display comes from **the path**, which
+ *  `memory::corpus` writes, rather than from the passage, which is the model's
+ *  chunking and may or may not begin with the note's title. Parsing our own
+ *  layout is a thing we can be right about; guessing where a chunk starts is not.
+ *
+ *  The three shapes are the ones `memory::corpus` writes and
+ *  `sync::manifest::ALLOWED` allows, so this is exhaustive by construction rather
+ *  than by hope. Anything else is shown by its filename rather than dropped: a
+ *  corpus is a directory of markdown and somebody may have put a file in it —
+ *  the same answer `Corpus::notes` gives on the other side of the IPC. */
+export function labelHit(hit: MemoryHit): HitLabel {
+  const parts = hit.file.split("/");
+  if (parts[0] === "Diaries" && parts.length === 3) {
+    return {
+      title: `${parts[1]} — lessons`,
+      when: parts[2].replace(/\.md$/, ""),
+      room: hit.room ?? parts[1],
+      global: true,
+    };
+  }
+  if (parts.length === 4 && parts[1] === "Sessions") {
+    const month = parts[2];
+    const file = parts[3].replace(/\.md$/, "");
+    const day = file.slice(0, 2);
+    const topic = file.slice(3).replace(/-/g, " ");
+    return {
+      title: topic || file,
+      when: /^\d{2}$/.test(day) ? `${month}-${day}` : month,
+      global: false,
+    };
+  }
+  if (parts.length === 2 && parts[1] === "Facts.md") {
+    return { title: "Facts", when: "", global: false };
+  }
+  return { title: parts[parts.length - 1].replace(/\.md$/, ""), when: "", global: false };
+}
+
+/** A hit as the same shape a listed note has, so one row renderer serves both.
+ *
+ *  The size and the mtime are the two facts a hit does not carry and a row does
+ *  not show. They are zero rather than optional because everything downstream —
+ *  the row, the reader, `memory_read_note` — takes a note, and an optional field
+ *  would spread a hit's absence through all of it. */
+export function hitAsNote(hit: MemoryHit): MemoryNoteEntry {
+  const label = labelHit(hit);
+  const parts = hit.file.split("/");
+  const kind: MemoryNoteEntry["kind"] = label.global
+    ? "diary"
+    : parts.length === 4 && parts[1] === "Sessions"
+      ? "session"
+      : parts.length === 2 && parts[1] === "Facts.md"
+        ? "facts"
+        : "other";
+  return {
+    file: hit.file,
+    scope: label.global ? "Diaries" : parts[0],
+    room: label.room ?? null,
+    kind,
+    when: label.when,
+    title: label.title,
+    size: 0,
+    mtime: 0,
+  };
+}
+
+/** The passage, flattened to one paragraph for a list row.
+ *
+ *  A chunk carries its markdown — headings, bullets, blank lines — and a row in
+ *  this column has room for two lines of it. Trimmed rather than truncated
+ *  mid-word. */
+export function excerpt(text: string, max = 160): string {
+  const flat = text.replace(/^#+\s*/gm, "").split(/\s+/).filter(Boolean).join(" ");
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max);
+  const space = cut.lastIndexOf(" ");
+  return `${space > max * 0.6 ? cut.slice(0, space) : cut}…`;
+}
 
 /** The three groups, in the order the page shows them.
  *
@@ -115,7 +236,10 @@ function el<K extends keyof HTMLElementTagNameMap>(
 
 export interface MemoryPageOptions {
   /** The active workspace, asked each render rather than held: the page outlives
-   *  every workspace switch and the panel's head is what changes under it. */
+   *  every workspace switch and the panel's head is what changes under it.
+   *
+   *  It scopes the search too: a workspace sees its own notes plus the global
+   *  diaries, which is what makes a lesson from another project reachable here. */
   workspace: () => { id: string; name: string } | null;
   /** Every workspace the app knows, so a scope can be shown as a name. A scope
    *  with no workspace left is shown as itself — the notes outlive the project. */
@@ -130,6 +254,9 @@ export interface MemoryView {
   readonly mount: HTMLElement;
   /** Re-read the corpus and repaint. */
   refresh: () => Promise<void>;
+  /** Put the caret in the search field. Where the palette's "Search your notes…"
+   *  lands, which is the whole of what the dialog it replaces was. */
+  focusSearch: () => void;
 }
 
 /** Which groups a person has folded away. Kept for the life of the window rather
@@ -139,6 +266,15 @@ type Fold = Record<keyof Grouped, boolean>;
 
 export function mountMemory(opts: MemoryPageOptions): MemoryView {
   const mount = el("div", "mem");
+  /* The field switches the list between two sources rather than opening
+     anything. `role="searchbox"` is not claimed: this is a plain text input that
+     filters what is below it, and the list it filters is not a listbox either —
+     every row is a button a person presses. */
+  const field = el("input", "mem-search");
+  field.type = "search";
+  field.placeholder = "Search your notes…";
+  field.setAttribute("aria-label", "Search your notes");
+  field.dataset.fk = "memory-search";
   const head = el("p", "mem-head");
   head.dataset.fk = "memory-head";
   const readiness = el("p", "mem-readiness");
@@ -166,17 +302,32 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     next.focus();
     next.click();
   };
-  mount.append(head, readiness, list);
+  mount.append(field, head, readiness, list);
 
   const folded: Fold = { mine: false, lessons: false, others: true };
   let notes: MemoryNoteEntry[] = [];
   let selected: string | null = null;
+  /** The results, or `null` while the field is empty and the list is the corpus.
+   *  Null rather than an empty array, because "searched and found nothing" and
+   *  "not searching" are two different lists with two different sentences. */
+  let hits: { note: MemoryNoteEntry; text: string }[] | null = null;
+  /** The last status read, so the head can say what searching needs without
+   *  asking again on every keystroke. */
+  let status: MemoryStatus | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  /** Which search is the current one: a slow answer must not land on a query
+   *  somebody has already replaced. */
+  let seq = 0;
 
   const paint = () => {
     const ws = opts.workspace();
     const names = opts.names();
-    const groups = group(notes, ws?.id ?? null);
+    /* Whichever list is showing: it is what memory HOLDS, and somebody reading a
+       result still wants to know it is one of forty notes rather than one of four
+       hundred. */
     head.textContent = corpusLine(notes);
+    if (hits !== null) { paintHits(); return; }
+    const groups = group(notes, ws?.id ?? null);
     list.replaceChildren();
 
     if (notes.length === 0) {
@@ -213,6 +364,31 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     }
   };
 
+  /** The same list, from the other source.
+   *
+   *  Ungrouped on purpose: results are ordered by how well they match, and
+   *  cutting them into "this project" and "the rest" would put a weaker hit above
+   *  a stronger one for a reason nobody asked for. A row still says when a note
+   *  is a lesson from every project, which is the one thing the grouping said
+   *  that a result still needs. */
+  const paintHits = () => {
+    const names = opts.names();
+    list.replaceChildren();
+    if (hits!.length === 0) {
+      // Only reachable with a ready index — `searchReadiness` has already spoken
+      // for every other kind of nothing — so this really does mean what it says.
+      list.append(el(
+        "p",
+        "mem-empty",
+        "Nothing matched. The notes are searched by meaning, not by word.",
+      ));
+      return;
+    }
+    const rows = el("div", "mem-rows");
+    for (const hit of hits!) rows.append(row(hit.note, names, hit.text));
+    list.append(rows);
+  };
+
   const section = (
     key: keyof Grouped,
     title: string,
@@ -241,7 +417,7 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     return box;
   };
 
-  const row = (note: MemoryNoteEntry, names: Map<string, string>): HTMLElement => {
+  const row = (note: MemoryNoteEntry, names: Map<string, string>, text?: string): HTMLElement => {
     const btn = el("button", `notes-row mem-row${note.file === selected ? " selected" : ""}`);
     btn.type = "button";
     btn.dataset.fk = `memory-row-${note.file}`;
@@ -251,11 +427,19 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     if (note.when) line.append(el("span", "notes-row-when", note.when));
     btn.append(line);
     const scope = rowScope(note, names);
-    // A lesson says its room; a note from another project says which. This
-    // project's own says nothing — the header above it just did.
-    if (scope && note.scope !== opts.workspace()?.id) {
-      btn.append(el("div", "notes-row-scope", scope));
+    /* A lesson says its room; a note from another project says which. This
+       project's own says nothing while browsing — the header above it just did —
+       but a result has no header above it, so there it always says. A lesson
+       from another project turning up is the feature working, not a leak. */
+    if (scope && (text !== undefined || note.scope !== opts.workspace()?.id)) {
+      btn.append(el("div", "notes-row-scope", note.kind === "diary" && text !== undefined
+        ? `${scope} — a lesson, any project`
+        : scope));
     }
+    /* The passage, on a result only. It is the one thing on a row that says WHY
+       this note came back, and without it a result is a filename with extra
+       steps. Two lines, clamped by the stylesheet: this column is 280–384px. */
+    if (text !== undefined) btn.append(el("div", "notes-row-text", excerpt(text)));
     btn.onclick = () => {
       selected = note.file;
       for (const other of list.querySelectorAll(".mem-row")) other.classList.remove("selected");
@@ -271,12 +455,13 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
    *  neither the sidecar nor the model, so a status call that throws must cost
    *  the sentence and not the list. */
   const sayReadiness = async () => {
-    let status: MemoryStatus;
     try {
       status = await memoryStatus();
     } catch {
+      status = null;
       readiness.textContent = "Searching your notes is not available on this build.";
       readiness.hidden = notes.length === 0;
+      field.disabled = true;
       return;
     }
     const r = searchReadiness(status);
@@ -284,6 +469,67 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     // On an empty corpus the empty state already says what fills it, and "there
     // are no notes to search yet" underneath it is the same sentence twice.
     readiness.hidden = r.ready || notes.length === 0;
+    /* Left typable while it is merely not ready: the state can change under an
+       open page — an index finishes, a download completes — and a field disabled
+       on the way in would not notice. Disabled only where there is no search at
+       all, which is a build with no sidecar staged. */
+    field.disabled = false;
+  };
+
+  /** Run the query, or go back to browsing when there is none.
+   *
+   *  The readiness check is what keeps an empty result honest: without it, "no
+   *  results" is returned for a missing model, an index that has not been built,
+   *  and notes too short to index — three states with three different next steps,
+   *  and only one of them is about the notes. */
+  const search = async () => {
+    const query = field.value.trim();
+    if (!query) {
+      hits = null;
+      paint();
+      await sayReadiness();
+      return;
+    }
+    await sayReadiness();
+    if (status === null || !searchReadiness(status).ready) {
+      // The list stays on the corpus rather than emptying: browsing works, the
+      // sentence above says what searching would need, and blanking what does
+      // work would say the opposite.
+      hits = null;
+      paint();
+      readiness.hidden = false;
+      return;
+    }
+    const mine = ++seq;
+    let found: MemoryHit[];
+    try {
+      found = await memorySearch(query, opts.workspace()?.id ?? undefined, 12);
+    } catch (e) {
+      if (mine !== seq) return;
+      readiness.textContent = String(e);
+      readiness.hidden = false;
+      return;
+    }
+    if (mine !== seq) return;
+    hits = found.map((h) => ({ note: hitAsNote(h), text: h.text }));
+    paint();
+  };
+
+  field.oninput = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void search(), DEBOUNCE_MS);
+  };
+  /* Escape clears the field and gives the corpus back — the one gesture the
+     dialog had that a page still owes, since there is no longer anything to
+     close. It stops there rather than bubbling to the window's own Escape, which
+     would put the deck back from under a note somebody is reading. */
+  field.onkeydown = (e) => {
+    if (e.key !== "Escape" || field.value === "") return;
+    e.preventDefault();
+    e.stopPropagation();
+    field.value = "";
+    if (timer) clearTimeout(timer);
+    void search();
   };
 
   const refresh = async () => {
@@ -291,6 +537,7 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
       notes = await memoryNotes();
     } catch (e) {
       notes = [];
+      hits = null;
       paint();
       head.textContent = `The corpus could not be read (${e}).`;
       readiness.hidden = true;
@@ -300,5 +547,9 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     await sayReadiness();
   };
 
-  return { mount, refresh };
+  return {
+    mount,
+    refresh,
+    focusSearch: () => { field.focus(); field.select(); },
+  };
 }

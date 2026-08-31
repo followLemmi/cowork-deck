@@ -160,20 +160,36 @@ The one the queue exists for.
       is that the absence is deliberate rather than a session quietly losing its
       memory.
 
+## The memory page
+
+The rail's fourth button. Everything below it is a directory listing, so none of
+it needs the model.
+
+- [ ] The page lists this project's notes, the lessons and every other project's,
+      each group counted — and a collapsed group still says how many it holds.
+- [ ] With nothing captured yet, it says what fills it rather than showing an
+      empty column.
+- [ ] Choosing a note reads it **where the deck was**. The deck comes back from
+      the control in the head and from Escape, with the tiles, the zoom and the
+      layout exactly as they were.
+- [ ] **Show the file** reveals the note in Finder or Explorer.
+
 ## Searching them yourself
 
 Needs the model downloaded, which the block under **Settings → Session notes**
-offers.
+offers. The search is the field at the top of the memory page; the palette's
+**Search your notes…** lands on it with the caret already there.
 
-- [ ] With the model absent, **Search your notes…** says the 479 MB is needed and
-      offers it, before you type anything.
+- [ ] With the model absent, the page says the 479 MB is needed and offers it,
+      before you type anything — and the list of notes is still there, because
+      browsing needs neither the model nor the sidecar.
 - [ ] Download it. Progress counts up; quitting mid-download and starting again
       **resumes** rather than restarting from zero.
 - [ ] With a note captured, search for something in it by meaning rather than by
       its words — "why did the build pick the wrong architecture", not the
       filename. It comes back.
-- [ ] A result shows the whole note beside the list, and **Show the file** reveals
-      it in Finder or Explorer.
+- [ ] A result opens the note the same way a listed one does, and clearing the
+      field gives the whole corpus back.
 - [ ] A query matching nothing says "nothing matched" — and, with one lesson in a
       fresh diary room, says the notes are too short to index rather than that
       nothing matched.

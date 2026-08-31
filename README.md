@@ -286,9 +286,15 @@ configured and both are yours to rewrite.
 record of truth. Facts are appended and marked superseded rather than edited, so a wrong one
 can be corrected without losing what it said.
 
-**Searching them.** **Search your notes…** in the command palette takes a sentence rather
-than a keyword: the notes are indexed by meaning, so "why did the cross build pick the wrong
-architecture" finds the session that answered it. A result opens the note beside the list.
+**Reading them.** The rail's **Memory** page lists everything ever written down — this
+project's notes first, then the lessons, then every other project's. It is a directory
+listing rather than a search, so it works on a machine that has downloaded nothing.
+Choosing a note reads it where the deck was, and one control gives the deck back.
+
+**Searching them.** The field at the top of that page — or **Search your notes…** in the
+command palette, which lands on it — takes a sentence rather than a keyword: the notes are
+indexed by meaning, so "why did the cross build pick the wrong architecture" finds the
+session that answered it. A result opens the same way a listed note does.
 Searching needs a 479 MB embedding model, downloaded once per machine and offered rather
 than fetched behind your back — it runs on your machine and the index never leaves it.
 Everything is on your disk; nothing about a search reaches a network.

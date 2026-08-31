@@ -2016,6 +2016,21 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    carries a title, a date and at most one more word, and why a note's body is
    read on the document surface instead of in a preview pane here. */
 .mem { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+/* The search, which was a dialog until there was a page to put it on. It
+   switches the list below between two sources rather than opening anything, so
+   it sits at the top of the page and not in a bar of its own. */
+.mem-search {
+  width: 100%; box-sizing: border-box; padding: var(--sp-2);
+  background: var(--bg-inset); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font: inherit; font-size: var(--fs-sm);
+}
+.mem-search::placeholder { color: var(--fg-dim); }
+.mem-search:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+/* Disabled only where there is no search at all — a build with no sidecar
+   staged. Not ready is a sentence, not a dead control: an index finishes and a
+   download completes under an open page. */
+.mem-search:disabled { color: var(--fg-dim); cursor: not-allowed; }
 .mem-head { margin: 0; color: var(--fg-mid); font-size: var(--fs-sm); }
 /* What searching would additionally need. Dimmer than the head above it: the
    page works without it, and a warning-coloured line would say otherwise. */
@@ -2049,6 +2064,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    everything beside it does not. */
 .mem-row .notes-row-title { overflow-wrap: anywhere; }
 .mem-row .notes-row-when { margin-left: auto; white-space: nowrap; }
+/* Two lines of the passage and no more. It is the only thing on a result saying
+   why the note came back, and a row that grew with the chunk would push the next
+   result off the page. */
+.mem-row .notes-row-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 .mem-row .notes-row-scope {
   margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
