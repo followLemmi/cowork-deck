@@ -383,6 +383,7 @@ fn main() {
             memory::memory_capture_offer,
             memory::memory_status,
             memory::memory_search,
+            memory::memory_download_model,
             memory::memory_rooms,
             memory::memory_save_room,
             memory::memory_retire_room,

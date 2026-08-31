@@ -14,9 +14,23 @@ const summary = vi.fn().mockResolvedValue({
   state: { lastPull: null, lastPush: null, fault: null },
 });
 const questions = vi.fn().mockResolvedValue([]);
+/* The notes section mounts the rooms editor and the model block, and both read
+   through `ipc`. Stubbed here rather than left missing: an absent export throws
+   on access, which used to leave the pane half-built while these tests still
+   passed — a section that cannot fill itself has to fail something. */
 vi.mock("../src/ipc", () => ({
   syncSummary: () => summary(),
   syncQuestions: () => questions(),
+  memoryRooms: () => Promise.resolve([{ name: "reviewer", description: "review lessons" }]),
+  memorySaveRoom: () => Promise.resolve("reviewer"),
+  memoryRetireRoom: () => Promise.resolve(true),
+  memoryRenameRoom: () => Promise.resolve("reviewer"),
+  memoryStatus: () => Promise.resolve({
+    root: "/r", cache: "/r/.index", state: "ready", files: 2, chunks: 5, dim: 384,
+    model: { dir: "/r/.model", state: "present", have: 1, total: 1 },
+  }),
+  memoryDownloadModel: () => Promise.resolve(true),
+  onMemoryModel: () => Promise.resolve(() => {}),
 }));
 let mounted = 0;
 let disposed = 0;
@@ -141,6 +155,19 @@ describe("the session notes section", () => {
     go("notes");
     const text = document.querySelector(".set-pane")?.textContent?.toLowerCase() ?? "";
     expect(text).toContain("your own claude account");
+  });
+
+  /** Both blocks this section mounts actually fill. Asserted because they used
+   *  not to: a missing mock threw out of `fill` and the pane was left with only
+   *  the parts built before the throw, while every test here still passed. */
+  it("mounts the rooms editor and the model block", async () => {
+    void open();
+    go("notes");
+    await new Promise((r) => setTimeout(r, 0));
+    const pane = document.querySelector(".set-pane")!;
+    expect(pane.querySelector('[data-fk="room-add"]'), "the rooms editor").not.toBeNull();
+    expect(pane.querySelector('[data-fk="model-status"]'), "the model block").not.toBeNull();
+    expect(pane.textContent).toContain("2 notes indexed");
   });
 });
 

@@ -579,6 +579,64 @@ export const closeSession = (session: string, capture?: CaptureOnClose | null) =
  *  offer. */
 export const memoryCaptureOffer = (session: string, cliKind?: CliKind) =>
   invoke<CaptureOffer>("memory_capture_offer", { session, cliKind: cliKind ?? null });
+/** What the model directory holds. Three states, not a boolean: `partial` is a
+ *  resumable download, and calling it absent would invite somebody to start
+ *  479 MB again with the bytes already on disk. */
+export interface MemoryModelState {
+  dir: string;
+  state: "absent" | "partial" | "present";
+  have: number;
+  total: number;
+}
+/** The index and the model, from the sidecar's own `status`. */
+export interface MemoryStatus {
+  root: string;
+  cache: string;
+  /** `absent` — nothing has been indexed; `empty` — indexed, nothing in it;
+   *  `ready`. Three, because counts alone cannot tell the first two apart. */
+  state: "absent" | "empty" | "ready";
+  files: number;
+  chunks: number;
+  dim: number;
+  model: MemoryModelState;
+}
+/** The index and the model. Needs neither, which is what makes it the call that
+ *  decides what the interface may offer — a search returning nothing cannot tell
+ *  "no matches" from "no model" from "never indexed". */
+export const memoryStatus = () => invoke<MemoryStatus>("memory_status");
+/** Search the notes. Scoped to a workspace sees its notes plus the global
+ *  diaries; absent, it searches everything. */
+export const memorySearch = (query: string, workspaceId?: string, top?: number) =>
+  invoke<MemoryHit[]>("memory_search", {
+    query, workspaceId: workspaceId ?? null, top: top ?? null,
+  });
+export interface MemoryHit {
+  score: number;
+  /** Relative to the corpus root — `ws-1/Sessions/2026-08/31-topic.md`. */
+  file: string;
+  /** The workspace id, or `lessons` for a diary. */
+  scope: string;
+  room: string | null;
+  text: string;
+}
+/** Start fetching the embedding model. Resolves whether a download was started —
+ *  `false` when one already is. Progress arrives on `memory://model`. */
+export const memoryDownloadModel = () => invoke<boolean>("memory_download_model");
+/** Where a download has got to, or how it ended. One shape for both, so a
+ *  surface rendering "fetching", "done" and "it failed" in one place cannot let
+ *  them disagree. */
+export interface MemoryModelEvent {
+  phase: "fetching" | "verifying" | "ready" | "failed";
+  file?: string;
+  got: number;
+  total: number;
+  error?: string;
+}
+export const onMemoryModel = (fn: (e: MemoryModelEvent) => void): Promise<UnlistenFn> =>
+  listen<MemoryModelEvent>("memory://model", (e) => fn(e.payload));
+/** The corpus or the index moved. */
+export const onMemoryChanged = (fn: () => void): Promise<UnlistenFn> =>
+  listen("memory://changed", () => fn());
 /** A diary room: a name, and the sentence a lesson is routed by. */
 export interface DiaryRoom {
   name: string;

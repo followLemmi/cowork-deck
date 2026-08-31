@@ -419,6 +419,127 @@ fn reindexing() -> &'static std::sync::atomic::AtomicBool {
     &REINDEXING
 }
 
+/// What a download is doing, or how it ended.
+///
+/// One event shape for both, because a surface has to render "fetching", "done"
+/// and "it failed" in the same place and a second event would let those disagree.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModelDownload {
+    /// `fetching`, `verifying`, `ready` or `failed`.
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    pub got: u64,
+    pub total: u64,
+    /// Why it failed, in a sentence somebody could act on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn downloading() -> &'static std::sync::atomic::AtomicBool {
+    static DOWNLOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &DOWNLOADING
+}
+
+fn emit_model(ev: ModelDownload) {
+    if let Some(handle) = app().get() {
+        let _ = handle.emit("memory://model", ev);
+    }
+}
+
+/// Fetch the embedding model, reporting progress on `memory://model`.
+///
+/// Returns whether a download was started; `false` when one already is. The work
+/// is on a thread of its own — 479 MB is not something to hold a command open
+/// for — and an interrupted one resumes rather than restarting (ADR-0005), so
+/// quitting mid-download costs nothing but time.
+///
+/// **It ends by running `update`, and that is not tidiness.** The probe that
+/// decides whether the downloaded bytes are a working model lives inside
+/// `OnnxEmbedder::load`, so nothing before the first real use can say. ADR-0005
+/// is explicit about why it matters: a truncated or damaged ONNX file may still
+/// load and still produce vectors, every search then returns plausible-looking
+/// nonsense, and nothing reports a fault. Verifying here is what turns that into
+/// a sentence at the moment somebody is looking.
+#[tauri::command]
+pub fn memory_download_model() -> bool {
+    use std::sync::atomic::Ordering;
+    let Some(s) = indexer() else { return false };
+    if !s.is_staged() {
+        emit_model(ModelDownload {
+            phase: "failed".into(),
+            file: None,
+            got: 0,
+            total: 0,
+            error: Some(format!("the memory sidecar is not installed at {}", s.program().display())),
+        });
+        return false;
+    }
+    if downloading().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return false;
+    }
+
+    std::thread::spawn(move || {
+        let mut last = ModelDownload {
+            phase: "fetching".into(),
+            file: None,
+            got: 0,
+            total: 0,
+            error: None,
+        };
+        let fetched = s.download_model(&mut |p| {
+            last = ModelDownload {
+                phase: "fetching".into(),
+                file: Some(p.file.clone()),
+                got: p.got,
+                total: p.total,
+                error: None,
+            };
+            emit_model(last.clone());
+        });
+
+        let out = match fetched {
+            Err(e) => Err(e),
+            Ok(()) => {
+                // The probe, by way of the only thing that runs it.
+                emit_model(ModelDownload {
+                    phase: "verifying".into(),
+                    file: None,
+                    got: last.got,
+                    total: last.total,
+                    error: None,
+                });
+                s.update().map(|_| ())
+            }
+        };
+        downloading().store(false, Ordering::SeqCst);
+
+        match out {
+            Ok(()) => {
+                emit_model(ModelDownload {
+                    phase: "ready".into(),
+                    file: None,
+                    got: last.total,
+                    total: last.total,
+                    error: None,
+                });
+                announce();
+            }
+            Err(e) => {
+                eprintln!("memory: the model is not usable ({e})");
+                emit_model(ModelDownload {
+                    phase: "failed".into(),
+                    file: last.file.clone(),
+                    got: last.got,
+                    total: last.total,
+                    error: Some(e),
+                });
+            }
+        }
+    });
+    true
+}
+
 /// Every wrapup job, oldest first.
 ///
 /// Read-only, and the frontend has nothing that writes the queue: a job is put

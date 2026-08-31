@@ -28,6 +28,7 @@ import { openDialog } from "./dialog-shell";
 import { syncQuestions, syncSummary } from "./ipc";
 import { labeledCheck } from "./forms";
 import { mountRooms } from "./diary-rooms";
+import { mountModel } from "./memory-model";
 import { mountSync } from "./sync-dialog";
 import { applyScale, currentScale, scaleLabel, SCALE_STEPS } from "./ui-scale";
 import type { ConfigPaths, Workspace } from "./ipc";
@@ -417,7 +418,19 @@ const SECTIONS: Section[] = [
         + "a mistake made in one repository stop the same mistake in the next. A lesson "
         + "that fits no room is not filed.";
       body.append(roomsHint);
-      return () => live.dispose();
+
+      /* Searching the notes, in the same section: from where somebody sits it is
+         one feature — notes you can search — and the model is what the searching
+         half needs. Mounted, like the rooms above it. */
+      body.append(sectionHead("Searching your notes"));
+      const model = document.createElement("div");
+      body.append(model);
+      const liveModel = mountModel(model);
+
+      return () => {
+        live.dispose();
+        liveModel.dispose();
+      };
     },
   },
   {
