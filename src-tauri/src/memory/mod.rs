@@ -1,12 +1,12 @@
 //! The deck's own memory: what past sessions did and decided, written down
 //! where a later session — or a later machine — can find it.
 //!
-//! Phase 2 of #35 is the write path, and it is the half the feature stands on.
-//! Search over an empty corpus is a working search that returns nothing, so
-//! nothing here indexes, embeds or spawns the `cowork_memory` sidecar; under
+//! Phase 2 of #35 was the write path, and it is the half the feature stands on:
+//! search over an empty corpus is a working search that returns nothing. Under
 //! ADR-0004 the markdown *is* the memory and the index is a cache built over it
-//! afterwards, which is why the write path can be finished and tested with no
-//! model on the machine at all.
+//! afterwards, which is why the write path was finished and tested with no model
+//! on the machine at all — and why every module here except [`sidecar`] still
+//! needs none.
 //!
 //! - [`corpus`] — where a note goes and what it looks like when it gets there.
 //! - [`queue`] — the durable queue that makes capture a promise.
@@ -15,6 +15,8 @@
 //! - [`rooms`] — the diary rooms a lesson can be routed to, and what happens to
 //!   one that is retired.
 //! - [`capture`] — one `claude -p` per closed session, billed to the person.
+//! - [`sidecar`] — talking to `cowork_memory`, which is what reads the corpus
+//!   back.
 //!
 //! The root is the app's config directory, which is also the store's directory
 //! and the sync repository root (ADR-0006). Neither module resolves it: both are
@@ -26,6 +28,7 @@ pub mod capture;
 pub mod corpus;
 pub mod queue;
 pub mod rooms;
+pub mod sidecar;
 pub mod transcript;
 
 use queue::Queue;
@@ -165,6 +168,12 @@ fn drain_now() {
             }
             if r.failed > 0 {
                 eprintln!("memory: gave up on {} capture job(s)", r.failed);
+            }
+            // A note on disk that the index has not seen is a note no search
+            // finds. Here rather than at the end of every capture, so a drain of
+            // six jobs embeds once.
+            if r.wrote > 0 {
+                spawn_reindex();
             }
         }
         Err(e) => eprintln!("warning: the wrapup queue could not be drained ({e})"),
@@ -325,6 +334,89 @@ pub fn memory_forget_capture_answer() -> Result<(), String> {
     crate::store::Store::new(dir.clone())
         .clear_capture_on_close()
         .map_err(|e| e.to_string())
+}
+
+/// The sidecar over this corpus, or `None` before [`init`].
+pub fn indexer() -> Option<sidecar::Sidecar> {
+    dir().get().map(|d| sidecar::Sidecar::new(d.clone()))
+}
+
+/// The index and the model.
+///
+/// The call that decides what the interface may offer, because it needs neither
+/// — see [`sidecar`]. A search returning nothing cannot tell "no matches" from
+/// "never indexed" from "no model", and this is what tells them apart.
+#[tauri::command]
+pub fn memory_status() -> Result<sidecar::Status, String> {
+    indexer().ok_or_else(|| "memory is not wired up".to_string())?.status()
+}
+
+/// Search the corpus.
+///
+/// `workspace_id` scopes it: a workspace sees its own notes plus the global
+/// diaries, which is what makes a lesson from another project reachable from
+/// this one. Absent, it searches everything.
+#[tauri::command]
+pub fn memory_search(
+    query: String,
+    workspace_id: Option<String>,
+    top: Option<usize>,
+) -> Result<Vec<sidecar::Hit>, String> {
+    let scope = match workspace_id.filter(|w| !w.trim().is_empty()) {
+        Some(id) => sidecar::Scope::Workspace(id),
+        None => sidecar::Scope::Everything,
+    };
+    indexer()
+        .ok_or_else(|| "memory is not wired up".to_string())?
+        .search(&query, &scope, top.unwrap_or(10))
+}
+
+/// Bring the index up to date, on a thread of its own.
+///
+/// Never awaited by a caller and never on a launch path: a cold index embeds
+/// every note there is, which on a corpus somebody has been filling for months
+/// is minutes of CPU. #35 is explicit that memory stays off the session launch
+/// path, and this is the call that would break that promise if it were
+/// synchronous.
+pub fn spawn_reindex() -> bool {
+    use std::sync::atomic::Ordering;
+    let Some(s) = indexer() else { return false };
+    if !s.is_staged() {
+        // Ordinary on a build that did not stage it, and not worth a warning on
+        // every start — `memory_status` says so where somebody is looking.
+        return false;
+    }
+    // Its own guard, and for a sharper reason than the drain's: two reindexes
+    // would each embed the same notes, on the CPU, at the same time. The two
+    // things that start one — a startup pass and a drain that wrote a note — can
+    // easily coincide on a machine that was shut with work queued.
+    if reindexing().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return false;
+    }
+    std::thread::spawn(move || {
+        let out = s.update();
+        reindexing().store(false, Ordering::SeqCst);
+        match out {
+        Ok(ix) if ix.changed > 0 => {
+            eprintln!(
+                "memory: reindexed {} file(s); {} files, {} chunks",
+                ix.changed, ix.files, ix.chunks,
+            );
+            announce();
+        }
+        Ok(_) => {}
+        // Warned rather than surfaced: the ordinary cause is a model that has
+        // not been downloaded, which is a sentence the interface owes somebody
+        // where they asked (#374) rather than a notification at startup.
+        Err(e) => eprintln!("memory: could not reindex ({e})"),
+        }
+    });
+    true
+}
+
+fn reindexing() -> &'static std::sync::atomic::AtomicBool {
+    static REINDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &REINDEXING
 }
 
 /// Every wrapup job, oldest first.

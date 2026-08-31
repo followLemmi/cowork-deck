@@ -168,6 +168,11 @@ fn main() {
             // than before it — #35 is explicit that memory stays off the session
             // launch path, and a summary is worth none of that delay.
             memory::spawn_drain();
+            // And bring the index up to date with whatever is already on disk —
+            // notes this machine wrote before the last quit, and notes that
+            // arrived from another machine through sync. Its own thread, guarded
+            // against overlapping the drain's own reindex.
+            memory::spawn_reindex();
 
             // Start the status listener on the tokio runtime Tauri provides.
             let handle_for_cb = handle.clone();
@@ -376,6 +381,8 @@ fn main() {
             commands::reveal_path,
             memory::memory_jobs,
             memory::memory_capture_offer,
+            memory::memory_status,
+            memory::memory_search,
             memory::memory_rooms,
             memory::memory_save_room,
             memory::memory_retire_room,
