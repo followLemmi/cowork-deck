@@ -2010,6 +2010,49 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .notes-preview-path { color: var(--fg-dim); font-size: var(--fs-sm); word-break: break-all; }
 .notes-preview-body { color: var(--fg); font-size: var(--fs-sm); }
 
+/* --- The memory page ------------------------------------------------------
+   The rail's fourth page: the whole corpus in a column measured at
+   `clamp(17.5rem, 19vw, 24rem)` — 280 to 384px. That measurement is why a row
+   carries a title, a date and at most one more word, and why a note's body is
+   read on the document surface instead of in a preview pane here. */
+.mem { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.mem-head { margin: 0; color: var(--fg-mid); font-size: var(--fs-sm); }
+/* What searching would additionally need. Dimmer than the head above it: the
+   page works without it, and a warning-coloured line would say otherwise. */
+.mem-readiness {
+  margin: 0; color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body);
+}
+.mem-empty { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-body); }
+.mem-list { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.mem-group { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mem-group-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2);
+  padding: var(--sp-1) 0; background: none; border: 0; cursor: pointer;
+  color: var(--fg-mid); font-size: var(--fs-xs); text-align: left;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.mem-group-head:hover { color: var(--fg); }
+.mem-group-head:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--r-ctl); }
+.mem-group-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The count stays on the header rather than inside the group, so a collapsed
+   group still says how much is behind it. */
+.mem-group-count { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.mem-rows { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* A row is a button, so the keyboard reaches every note the mouse does. It
+   borrows `.notes-row` from the search dialog on purpose: the same list of the
+   same things, and two appearances would be two answers to "what is a note". */
+.mem-row {
+  display: block; width: 100%; text-align: left; font: inherit; min-width: 0;
+}
+.mem-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The column is 280–384px, and a title is the part worth reading: it wraps, and
+   everything beside it does not. */
+.mem-row .notes-row-title { overflow-wrap: anywhere; }
+.mem-row .notes-row-when { margin-left: auto; white-space: nowrap; }
+.mem-row .notes-row-scope {
+  margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* A row of mutually exclusive choices that are not sizes. Same control, and it
    shares `.settings-size` for the buttons themselves — what differs is only that
    the group is not a set of numbers, so the name of the group had to. */

@@ -1,6 +1,7 @@
 import { WorkspacesPanel } from "./workspaces";
 import { openNoteSearch } from "./memory-search";
 import { openMemoryJobs } from "./memory-jobs";
+import { mountMemory } from "./memory-page";
 import { SkillsPanel } from "./skills";
 import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
 import {
@@ -18,7 +19,7 @@ import {
 import type { PanelPage, WorkspacePage } from "./view";
 import {
   claudeAvailable, closeSession, deleteSkillHistory, listRuns, loadLayout, loadUiState,
-  memoryForgetCaptureAnswer, onRunsChanged,
+  memoryForgetCaptureAnswer, onMemoryChanged, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
   revealPath, saveUiState, scheduleAck, schedulerReady, openWorkspaceWindow, onSessionOwner,
   onWorkspacesChanged,
@@ -210,7 +211,17 @@ export function startApp(role: WindowRole): Promise<void> {
   memMount.className = "island";
   const memHead = document.createElement("h3");
   memHead.textContent = PANEL_TITLE.memory;
-  memMount.append(memHead);
+  /* Asked for the workspace each render rather than handed one: the page outlives
+     every workspace switch, and "this project" has to mean whichever project the
+     panel's head is naming at the time. */
+  const memoryView = mountMemory({
+    workspace: () => {
+      const ws = workspaces.active;
+      return ws ? { id: ws.id, name: ws.name } : null;
+    },
+    names: () => new Map(workspaces.all.map((w) => [w.id, w.name])),
+  });
+  memMount.append(memHead, memoryView.mount);
   const memoryPage = document.createElement("div");
   memoryPage.id = "mem-page";
   memoryPage.className = "panel-page hidden";
@@ -912,6 +923,11 @@ export function startApp(role: WindowRole): Promise<void> {
     // while it is visible and does not poll at all. Opening it is a deliberate
     // act, so the read is unconditional.
     if (page === "history") void refreshHistory();
+    /* Same rule as the journal's, and for the same reason: opening a page is a
+       deliberate act, so the read is unconditional — and the page does not poll.
+       What keeps it current while it is open is `memory://changed`, which a
+       capture and a reindex both fire. */
+    if (page === "memory") void memoryView.refresh();
   }
   /** Which of the two the workspace panel is holding.
    *
@@ -1210,6 +1226,13 @@ export function startApp(role: WindowRole): Promise<void> {
       () => onRunsChanged(() => {
         void skills.refreshRuns();
         if (currentPage === "history") void refreshHistory();
+      }).then(() => {}),
+      /* A note was written, or the index moved. Only while the page is on
+         screen, and for the same reason the journal re-reads that way: a corpus
+         re-read behind a hidden page is work nobody asked for, and opening the
+         page reads unconditionally anyway. */
+      () => onMemoryChanged(() => {
+        if (currentPage === "memory") void memoryView.refresh();
       }).then(() => {}),
       // The list, and the one question a pinned window has to ask of it before
       // anything is drawn from it. See `closeIfPinnedWorkspaceGone` for why the
