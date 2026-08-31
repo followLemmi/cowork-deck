@@ -156,6 +156,14 @@ fn main() {
             // dropped on the way in.
             usage::observed::restore(dir.clone(), chrono::Utc::now().timestamp_millis());
 
+            // And once more for the same reason, about the queue that carries
+            // the memory of a closed session. `recover_wrapup_queue` puts back
+            // whatever a crash left mid-job — sound only here, before the
+            // frontend can close a tile, because nothing has a job in flight at
+            // this point and so every `running` job on disk is one of those.
+            memory::init(dir.clone(), handle.clone());
+            memory::recover_wrapup_queue();
+
             // Start the status listener on the tokio runtime Tauri provides.
             let handle_for_cb = handle.clone();
             let port = tauri::async_runtime::block_on(async move {
@@ -361,6 +369,7 @@ fn main() {
             commands::list_runs,
             commands::delete_skill_history,
             commands::reveal_path,
+            memory::memory_jobs,
             sync_cmd::sync_summary,
             sync_cmd::sync_preflight,
             sync_cmd::sync_probe,
