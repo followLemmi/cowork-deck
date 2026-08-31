@@ -47,7 +47,8 @@
 //!
 //! # The call is isolated on purpose
 //!
-//! Four flags, each closing a specific hole rather than being hygiene:
+//! Five flags and a scratch directory, each closing a specific hole rather than
+//! being hygiene:
 //!
 //! - `--restricted` ignores the user, project and local settings files, which is
 //!   what keeps **the deck's own hooks** out of this call. Without it a capture
@@ -56,6 +57,27 @@
 //! - `--strict-mcp-config` skips every MCP server the person has configured.
 //!   Summarising prose needs none of them, and starting a handful of stdio
 //!   servers to do it would cost more than the call.
+//! - `--tools ""` gives it no tools. `--restricted` leaves the file tools in
+//!   place and every available tool's definition travels with the request:
+//!   measured at **11 894 input tokens** for a two-turn transcript, against
+//!   **756** with this flag. Deterministic, and the same 756 twice.
+//!
+//! What that did *not* settle is the total. Three live calls against
+//! `claude-haiku-4-5-20251001`, one prompt:
+//!
+//! | tools | in | out | usd |
+//! |---|---|---|---|
+//! | default | 11 894 | 1 390 | 0.0096 |
+//! | none, `--effort low` | 756 | 4 405 | 0.0242 |
+//! | none | 756 | 4 704 | 0.0257 |
+//!
+//! The output is mostly thinking — the shortest visible note came from the run
+//! with the *fewest* output tokens — and it varies by more than three thousand
+//! tokens between identical requests. So the input figure is evidence and the
+//! total is not: at one sample each, the thinking variance swamps whatever the
+//! flags did. `--tools ""` is kept on the input evidence alone. `--effort` was
+//! tried and dropped, because it showed no effect and a flag nobody can justify
+//! is a flag that should not be there. Sampling this properly is #379.
 //! - `--no-session-persistence` keeps the call out of `~/.claude/projects`, so
 //!   it never becomes a transcript the deck might later read, count or resume.
 //! - a scratch working directory, because `--restricted` ignores project
@@ -277,6 +299,25 @@ fn unwrap_envelope(stdout: &str) -> Result<(String, Option<CaptureCost>), String
     let Ok(raw) = serde_json::from_str::<serde_json::Value>(trimmed) else {
         return Ok((trimmed.to_string(), None));
     };
+
+    // `--output-format json` on Claude Code 2.1.251 returns a JSON **array** of
+    // the whole stream — `{"type":"system","subtype":"init",…}` first, the
+    // session's tool list and thinking-token notices after it, and the result
+    // last. Measured rather than read: the first live call against the real CLI
+    // failed exactly here, on an implementation that assumed a single object.
+    //
+    // The result is therefore found by its `type` and not by its position, so a
+    // stream that grows another trailing event does not become a parse failure. A
+    // build that returns one object instead still goes through the checks below.
+    let raw = match raw {
+        serde_json::Value::Array(events) => events
+            .into_iter()
+            .rev()
+            .find(|e| e.get("type").and_then(serde_json::Value::as_str) == Some("result"))
+            .ok_or("the CLI returned a stream with no result in it")?,
+        other => other,
+    };
+
     // Every field of `Envelope` has a default, so *any* JSON object
     // deserialises into one — including the summary object we asked the model
     // for. Deciding "is this an envelope?" by whether it parses would therefore
@@ -389,6 +430,15 @@ fn args(model: &str) -> Vec<String> {
         // No MCP servers. Summarising prose needs none, and starting a handful
         // of stdio servers would cost more than the call.
         "--strict-mcp-config",
+        // No tools. `--restricted` strips the ones that run code and leaves the
+        // file tools, and every remaining tool's definition travels with the
+        // request: 11 894 input tokens measured for a two-turn transcript,
+        // against 756 with this flag. Summarising prose that is already in the
+        // request needs no tool, so it gets none — `""` is the CLI's own spelling
+        // of that. See the module header for what this did and did not settle.
+        "--tools",
+        "",
+
         // Never lands in ~/.claude/projects, so it cannot become a transcript
         // the deck later reads, counts or resumes.
         "--no-session-persistence",
@@ -628,6 +678,9 @@ mod tests {
         assert_eq!(at("--model").as_deref(), Some("haiku"));
         assert_eq!(at("--output-format").as_deref(), Some("json"));
         assert_eq!(at("--system-prompt").as_deref(), Some(SYSTEM_PROMPT));
+        // The empty string is the CLI's own spelling of "no tools", and it is
+        // where most of the cost of a capture was.
+        assert_eq!(at("--tools").as_deref(), Some(""));
     }
 
     // ----- the envelope -----
@@ -681,6 +734,45 @@ mod tests {
 
         let (reply, _) = unwrap_envelope("not json at all").unwrap();
         assert_eq!(reply, "not json at all", "which then fails at parse_summary, with a reason");
+    }
+
+    /// The shape the real CLI returns, and the reason the live test exists: the
+    /// first call against Claude Code 2.1.251 failed on an implementation that
+    /// assumed one object. `--output-format json` returns the whole stream.
+    #[test]
+    fn a_streamed_answer_is_read_out_of_the_events_by_type_not_by_position() {
+        let out = serde_json::json!([
+            { "type": "system", "subtype": "init", "model": "claude-haiku-4-5-20251001",
+              "mcp_servers": [], "claude_code_version": "2.1.251" },
+            { "type": "system", "subtype": "thinking_tokens", "estimate": 1 },
+            { "type": "assistant", "message": { "content": [] } },
+            { "type": "result", "subtype": "success", "is_error": false,
+              "result": "{\"empty\":true}", "total_cost_usd": 0.0009,
+              "usage": { "input_tokens": 7, "output_tokens": 11 } },
+        ])
+        .to_string();
+        let (reply, cost) = unwrap_envelope(&out).unwrap();
+        assert_eq!(reply, "{\"empty\":true}");
+        assert_eq!(cost.unwrap().output_tokens, 11);
+    }
+
+    #[test]
+    fn a_stream_that_never_produced_a_result_is_a_failure_naming_that() {
+        let out = serde_json::json!([{ "type": "system", "subtype": "init" }]).to_string();
+        let e = unwrap_envelope(&out).expect_err("a stream with no result is not a reply");
+        assert!(e.contains("no result"), "{e}");
+    }
+
+    /// A streamed error still reads as an error rather than as a summary.
+    #[test]
+    fn an_error_inside_a_stream_is_still_an_error() {
+        let out = serde_json::json!([
+            { "type": "system", "subtype": "init" },
+            { "type": "result", "is_error": true, "result": "credit balance too low" },
+        ])
+        .to_string();
+        let e = unwrap_envelope(&out).expect_err("an error envelope must not parse as a reply");
+        assert!(e.contains("credit balance too low"), "{e}");
     }
 
     /// An envelope that really is one, with no result in it, is a failure — the

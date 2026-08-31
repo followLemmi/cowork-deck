@@ -39,6 +39,21 @@ If this fails on an argument rather than on content, the flag set in
 `memory::capture::args` is wrong for the installed CLI and nothing below will
 work. Fix that first.
 
+> **Run once, 2026-08-31, Claude Code 2.1.251, macOS.** It failed the first time
+> and the failure was worth the cent: `--output-format json` returns a JSON
+> **array** of the whole stream, not a single envelope, so the result has to be
+> found in it by `type`. Fixed, and the shape is now asserted by a unit test.
+>
+> The pass after that also showed where the money goes. `--restricted` leaves the
+> file tools in place and every available tool's definition travels with the
+> request: 11 894 input tokens for a two-turn transcript, against 756 once
+> `--tools ""` was added. Output is dominated by thinking and varies by thousands
+> of tokens between identical calls, so the per-capture total is not settled —
+> that is #379, and it wants sampling rather than another single call.
+>
+> Everything below this line is **not yet run**: it needs somebody at the
+> keyboard closing tiles and killing the app.
+
 ## The question at the close
 
 - [ ] Start a session, give it a real piece of work, let it answer. Close the tile.
