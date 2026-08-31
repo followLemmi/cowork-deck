@@ -380,6 +380,7 @@ fn main() {
             commands::delete_skill_history,
             commands::reveal_path,
             memory::memory_jobs,
+            memory::memory_retry_job,
             memory::memory_capture_offer,
             memory::memory_status,
             memory::memory_search,

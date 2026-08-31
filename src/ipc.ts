@@ -619,6 +619,39 @@ export interface MemoryHit {
   room: string | null;
   text: string;
 }
+/** What one capture cost, off the CLI's own envelope. */
+export interface MemoryCost {
+  inputTokens: number;
+  outputTokens: number;
+  /** What the CLI said it cost, when it said. Absent on a plan where the question
+   *  has no dollar answer. */
+  usd?: number;
+}
+/** One wrapup job, folded out of the queue's events. */
+export interface MemoryJob {
+  jobId: string;
+  queuedAt: number;
+  sessionId: string;
+  workspaceId: string;
+  transcriptPath: string;
+  cliKind: CliKind;
+  sessionName: string | null;
+  state: "queued" | "running" | "done" | "failed";
+  attempts: number;
+  /** Why it last came out of `running` without finishing, or why it was given up
+   *  on. Can hold model output, which is ours — render it as detail, never as a
+   *  headline. */
+  lastError: string | null;
+  notePath: string | null;
+  cost: MemoryCost | null;
+}
+/** Every wrapup job, oldest first. Machine-local: the queue names transcript
+ *  paths on this machine and does not travel. */
+export const memoryJobs = () => invoke<MemoryJob[]>("memory_jobs");
+/** Put a finished-with job back on the queue. Resolves whether there was one to
+ *  reopen. **It spends money**, like any capture. */
+export const memoryRetryJob = (jobId: string) =>
+  invoke<boolean>("memory_retry_job", { jobId });
 /** One note, read back out of the corpus by its path relative to the root. */
 export interface MemoryNote {
   path: string;

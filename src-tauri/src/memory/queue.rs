@@ -207,6 +207,24 @@ pub struct JobDone {
     pub cost: Option<super::capture::CaptureCost>,
 }
 
+/// A person asked for a job to be tried again.
+///
+/// Its own event rather than a [`JobRequeued`], and the difference is who is
+/// speaking. `fold_events` refuses to revise a terminal job — "the moment
+/// something finished is not open to correction by a later, less informed
+/// writer" — and this line is *more* informed, not less: somebody looked at the
+/// failure, presumably fixed something, and said try again. So it is the one
+/// event that reopens a job, and the fold names it as the exception rather than
+/// relaxing the rule for everything.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobRetried {
+    #[serde(default = "queue_version")]
+    pub v: u8,
+    #[serde(rename = "jobId")]
+    pub job_id: String,
+    pub at: i64,
+}
+
 /// A job is given up on, and stays visible saying why.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JobFailed {
@@ -228,6 +246,7 @@ pub enum JobEvent {
     Queued(JobQueued),
     Started(JobStarted),
     Requeued(JobRequeued),
+    Retried(JobRetried),
     Done(JobDone),
     Failed(JobFailed),
 }
@@ -385,6 +404,19 @@ pub fn fold_events(content: &str) -> Vec<WrapupJob> {
                 if let Some(job) = at_mut(&mut order, &index, &e.job_id) {
                     job.state = JobState::Queued;
                     job.last_error = Some(e.reason);
+                }
+            }
+            JobEvent::Retried(e) => {
+                // The one event that reaches a terminal job, so it goes through
+                // the index rather than through `at_mut`.
+                if let Some(&i) = index.get(&e.job_id) {
+                    let job = &mut order[i];
+                    job.state = JobState::Queued;
+                    // A fresh set of attempts: the person has presumably changed
+                    // something, and carrying the spent ones would make the retry
+                    // fail on its first stumble.
+                    job.attempts = 0;
+                    job.last_error = None;
                 }
             }
             JobEvent::Done(e) => {
@@ -590,6 +622,26 @@ impl Queue {
             job_id: job_id.to_string(),
             at: now_ms(),
             reason: error.to_string(),
+        }))?;
+        Ok(true)
+    }
+
+    /// Put a finished-with job back on the queue, because somebody asked.
+    ///
+    /// Returns whether there was such a job. Only a terminal one is worth
+    /// retrying — a queued job is already going to run, and reopening a running
+    /// one would race the process holding it.
+    pub fn retry(&self, job_id: &str) -> io::Result<bool> {
+        let Some(job) = self.jobs().into_iter().find(|j| j.job_id == job_id) else {
+            return Ok(false);
+        };
+        if !job.state.is_terminal() {
+            return Ok(false);
+        }
+        self.append(&JobEvent::Retried(JobRetried {
+            v: WRAPUP_QUEUE_VERSION,
+            job_id: job_id.to_string(),
+            at: now_ms(),
         }))?;
         Ok(true)
     }
@@ -1106,6 +1158,58 @@ mod tests {
     }
 
     // ----- the fold's rules -----
+
+    // ----- retrying by hand -----
+
+    /// The exception to "a terminal job is not revised", and the reason it is an
+    /// exception: this line is *more* informed than the one it overrides.
+    #[test]
+    fn a_person_can_reopen_a_job_that_was_given_up_on() {
+        let q = Queue::new(tmp("retry"));
+        let id = q.enqueue(&req("s-1")).unwrap();
+        for _ in 0..MAX_ATTEMPTS {
+            q.drain(|_| Err("still broken".into())).unwrap();
+        }
+        assert_eq!(one(&q, &id).state, JobState::Failed);
+
+        assert!(q.retry(&id).unwrap());
+        let job = one(&q, &id);
+        assert_eq!(job.state, JobState::Queued);
+        // A fresh set of attempts, or the retry would fail on its first stumble
+        // having already spent them.
+        assert_eq!(job.attempts, 0);
+        assert_eq!(job.last_error, None, "and the old reason is not left standing");
+
+        let mut calls = 0;
+        q.drain(|_| {
+            calls += 1;
+            Ok((Some("/notes/s-1.md".into()), None))
+        })
+        .unwrap();
+        assert_eq!(calls, 1, "and it actually runs");
+        assert_eq!(one(&q, &id).state, JobState::Done);
+    }
+
+    #[test]
+    fn a_done_job_can_be_asked_for_again() {
+        let q = Queue::new(tmp("retry-done"));
+        let id = q.enqueue(&req("s-1")).unwrap();
+        q.drain(|_| Ok((Some("/notes/a.md".into()), None))).unwrap();
+        assert!(q.retry(&id).unwrap());
+        assert_eq!(one(&q, &id).state, JobState::Queued);
+    }
+
+    /// A queued job is already going to run, and reopening a running one would
+    /// race the process holding it.
+    #[test]
+    fn only_a_finished_job_is_worth_retrying() {
+        let q = Queue::new(tmp("retry-live"));
+        let id = q.enqueue(&req("s-1")).unwrap();
+        assert!(!q.retry(&id).unwrap(), "already queued");
+        q.next().unwrap();
+        assert!(!q.retry(&id).unwrap(), "and running is not to be reopened");
+        assert!(!q.retry("never-existed").unwrap());
+    }
 
     #[test]
     fn a_terminal_job_is_not_revised_by_a_later_line() {

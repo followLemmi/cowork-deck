@@ -160,6 +160,34 @@ The one the queue exists for.
       is that the absence is deliberate rather than a session quietly losing its
       memory.
 
+## Searching them yourself
+
+Needs the model downloaded, which the block under **Settings → Session notes**
+offers.
+
+- [ ] With the model absent, **Search your notes…** says the 479 MB is needed and
+      offers it, before you type anything.
+- [ ] Download it. Progress counts up; quitting mid-download and starting again
+      **resumes** rather than restarting from zero.
+- [ ] With a note captured, search for something in it by meaning rather than by
+      its words — "why did the build pick the wrong architecture", not the
+      filename. It comes back.
+- [ ] A result shows the whole note beside the list, and **Show the file** reveals
+      it in Finder or Explorer.
+- [ ] A query matching nothing says "nothing matched" — and, with one lesson in a
+      fresh diary room, says the notes are too short to index rather than that
+      nothing matched.
+
+## What has been captured
+
+- [ ] **Memory: what has been captured…** in the palette lists the sessions
+      closed with a note, newest first, with what each one cost.
+- [ ] It says the retry spends money and that the queue is this machine's.
+- [ ] A failed job has **Try again**; pressing it re-runs the summary.
+- [ ] A job that succeeded with nothing worth writing reads as that, not as a
+      failure.
+- [ ] A long failure reason is trimmed in the row and whole on hover.
+
 ## Your sessions can search too
 
 The half that makes the corpus worth filling. Needs the model downloaded.

@@ -1,5 +1,6 @@
 import { WorkspacesPanel } from "./workspaces";
 import { openNoteSearch } from "./memory-search";
+import { openMemoryJobs } from "./memory-jobs";
 import { SkillsPanel } from "./skills";
 import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
 import {
@@ -2489,6 +2490,7 @@ export function startApp(role: WindowRole): Promise<void> {
          offer, which is a flow of its own with its own copy. */
       /* Its own dialog rather than a mode of the palette: the palette filters
          command titles, and this takes a sentence and shows prose. */
+      { id: "notes-jobs", title: "Memory: what has been captured…", run: () => openMemoryJobs() },
       { id: "notes-search", title: "Search your notes…", run: () => openNoteSearch({ workspaceId: workspaces.active?.id ?? null }) },
       { id: "notes", title: "Session notes…", run: () => void openSettings("notes") },
       { id: "sync", title: "Memory sync…", run: () => void openSettings("config") },

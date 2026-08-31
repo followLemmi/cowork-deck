@@ -690,6 +690,22 @@ pub fn memory_download_model() -> bool {
     true
 }
 
+/// Put a finished-with job back on the queue, and start a drain.
+///
+/// Returns whether there was such a job to reopen. **It spends money**, the same
+/// as any capture, which is why the surface asking for it has to say so before
+/// the button rather than after — see `memory-jobs.ts`.
+#[tauri::command]
+pub fn memory_retry_job(job_id: String) -> Result<bool, String> {
+    let q = wrapup_queue().ok_or_else(|| "memory is not wired up".to_string())?;
+    let reopened = q.retry(&job_id).map_err(|e| e.to_string())?;
+    if reopened {
+        announce();
+        spawn_drain();
+    }
+    Ok(reopened)
+}
+
 /// Every wrapup job, oldest first.
 ///
 /// Read-only, and the frontend has nothing that writes the queue: a job is put
