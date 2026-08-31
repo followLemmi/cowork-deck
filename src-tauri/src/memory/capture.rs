@@ -65,6 +65,7 @@
 
 use super::corpus::{Corpus, DiaryEntry, Note, Section};
 use super::queue::WrapupJob;
+use super::rooms::Room;
 use super::transcript::{self, Digest};
 use crate::which::{self, RunFault};
 use serde::{Deserialize, Serialize};
@@ -102,20 +103,6 @@ const DIGEST_CHARS: usize = 24_000;
 /// becomes debuggable instead of mysterious. Bounded because it lands in a
 /// record, and unbounded text in a record is a record nobody opens.
 const KEEP_REPLY_CHARS: usize = 2_000;
-
-/// A diary room, as the capture prompt needs to see it.
-///
-/// Declared here because capture is the only thing that reads one today. #367
-/// owns the configuration — where the list comes from, how it is edited, whether
-/// it travels — and this type moves there with it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Room {
-    pub name: String,
-    /// What belongs in it, in the person's own words. The only thing the model
-    /// has to route a lesson by, which is why it is a field rather than a
-    /// comment.
-    pub description: String,
-}
 
 /// What one capture cost, off the CLI's own envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

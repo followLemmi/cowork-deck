@@ -579,6 +579,26 @@ export const closeSession = (session: string, capture?: CaptureOnClose | null) =
  *  offer. */
 export const memoryCaptureOffer = (session: string, cliKind?: CliKind) =>
   invoke<CaptureOffer>("memory_capture_offer", { session, cliKind: cliKind ?? null });
+/** A diary room: a name, and the sentence a lesson is routed by. */
+export interface DiaryRoom {
+  name: string;
+  description: string;
+}
+/** Every configured room. Seeds a usable default set on a corpus that has never
+ *  had any, so the surface never opens on an empty page with an Add button. */
+export const memoryRooms = () => invoke<DiaryRoom[]>("memory_rooms");
+/** Declare a room or change its description. Resolves the name it was stored
+ *  under, which is the slug of what was asked for. */
+export const memorySaveRoom = (name: string, description: string) =>
+  invoke<string>("memory_save_room", { name, description });
+/** Stop routing lessons to a room. **Its lessons stay on disk** — a room removed
+ *  by mistake must not take months of them with it. */
+export const memoryRetireRoom = (name: string) =>
+  invoke<boolean>("memory_retire_room", { name });
+/** Rename a room, moving its lessons with it. Rejects a merge into an existing
+ *  one. */
+export const memoryRenameRoom = (from: string, to: string) =>
+  invoke<string>("memory_rename_room", { from, to });
 /** Forget the remembered answer, so the next close asks again. */
 export const memoryForgetCaptureAnswer = () =>
   invoke<void>("memory_forget_capture_answer");

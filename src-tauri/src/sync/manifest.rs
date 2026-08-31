@@ -55,6 +55,12 @@ pub const ALLOWED: &[&str] = &[
     // Global, cross-project, and the reason a lesson learned in one repository
     // reaches the next one.
     "Diaries/*/*.md",
+    // The room's own record, beside the lessons it describes — the same shape and
+    // the same reasoning as `*/workspace.json` above. It travels because the
+    // lessons do: ship a diary without the room that routes to it and the second
+    // machine has lessons filed under a room it has never heard of, with nothing
+    // to route new ones by (`memory::rooms`).
+    "Diaries/*/room.json",
     "scenarios/*.json",
     // Sharded per machine: the journal is append-only, and two machines
     // appending to one file conflict on every single sync.
@@ -157,6 +163,7 @@ mod tests {
             "ws-1/Facts.md",
             "ws-1/Sessions/2026-08/24-topic.md",
             "Diaries/reviewer/2026-08.md",
+            "Diaries/reviewer/room.json",
             "scenarios/sk-1.json",
             "runs/m-1/runs.jsonl",
             "runs/m-1/machine.json",

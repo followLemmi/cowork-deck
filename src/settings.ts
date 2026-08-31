@@ -27,6 +27,7 @@
 import { openDialog } from "./dialog-shell";
 import { syncQuestions, syncSummary } from "./ipc";
 import { labeledCheck } from "./forms";
+import { mountRooms } from "./diary-rooms";
 import { mountSync } from "./sync-dialog";
 import { applyScale, currentScale, scaleLabel, SCALE_STEPS } from "./ui-scale";
 import type { ConfigPaths, Workspace } from "./ipc";
@@ -399,6 +400,24 @@ const SECTIONS: Section[] = [
         + "is saved on this machine. Sessions with nothing in them are skipped, and "
         + "cost nothing.";
       body.append(hint);
+
+      /* The rooms, in this section rather than one of their own: a diary room is
+         what a session note's lessons are filed into, so it is the same subject
+         and a second rail row would split it. Mounted, like the sync section, so
+         the window stays a rail and a pane. */
+      body.append(sectionHead("Diary rooms"));
+      const rooms = document.createElement("div");
+      body.append(rooms);
+      const live = mountRooms(rooms);
+      const roomsHint = document.createElement("p");
+      roomsHint.className = "form-hint";
+      roomsHint.textContent =
+        "Lessons worth carrying to other projects are filed into a room, chosen by the "
+        + "model from the sentence you write here. Rooms are global — that is what lets "
+        + "a mistake made in one repository stop the same mistake in the next. A lesson "
+        + "that fits no room is not filed.";
+      body.append(roomsHint);
+      return () => live.dispose();
     },
   },
   {

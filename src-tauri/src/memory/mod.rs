@@ -12,6 +12,8 @@
 //! - [`queue`] — the durable queue that makes capture a promise.
 //! - [`transcript`] — reading a session's log, per CLI, because the deck runs
 //!   sessions on four of them and their logs have nothing in common.
+//! - [`rooms`] — the diary rooms a lesson can be routed to, and what happens to
+//!   one that is retired.
 //! - [`capture`] — one `claude -p` per closed session, billed to the person.
 //!
 //! The root is the app's config directory, which is also the store's directory
@@ -23,6 +25,7 @@
 pub mod capture;
 pub mod corpus;
 pub mod queue;
+pub mod rooms;
 pub mod transcript;
 
 use queue::Queue;
@@ -88,12 +91,15 @@ pub fn recover_wrapup_queue() {
 
 /// The diary rooms a capture may route a lesson to.
 ///
-/// Empty until #367, which owns where the list comes from and how it is edited.
-/// Empty is a working state rather than a stub: the prompt then asks for no
-/// lessons at all, and `capture::run` drops any that arrive anyway — a room
-/// nobody configured is a directory nobody reads.
-fn rooms() -> Vec<capture::Room> {
-    Vec::new()
+/// Through `for_prompt`, which is where a description is made one line and
+/// bounded before it reaches a model request. Empty stays a working state: the
+/// prompt then asks for no lessons at all, and `capture::run` drops any that
+/// arrive anyway.
+fn prompt_rooms() -> Vec<rooms::Room> {
+    match dir().get() {
+        Some(d) => rooms::Rooms::new(d.clone()).for_prompt(),
+        None => Vec::new(),
+    }
 }
 
 /// Whether a drain is already running.
@@ -133,7 +139,7 @@ fn drain_now() {
     let Some(q) = wrapup_queue() else { return };
     let Some(dir) = dir().get() else { return };
     let corpus = corpus::Corpus::new(dir.clone());
-    let rooms = rooms();
+    let rooms = prompt_rooms();
 
     let report = q.drain(|job| {
         capture::run(job, &corpus, &rooms).map(|c| {
@@ -272,6 +278,44 @@ pub fn enqueue_on_close(
             false
         }
     }
+}
+
+fn rooms_store() -> Result<rooms::Rooms, String> {
+    dir()
+        .get()
+        .map(|d| rooms::Rooms::new(d.clone()))
+        .ok_or_else(|| "memory is not wired up".to_string())
+}
+
+/// Every configured diary room.
+///
+/// Through `list`, which is what seeds the defaults on a corpus that has never
+/// had any — so opening the surface for the first time shows a usable set rather
+/// than an empty page with an Add button.
+#[tauri::command]
+pub fn memory_rooms() -> Vec<rooms::Room> {
+    rooms_store().map(|r| r.list()).unwrap_or_default()
+}
+
+/// Declare a room, or change its description. Returns the name it was stored
+/// under, which is the slug of what was asked for.
+#[tauri::command]
+pub fn memory_save_room(name: String, description: String) -> Result<String, String> {
+    rooms_store()?.save(&name, &description).map_err(|e| e.to_string())
+}
+
+/// Stop routing lessons to a room. **Its lessons stay on disk** — see
+/// [`rooms::Rooms::retire`] for why that is not negotiable.
+#[tauri::command]
+pub fn memory_retire_room(name: String) -> Result<bool, String> {
+    rooms_store()?.retire(&name).map_err(|e| e.to_string())
+}
+
+/// Rename a room, moving its lessons with it. Refuses to merge into an existing
+/// one.
+#[tauri::command]
+pub fn memory_rename_room(from: String, to: String) -> Result<String, String> {
+    rooms_store()?.rename(&from, &to).map_err(|e| e.to_string())
 }
 
 /// Forget the remembered answer, so the next close asks again.

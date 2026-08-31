@@ -1991,6 +1991,30 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    the group is not a set of numbers, so the name of the group had to. */
 .settings-choice { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
 
+/* Diary rooms: a name, the sentence a lesson is routed by, and a way out. The
+   description takes the room because it is the field that does the work — a name
+   is a word and the sentence is the criterion. */
+.rooms-list { display: flex; flex-direction: column; gap: var(--sp-1); }
+.rooms-row { display: grid; grid-template-columns: 9rem 1fr auto; gap: var(--sp-2); align-items: center; }
+.rooms-row--add { margin-top: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.rooms-name, .rooms-desc {
+  background: var(--bg-inset); border: 1px solid var(--line-strong); border-radius: var(--r-ctl);
+  color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 6px var(--sp-2);
+  min-height: 30px; outline: none; min-width: 0;
+}
+.rooms-name::placeholder, .rooms-desc::placeholder { color: var(--fg-dim); }
+.rooms-name:focus, .rooms-desc:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.rooms-remove, .rooms-add {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg-mid); background: var(--bg-inset);
+  border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 6px var(--sp-3);
+  min-height: 30px; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.rooms-remove:hover, .rooms-add:hover { background: var(--bg-hover-2); color: var(--fg); border-color: var(--line-strong); }
+.rooms-remove:focus-visible, .rooms-add:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* A fault reads where it happened, in the row that caused it. */
+.rooms-fault { grid-column: 1 / -1; color: var(--st-error); }
+
 /* Checkbox beside its label rather than under it, and not the 13px system size.
    accent-color themes the native control — no custom rendering needed here. */
 .form-check {
