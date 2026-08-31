@@ -619,6 +619,16 @@ export interface MemoryHit {
   room: string | null;
   text: string;
 }
+/** One note, read back out of the corpus by its path relative to the root. */
+export interface MemoryNote {
+  path: string;
+  markdown: string;
+}
+/** Read a note. The path is relative and checked against the corpus root on the
+ *  Rust side — a command taking an absolute one would be a command any window
+ *  could ask to read any file. */
+export const memoryReadNote = (file: string) =>
+  invoke<MemoryNote>("memory_read_note", { file });
 /** Start fetching the embedding model. Resolves whether a download was started —
  *  `false` when one already is. Progress arrives on `memory://model`. */
 export const memoryDownloadModel = () => invoke<boolean>("memory_download_model");

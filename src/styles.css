@@ -1986,6 +1986,30 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .settings-size:hover { background: var(--bg-hover-2); color: var(--fg); border-color: var(--line-strong); }
 .settings-size.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
 .settings-size:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* Searching your notes: a list of hits over a preview of the one selected. The
+   dialog is taller than the others here because a passage needs room to be
+   recognised — a one-line row is a filename with extra steps. */
+.notes-list { display: flex; flex-direction: column; gap: 2px; max-height: 34vh; overflow-y: auto; }
+.notes-row {
+  padding: var(--sp-2); border: 1px solid transparent; border-radius: var(--r-ctl);
+  cursor: pointer; background: var(--bg-inset);
+}
+.notes-row:hover { background: var(--bg-hover-2); }
+.notes-row.selected { border-color: var(--accent); background: var(--sel); }
+.notes-row-head { display: flex; gap: var(--sp-2); align-items: baseline; flex-wrap: wrap; }
+.notes-row-title { color: var(--fg); font-size: var(--fs-base); font-weight: var(--fw-medium); }
+.notes-row-when { color: var(--fg-dim); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.notes-row-scope { color: var(--fg-mid); font-size: var(--fs-sm); }
+.notes-row-text { color: var(--fg-mid); font-size: var(--fs-sm); margin-top: 2px; }
+.notes-preview { max-height: 34vh; overflow-y: auto; }
+.notes-preview:empty { display: none; }
+.notes-preview-head {
+  display: flex; gap: var(--sp-2); align-items: center; justify-content: space-between;
+  padding-bottom: var(--sp-2); border-bottom: 1px solid var(--line);
+}
+.notes-preview-path { color: var(--fg-dim); font-size: var(--fs-sm); word-break: break-all; }
+.notes-preview-body { color: var(--fg); font-size: var(--fs-sm); }
+
 /* A row of mutually exclusive choices that are not sizes. Same control, and it
    shares `.settings-size` for the buttons themselves — what differs is only that
    the group is not a set of numbers, so the name of the group had to. */

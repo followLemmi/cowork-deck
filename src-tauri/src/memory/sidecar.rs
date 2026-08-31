@@ -332,8 +332,8 @@ impl Sidecar {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!(
-                        "the download said nothing for {}s and was stopped;                          what it had already fetched is kept and resumes",
-                        idle.as_secs(),
+                        "the download said nothing for {idle:?} and was stopped; \
+                         what it had already fetched is kept and resumes",
                     ));
                 }
                 // The writer is gone, which means stdout closed: the child is
@@ -588,20 +588,37 @@ echo '{"file":"model.onnx","got":2000000,"total":479383128}'"#,
         assert!(e.contains("resumes"), "and says the bytes already fetched are kept: {e}");
     }
 
-    /// A slow download is the common case on 479 MB and must not be reaped. The
-    /// gap between lines is what is bounded, not the total.
+    /// A slow download is the common case on 479 MB and must not be reaped. What
+    /// is bounded is the gap between lines, not the whole run.
+    ///
+    /// The delay is in the **callback**, not in the script, and that is what makes
+    /// this deterministic. `thread::sleep` does not care how busy the machine is,
+    /// whereas a `sleep 0.2` in a shell plus a process spawn under seven hundred
+    /// parallel tests does — that version flaked. And it distinguishes the two
+    /// implementations, which a merely-generous bound would not: the total run
+    /// outlasts the bound, so a deadline on the whole thing would fire here.
     #[test]
     #[cfg(unix)]
     fn a_slow_download_is_not_a_stuck_one() {
-        // Plain lines: `run_streaming` hands over whatever it read, and what is
-        // under test is the gap between them rather than their shape.
-        let (s, _dir) = faked("slow", "for i in 1 2 3; do echo line-$i; sleep 0.2; done");
-        let mut seen: Vec<String> = Vec::new();
-        s.run_streaming(&["model", "--download"], Duration::from_millis(1500), &mut |l| {
-            seen.push(l.to_string())
+        let (s, _dir) = faked("slow", "for i in 1 2 3 4 5; do echo line-$i; done");
+        // Generous enough that spawning `/bin/sh` under the full suite fits inside
+        // the FIRST gap — which is where the previous version of this test flaked,
+        // because that gap includes the spawn and nothing about it is under this
+        // test's control.
+        let bound = Duration::from_secs(3);
+        let started = std::time::Instant::now();
+        let mut seen = 0;
+        s.run_streaming(&["model", "--download"], bound, &mut |_| {
+            seen += 1;
+            std::thread::sleep(Duration::from_millis(800));
         })
-        .expect("three lines 200ms apart is slow, not stuck");
-        assert_eq!(seen, vec!["line-1", "line-2", "line-3"]);
+        .expect("five lines with 800ms of work between them is slow, not stuck");
+        assert_eq!(seen, 5);
+        assert!(
+            started.elapsed() > bound,
+            "the run has to outlast the bound, or this proves nothing: {:?}",
+            started.elapsed(),
+        );
     }
 
     #[test]

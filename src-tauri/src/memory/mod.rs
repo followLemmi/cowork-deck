@@ -419,6 +419,65 @@ fn reindexing() -> &'static std::sync::atomic::AtomicBool {
     &REINDEXING
 }
 
+/// One note, read back out of the corpus.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Note {
+    /// Where it is, so it can be revealed in a file manager.
+    pub path: String,
+    pub markdown: String,
+}
+
+/// Read one note by its path relative to the corpus root.
+///
+/// **Relative, and checked.** A search hit's `file` comes back from the sidecar,
+/// which read it off the filesystem, so in practice it is already ours — but this
+/// is a command, and a command that took an absolute path would be a command any
+/// window could ask to read any file. The path is joined to the root and the
+/// result has to still be inside it, which is the same reasoning `corpus::segment`
+/// applies on the way in.
+///
+/// `main.rs` refuses `open-path` in the opener plugin for a related reason — "a
+/// URL out of a pull request description" naming a file to run — so a note is
+/// read and rendered in the app rather than handed to whatever the system would
+/// launch.
+#[tauri::command]
+pub fn memory_read_note(file: String) -> Result<Note, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    let real = note_under(root, &file)?;
+    let bytes =
+        std::fs::read(&real).map_err(|e| format!("could not read that note ({})", e.kind()))?;
+    Ok(Note {
+        path: real.to_string_lossy().into_owned(),
+        // Lossily, for the reason `transcript::read` gives about transcripts: a
+        // note that is not quite text is better read imperfectly than refused.
+        markdown: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+/// Resolve a note's relative path inside the corpus, or refuse.
+///
+/// Split out from the command because it is the only defensive logic in this
+/// module and the only part of it worth a test: the command around it is a file
+/// read.
+fn note_under(root: &std::path::Path, file: &str) -> Result<PathBuf, String> {
+    if !file.ends_with(".md") {
+        return Err("that is not a note".to_string());
+    }
+    // `canonicalize` resolves `..` and every symlink on the way, so containment
+    // is checked against where the path actually lands rather than how it is
+    // spelled. A prefix check on the joined string would pass
+    // `ws-1/../../.ssh/id_rsa.md` and follow a symlink out without noticing.
+    let real = root.join(file).canonicalize().map_err(|_| "that note is not there".to_string())?;
+    let real_root = root.canonicalize().map_err(|e| e.to_string())?;
+    if !real.starts_with(&real_root) {
+        return Err("that note is not in the corpus".to_string());
+    }
+    if !real.is_file() {
+        return Err("that note is not there".to_string());
+    }
+    Ok(real)
+}
+
 /// What a download is doing, or how it ended.
 ///
 /// One event shape for both, because a surface has to render "fetching", "done"
@@ -549,4 +608,90 @@ pub fn memory_download_model() -> bool {
 #[tauri::command]
 pub fn memory_jobs() -> Vec<queue::WrapupJob> {
     wrapup_queue().map(|q| q.jobs()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn corpus(name: &str) -> PathBuf {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "cd-note-{name}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ws-1/Sessions/2026-08")).unwrap();
+        std::fs::write(root.join("ws-1/Sessions/2026-08/31-a-note.md"), "# a note\n").unwrap();
+        root
+    }
+
+    #[test]
+    fn a_note_inside_the_corpus_resolves() {
+        let root = corpus("ok");
+        let p = note_under(&root, "ws-1/Sessions/2026-08/31-a-note.md").unwrap();
+        assert!(p.ends_with("31-a-note.md"));
+    }
+
+    /// The check this function exists for. A prefix test on the joined string
+    /// would pass every one of these.
+    #[test]
+    fn a_path_that_climbs_out_of_the_corpus_is_refused() {
+        let root = corpus("escape");
+        // Something real to reach for, one directory above the corpus.
+        let outside = root.parent().unwrap().join("cd-note-outside.md");
+        std::fs::write(&outside, "not yours\n").unwrap();
+
+        let e = note_under(&root, "../cd-note-outside.md")
+            .expect_err("a note above the corpus is not a note in it");
+        assert!(e.contains("not in the corpus"), "{e}");
+
+        let e = note_under(&root, "ws-1/../../cd-note-outside.md")
+            .expect_err("nor is one reached the long way round");
+        assert!(e.contains("not in the corpus"), "{e}");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// `canonicalize` is what makes this refusal work: the path is inside the
+    /// corpus and the file it names is not.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_pointing_out_of_the_corpus_is_refused() {
+        let root = corpus("symlink");
+        let outside = root.parent().unwrap().join("cd-note-secret.md");
+        std::fs::write(&outside, "not yours\n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("ws-1/link.md")).unwrap();
+
+        let e = note_under(&root, "ws-1/link.md")
+            .expect_err("a link out of the corpus leads out of the corpus");
+        assert!(e.contains("not in the corpus"), "{e}");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn only_markdown_is_a_note() {
+        let root = corpus("ext");
+        std::fs::write(root.join("ws-1/workspace.json"), "{}").unwrap();
+        let e = note_under(&root, "ws-1/workspace.json").expect_err("a record is not a note");
+        assert!(e.contains("not a note"), "{e}");
+        // The store's own files sit in this directory, which is why the
+        // extension is checked rather than assumed from the layout.
+        std::fs::write(root.join("accounts.json"), "{}").unwrap();
+        assert!(note_under(&root, "accounts.json").is_err());
+    }
+
+    #[test]
+    fn a_note_that_is_not_there_says_so_rather_than_which() {
+        let root = corpus("missing");
+        let e = note_under(&root, "ws-1/Sessions/2026-08/nothing.md").unwrap_err();
+        assert!(e.contains("not there"), "{e}");
+    }
+
+    #[test]
+    fn a_directory_is_not_a_note() {
+        let root = corpus("dir");
+        std::fs::create_dir_all(root.join("ws-1/odd.md")).unwrap();
+        assert!(note_under(&root, "ws-1/odd.md").is_err());
+    }
 }
