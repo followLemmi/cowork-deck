@@ -362,16 +362,43 @@ pub fn init_with_remote(repo: &Path, url: &str) -> Result<(), GitError> {
 }
 
 /// The remote this repository points at, if any.
+///
+/// `origin` first, `upstream` next, and then the sole remote when there is
+/// exactly one — because "the remote is called `origin`" is a convention, not a
+/// rule, and a clone that calls it `github` is still the same project on every
+/// machine that has it. A workspace whose remote had an unconventional name used
+/// to resolve to "this folder has no remote", which is the one answer that
+/// cannot be told apart from a folder that really has none.
+///
+/// Two or more unconventionally named remotes resolve to nothing. Picking one
+/// would be guessing which of several is the project's identity, and a wrong
+/// guess makes two machines disagree — worse than admitting there is no answer.
 pub fn remote_url(repo: &Path) -> Option<String> {
-    run(
-        repo,
-        "remote",
-        &["remote", "get-url", "origin"],
-        &Auth::default(),
-        LOCAL_DEADLINE,
-    )
-    .ok()
-    .filter(|s| !s.is_empty())
+    for name in ["origin", "upstream"] {
+        if let Some(url) = get_url(repo, name) {
+            return Some(url);
+        }
+    }
+    let mut names = remotes(repo);
+    match names.len() {
+        1 => get_url(repo, &names.pop()?),
+        _ => None,
+    }
+}
+
+/// One remote's fetch URL, or nothing when there is no remote by that name.
+fn get_url(repo: &Path, name: &str) -> Option<String> {
+    // `run` already trims what git printed.
+    run(repo, "remote", &["remote", "get-url", name], &Auth::default(), LOCAL_DEADLINE)
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Every remote this repository has, by name.
+fn remotes(repo: &Path) -> Vec<String> {
+    run(repo, "remote", &["remote"], &Auth::default(), LOCAL_DEADLINE)
+        .map(|out| out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 /// True when a rebase stopped on a conflict and is waiting for someone.
@@ -435,6 +462,11 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    fn add_remote(dir: &Path, name: &str, url: &str) {
+        run(dir, "remote", &["remote", "add", name, url], &Auth::default(), LOCAL_DEADLINE)
+            .expect("git remote add");
     }
 
     fn write(dir: &Path, rel: &str, body: &str) {
@@ -580,6 +612,65 @@ mod tests {
         // And running it twice is not an error.
         init_with_remote(&dir, &f.url()).unwrap();
         assert_eq!(remote_url(&dir).as_deref(), Some(f.url().as_str()));
+    }
+
+    /// A clone whose remote is not called `origin` is still the same project on
+    /// every machine that has it — which is the whole of what sync compares
+    /// (#348, #359).
+    #[test]
+    fn a_remote_by_any_other_name_is_still_this_project() {
+        let f = Fixture::new("othername");
+        let dir = f.root.join("named-github");
+        fs::create_dir_all(&dir).unwrap();
+        run_outside(&dir, "init", &["init", "--quiet"], &Auth::default(), LOCAL_DEADLINE).unwrap();
+        add_remote(&dir, "github", "git@github.com:o/r.git");
+
+        assert_eq!(
+            remote_url(&dir).as_deref(),
+            Some("git@github.com:o/r.git"),
+            "the sole remote is the answer, whatever it is called"
+        );
+    }
+
+    /// Convention still wins where it is present: a fork has both, and `origin`
+    /// is the one the other machine will also have.
+    #[test]
+    fn origin_wins_over_every_other_remote_and_upstream_over_the_rest() {
+        let f = Fixture::new("precedence");
+
+        let both = f.root.join("both");
+        fs::create_dir_all(&both).unwrap();
+        run_outside(&both, "init", &["init", "--quiet"], &Auth::default(), LOCAL_DEADLINE).unwrap();
+        add_remote(&both, "github", "git@github.com:o/mirror.git");
+        add_remote(&both, "upstream", "git@github.com:o/upstream.git");
+        add_remote(&both, "origin", "git@github.com:o/fork.git");
+        assert_eq!(remote_url(&both).as_deref(), Some("git@github.com:o/fork.git"));
+
+        let no_origin = f.root.join("no-origin");
+        fs::create_dir_all(&no_origin).unwrap();
+        run_outside(&no_origin, "init", &["init", "--quiet"], &Auth::default(), LOCAL_DEADLINE)
+            .unwrap();
+        add_remote(&no_origin, "github", "git@github.com:o/mirror.git");
+        add_remote(&no_origin, "upstream", "git@github.com:o/upstream.git");
+        assert_eq!(
+            remote_url(&no_origin).as_deref(),
+            Some("git@github.com:o/upstream.git"),
+            "second convention before guesswork"
+        );
+    }
+
+    /// Guessing which of several remotes is the project's identity is how two
+    /// machines come to disagree about it, and disagreeing is worse than not
+    /// knowing.
+    #[test]
+    fn two_unconventional_remotes_are_no_answer_at_all() {
+        let f = Fixture::new("ambiguous");
+        let dir = f.root.join("two");
+        fs::create_dir_all(&dir).unwrap();
+        run_outside(&dir, "init", &["init", "--quiet"], &Auth::default(), LOCAL_DEADLINE).unwrap();
+        add_remote(&dir, "github", "git@github.com:o/r.git");
+        add_remote(&dir, "gitlab", "git@gitlab.com:o/r.git");
+        assert!(remote_url(&dir).is_none());
     }
 
     #[test]

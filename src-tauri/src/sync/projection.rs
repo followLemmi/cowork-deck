@@ -368,6 +368,7 @@ mod tests {
             repo: Some(crate::model::WorkspaceRepo {
                 url: Some("https://github.com/followLemmi/cowork-deck".into()),
                 from: "/Users/someone/code/cowork-deck".into(),
+                resolver: crate::sync::identity::RESOLVER,
             }),
         }
     }
@@ -440,6 +441,7 @@ mod tests {
             w.repo = Some(crate::model::WorkspaceRepo {
                 url: None,
                 from: "/Users/someone/code/cowork-deck".into(),
+                resolver: crate::sync::identity::RESOLVER,
             });
             project_workspace(&w)
         };

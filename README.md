@@ -267,15 +267,22 @@ plausible paragraph nobody wrote.
 **When both machines already had the project:** each added the folder before sync was switched on, so
 each made its own id, and the arriving record looks like a second project. The deck recognises them by
 the folder's git remote — the one thing that is the same string on both machines — and asks whether
-they are the same project instead of deciding. Answering "same project" leaves one workspace with this
-machine's folder and both machines' history; answering "different projects" leaves both and does not
-ask again, on either machine. A workspace whose folder has no remote has nothing to be recognised by
-and is never offered as a duplicate, because a guess that is wrong merges two real projects.
+they are the same project instead of deciding. The remote does not have to be called `origin`: the deck
+takes `origin`, then `upstream`, then the only remote there is. Answering "same project" leaves one
+workspace with this machine's folder and both machines' history; answering "different projects" leaves
+both and does not ask again, on either machine.
+
+A project kept without a git remote — a config folder, a scratch checkout — is recognised by the folder
+instead, but only where both records are on *this* machine and point at the same directory. That
+comparison never leaves the machine, and the only thing that travels is the answer. Two records with
+neither a remote nor a folder here are compared to nothing, because a guess that is wrong merges two
+real projects.
 
 See [ADR-0006](docs/adr/0006-the-config-directory-is-the-sync-repository.md) for why the config
 directory *is* the repository, and
-[ADR-0009](docs/adr/0007-a-workspaces-identity-across-machines-is-its-remote.md) for what a workspace's
-identity is across machines and what merging two records actually moves.
+[ADR-0007](docs/adr/0007-a-workspaces-identity-across-machines-is-its-remote.md) for what a workspace's
+identity is across machines and what merging two records actually moves, as amended by
+[ADR-0010](docs/adr/0010-where-there-is-no-remote-the-folder-is-the-identity.md).
 
 ## Install
 

@@ -218,7 +218,17 @@ export interface SyncSummary {
 }
 export type SyncQuestion =
   | { kind: "needs-path"; workspaceId: string; name: string; cloneFrom: string | null }
-  | { kind: "duplicate"; arrivingId: string; localId: string; name: string }
+  | {
+      kind: "duplicate";
+      arrivingId: string;
+      localId: string;
+      name: string;
+      /** What matched: the same remote URL, or one folder on this machine —
+       *  which is the identity a project with no repository has
+       *  (`sync::adopt::DuplicateBasis`). The two read differently to whoever
+       *  answers, so the sentence is not shared. */
+      basis: "repository" | "folder";
+    }
   | { kind: "needs-board-path"; workspaceId: string; name: string };
 
 export const syncSummary = () => invoke<SyncSummary>("sync_summary");
