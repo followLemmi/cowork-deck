@@ -250,9 +250,20 @@ fn run_status_of(exit: &crate::pty::Exit) -> crate::runs::RunStatus {
     }
 }
 
+/// The workspace list, refusing rather than answering "none" for a file it
+/// cannot read.
+///
+/// It answered `Vec` until #369, on `read_vec`'s best-effort terms: an
+/// unparseable `workspaces.json` read as an empty list, which cost a stale
+/// sidebar and nothing else. It costs more now. A window pinned to a workspace
+/// closes itself when this call stops listing it, so an empty answer is a
+/// decision to hand the window's sessions back and go — and a fault has to be
+/// unable to make that decision. `try_workspaces` carries the difference; the
+/// frontend's `listWorkspaces` rejects, and every reader of it already has to
+/// survive an invoke that fails.
 #[tauri::command]
-pub fn list_workspaces(state: State<AppState>) -> Vec<Workspace> {
-    state.store.lock().unwrap().workspaces()
+pub fn list_workspaces(state: State<AppState>) -> Result<Vec<Workspace>, String> {
+    state.store.lock().unwrap().try_workspaces().map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Workspace>, String> {
@@ -2297,6 +2308,12 @@ pub async fn open_workspace_window(
 
     // Already open: raise it. Tauri refuses a second window with the same label,
     // and a person who asks twice means "show me that one".
+    //
+    // Before the store is consulted, deliberately. Raising needs no title and no
+    // record — the window is on screen, whatever the store now says — and this
+    // is the path that recovers the case nothing else can, a window that died
+    // without announcing it. Refusing to raise something visible on the strength
+    // of a file read would trade that recovery for nothing.
     if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.unminimize();
         let _ = existing.show();
@@ -2304,22 +2321,30 @@ pub async fn open_workspace_window(
         return Ok(label);
     }
 
+    // The workspace has to still be there, and this is the only place that can
+    // say so before a window exists. A window's label is minted from the id and
+    // is then immutable, so a window opened for an id the store does not have is
+    // pinned to nothing for as long as it lives: its sessions collect under
+    // "Other" and it has no workspace row, which means no way to start a session
+    // in it (#369).
+    //
+    // Reachable from an ordinary click. A window's copy of the list can be older
+    // than the store — a pull that folded or deleted a record leaves the main
+    // window drawing a row for it — and pressing that row lands here. Refusing
+    // is what turns a silently broken window into a sentence, and the caller
+    // re-reads its list when it hears this.
+    let title = {
+        // Scoped: the guard must not be held across the await below.
+        let store = state.store.lock().unwrap();
+        store.workspaces().into_iter().find(|w| w.id == workspace_id).map(|w| w.name)
+    }
+    .ok_or_else(|| "that workspace is no longer in the store".to_string())?;
+
     // A label is reusable — the same workspace pulled out, returned, and pulled
     // out again — and the readiness of the window that has gone is not this
     // one's. Cleared here as well as on `Destroyed` because only one of the two
     // is guaranteed to have run by now.
     state.windows_ready.forget(&label);
-
-    let title = {
-        // Scoped: the guard must not be held across the await below.
-        let store = state.store.lock().unwrap();
-        store
-            .workspaces()
-            .into_iter()
-            .find(|w| w.id == workspace_id)
-            .map(|w| w.name)
-            .unwrap_or_else(|| "cowork-deck".to_string())
-    };
 
     let window = tauri::WebviewWindowBuilder::new(
         &app,

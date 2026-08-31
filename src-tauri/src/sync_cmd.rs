@@ -176,13 +176,73 @@ pub fn sync_disconnect(state: State<AppState>) -> Result<(), String> {
 
 /// One cycle, on demand. The same call the loop makes.
 #[tauri::command(async)]
-pub fn sync_now(state: State<AppState>) -> Result<SyncState, String> {
+pub fn sync_now(app: tauri::AppHandle, state: State<AppState>) -> Result<SyncState, String> {
     let root = root(&state)?;
     let (workspaces, skills) = {
         let store = state.store.lock().map_err(|_| "store lock".to_string())?;
         (store.workspaces(), store.skills())
     };
-    Ok(run_once(&root, &workspaces, &skills))
+    let before = ids(&workspaces);
+    let st = run_once(&root, &workspaces, &skills);
+    announce_if_changed(&app, &before);
+    Ok(st)
+}
+
+/// The workspace ids, sorted, for the one comparison this module makes.
+///
+/// Sorted rather than left in file order, because the two writers of that file
+/// disagree about it: a pull saves what `adopt` produced, which is in sorted
+/// path order, while a workspace added on this machine is appended. So the first
+/// cycle after any local addition rewrites the file with the same records in a
+/// different order. Compared positionally that reads as a change, and the
+/// announcement then costs every window exactly the tree rebuild this comparison
+/// exists to avoid.
+fn ids(workspaces: &[crate::model::Workspace]) -> Vec<String> {
+    let mut out: Vec<String> = workspaces.iter().map(|w| w.id.clone()).collect();
+    out.sort();
+    out
+}
+
+/// Tell every window the store's workspace list is not what it read at boot.
+///
+/// **A pull can delete a workspace record**, or fold two into one, because
+/// somebody answered that question on the other machine. Nothing in a webview
+/// can see that happen: `workspaces.json` is read once, during boot, so every
+/// window goes on drawing a row for a record that is gone — and a window pinned
+/// to that record goes on being pinned to nothing, with its sessions under
+/// "Other" and no row to start a session from (#369).
+///
+/// Emitted app-wide rather than to a chosen window: which windows care is not
+/// this side's business, and the main window has a stale row to drop whether or
+/// not a pinned window has to close.
+///
+/// Compared by id rather than by whole record, and that is deliberate: a name, a
+/// path or an account changing is the store answering for something a window
+/// already did, and re-reading the list on every such tick would rebuild the
+/// tree — and with it the containers the deck's session rows live in — every five
+/// minutes for nothing.
+fn announce_if_changed(app: &tauri::AppHandle, before: &[String]) {
+    // `try_workspaces`, not `workspaces`: a store that cannot be read has to be
+    // able to say so. The best-effort read answers an unparseable file with an
+    // empty list, and an empty list here is indistinguishable from "the pull
+    // deleted every workspace" — which every pinned window answers by handing
+    // its sessions back and closing. A fault must not be able to close windows.
+    let after = app.try_state::<AppState>().and_then(|st| {
+        let store = st.store.lock().ok()?;
+        match store.try_workspaces() {
+            Ok(items) => Some(ids(&items)),
+            Err(e) => {
+                eprintln!("warning: sync could not re-read the workspace list ({e}); saying nothing");
+                None
+            }
+        }
+    });
+    // Nothing to compare against says nothing. The alternative is announcing a
+    // change that may not have happened, which costs every window a re-read.
+    let Some(after) = after else { return };
+    if after != before {
+        let _ = app.emit("workspaces://changed", ());
+    }
 }
 
 /// A cycle plus the bookkeeping a person sees.
@@ -367,8 +427,13 @@ pub fn spawn(app: tauri::AppHandle) {
                 st.store.lock().ok().map(|s| (s.workspaces(), s.skills()))
             });
             if let Some((workspaces, skills)) = read {
+                let before = ids(&workspaces);
                 let st = run_once(&dir, &workspaces, &skills);
                 let _ = app.emit("sync://state", &st);
+                // What the cycle pulled may have taken a workspace with it. See
+                // `announce_if_changed`: this is the only moment anything in the
+                // app can notice.
+                announce_if_changed(&app, &before);
             }
             std::thread::sleep(job::TICK);
         }
@@ -403,13 +468,23 @@ pub fn sync_questions(state: State<AppState>) -> Result<Vec<crate::sync::adopt::
 /// it.
 #[tauri::command(async)]
 pub fn sync_merge_workspaces(
+    app: tauri::AppHandle,
     state: State<AppState>,
     from: String,
     into: String,
 ) -> Result<Vec<crate::model::Workspace>, String> {
-    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
-    let root = store.dir.clone();
-    merge_workspaces(&root, &store, &from, &into)
+    let merged = {
+        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let root = store.dir.clone();
+        merge_workspaces(&root, &store, &from, &into)?
+    };
+    // The one reference a fold cannot repoint is the label of a window pinned to
+    // the losing id — a label is minted once and is then that window's name for
+    // life. So the window has to be told, and this is the announcement it hears:
+    // it hands its sessions back to the main window and closes, rather than
+    // living on pinned to an id the store no longer has (#369).
+    let _ = app.emit("workspaces://changed", ());
+    Ok(merged)
 }
 
 /// The whole of the answer, taking a store rather than the app's state so it can
@@ -839,5 +914,38 @@ mod tests {
         assert_eq!(st, SyncState::default());
         assert!(!dir.join("ws-1").exists(), "nothing is written before sync is on");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The comparison behind `workspaces://changed` (#369): a set, not an order.
+    ///
+    /// The order genuinely differs between the file's two writers — a pull saves
+    /// `adopt`'s sorted output, a local addition appends — so a positional
+    /// comparison announces a change after the first cycle following any local
+    /// addition, and every window pays for it with a tree rebuild.
+    #[test]
+    fn ids_ignore_the_order_the_file_happens_to_be_in() {
+        let a = [ws("w-2", "Q", "/q"), ws("w-1", "P", "/p")];
+        let b = [ws("w-1", "P", "/p"), ws("w-2", "Q", "/q")];
+        assert_eq!(ids(&a), ids(&b), "the same two workspaces are not a change");
+    }
+
+    /// And a record actually leaving still is one — the case the whole event
+    /// exists for.
+    #[test]
+    fn ids_notice_a_workspace_that_left() {
+        let before = ids(&[ws("w-1", "P", "/p"), ws("w-2", "Q", "/q")]);
+        let after = ids(&[ws("w-1", "P", "/p")]);
+        assert_ne!(before, after);
+    }
+
+    /// A name changing is not a change this event reports: it is the store
+    /// answering for something a window already did, and re-reading on it would
+    /// rebuild every window's tree — and the containers the deck's session rows
+    /// live in — on a five-minute timer for nothing.
+    #[test]
+    fn ids_ignore_a_renamed_workspace() {
+        let before = ids(&[ws("w-1", "P", "/p")]);
+        let after = ids(&[ws("w-1", "renamed", "/elsewhere")]);
+        assert_eq!(before, after);
     }
 }

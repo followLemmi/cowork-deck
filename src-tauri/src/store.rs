@@ -212,6 +212,18 @@ impl Store {
     }
 
     pub fn workspaces(&self) -> Vec<Workspace> { Self::read_vec(&self.ws_path()) }
+    /// The workspace list, or the reason it could not be read.
+    ///
+    /// `workspaces` above is best-effort, and `read_vec` states the condition
+    /// that makes that safe: nothing destructive follows a plain listing. Since
+    /// #369 something does. A window pinned to a workspace closes itself when
+    /// the list stops containing it, so "this file will not parse" arriving as
+    /// "there are no workspaces" would close every detached window over a fault
+    /// that deleted nothing. A caller about to act on the *absence* of a record
+    /// asks this one, and says nothing when it cannot be answered.
+    pub fn try_workspaces(&self) -> std::io::Result<Vec<Workspace>> {
+        Self::try_read_vec(&self.ws_path())
+    }
     pub fn save_workspaces(&self, items: &[Workspace]) -> std::io::Result<()> {
         Self::write_vec(&self.ws_path(), items)
     }
@@ -1581,5 +1593,39 @@ mod tests {
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "a failed save left temp files behind: {leftovers:?}");
+    }
+
+    /// The difference `try_workspaces` exists for (#369).
+    ///
+    /// `workspaces` answers an unparseable file with an empty list, which is the
+    /// right trade for a plain listing and the wrong one for a decision: a window
+    /// pinned to a workspace closes itself when the list stops containing it, so
+    /// a fault that deleted nothing would close every detached window. The strict
+    /// read is what lets a caller tell the two apart and say nothing.
+    #[test]
+    fn try_workspaces_refuses_a_list_it_cannot_parse() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.ws_path(), "{ not an array").unwrap();
+
+        assert!(
+            s.workspaces().is_empty(),
+            "the best-effort read still answers empty, as its callers rely on"
+        );
+        assert!(
+            s.try_workspaces().is_err(),
+            "a list that will not parse must not read as a list with nothing in it"
+        );
+    }
+
+    /// And an *empty* file is still a first run rather than a fault — the
+    /// tolerance `try_read_vec` documents, which a zero-byte file left by an
+    /// older build or a power cut depends on.
+    #[test]
+    fn try_workspaces_accepts_an_empty_file() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.ws_path(), "").unwrap();
+        assert!(s.try_workspaces().unwrap().is_empty());
     }
 }

@@ -18,6 +18,7 @@ import {
   claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
   revealPath, saveUiState, scheduleAck, schedulerReady, openWorkspaceWindow, onSessionOwner,
+  onWorkspacesChanged,
   syncSummary,
   hostPlatform,
   configPaths,
@@ -1160,12 +1161,31 @@ export function startApp(role: WindowRole): Promise<void> {
         void skills.refreshRuns();
         if (currentPage === "history") void refreshHistory();
       }).then(() => {}),
-      () => workspaces.load(),
+      // The list, and the one question a pinned window has to ask of it before
+      // anything is drawn from it. See `closeIfPinnedWorkspaceGone` for why the
+      // backend's refusal does not cover this on its own.
+      //
+      // A list that could not be read is caught here rather than left to
+      // `onError`, and the two halves of that are both deliberate. Boot goes on:
+      // an unreadable list costs a sidebar, while stopping the remaining steps
+      // would cost the deck and every session waiting in it — the app has to stay
+      // the place those are recovered from. And the pinned question is not asked,
+      // because a store that would not parse deleted nothing.
+      () => workspaces.load().then(
+        () => closeIfPinnedWorkspaceGone().then(() => {}),
+        (e: unknown) => { console.error("the workspace list could not be read at boot", e); },
+      ),
       () => skills.load(),
       () => onTasksChanged((workspaceId) => {
         if (boardVisible && workspaces.active?.id === workspaceId) void refreshBoard();
         void refreshCounts();
       }).then(() => {}),
+      // The store's workspace list changed without this window asking. Every
+      // window listens, main and pinned alike: the row to drop is the main
+      // window's business and the window to close is the pinned one's, and
+      // neither can be decided by whoever wrote the file. See
+      // `rereadWorkspaces`.
+      () => onWorkspacesChanged(() => { void rereadWorkspaces(); }).then(() => {}),
       // Idempotent, and merely wasteful rather than wrong — but it re-points
       // backend watchers from a list every window holds the same copy of. The
       // other two calls to it are reactions to something *this* window did, and
@@ -2135,12 +2155,87 @@ export function startApp(role: WindowRole): Promise<void> {
     // when it exists and opens one when it does not, so the click always does
     // what it says — including in the case this cannot otherwise recover from,
     // a window that died without announcing it.
-    (ws) => { void openWorkspaceWindow(ws.id).catch((e) => console.debug("raise failed", e)); },
+    (ws) => {
+      void openWorkspaceWindow(ws.id).catch((e) => {
+        console.debug("raise failed", e);
+        // As in `detachWorkspace`: a row for a record the store has lost is
+        // refused rather than opened, and re-reading is what removes the row.
+        void rereadWorkspaces();
+      });
+    },
     (workspaceId) => { void emitTo(workspaceLabel(workspaceId), "workspace://gone", {}); });
   /* A window pinned to one workspace shows that one and no other — see `pinTo`.
      Before `load()`, so the first render is already the right list rather than a
      full tree that blinks down to one row. */
   if (pinnedTo !== null) workspaces.pinTo(pinnedTo);
+
+  /** Read the workspace list again, because the store changed under this window.
+   *
+   *  The list is read once during boot, and until #369 that was the only read
+   *  there ever was: a pull that deleted a workspace record — or carried the
+   *  answer somebody gave to a duplicate question on the other machine — left
+   *  every open window drawing a row for a record that no longer exists. See
+   *  `onWorkspacesChanged` for what says so and when.
+   *
+   *  Two things follow from the new list, and they are the two states a stale one
+   *  hid:
+   *
+   *  A window pinned to a workspace that has gone is pinned to nothing, and that
+   *  is the state the comment on `workspace://gone` says the app has no answer
+   *  for. It was reachable anyway: the sessions collected under "Other" — the
+   *  heading for a session whose workspace was deleted — and with no workspace
+   *  row there was no "New session in …" row either, so the window could not be
+   *  given work at all. It closes instead, which hands its sessions back to the
+   *  main window, where an orphan has always lived.
+   *
+   *  And the *active* workspace can be the one that went. The panel then has no
+   *  active workspace while the deck goes on filtering its tiles to an id nothing
+   *  answers for, so the window falls back to the first workspace there is — the
+   *  same choice `load()` makes on a cold start. */
+  async function rereadWorkspaces(): Promise<void> {
+    try {
+      await workspaces.load();
+    } catch (e) {
+      // `list_workspaces` refuses a list it cannot read rather than answering
+      // "none" (#369), and refusing is what has to stop this: the *absence* of a
+      // record is what closes a pinned window, and a store that would not parse
+      // deleted nothing. Keeping the list this window already has is the only
+      // honest reading of a failed read.
+      console.error("re-reading the workspace list failed; keeping the list this window has", e);
+      return;
+    }
+    if (await closeIfPinnedWorkspaceGone()) return;
+    if (workspaces.active === null) {
+      const first = workspaces.all[0]?.id ?? null;
+      if (first) workspaces.activate(first);
+      else activateWorkspace(null);
+    }
+    // Paired with `refreshCounts` everywhere the workspace set changes, and for
+    // the reason `AppState.watchers` gives: a record that arrived in a pull has
+    // no tracker watcher until something re-points them, so its open-task count
+    // would sit still until the next restart. Main only, exactly as at boot —
+    // every window hears this event and holds the same list, so the other copies
+    // of the call would re-point the same backend watchers at the same roots.
+    if (isMain) void taskWatchSync();
+    void refreshCounts();
+  }
+
+  /** Close this window if the workspace it is pinned to is not in the store.
+   *
+   *  Answers whether it did, because everything a caller does next is work for a
+   *  window that is staying.
+   *
+   *  Asked on the announcement and again once at boot. `open_workspace_window`
+   *  refuses an id the store does not have, but it answers *before* the window
+   *  exists: a pull landing in the gap between that answer and this window's
+   *  first read leaves it pinned to nothing with the announcement it would have
+   *  heard already sent, which is #369 again with no way out of it. */
+  async function closeIfPinnedWorkspaceGone(): Promise<boolean> {
+    if (pinnedTo === null || workspaces.all.some((w) => w.id === pinnedTo)) return false;
+    await getCurrentWindow().close();
+    return true;
+  }
+
   /** Every launch path needs an active workspace. Saying so beats a button that
    *  looks broken — the old behaviour was a bare `return`. */
   async function requireWorkspace(): Promise<Workspace | null> {
@@ -2555,6 +2650,11 @@ export function startApp(role: WindowRole): Promise<void> {
       if (tiles.length) await emitTo(label, "workspace://take", { tiles });
     } catch (e) {
       await alertModal(`Could not open a window for ${ws.name}: ${String(e)}`);
+      // One of the two reasons this fails is that the row pressed is a record the
+      // store no longer has — `open_workspace_window` refuses those rather than
+      // opening a window pinned to nothing (#369). Re-reading is what takes the
+      // row away, so the same press does not fail the same way twice.
+      void rereadWorkspaces();
     }
   }
 
@@ -2650,6 +2750,9 @@ export function startApp(role: WindowRole): Promise<void> {
       if (tiles.length) await emitTo(label, "workspace://take", { tiles });
     } catch (e) {
       await alertModal(`Could not pull ${ws.name} out: ${String(e)}`);
+      // As in `detachWorkspace`, and for the same reason: one of the two ways
+      // this fails is a row for a record the store has lost (#369).
+      void rereadWorkspaces();
     }
   }
 
