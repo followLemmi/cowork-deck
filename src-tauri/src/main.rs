@@ -9,6 +9,7 @@ mod gh;
 mod gh_pr;
 mod hooks;
 mod listener;
+mod memory;
 mod pty;
 mod commands;
 mod run_journal;
