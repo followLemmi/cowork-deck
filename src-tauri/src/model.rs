@@ -140,12 +140,13 @@ pub struct Workspace {
 ///
 /// Remembered rather than asked for, because the alternative is a subprocess per
 /// workspace on a five-minute timer for a value that changes about once in a
-/// project's life. `from` is what keeps that safe: an answer is only good for
-/// the folder it was read in, so a workspace re-pointed elsewhere re-resolves
-/// instead of carrying the old project's identity to the new one.
+/// project's life. Two things keep that safe, and they are the two ways a
+/// remembered answer goes stale: `from`, because an answer is only good for the
+/// folder it was read in, and `resolver`, because an answer is only good for the
+/// question that produced it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceRepo {
-    /// The remote, as `git remote get-url origin` gave it.
+    /// The remote, as `sync::git::remote_url` gave it.
     ///
     /// `None` is an answer, not a gap: this folder has no remote, and it is
     /// worth writing down, or every cycle asks the same question again. A
@@ -156,6 +157,21 @@ pub struct WorkspaceRepo {
     /// The folder the answer was read in. This machine's disk, so it never
     /// travels — see `sync::projection`.
     pub from: String,
+    /// Which version of the question this answers (`sync::identity::RESOLVER`).
+    ///
+    /// A stored `None` means "asked, and this folder has no remote", and
+    /// `identity::refresh` trusts it forever so the folder is not re-probed on
+    /// every cycle for the rest of its life. That trust is only earned while the
+    /// question stays the same. When `remote_url` learned to look past `origin`
+    /// (ADR-0010), every `None` written before it became an answer to a question
+    /// nobody is asking any more — and without this field they would have been
+    /// trusted anyway, leaving the fix inert on exactly the installs that
+    /// reported the bug (#359).
+    ///
+    /// Absent in a store written before the field existed, which deserialises to
+    /// `0` and is below every real version, so those answers are re-asked once.
+    #[serde(default)]
+    pub resolver: u32,
 }
 
 /// Where a workspace's cards were before its effective root last moved.

@@ -32,6 +32,10 @@ surviving id, and that is a loss of history rather than a tidy-up".
 
 ## Decision
 
+> **Amended by [ADR-0010](0010-where-there-is-no-remote-the-folder-is-the-identity.md)**
+> on two points: a remote may be called something other than `origin`, and a
+> project with no remote at all is identified by its folder on this machine.
+
 **Identity across machines is the remote URL of the workspace's folder,
 normalised.** `git remote get-url origin`, not `gh`: the comparison needs a
 string both machines produce, not a pretty `owner/name`, and asking `gh` costs a
@@ -41,7 +45,9 @@ network round trip and an authenticated account. Two spellings of one repository
 **A workspace with no remote has no cross-machine identity, and is never offered
 as a duplicate of anything.** Name plus something else is a guess, and guessing
 wrong merges two real projects. It is fair for those to stay unrecognised, as
-long as the ones that can be recognised are.
+long as the ones that can be recognised are. *(Amended by ADR-0010: two records
+on this machine pointing at one folder are recognised, which needs no agreement
+between machines and is not a guess.)*
 
 **The answer is remembered on the record, not re-derived.** `Workspace.repo`
 holds the URL *and the folder it was read in*. The folder is what makes the cache

@@ -253,6 +253,21 @@ describe("WorkspacesPanel pinned to one workspace", () => {
     expect(el.querySelectorAll(".ws-row")).toHaveLength(2);
   });
 
+  /* The store can lose the workspace a window is pinned to: a pull deletes the
+     record, or carries the answer somebody gave to a duplicate question on the
+     other machine. The panel says so by having nothing rather than by falling
+     back to another workspace — `startApp` closes the window on that (#369), and
+     a fallback would instead leave it showing a project it is not for. */
+  it("has nothing when the workspace it is pinned to is not in the store", async () => {
+    const el = mount();
+    const panel = new WorkspacesPanel(el, () => {});
+    panel.pinTo("gone");
+    await panel.load();
+    expect(panel.all).toEqual([]);
+    expect(panel.active).toBeNull();
+    expect(el.querySelectorAll(".ws-row")).toHaveLength(0);
+  });
+
   /* `activate` is how something other than this panel names a workspace — a
      scenario's run, say. One that is not this window's must not be switched to:
      its sessions are in another window and the deck here would empty. */

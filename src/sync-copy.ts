@@ -126,10 +126,18 @@ export function questionCopy(q: SyncQuestion): {
   switch (q.kind) {
     case "duplicate":
       return {
-        text:
-          `“${q.name}” arrived from another machine, and it is the same repository `
-          + `as a workspace you already have here. Joining them keeps this machine's `
-          + `folder and both machines' history; nothing is deleted either way.`,
+        text: q.basis === "folder"
+          // Not "it has no git remote": all the deck knows is that it has no
+          // repository recorded for either record, which is also what a folder
+          // it has not managed to ask about yet looks like. Saying the stronger
+          // thing would be describing something nobody checked.
+          ? `“${q.name}” and another workspace here point at the same folder on this `
+            + `machine, and neither has a repository recorded to tell them apart by. `
+            + `Joining them keeps one workspace and both histories; nothing is `
+            + `deleted either way.`
+          : `“${q.name}” arrived from another machine, and it is the same repository `
+            + `as a workspace you already have here. Joining them keeps this machine's `
+            + `folder and both machines' history; nothing is deleted either way.`,
         primary: "Same project",
         secondary: "Different projects",
       };

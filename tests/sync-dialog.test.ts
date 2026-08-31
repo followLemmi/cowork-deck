@@ -175,6 +175,7 @@ describe("while sync is running", () => {
 describe("the questions a pull raised", () => {
   const duplicate = {
     kind: "duplicate", arrivingId: "ws-a", localId: "ws-b", name: "cowork-deck",
+    basis: "repository",
   } as const;
 
   beforeEach(() => {
