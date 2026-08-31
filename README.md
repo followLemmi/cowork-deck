@@ -302,10 +302,12 @@ and to what. A single short line is on disk and listed immediately, but is not s
 its own: the index skips anything under about 120 letters, so a file becomes findable once
 it holds a few.
 
-**Reading them.** The rail's **Memory** page lists everything ever written down — this
-project's notes first, then the lessons, then every other project's. It is a directory
-listing rather than a search, so it works on a machine that has downloaded nothing.
-Choosing a note reads it where the deck was, and one control gives the deck back.
+**Reading them.** The rail's **Memory** page lists everything ever written down: a heading
+per project with its notes under it, the most recently written project first, and the
+lessons last. It does not change with the project you have open — memory spans them. It is
+a directory listing rather than a search, so it works on a machine that has downloaded
+nothing. Opening the page puts a screen of its own where the deck was; choosing a note
+reads it there, and one control gives the deck back.
 
 **Searching them.** The field at the top of that page — or **Search your notes…** in the
 command palette, which lands on it — takes a sentence rather than a keyword: the notes are

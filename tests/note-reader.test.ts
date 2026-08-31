@@ -338,3 +338,45 @@ describe("writing a note by hand", () => {
     expect(fk("note-compose-fault")!.textContent).toContain("title and a TL;DR");
   });
 });
+
+/** The surface while the memory page is open and no note is chosen.
+ *
+ *  The deck's own empty state offers to start a session, which under a page about
+ *  notes answers a question nobody asked. */
+describe("the memory surface with no note on it", () => {
+  const summary = { corpus: "12 notes across 3 projects.", readiness: null };
+
+  it("says what memory is and what the list beside it holds", () => {
+    const { reader } = mount();
+    reader.showLanding(summary);
+
+    expect(reader.isOpen()).toBe(true);
+    expect(document.querySelector(".note-reader-title")!.textContent).toBe("Memory");
+    expect(fk("note-reader-landing")!.textContent).toContain("a heading per project");
+    expect(document.querySelector(".note-reader-where")!.textContent)
+      .toBe("12 notes across 3 projects.");
+  });
+
+  it("repeats what searching needs, where somebody is about to search", () => {
+    const { reader } = mount();
+    reader.showLanding({ corpus: "1 note.", readiness: "Searching needs a 479 MB model." });
+    expect(fk("note-reader-landing")!.textContent).toContain("479 MB");
+  });
+
+  /** Called on every entry to the page, including the one a person makes by
+   *  pressing the rail button they are already on. */
+  it("does not blank a note somebody is reading", async () => {
+    const { reader } = mount();
+    await reader.open(note());
+    reader.showLanding(summary);
+    expect(reader.current()).toBe("ws-1/Sessions/2026-08/31-the-staging-script.md");
+    expect(document.querySelector('[data-fk="note-reader-landing"]')).toBeNull();
+  });
+
+  it("gives the deck back from its own control", () => {
+    const { reader } = mount();
+    reader.showLanding(summary);
+    fk("note-reader-close")!.click();
+    expect(reader.isOpen()).toBe(false);
+  });
+});

@@ -2194,6 +2194,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 /* A rule a person cannot see being obeyed, written where it applies — the same
    choice `.panel-hint` records. */
 .note-reader-rule { color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body); }
+/* The surface with no note on it. The deck's own empty state offers to start a
+   session, which under a page about notes answers a question nobody asked. */
+.note-reader-landing {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  max-width: 68ch; margin-inline: auto; padding-top: var(--sp-6);
+}
+.note-reader-lede { margin: 0; color: var(--fg); font-size: var(--fs-lg); line-height: var(--lh-body); }
+.note-reader-landing .note-reader-rule { margin: 0; }
+
 .note-reader-wait, .note-reader-fault { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); }
 .note-reader-fault { color: var(--st-error); }
 

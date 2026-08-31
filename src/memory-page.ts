@@ -19,6 +19,17 @@
 // bug — and the head has to have said so before they try. That one sentence is
 // what stops the page reading as broken.
 //
+// # A heading per project, and it does not depend on which one is open
+//
+// The first shape here grouped by "this project, the lessons, everything else",
+// which made the page answer a different question every time the workspace
+// changed and hid every other project's notes behind one fold. Memory spans
+// projects, and somebody looking at it is looking ACROSS them — so the list is a
+// heading per project with its notes under it, ordered by the most recent note in
+// each, and the lessons last. Only the first heading arrives open: a corpus
+// across a dozen projects is a wall either way, and a wall of headings with
+// counts is one a person can read.
+//
 // # 280–384px
 //
 // Measured: the rail's column is `clamp(17.5rem, 19vw, 24rem)`. A title, a date
@@ -151,33 +162,61 @@ export function excerpt(text: string, max = 160): string {
   return `${space > max * 0.6 ? cut.slice(0, space) : cut}…`;
 }
 
-/** The three groups, in the order the page shows them.
- *
- *  The order is the argument: **this project** first, because that is what the
- *  person is in; **lessons** next, because they are the reason memory is global
- *  at all; **other projects** last. */
-export interface Grouped {
-  mine: MemoryNoteEntry[];
-  lessons: MemoryNoteEntry[];
-  others: MemoryNoteEntry[];
+/** One heading in the list, and everything filed under it. */
+export interface Group {
+  /** The scope it stands for: a workspace id, or `Diaries`. Stable across
+   *  repaints, which is what lets a fold survive one. */
+  key: string;
+  /** What the heading says. A workspace's name where the app still knows it, the
+   *  scope itself where it does not. */
+  title: string;
+  notes: MemoryNoteEntry[];
 }
 
-/** Split the corpus three ways.
+/** The reserved scope of the diaries, as `memory::corpus` writes it. */
+const DIARIES = "Diaries";
+
+/** Split the corpus by what it is about: one group per project, and one for the
+ *  lessons.
  *
- *  A window with no active workspace has no first group — not an empty one with a
- *  zero beside it — so `mine` is empty and the page renders two headers. Its
- *  notes are not lost: with no workspace to be "this project", every project is
- *  another one. */
-export function group(notes: MemoryNoteEntry[], workspaceId: string | null): Grouped {
-  const mine: MemoryNoteEntry[] = [];
+ *  **It does not depend on which project is open.** The previous shape did — this
+ *  project, then the lessons, then everything else in one heap — and it made the
+ *  page answer a different question every time the workspace changed, while
+ *  hiding every other project's notes behind a single fold called "Other
+ *  projects". Memory spans projects; a person looking at it is looking across
+ *  them, not out from one.
+ *
+ *  Ordered by the most recent note in each group, newest first, because that is
+ *  the only ordering the corpus itself supports — the notes carry an mtime and
+ *  the projects carry nothing. The lessons sit last whatever their age: they are
+ *  not a project, and a heading that moved between the projects and the end
+ *  depending on when somebody last filed a lesson would be a list that reshuffles
+ *  for no reason a person can see. */
+export function group(notes: MemoryNoteEntry[], names: Map<string, string>): Group[] {
+  const byScope = new Map<string, MemoryNoteEntry[]>();
   const lessons: MemoryNoteEntry[] = [];
-  const others: MemoryNoteEntry[] = [];
   for (const note of notes) {
-    if (note.kind === "diary") lessons.push(note);
-    else if (workspaceId !== null && note.scope === workspaceId) mine.push(note);
-    else others.push(note);
+    if (note.kind === "diary") { lessons.push(note); continue; }
+    const at = byScope.get(note.scope);
+    if (at) at.push(note);
+    else byScope.set(note.scope, [note]);
   }
-  return { mine, lessons, others };
+  const groups: Group[] = [...byScope.entries()].map(([key, rows]) => ({
+    key,
+    // A scope whose workspace has been deleted is shown as itself: the notes
+    // outlive the project, and hiding them under an id nobody recognises beats
+    // dropping them.
+    title: names.get(key) ?? key,
+    notes: rows,
+  }));
+  groups.sort((a, b) => {
+    const recent = (g: Group) => Math.max(...g.notes.map((n) => n.mtime));
+    return recent(b) - recent(a) || a.title.localeCompare(b.title);
+  });
+  if (lessons.length) {
+    groups.push({ key: DIARIES, title: "Lessons, from every project", notes: lessons });
+  }
+  return groups;
 }
 
 /** What the corpus holds, in a sentence.
@@ -266,12 +305,21 @@ export interface MemoryView {
   /** Put the caret in the search field. Where the palette's "Search your notes…"
    *  lands, which is the whole of what the dialog it replaces was. */
   focusSearch: () => void;
+  /** What the page knows, for the surface beside it to say while no note is
+   *  open. Read rather than pushed: the surface is shown on entering the page,
+   *  which is not when the corpus was last read. */
+  summary: () => { corpus: string; readiness: string | null };
 }
 
-/** Which groups a person has folded away. Kept for the life of the window rather
- *  than persisted: it is a glance-scoped preference, and a page that remembered
- *  a collapse from last week would hide notes somebody has forgotten they hid. */
-type Fold = Record<keyof Grouped, boolean>;
+/** Which groups a person has folded away, by scope. Kept for the life of the
+ *  window rather than persisted: it is a glance-scoped preference, and a page
+ *  that remembered a collapse from last week would hide notes somebody has
+ *  forgotten they hid.
+ *
+ *  A scope absent from the map has never been touched, and takes the default
+ *  below — which is why this is a `Map` of what a person DID rather than a
+ *  record of every group's state. */
+type Fold = Map<string, boolean>;
 
 export function mountMemory(opts: MemoryPageOptions): MemoryView {
   const mount = el("div", "mem");
@@ -343,30 +391,32 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
   const jobs = mountCaptureRecord();
   mount.append(field, head, readiness, list, write, jobs.mount);
 
-  const folded: Fold = { mine: false, lessons: false, others: true };
+  const folded: Fold = new Map();
   let notes: MemoryNoteEntry[] = [];
   let selected: string | null = null;
   /** The results, or `null` while the field is empty and the list is the corpus.
    *  Null rather than an empty array, because "searched and found nothing" and
    *  "not searching" are two different lists with two different sentences. */
   let hits: { note: MemoryNoteEntry; text: string }[] | null = null;
-  /** The last status read, so the head can say what searching needs without
-   *  asking again on every keystroke. */
+  /** The last status read, and when. Reading it spawns the sidecar, so it is
+   *  cached rather than asked for on the path of every query. */
   let status: MemoryStatus | null = null;
+  let statusReadAt = 0;
+  /** Whether a search is in flight, and the query waiting behind it. */
+  let running = false;
+  let pending: string | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** Which search is the current one: a slow answer must not land on a query
    *  somebody has already replaced. */
   let seq = 0;
 
   const paint = () => {
-    const ws = opts.workspace();
     const names = opts.names();
     /* Whichever list is showing: it is what memory HOLDS, and somebody reading a
        result still wants to know it is one of forty notes rather than one of four
        hundred. */
     head.textContent = corpusLine(notes);
     if (hits !== null) { paintHits(); return; }
-    const groups = group(notes, ws?.id ?? null);
     list.replaceChildren();
 
     if (notes.length === 0) {
@@ -382,25 +432,12 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
       return;
     }
 
-    const sections: [key: keyof Grouped, title: string, rows: MemoryNoteEntry[]][] = [
-      [
-        "mine",
-        // The workspace's own name rather than "this project": the panel's head
-        // says which workspace the panel is about, and a group that repeated the
-        // word instead of the name would be the one line on the page that did not.
-        ws ? ws.name : "This project",
-        groups.mine,
-      ],
-      ["lessons", "Lessons, from every project", groups.lessons],
-      ["others", "Other projects", groups.others],
-    ];
-
-    for (const [key, title, rows] of sections) {
-      // No empty group with a zero beside it — most of all the first one, which
-      // is absent rather than empty in a window with no active workspace.
-      if (rows.length === 0) continue;
-      list.append(section(key, title, rows, names));
-    }
+    /* One heading per project, newest first, and the lessons last. Only the
+       first arrives open: a corpus across a dozen projects is a wall either way,
+       and a wall of headings with counts is one a person can read. Which one is
+       first does not depend on which project is open — see `group`. */
+    const groups = group(notes, names);
+    groups.forEach((g, i) => list.append(section(g, folded.get(g.key) ?? i > 0)));
   };
 
   /** The same list, from the other source.
@@ -411,7 +448,6 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
    *  is a lesson from every project, which is the one thing the grouping said
    *  that a result still needs. */
   const paintHits = () => {
-    const names = opts.names();
     list.replaceChildren();
     if (hits!.length === 0) {
       // Only reachable with a ready index — `searchReadiness` has already spoken
@@ -424,39 +460,35 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
       return;
     }
     const rows = el("div", "mem-rows");
-    for (const hit of hits!) rows.append(row(hit.note, names, hit.text));
+    for (const hit of hits!) rows.append(row(hit.note, hit.text));
     list.append(rows);
   };
 
-  const section = (
-    key: keyof Grouped,
-    title: string,
-    rows: MemoryNoteEntry[],
-    names: Map<string, string>,
-  ): HTMLElement => {
+  const section = (g: Group, shut: boolean): HTMLElement => {
     const box = el("section", "mem-group");
     const toggle = el("button", "mem-group-head");
     toggle.type = "button";
-    toggle.dataset.fk = `memory-group-${key}`;
-    toggle.setAttribute("aria-expanded", String(!folded[key]));
+    toggle.dataset.fk = `memory-group-${g.key}`;
+    toggle.setAttribute("aria-expanded", String(!shut));
     toggle.append(
-      el("span", "mem-group-title", title),
+      el("span", "mem-group-title", g.title),
       // On the header, so a collapsed group still says how much is behind it.
-      el("span", "mem-group-count", String(rows.length)),
+      el("span", "mem-group-count", String(g.notes.length)),
     );
     const body = el("div", "mem-rows");
-    body.hidden = folded[key];
+    body.hidden = shut;
     toggle.onclick = () => {
-      folded[key] = !folded[key];
-      toggle.setAttribute("aria-expanded", String(!folded[key]));
-      body.hidden = folded[key];
+      const now = !body.hidden;
+      folded.set(g.key, now);
+      toggle.setAttribute("aria-expanded", String(!now));
+      body.hidden = now;
     };
-    for (const note of rows) body.append(row(note, names));
+    for (const note of g.notes) body.append(row(note));
     box.append(toggle, body);
     return box;
   };
 
-  const row = (note: MemoryNoteEntry, names: Map<string, string>, text?: string): HTMLElement => {
+  const row = (note: MemoryNoteEntry, text?: string): HTMLElement => {
     const btn = el("button", `notes-row mem-row${note.file === selected ? " selected" : ""}`);
     btn.type = "button";
     btn.dataset.fk = `memory-row-${note.file}`;
@@ -465,15 +497,18 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     line.append(el("span", "notes-row-title", rowTitle(note)));
     if (note.when) line.append(el("span", "notes-row-when", note.when));
     btn.append(line);
-    const scope = rowScope(note, names);
-    /* A lesson says its room; a note from another project says which. This
-       project's own says nothing while browsing — the header above it just did —
-       but a result has no header above it, so there it always says. A lesson
-       from another project turning up is the feature working, not a leak. */
-    if (scope && (text !== undefined || note.scope !== opts.workspace()?.id)) {
-      btn.append(el("div", "notes-row-scope", note.kind === "diary" && text !== undefined
-        ? `${scope} — a lesson, any project`
-        : scope));
+    /* Nothing about where it came from while browsing: every row sits under a
+       heading that just said it, and repeating the project on each of forty rows
+       is forty repetitions of the one fact the heading exists for. A RESULT has no
+       heading above it, so there it says — and a lesson from another project
+       turning up is the feature working, not a leak. */
+    if (text !== undefined) {
+      const scope = rowScope(note, opts.names());
+      if (scope) {
+        btn.append(el("div", "notes-row-scope", note.kind === "diary"
+          ? `${scope} — a lesson, any project`
+          : scope));
+      }
     }
     /* The passage, on a result only. It is the one thing on a row that says WHY
        this note came back, and without it a result is a filename with extra
@@ -496,8 +531,10 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
   const sayReadiness = async () => {
     try {
       status = await memoryStatus();
+      statusReadAt = Date.now();
     } catch {
       status = null;
+      statusReadAt = Date.now();
       readiness.textContent = "Searching your notes is not available on this build.";
       readiness.hidden = notes.length === 0;
       field.disabled = true;
@@ -515,34 +552,77 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     field.disabled = false;
   };
 
+  /** Whether the cached status is still worth trusting.
+   *
+   *  Every read of it spawns the sidecar, so asking before each search put a
+   *  process on the path of every query — on top of the search's own, which loads
+   *  the embedding model. What the status answers changes on the scale of a
+   *  download finishing or an index run completing, not on the scale of typing.
+   *  A minute is far shorter than either and far longer than a sentence. */
+  const STATUS_TTL_MS = 60_000;
+
+  const readinessNow = async (): Promise<MemoryStatus | null> => {
+    if (status !== null && Date.now() - statusReadAt < STATUS_TTL_MS) return status;
+    await sayReadiness();
+    return status;
+  };
+
   /** Run the query, or go back to browsing when there is none.
    *
    *  The readiness check is what keeps an empty result honest: without it, "no
    *  results" is returned for a missing model, an index that has not been built,
    *  and notes too short to index — three states with three different next steps,
-   *  and only one of them is about the notes. */
+   *  and only one of them is about the notes.
+   *
+   *  **One search at a time, and the newest wins.** A search is a process that
+   *  loads a 479 MB model, so two in flight are two model loads competing for the
+   *  same CPU — which is what made typing into this field stutter once a corpus
+   *  was big enough to be worth searching. The debounce alone does not prevent it:
+   *  it bounds how often a query is SENT, not how many are running. So a query
+   *  arriving while one runs replaces the pending one and waits its turn, and only
+   *  the last of a burst is ever run. */
   const search = async () => {
-    const query = field.value.trim();
+    let query = field.value.trim();
     if (!query) {
-      hits = null;
-      paint();
-      await sayReadiness();
+      // Browsing needs nothing, so clearing the field is instant and asks
+      // nothing of the sidecar.
+      if (hits !== null) { hits = null; paint(); }
       return;
     }
-    await sayReadiness();
-    if (status === null || !searchReadiness(status).ready) {
+    if (running) { pending = query; return; }
+    running = true;
+    try {
+      await runQuery(query);
+      // Whatever arrived while that one ran, and only the last of it.
+      while (pending !== null && pending !== query) {
+        query = pending;
+        pending = null;
+        await runQuery(query);
+      }
+      pending = null;
+    } finally {
+      running = false;
+    }
+  };
+
+  const runQuery = async (query: string) => {
+    const ready = await readinessNow();
+    if (ready === null || !searchReadiness(ready).ready) {
       // The list stays on the corpus rather than emptying: browsing works, the
       // sentence above says what searching would need, and blanking what does
       // work would say the opposite.
-      hits = null;
-      paint();
+      if (hits !== null) { hits = null; paint(); }
       readiness.hidden = false;
       return;
     }
     const mine = ++seq;
     let found: MemoryHit[];
     try {
-      found = await memorySearch(query, opts.workspace()?.id ?? undefined, 12);
+      /* Everything, rather than this project plus the lessons. The list under
+         this field is the whole corpus by project (#382 as revised), and a search
+         that quietly answered from a narrower corpus than the one on screen would
+         be the page disagreeing with itself. */
+      found = await memorySearch(query, undefined, 12);
     } catch (e) {
       if (mine !== seq) return;
       readiness.textContent = String(e);
@@ -639,6 +719,10 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     mount,
     refresh,
     focusSearch: () => { field.focus(); field.select(); },
+    summary: () => ({
+      corpus: corpusLine(notes),
+      readiness: readiness.hidden ? null : (readiness.textContent || null),
+    }),
     revealCaptures: jobs.reveal,
   };
 }

@@ -137,6 +137,60 @@ export class NoteReader {
   /** Which note is on screen, by its path relative to the corpus root. */
   current(): string | null { return this.note?.file ?? null; }
 
+  /** The surface with no note on it yet.
+   *
+   *  Shown for as long as the memory page is the one the rail is holding. The
+   *  deck's own empty state is about sessions — it offers to start one — and
+   *  under a page about notes that is an answer to a question nobody asked. A
+   *  surface that belongs to what the panel is showing is the point of covering
+   *  the deck at all.
+   *
+   *  A note already open is left alone: this is called on every entry to the
+   *  page, and blanking a note somebody is reading because they pressed the rail
+   *  button they were already on would be worse than doing nothing. */
+  showLanding(summary: { corpus: string; readiness: string | null }): void {
+    if (this.note !== null || this.isEditing()) { this.el.hidden = false; return; }
+    this.el.hidden = false;
+    this.seq += 1;
+
+    const named = el("div", "note-reader-named");
+    named.append(el("div", "note-reader-title", "Memory"));
+    named.append(el("div", "note-reader-where", summary.corpus));
+    const acts = el("div", "note-reader-acts");
+    const back = el("button", "note-reader-back");
+    back.type = "button";
+    back.dataset.fk = "note-reader-close";
+    back.title = "Give the deck back (Escape)";
+    back.setAttribute("aria-label", "Give the deck back");
+    back.append(icon("x", 14));
+    back.onclick = () => this.close();
+    acts.append(back);
+    this.head.replaceChildren(named, acts);
+
+    const landing = el("div", "note-reader-landing");
+    landing.dataset.fk = "note-reader-landing";
+    landing.append(el(
+      "p",
+      "note-reader-lede",
+      "Everything earlier sessions in every project wrote down, plus the lessons "
+      + "that travel between them.",
+    ));
+    landing.append(el(
+      "p",
+      "note-reader-rule",
+      "The list beside this one is the whole corpus, a heading per project. "
+      + "Choosing a note reads it here, at a width prose can be read at; Escape "
+      + "gives the deck back.",
+    ));
+    if (summary.readiness) {
+      // What searching would additionally need, said once more where somebody is
+      // about to type into the field — the page's own line is above the list and
+      // easy to be past by then.
+      landing.append(el("p", "note-reader-rule", summary.readiness));
+    }
+    this.body.replaceChildren(landing);
+  }
+
   /** Put a note on the surface, reading it through the command.
    *
    *  **Through the command, never by path.** `memory_read_note` canonicalises and

@@ -63,26 +63,41 @@ const lesson = (over: Partial<MemoryNoteEntry> = {}): MemoryNoteEntry => note({
   ...over,
 });
 
-/* The order is the argument: this project first, because that is what the person
-   is in; lessons next, because they are the reason memory is global at all; other
-   projects last. */
-describe("the three groups", () => {
-  it("splits a corpus by what it is about", () => {
-    const all = [note(), lesson(), note({ file: "ws-2/Facts.md", scope: "ws-2", kind: "facts" })];
-    expect(group(all, "ws-1")).toEqual({
-      mine: [all[0]],
-      lessons: [all[1]],
-      others: [all[2]],
-    });
+const NAMES = new Map([["ws-1", "deck"], ["ws-2", "relay"]]);
+
+/** One heading per project, and one for the lessons.
+ *
+ *  It does not depend on which project is open. The shape before it did — this
+ *  project, the lessons, then everything else in one heap — which made the page
+ *  answer a different question every time the workspace changed and hid every
+ *  other project behind a single fold. */
+describe("the groups", () => {
+  it("gives every project a heading of its own, and the lessons the last", () => {
+    const mine = note({ mtime: 300 });
+    const theirs = note({ file: "ws-2/Facts.md", scope: "ws-2", kind: "facts", mtime: 200 });
+    const learnt = lesson({ mtime: 999 });
+
+    expect(group([mine, theirs, learnt], NAMES)).toEqual([
+      { key: "ws-1", title: "deck", notes: [mine] },
+      { key: "ws-2", title: "relay", notes: [theirs] },
+      // Last whatever its age: the lessons are not a project, and a heading that
+      // moved among them would reshuffle the list for no visible reason.
+      { key: "Diaries", title: "Lessons, from every project", notes: [learnt] },
+    ]);
   });
 
-  /** A window with no active workspace has no first group. Its notes are not
-   *  lost — with no project to be "this" one, every project is another. */
-  it("has no first group without a workspace, and loses nothing", () => {
-    const g = group([note(), lesson()], null);
-    expect(g.mine).toEqual([]);
-    expect(g.others).toHaveLength(1);
-    expect(g.lessons).toHaveLength(1);
+  /** Newest first, by the most recent note in each — the only ordering the
+   *  corpus supports, since the notes carry an mtime and the projects do not. */
+  it("puts the project with the most recent note first", () => {
+    const older = note({ mtime: 100 });
+    const newer = note({ file: "ws-2/Facts.md", scope: "ws-2", kind: "facts", mtime: 900 });
+    expect(group([older, newer], NAMES).map((g) => g.key)).toEqual(["ws-2", "ws-1"]);
+  });
+
+  /** The same list whichever project is open: nothing here is passed a workspace. */
+  it("names a scope whose workspace is gone as itself, rather than dropping it", () => {
+    expect(group([note({ scope: "gone", file: "gone/Facts.md", kind: "facts" })], NAMES))
+      .toEqual([{ key: "gone", title: "gone", notes: [expect.anything()] }]);
   });
 });
 
@@ -267,7 +282,7 @@ describe("the page", () => {
     await view.refresh();
     await flush();
 
-    const toggle = fk("memory-group-mine")!;
+    const toggle = fk("memory-group-ws-1")!;
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     toggle.click();
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
@@ -275,23 +290,50 @@ describe("the page", () => {
     expect(document.querySelector<HTMLElement>(".mem-rows")!.hidden).toBe(true);
   });
 
-  it("renders no group for a workspace that is not there", async () => {
-    notes.mockResolvedValue([lesson()]);
+  /** The whole point of the change: the same headings whether a project is open
+   *  or not, and a window with none is not a window with less memory. */
+  it("lists every project's notes with no workspace active", async () => {
+    notes.mockResolvedValue([note(), lesson(), note({ file: "ws-2/Facts.md", scope: "ws-2", kind: "facts" })]);
     const view = mount(null);
     await view.refresh();
     await flush();
 
     const titles = [...fk("memory-list")!.querySelectorAll(".mem-group-title")]
       .map((e) => e.textContent);
-    expect(titles).toEqual(["Lessons, from every project"]);
+    expect(titles).toEqual(["deck", "relay", "Lessons, from every project"]);
   });
 
-  it("names the first group after the workspace, which the head above it names too", async () => {
+  it("names a heading after its workspace", async () => {
     notes.mockResolvedValue([note()]);
     const view = mount();
     await view.refresh();
     await flush();
     expect(fk("memory-list")!.querySelector(".mem-group-title")!.textContent).toBe("deck");
+  });
+
+  /** A wall of headings with counts is readable; a wall of every note is not. */
+  it("opens the first heading and folds the rest", async () => {
+    notes.mockResolvedValue([note({ mtime: 900 }), note({ file: "ws-2/Facts.md", scope: "ws-2", kind: "facts", mtime: 100 })]);
+    const view = mount();
+    await view.refresh();
+    await flush();
+
+    const bodies = [...fk("memory-list")!.querySelectorAll<HTMLElement>(".mem-rows")];
+    expect(bodies.map((b) => b.hidden)).toEqual([false, true]);
+  });
+
+  /** A fold is keyed by the scope, so it survives the repaint a capture causes. */
+  it("keeps a group folded across a refresh", async () => {
+    notes.mockResolvedValue([note()]);
+    const view = mount();
+    await view.refresh();
+    await flush();
+
+    fk("memory-group-ws-1")!.click();
+    expect(document.querySelector<HTMLElement>(".mem-rows")!.hidden).toBe(true);
+    await view.refresh();
+    await flush();
+    expect(document.querySelector<HTMLElement>(".mem-rows")!.hidden).toBe(true);
   });
 
   it("says what fills an empty corpus", async () => {
@@ -372,6 +414,8 @@ describe("the page", () => {
    *  the reader on a note with no row on screen, and the selection would appear
    *  to vanish. */
   it("does not step into a group somebody has folded away", async () => {
+    // One project and the lessons. Only the first heading arrives open, so the
+    // lessons are the folded group the arrows must not step into.
     notes.mockResolvedValue([note(), lesson()]);
     const opened: string[] = [];
     const view = mountMemory({
@@ -383,7 +427,6 @@ describe("the page", () => {
     await view.refresh();
     await flush();
 
-    fk("memory-group-lessons")!.click();
     const list = fk("memory-list")!;
     for (let i = 0; i < 3; i++) {
       list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
@@ -528,7 +571,10 @@ describe("searching from the page", () => {
     expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
 
     await type("cross build");
-    expect(search).toHaveBeenCalledWith("cross build", "ws-1", 12);
+    // Everything, not this project plus the lessons: the list under the field is
+    // the whole corpus by project, and a search answering from a narrower one
+    // would be the page disagreeing with itself.
+    expect(search).toHaveBeenCalledWith("cross build", undefined, 12);
     // One list: no groups while searching, because results are ordered by how
     // well they match and cutting them up would reorder them for no reason.
     expect(document.querySelectorAll(".mem-group")).toHaveLength(0);
@@ -549,7 +595,7 @@ describe("searching from the page", () => {
     }
     await tick(320);
     expect(search).toHaveBeenCalledTimes(1);
-    expect(search).toHaveBeenCalledWith("cross", "ws-1", 12);
+    expect(search).toHaveBeenCalledWith("cross", undefined, 12);
   });
 
   it("does not search an empty query", async () => {
@@ -650,6 +696,62 @@ describe("searching from the page", () => {
     expect(field.value).toBe("");
     expect(seen).toEqual([]);
     expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
+  });
+
+  /** A search is a process that loads a 479 MB model, so two in flight are two
+   *  model loads competing for one CPU — which is what made typing stutter. The
+   *  debounce bounds how often a query is SENT, not how many are running. */
+  it("runs one search at a time, and only the last of a burst", async () => {
+    let release: ((v: unknown) => void) | null = null;
+    search.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    search.mockResolvedValue([hit()]);
+
+    const view = mount();
+    await view.refresh();
+    await flush();
+
+    await type("first");
+    expect(search).toHaveBeenCalledTimes(1);
+
+    // Two more queries arrive while the first is still running.
+    await type("second");
+    await type("third");
+    expect(search).toHaveBeenCalledTimes(1);
+
+    release!([]);
+    await flush();
+    await flush();
+    expect(search).toHaveBeenCalledTimes(2);
+    // The middle one is never run: it was replaced before its turn came.
+    expect(search.mock.calls.map((c) => c[0])).toEqual(["first", "third"]);
+  });
+
+  /** Reading the status spawns the sidecar. Asking before each search put a
+   *  second process on the path of every query. */
+  it("does not re-read the status for every query", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    const reads = status.mock.calls.length;
+
+    await type("one");
+    await type("two");
+    await type("three");
+    expect(status.mock.calls.length).toBe(reads);
+  });
+
+  /** Clearing the field asks the sidecar nothing: browsing needs neither the
+   *  model nor a process. */
+  it("goes back to browsing without a call", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    await type("cross build");
+    const calls = search.mock.calls.length;
+
+    await type("");
+    expect(search.mock.calls.length).toBe(calls);
+    expect(document.querySelectorAll(".mem-group").length).toBeGreaterThan(0);
   });
 
   it("puts the caret in the field when the palette asks for it", async () => {

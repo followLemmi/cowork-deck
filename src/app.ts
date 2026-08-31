@@ -944,8 +944,19 @@ export function startApp(role: WindowRole): Promise<void> {
     /* Same rule as the journal's, and for the same reason: opening a page is a
        deliberate act, so the read is unconditional — and the page does not poll.
        What keeps it current while it is open is `memory://changed`, which a
-       capture and a reindex both fire. */
-    if (page === "memory") void memoryView.refresh();
+       capture and a reindex both fire.
+
+       The stage goes with it. The deck's empty state offers to start a session,
+       which under a page about notes is an answer to a question nobody asked — so
+       memory gets a surface of its own for as long as it is the page the rail is
+       holding, and leaving gives the deck back. Leaving is not allowed to throw
+       away an edit: `close` is skipped while somebody is typing into a note. */
+    if (page === "memory") {
+      void memoryView.refresh().then(() => noteReader.showLanding(memoryView.summary()));
+      noteReader.showLanding(memoryView.summary());
+    } else if (!noteReader.isEditing()) {
+      noteReader.close();
+    }
   }
   /** Which of the two the workspace panel is holding.
    *
