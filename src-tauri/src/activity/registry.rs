@@ -127,7 +127,11 @@ pub fn roll_with(reader: &dyn ActivityReader, session: &str) -> ActivityRoll {
 /// Returns the files and whether the cap cut the list short. The flag reaches the
 /// roll: a tally that quietly stopped counting is worse than one that says it
 /// stopped.
-fn walk(dir: &std::path::Path, ext: &str, cap: usize) -> (Vec<std::path::PathBuf>, bool) {
+///
+/// `pub(crate)` because `memory::transcript` reads the same trees for prose that
+/// this reads for tool calls, and two walks over one layout would be two places
+/// to get the cap wrong.
+pub(crate) fn walk(dir: &std::path::Path, ext: &str, cap: usize) -> (Vec<std::path::PathBuf>, bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return (Vec::new(), false);
     };

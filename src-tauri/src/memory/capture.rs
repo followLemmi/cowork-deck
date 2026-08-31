@@ -15,9 +15,9 @@
 //! is built to be economical rather than thorough:
 //!
 //! - the transcript is reduced to its prose before it is sent, not shipped
-//!   whole — [`digest`] drops tool calls, tool results, thinking blocks,
-//!   injected reminders and slash-command echoes, which is most of the bytes of
-//!   a working session;
+//!   whole — [`super::transcript`] drops tool calls, tool results, thinking
+//!   blocks, injected reminders and slash-command echoes, which is most of the
+//!   bytes of a working session;
 //! - what survives is capped at [`DIGEST_CHARS`], keeping the head and the tail
 //!   over the middle;
 //! - a session with nothing in it is never sent at all;
@@ -30,6 +30,20 @@
 //! What it cost comes back in the `--output-format json` envelope, and is kept
 //! on the job record. A number we already have and would have to re-run the
 //! model to recover is not worth throwing away — least of all this number.
+//!
+//! # Whose transcript, and who summarises it
+//!
+//! Two independent axes, and they are deliberately separate. **How a session's
+//! log is read** depends on the CLI that wrote it, and lives in
+//! [`super::transcript`] behind a per-CLI digester — the deck runs sessions on
+//! four CLIs and their logs have nothing in common. **Who writes the summary**
+//! is this module's choice, and it is Claude for every session regardless of
+//! which CLI produced the transcript: summarising prose is not a job that needs
+//! the model to be the one that did the work.
+//!
+//! A session whose CLI has no digester yet fails visibly rather than producing
+//! nothing — see [`super::transcript`] for why that distinction is the whole
+//! reason the seam exists.
 //!
 //! # The call is isolated on purpose
 //!
@@ -51,6 +65,7 @@
 
 use super::corpus::{Corpus, DiaryEntry, Note, Section};
 use super::queue::WrapupJob;
+use super::transcript::{self, Digest};
 use crate::which::{self, RunFault};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -113,184 +128,6 @@ pub struct CaptureCost {
     /// question does not have a dollar answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usd: Option<f64>,
-}
-
-// ---------------------------------------------------------------- the digest
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
-    Person,
-    Assistant,
-}
-
-impl Role {
-    fn label(self) -> &'static str {
-        match self {
-            Role::Person => "[person]",
-            Role::Assistant => "[claude]",
-        }
-    }
-}
-
-/// A transcript reduced to the conversation inside it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Digest {
-    /// The conversation, rendered for a prompt.
-    pub text: String,
-    pub person_turns: usize,
-    pub assistant_turns: usize,
-    /// Whether the middle was dropped to fit the budget.
-    pub truncated: bool,
-}
-
-impl Digest {
-    /// Whether there is anything here worth paying a model to read.
-    ///
-    /// Both sides, and that is the test rather than a length: a tile opened by
-    /// accident has neither, a tile that got a prompt and never answered has one
-    /// and is not a session anybody wants a note about. Checked before the call
-    /// so an empty session costs nothing at all.
-    pub fn is_substantive(&self) -> bool {
-        self.person_turns > 0 && self.assistant_turns > 0
-    }
-}
-
-/// Strip what is in a transcript but was never part of the conversation.
-///
-/// Three kinds, all of them injected rather than typed: a `<system-reminder>`
-/// block the harness adds to a turn, a slash command's machine-readable echo,
-/// and the stdout a local command wrote back into the transcript. Sending any of
-/// it would be paying to summarise the plumbing.
-fn clean(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find("<system-reminder>") {
-        out.push_str(&rest[..start]);
-        rest = match rest[start..].find("</system-reminder>") {
-            Some(end) => &rest[start + end + "</system-reminder>".len()..],
-            // Unterminated: the rest of this block is reminder, so drop it.
-            None => "",
-        };
-    }
-    out.push_str(rest);
-    let out = out.trim();
-    for echo in ["<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-stderr>"] {
-        if out.starts_with(echo) {
-            return String::new();
-        }
-    }
-    out.to_string()
-}
-
-/// The prose of one message, with every non-prose block left behind.
-///
-/// `content` is a string on a plain user turn and an array of blocks otherwise.
-/// Only `text` blocks survive: `thinking` is the model's scratch, `tool_use` and
-/// `tool_result` are the noise #35 refused to index, and an unrecognised block
-/// type is left out rather than guessed at.
-fn turn_text(message: &serde_json::Value) -> String {
-    match &message["content"] {
-        serde_json::Value::String(s) => clean(s),
-        serde_json::Value::Array(blocks) => blocks
-            .iter()
-            .filter(|b| b["type"] == "text")
-            .filter_map(|b| b["text"].as_str())
-            .map(clean)
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        _ => String::new(),
-    }
-}
-
-/// Reduce a Claude Code transcript to the conversation, within `budget`
-/// characters.
-///
-/// Tolerant of everything a file written by another process contains: a
-/// non-JSON line, a truncated last line, a block of an unexpected shape. Each
-/// costs that line and nothing else — the rule `runs::last_assistant_text`
-/// already follows on the same files.
-pub fn digest(content: &str, budget: usize) -> Digest {
-    let mut turns: Vec<(Role, String)> = Vec::new();
-    let mut person_turns = 0usize;
-    let mut assistant_turns = 0usize;
-
-    for line in content.lines() {
-        let v: serde_json::Value = match serde_json::from_str(line.trim()) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        // Injected context, not a turn. `isSidechain` is a subagent's own
-        // conversation: its conclusion reaches the main thread as a tool result,
-        // and summarising its internal working would double the bill for the
-        // same work.
-        if v["isMeta"] == true || v["isSidechain"] == true {
-            continue;
-        }
-        let role = match v["message"]["role"].as_str() {
-            Some("user") => Role::Person,
-            Some("assistant") => Role::Assistant,
-            _ => continue,
-        };
-        let text = turn_text(&v["message"]);
-        if text.is_empty() {
-            continue;
-        }
-        match role {
-            Role::Person => person_turns += 1,
-            Role::Assistant => assistant_turns += 1,
-        }
-        turns.push((role, text));
-    }
-
-    let rendered: Vec<String> =
-        turns.iter().map(|(r, t)| format!("{}\n{}", r.label(), t)).collect();
-    let (text, truncated) = fit(&rendered, budget);
-    Digest { text, person_turns, assistant_turns, truncated }
-}
-
-/// Join whole turns into `budget` characters, dropping from the middle.
-///
-/// The head says what the session was asked to do and the tail says how it
-/// ended; the middle is where the retries and the false starts live. Dropping
-/// whole turns rather than cutting inside one keeps every surviving turn
-/// attributable to a speaker — half a turn under a `[claude]` label reads as
-/// something Claude said and stopped saying.
-fn fit(turns: &[String], budget: usize) -> (String, bool) {
-    const SEP: &str = "\n\n";
-    const MARK: &str = "\n\n[… the middle of this session was left out …]\n\n";
-
-    let total: usize = turns.iter().map(|t| t.chars().count() + SEP.len()).sum();
-    if total <= budget {
-        return (turns.join(SEP), false);
-    }
-
-    let half = budget.saturating_sub(MARK.chars().count()) / 2;
-    let mut head: Vec<&String> = Vec::new();
-    let mut used = 0usize;
-    for t in turns {
-        let n = t.chars().count() + SEP.len();
-        if used + n > half {
-            break;
-        }
-        used += n;
-        head.push(t);
-    }
-    let mut tail: Vec<&String> = Vec::new();
-    let mut used = 0usize;
-    for t in turns.iter().rev().take(turns.len() - head.len()) {
-        let n = t.chars().count() + SEP.len();
-        if used + n > half {
-            break;
-        }
-        used += n;
-        tail.push(t);
-    }
-    tail.reverse();
-
-    let head_s = head.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(SEP);
-    let tail_s = tail.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(SEP);
-    (format!("{head_s}{MARK}{tail_s}"), true)
 }
 
 // ---------------------------------------------------------------- the prompt
@@ -642,18 +479,16 @@ pub fn run_with(
     rooms: &[Room],
     ask: &dyn Fn(&str) -> Result<(String, Option<CaptureCost>), String>,
 ) -> Result<Captured, String> {
-    let path = std::path::Path::new(&job.transcript_path);
-    // Lossily, and on purpose. #195 is a real non-UTF-8 transcript in the wild,
-    // and it reports zero tokens and no name with no error anywhere; a capture
-    // that panicked on one would be retried three times and then give up on a
-    // session it could have summarised imperfectly.
-    let bytes = std::fs::read(path).map_err(|e| {
-        // The path is the app's own, not the person's content.
-        format!("could not read the transcript at {} ({})", path.display(), e.kind())
-    })?;
-    let content = String::from_utf8_lossy(&bytes);
-
-    let digest = digest(&content, DIGEST_CHARS);
+    // Through the registry, never by parsing here: which reader understands this
+    // log is a property of the session's CLI, and an `Err` names a reason a
+    // person could act on. Crucially it is never "the session was empty" — a
+    // reader that did not understand the format must not be able to say that.
+    let digest = transcript::read(
+        job.cli,
+        &job.session_id,
+        Some(job.transcript_path.as_str()),
+        DIGEST_CHARS,
+    )?;
     if !digest.is_substantive() {
         // A success that writes nothing, and — the point of checking here — a
         // success that costs nothing.
@@ -747,189 +582,23 @@ mod tests {
         .to_string()
     }
 
-    // ----- the digest -----
-
-    #[test]
-    fn a_digest_keeps_the_conversation_and_drops_the_machinery() {
-        let content = [
-            line("user", "make the sidecar staging work on a cross build"),
-            serde_json::json!({
-                "type": "assistant",
-                "message": { "role": "assistant", "content": [
-                    { "type": "thinking", "thinking": "let me look at the script" },
-                    { "type": "tool_use", "id": "t1", "name": "Read", "input": {} },
-                ]},
-            })
-            .to_string(),
-            serde_json::json!({
-                "type": "user",
-                "message": { "role": "user", "content": [
-                    { "type": "tool_result", "tool_use_id": "t1", "content": "the whole file" },
-                ]},
-            })
-            .to_string(),
-            line("assistant", "it read the host triple instead of TAURI_ENV_TARGET_TRIPLE"),
-            "not json at all".to_string(),
-        ]
-        .join("\n");
-
-        let d = digest(&content, DIGEST_CHARS);
-        assert_eq!(d.person_turns, 1, "the tool_result turn is not a turn");
-        assert_eq!(d.assistant_turns, 1, "the thinking/tool_use turn is not one either");
-        assert!(d.text.contains("make the sidecar staging work"));
-        assert!(d.text.contains("TAURI_ENV_TARGET_TRIPLE"));
-        assert!(!d.text.contains("let me look at the script"), "thinking is scratch");
-        assert!(!d.text.contains("the whole file"), "tool output is the noise #35 refused");
-        assert!(!d.truncated);
-    }
-
-    #[test]
-    fn injected_context_is_not_part_of_the_conversation() {
-        let content = [
-            serde_json::json!({
-                "type": "user",
-                "isMeta": true,
-                "message": { "role": "user", "content": "injected project context" },
-            })
-            .to_string(),
-            serde_json::json!({
-                "type": "assistant",
-                "isSidechain": true,
-                "message": { "role": "assistant", "content": [
-                    { "type": "text", "text": "a subagent's private working" },
-                ]},
-            })
-            .to_string(),
-            line("user", "the real question"),
-            line("assistant", "the real answer"),
-        ]
-        .join("\n");
-
-        let d = digest(&content, DIGEST_CHARS);
-        assert!(!d.text.contains("injected project context"));
-        assert!(!d.text.contains("subagent's private working"));
-        assert_eq!(d.person_turns, 1);
-        assert_eq!(d.assistant_turns, 1);
-    }
-
-    #[test]
-    fn a_system_reminder_is_stripped_from_a_turn_that_is_otherwise_real() {
-        let content = [
-            line(
-                "user",
-                "fix the flake\n<system-reminder>Here is useful context: …</system-reminder>\nand nothing else",
-            ),
-            line("assistant", "done"),
-        ]
-        .join("\n");
-        let d = digest(&content, DIGEST_CHARS);
-        assert!(d.text.contains("fix the flake"));
-        assert!(d.text.contains("and nothing else"));
-        assert!(!d.text.contains("Here is useful context"));
-    }
-
-    #[test]
-    fn an_unterminated_reminder_does_not_leak_the_rest_of_the_turn() {
-        assert_eq!(clean("keep this<system-reminder>and not this"), "keep this");
-    }
-
-    #[test]
-    fn a_slash_command_echo_is_not_prose() {
-        assert_eq!(clean("<command-name>/wrapup</command-name>"), "");
-        assert_eq!(clean("<local-command-stdout>a listing</local-command-stdout>"), "");
-        assert_eq!(clean("  a real question  "), "a real question");
-    }
-
-    #[test]
-    fn a_user_turn_can_be_a_plain_string() {
-        let content = [
-            serde_json::json!({
-                "type": "user",
-                "message": { "role": "user", "content": "a sentence, not an array" },
-            })
-            .to_string(),
-            line("assistant", "understood"),
-        ]
-        .join("\n");
-        let d = digest(&content, DIGEST_CHARS);
-        assert!(d.text.contains("a sentence, not an array"));
-        assert_eq!(d.person_turns, 1);
-    }
-
-    // ----- emptiness, which is what stops a pointless call -----
-
-    #[test]
-    fn a_session_with_nothing_in_it_is_not_worth_a_call() {
-        assert!(!digest("", DIGEST_CHARS).is_substantive());
-        assert!(!digest("not json\n", DIGEST_CHARS).is_substantive());
-        // A prompt that never got an answer is not a session either.
-        assert!(!digest(&line("user", "hello?"), DIGEST_CHARS).is_substantive());
-        // Nor is an assistant turn with no question behind it.
-        assert!(!digest(&line("assistant", "hi"), DIGEST_CHARS).is_substantive());
-    }
-
-    #[test]
-    fn one_exchange_is_enough_to_be_worth_summarising() {
-        let content = [line("user", "why is this flaky"), line("assistant", "a timing assumption")]
-            .join("\n");
-        assert!(digest(&content, DIGEST_CHARS).is_substantive());
-    }
-
-    // ----- the budget -----
-
-    #[test]
-    fn a_long_session_keeps_its_head_and_its_tail() {
-        let mut lines = vec![line("user", "THE OPENING ASK")];
-        for i in 0..200 {
-            lines.push(line("assistant", &format!("middle turn {i} {}", "x".repeat(300))));
-        }
-        lines.push(line("assistant", "THE CLOSING ANSWER"));
-
-        let d = digest(&lines.join("\n"), 4_000);
-        assert!(d.truncated);
-        assert!(d.text.chars().count() <= 4_000, "{}", d.text.chars().count());
-        assert!(d.text.contains("THE OPENING ASK"), "the ask says what the work was");
-        assert!(d.text.contains("THE CLOSING ANSWER"), "the end says how it went");
-        assert!(d.text.contains("the middle of this session was left out"));
-        // The counts are of what the transcript held, not of what was sent.
-        assert_eq!(d.person_turns, 1);
-        assert_eq!(d.assistant_turns, 201);
-    }
-
-    /// Bytes would halve this budget, and a naive byte slice would panic
-    /// mid-character. The hazard ADR-0003 names, in a second place.
-    #[test]
-    fn the_budget_counts_characters_not_bytes() {
-        let content =
-            [line("user", &"я".repeat(3_000)), line("assistant", &"ж".repeat(3_000))].join("\n");
-        let d = digest(&content, 2_000);
-        assert!(d.truncated);
-        assert!(d.text.chars().count() <= 2_000);
-    }
-
-    #[test]
-    fn a_session_that_fits_is_sent_whole_and_in_order() {
-        let content = [
-            line("user", "first"),
-            line("assistant", "second"),
-            line("user", "third"),
-        ]
-        .join("\n");
-        let d = digest(&content, DIGEST_CHARS);
-        assert!(!d.truncated);
-        let first = d.text.find("first").unwrap();
-        let second = d.text.find("second").unwrap();
-        let third = d.text.find("third").unwrap();
-        assert!(first < second && second < third);
-        assert_eq!(d.text.matches("[person]").count(), 2);
-        assert_eq!(d.text.matches("[claude]").count(), 1);
-    }
-
     // ----- the prompt -----
+
+    /// Built from turns rather than from a log: what the prompt says is a
+    /// property of the prompt, and `transcript` owns the reading.
+    fn a_digest(person: &str, assistant: &str) -> Digest {
+        transcript::assemble(
+            &[
+                transcript::Turn { role: transcript::Role::Person, text: person.into() },
+                transcript::Turn { role: transcript::Role::Assistant, text: assistant.into() },
+            ],
+            DIGEST_CHARS,
+        )
+    }
 
     #[test]
     fn the_prompt_carries_the_rooms_it_may_route_to_and_nothing_else() {
-        let d = digest(&[line("user", "a"), line("assistant", "b")].join("\n"), DIGEST_CHARS);
+        let d = a_digest("a", "b");
         let rooms = vec![Room {
             name: "reviewer".into(),
             description: "what code review keeps catching".into(),
@@ -942,7 +611,7 @@ mod tests {
 
     #[test]
     fn with_no_rooms_configured_the_prompt_asks_for_no_lessons() {
-        let d = digest(&[line("user", "a"), line("assistant", "b")].join("\n"), DIGEST_CHARS);
+        let d = a_digest("a", "b");
         let p = prompt(&d, &[]);
         assert!(p.contains("no diary rooms configured"));
         assert!(!p.contains("Route each to the room"));
@@ -950,9 +619,13 @@ mod tests {
 
     #[test]
     fn a_truncated_digest_says_so_in_the_prompt() {
-        let long: Vec<String> =
-            (0..200).map(|i| line("assistant", &format!("{i} {}", "x".repeat(300)))).collect();
-        let d = digest(&long.join("\n"), 2_000);
+        let turns: Vec<transcript::Turn> = (0..200)
+            .map(|i| transcript::Turn {
+                role: transcript::Role::Assistant,
+                text: format!("{i} {}", "x".repeat(300)),
+            })
+            .collect();
+        let d = transcript::assemble(&turns, 2_000);
         assert!(prompt(&d, &[]).contains("its middle was left out"));
     }
 
@@ -1092,6 +765,7 @@ mod tests {
             session_id: "s-1".into(),
             workspace_id: "ws-1".into(),
             transcript_path: transcript.to_string_lossy().into_owned(),
+            cli: crate::activity::model::CliKind::Claude,
             session_name: Some("relay".into()),
             state: super::super::queue::JobState::Running,
             attempts: 1,
@@ -1242,6 +916,7 @@ mod tests {
         let e = run_with(&job, &corpus, &[], &|_| unreachable!("no call for a missing file"))
             .expect_err("a missing transcript is a failure");
         assert!(e.contains("not-here.jsonl"), "{e}");
+        assert!(!e.contains("empty"), "a missing log is not an empty session: {e}");
     }
 
     #[test]

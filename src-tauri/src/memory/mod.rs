@@ -10,6 +10,8 @@
 //!
 //! - [`corpus`] — where a note goes and what it looks like when it gets there.
 //! - [`queue`] — the durable queue that makes capture a promise.
+//! - [`transcript`] — reading a session's log, per CLI, because the deck runs
+//!   sessions on four of them and their logs have nothing in common.
 //! - [`capture`] — one `claude -p` per closed session, billed to the person.
 //!
 //! The root is the app's config directory, which is also the store's directory
@@ -21,6 +23,7 @@
 pub mod capture;
 pub mod corpus;
 pub mod queue;
+pub mod transcript;
 
 use queue::Queue;
 use std::path::PathBuf;

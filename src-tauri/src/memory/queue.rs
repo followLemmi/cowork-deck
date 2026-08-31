@@ -113,6 +113,17 @@ pub struct EnqueueRequest {
     pub session_id: String,
     #[serde(rename = "workspaceId")]
     pub workspace_id: String,
+    /// Which CLI ran the session, and therefore which reader can make sense of
+    /// its log.
+    ///
+    /// Recorded at the close rather than assumed at the run. Without it the
+    /// runner has no way to tell a Claude Code transcript from a Copilot one,
+    /// and a reader handed the wrong format finds no turns, concludes the
+    /// session was empty and writes nothing — silently. `SessionEntry.cli_kind`
+    /// exists for exactly this dispatch and carries the same tolerance: an
+    /// unrecognised name is Claude.
+    #[serde(rename = "cliKind", default, skip_serializing_if = "Option::is_none")]
+    pub cli_kind: Option<String>,
     /// The transcript to summarise, as the app knew it at the close.
     #[serde(rename = "transcriptPath")]
     pub transcript_path: String,
@@ -134,6 +145,11 @@ pub struct JobQueued {
     pub session_id: String,
     #[serde(rename = "workspaceId")]
     pub workspace_id: String,
+    /// Absent on a line written before this field existed, and by
+    /// `CliKind::parse`'s rule that reads as Claude — which is what every
+    /// session was when those lines were written.
+    #[serde(rename = "cliKind", default, skip_serializing_if = "Option::is_none")]
+    pub cli_kind: Option<String>,
     #[serde(rename = "transcriptPath")]
     pub transcript_path: String,
     #[serde(rename = "sessionName", default, skip_serializing_if = "Option::is_none")]
@@ -257,6 +273,10 @@ pub struct WrapupJob {
     pub workspace_id: String,
     #[serde(rename = "transcriptPath")]
     pub transcript_path: String,
+    /// Parsed rather than raw, so no caller has to remember that an
+    /// unrecognised name means Claude.
+    #[serde(rename = "cliKind")]
+    pub cli: crate::activity::model::CliKind,
     #[serde(rename = "sessionName")]
     pub session_name: Option<String>,
     pub state: JobState,
@@ -344,6 +364,9 @@ pub fn fold_events(content: &str) -> Vec<WrapupJob> {
                     session_id: e.session_id,
                     workspace_id: e.workspace_id,
                     transcript_path: e.transcript_path,
+                    cli: crate::activity::model::CliKind::parse(
+                        e.cli_kind.as_deref().unwrap_or_default(),
+                    ),
                     session_name: e.session_name,
                     state: JobState::Queued,
                     attempts: 0,
@@ -458,6 +481,7 @@ impl Queue {
             at: now_ms(),
             session_id: req.session_id.clone(),
             workspace_id: req.workspace_id.clone(),
+            cli_kind: req.cli_kind.clone(),
             transcript_path: req.transcript_path.clone(),
             session_name: req.session_name.clone(),
         }))?;
@@ -783,6 +807,7 @@ mod tests {
         EnqueueRequest {
             session_id: session.into(),
             workspace_id: "ws-1".into(),
+            cli_kind: Some("claude".into()),
             transcript_path: format!("/tmp/{session}.jsonl"),
             session_name: Some("relay".into()),
         }
@@ -1120,6 +1145,7 @@ mod tests {
             at: now_ms(),
             session_id: "s-other".into(),
             workspace_id: "ws-other".into(),
+            cli_kind: None,
             transcript_path: "/tmp/other.jsonl".into(),
             session_name: None,
         }))
