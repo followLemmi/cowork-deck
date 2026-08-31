@@ -13,6 +13,17 @@ vi.mock("../src/ipc", () => ({
   memoryStatus: () => status(),
   memorySearch: (q: string, ws?: string, top?: number) => search(q, ws, top),
 }));
+// The three forms have their own file (`memory-write.test.ts`); what this one
+// asserts is which of them the page offers, and when.
+const addFact = vi.fn();
+const replaceFact = vi.fn();
+const addLesson = vi.fn();
+vi.mock("../src/memory-write", async (orig) => ({
+  ...(await orig() as object),
+  addFactForm: (t: unknown) => addFact(t),
+  replaceFactForm: (t: unknown) => replaceFact(t),
+  addLessonForm: (t: unknown) => addLesson(t),
+}));
 
 const hit = (over: Partial<MemoryHit> = {}): MemoryHit => ({
   score: 0.7,
@@ -400,6 +411,82 @@ describe("the page", () => {
     document.querySelector<HTMLButtonElement>(".mem-row")!.click();
     expect(opened).toEqual(["ws-1/Sessions/2026-08/31-the-staging-script.md"]);
     expect(document.querySelector(".mem-row")!.classList.contains("selected")).toBe(true);
+  });
+});
+
+/** Writing by hand, from the page that lists what is written (#385). */
+describe("the writing controls", () => {
+  beforeEach(() => {
+    notes.mockReset();
+    status.mockReset();
+    addFact.mockReset();
+    replaceFact.mockReset();
+    addLesson.mockReset();
+    notes.mockResolvedValue([note()]);
+    status.mockResolvedValue(ready());
+    addFact.mockResolvedValue(false);
+    replaceFact.mockResolvedValue(false);
+    addLesson.mockResolvedValue(false);
+  });
+
+  it("offers all three against the active workspace", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+
+    fk("memory-add-fact")!.click();
+    fk("memory-replace-fact")!.click();
+    fk("memory-add-lesson")!.click();
+    const target = { workspaceId: "ws-1", workspaceName: "deck" };
+    expect(addFact).toHaveBeenCalledWith(target);
+    expect(replaceFact).toHaveBeenCalledWith(target);
+    expect(addLesson).toHaveBeenCalledWith(target);
+  });
+
+  /** A fact belongs to a project and a lesson does not — so a window with no
+   *  active workspace offers a sentence rather than two buttons that fail. */
+  it("offers only the lesson without a workspace, and says why", async () => {
+    const view = mount(null);
+    await view.refresh();
+    await flush();
+
+    expect(fk("memory-add-fact")!.hidden).toBe(true);
+    expect(fk("memory-replace-fact")!.hidden).toBe(true);
+    expect(fk("memory-add-lesson")!.hidden).toBe(false);
+    expect(fk("memory-write-scope")!.textContent).toContain("A fact belongs to a project");
+  });
+
+  /** Why the two shapes get forms and a note gets an editor, said where somebody
+   *  looks for the button that is missing (#386). */
+  it("says why a fact and a lesson are not edited", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    expect(document.querySelector(".mem-write")!.textContent)
+      .toContain("appended, never rewritten");
+  });
+
+  it("re-reads the corpus after something is written", async () => {
+    addFact.mockResolvedValue(true);
+    const view = mount();
+    await view.refresh();
+    await flush();
+    const reads = notes.mock.calls.length;
+
+    fk("memory-add-fact")!.click();
+    await flush();
+    expect(notes.mock.calls.length).toBe(reads + 1);
+  });
+
+  it("does not re-read when a form was cancelled", async () => {
+    const view = mount();
+    await view.refresh();
+    await flush();
+    const reads = notes.mock.calls.length;
+
+    fk("memory-add-fact")!.click();
+    await flush();
+    expect(notes.mock.calls.length).toBe(reads);
   });
 });
 

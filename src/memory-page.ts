@@ -49,6 +49,7 @@ import {
   type MemoryHit, type MemoryNoteEntry, type MemoryStatus,
 } from "./ipc";
 import { searchReadiness } from "./memory-model";
+import { addFactForm, addLessonForm, APPEND_ONLY_NOTICE, replaceFactForm } from "./memory-write";
 
 /** How long after a keystroke the query is sent.
  *
@@ -302,7 +303,28 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     next.focus();
     next.click();
   };
-  mount.append(field, head, readiness, list);
+  /* Writing by hand, under the list rather than over it: what a person opens this
+     page for is what is already written. Three acts, and the two shapes they write
+     into are append-only line records — which is why they are forms and not an
+     editor, said in the sentence beside them rather than left to be discovered as
+     a missing button (#385, #386). */
+  const write = el("div", "mem-write");
+  const writeActs = el("div", "mem-write-acts");
+  const factBtn = el("button", "rooms-add", "Record a fact");
+  factBtn.type = "button";
+  factBtn.dataset.fk = "memory-add-fact";
+  const replaceBtn = el("button", "rooms-add", "Replace a fact");
+  replaceBtn.type = "button";
+  replaceBtn.dataset.fk = "memory-replace-fact";
+  const lessonBtn = el("button", "rooms-add", "File a lesson");
+  lessonBtn.type = "button";
+  lessonBtn.dataset.fk = "memory-add-lesson";
+  writeActs.append(factBtn, replaceBtn, lessonBtn);
+  const writeNote = el("p", "mem-write-note", APPEND_ONLY_NOTICE);
+  const writeScope = el("p", "mem-write-note");
+  writeScope.dataset.fk = "memory-write-scope";
+  write.append(writeActs, writeNote, writeScope);
+  mount.append(field, head, readiness, list, write);
 
   const folded: Fold = { mine: false, lessons: false, others: true };
   let notes: MemoryNoteEntry[] = [];
@@ -532,6 +554,49 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     void search();
   };
 
+  /** A fact belongs to a project; a lesson does not.
+   *
+   *  So a window with no active workspace can still file a lesson and has nothing
+   *  to record a fact against — offered as a sentence rather than as two buttons
+   *  that fail when pressed. */
+  const paintWrite = () => {
+    const ws = opts.workspace();
+    factBtn.hidden = ws === null;
+    replaceBtn.hidden = ws === null;
+    writeScope.hidden = ws !== null;
+    if (ws === null) {
+      writeScope.textContent =
+        "A fact belongs to a project, and this window has none active. A lesson is "
+        + "global and can be filed from here.";
+    }
+  };
+
+  const wrote = async (did: boolean) => {
+    if (!did) return;
+    /* Repaint from disk rather than from what the form thinks it wrote: the file
+       is the memory (ADR-0004), and the listing is a walk over it. The reindex is
+       the backend's, on the same write. */
+    await refresh();
+  };
+
+  factBtn.onclick = () => {
+    const ws = opts.workspace();
+    if (ws) void addFactForm({ workspaceId: ws.id, workspaceName: ws.name }).then(wrote);
+  };
+  replaceBtn.onclick = () => {
+    const ws = opts.workspace();
+    if (ws) void replaceFactForm({ workspaceId: ws.id, workspaceName: ws.name }).then(wrote);
+  };
+  lessonBtn.onclick = () => {
+    const ws = opts.workspace();
+    void addLessonForm({
+      workspaceId: ws?.id ?? "",
+      // The label a diary records. Without a workspace there is no name to give,
+      // and a lesson filed from nowhere says so rather than inventing one.
+      workspaceName: ws?.name ?? "no project",
+    }).then(wrote);
+  };
+
   const refresh = async () => {
     try {
       notes = await memoryNotes();
@@ -544,6 +609,7 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
       return;
     }
     paint();
+    paintWrite();
     await sayReadiness();
   };
 

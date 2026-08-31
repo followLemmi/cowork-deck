@@ -563,6 +563,45 @@ impl Corpus {
     }
 }
 
+/// One fact still standing, as `Facts.md` records it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Fact {
+    /// `YYYY-MM-DD`, the day it was recorded.
+    pub date: String,
+    /// The claim itself, without the date or the `[active]` marker: what
+    /// [`Corpus::supersede_fact`] matches on, which is why it is returned
+    /// separately rather than left for a caller to parse back out.
+    pub body: String,
+}
+
+impl Corpus {
+    /// Every `[active]` fact of one workspace, in the order the file has them.
+    ///
+    /// This is what gives [`Corpus::supersede_fact`] a caller. It shipped in
+    /// #363 with a comment saying what was missing — "something that *knows* a
+    /// fact has been superseded" — and a person knows: they pick the line.
+    ///
+    /// A superseded line is not returned. Its history is the point of keeping it
+    /// (ADR-0004), and offering it for replacement again would mark a line that
+    /// is already marked.
+    pub fn active_facts(&self, workspace_id: &str) -> io::Result<Vec<Fact>> {
+        let path = self.root.join(facts_rel(workspace_id)?);
+        let text = read_or_empty(&path)?;
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let Some(body) = active_fact_body(line) else { continue };
+            let date = line
+                .trim_start()
+                .strip_prefix("- ")
+                .and_then(|r| r.split_whitespace().next())
+                .unwrap_or_default()
+                .to_string();
+            out.push(Fact { date, body: body.to_string() });
+        }
+        Ok(out)
+    }
+}
+
 fn list_dir(root: &Path, dir: &Path, out: &mut Vec<Listed>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         // Best-effort, exactly as the sidecar's walk is: one unreadable subtree
@@ -704,7 +743,6 @@ fn title_of(path: &Path, rel: &str) -> String {
 }
 
 /// The text after the `[active]` marker of a fact bullet, if it is one.
-#[allow(dead_code)] // Reached only from `supersede_fact` and the tests; see above.
 fn active_fact_body(line: &str) -> Option<&str> {
     let rest = line.trim_start().strip_prefix("- ")?;
     let at = rest.find("[active]")?;
@@ -781,6 +819,46 @@ mod tests {
             tldr: tldr.into(),
             sections: vec![Section { heading: "What we did".into(), body: "- read the script".into() }],
         }
+    }
+
+    // ----- the facts a person can replace -----
+
+    /// `supersede_fact` shipped in #363 with no caller, and this is half of the
+    /// one it gets: the list a person picks the outdated line from.
+    #[test]
+    fn only_the_facts_that_still_stand_are_offered_for_replacement() {
+        let root = tmp("facts-active");
+        let c = Corpus::new(root.clone());
+        c.append_facts("ws-1", d(2026, 8, 1), &["memory — is — a port".to_string()]).unwrap();
+        c.append_facts("ws-1", d(2026, 8, 2), &["the model — is — 479 MB".to_string()]).unwrap();
+        c.supersede_fact("ws-1", d(2026, 8, 31), "memory — is — a port", "memory — is — a sidecar")
+            .unwrap();
+
+        let facts = c.active_facts("ws-1").unwrap();
+        let bodies: Vec<&str> = facts.iter().map(|f| f.body.as_str()).collect();
+        // The marked line is gone from the list and still in the file: its
+        // history is the point of keeping it (ADR-0004), and offering it again
+        // would mark a line that is already marked. The replacement is FIRST,
+        // because it goes directly under the line it replaces rather than at the
+        // end — a reader scanning for the fact finds the correction without
+        // scrolling, and this list is in the file's own order.
+        assert_eq!(bodies, ["memory — is — a sidecar", "the model — is — 479 MB"]);
+        let text = std::fs::read_to_string(root.join("ws-1/Facts.md")).unwrap();
+        assert!(text.contains("[superseded 2026-08-31] memory — is — a port"));
+    }
+
+    #[test]
+    fn a_fact_carries_the_day_it_was_recorded() {
+        let root = tmp("facts-dated");
+        let c = Corpus::new(root);
+        c.append_facts("ws-1", d(2026, 8, 31), &["a — b — c".to_string()]).unwrap();
+        assert_eq!(c.active_facts("ws-1").unwrap()[0].date, "2026-08-31");
+    }
+
+    #[test]
+    fn a_workspace_with_no_facts_file_has_no_facts_rather_than_an_error() {
+        let root = tmp("facts-none");
+        assert!(Corpus::new(root).active_facts("ws-1").unwrap().is_empty());
     }
 
     // ----- the listing -----

@@ -709,6 +709,35 @@ export interface MemoryNoteEntry {
   /** Seconds since the epoch. The only sort key the three shapes share. */
   mtime: number;
 }
+/** One fact of a workspace that still stands. */
+export interface MemoryFact {
+  /** `YYYY-MM-DD`, the day it was recorded. */
+  date: string;
+  /** The claim, without the date or the `[active]` marker — what a replacement
+   *  matches on. */
+  body: string;
+}
+/** The facts a workspace still claims, for the form that replaces one. */
+export const memoryFacts = (workspaceId: string) =>
+  invoke<MemoryFact[]>("memory_facts", { workspaceId });
+/** Record a fact by hand. One line: `subject — predicate — object`. The date and
+ *  the `[active]` marker are the app's to write. */
+export const memoryAddFact = (workspaceId: string, fact: string) =>
+  invoke<void>("memory_add_fact", { workspaceId, fact });
+/** Replace a fact that has stopped being true. The old line is marked and the new
+ *  one goes under it (ADR-0004). Resolves `false` when nothing matched — the file
+ *  moved under the form, and that is worth showing rather than swallowing. */
+export const memorySupersedeFact = (workspaceId: string, old: string, replacement: string) =>
+  invoke<boolean>("memory_supersede_fact", { workspaceId, old, replacement });
+/** File a lesson into a room the person picked. */
+export const memoryAddLesson = (lesson: {
+  room: string;
+  workspace: string;
+  severity: string;
+  category: string;
+  what: string;
+  avoid: string;
+}) => invoke<void>("memory_add_lesson", lesson);
 /** Everything ever written down, newest first.
  *
  *  A directory walk rather than a search, which is why the memory page is useful

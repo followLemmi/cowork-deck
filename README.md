@@ -286,6 +286,14 @@ configured and both are yours to rewrite.
 record of truth. Facts are appended and marked superseded rather than edited, so a wrong one
 can be corrected without losing what it said.
 
+**Writing into it yourself.** The memory page records a fact, replaces one that has stopped
+being true, and files a lesson into a room you pick rather than one a model picks. A fact is
+one line — the date and the `[active]` marker are written for you — and replacing one marks
+the old line and puts the new one under it, so the corpus can still answer when it changed
+and to what. A single short line is on disk and listed immediately, but is not searchable on
+its own: the index skips anything under about 120 letters, so a file becomes findable once
+it holds a few.
+
 **Reading them.** The rail's **Memory** page lists everything ever written down — this
 project's notes first, then the lessons, then every other project's. It is a directory
 listing rather than a search, so it works on a machine that has downloaded nothing.

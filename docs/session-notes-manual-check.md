@@ -174,6 +174,25 @@ it needs the model.
       layout exactly as they were.
 - [ ] **Show the file** reveals the note in Finder or Explorer.
 
+## Writing into it by hand
+
+From the memory page, under the list.
+
+- [ ] **Record a fact** writes one dated `[active]` bullet into this project's
+      `Facts.md`. Open the file: the date and the marker are there and you did not
+      type them.
+- [ ] **Replace a fact** offers the ones that still stand, marks the one you pick
+      `[superseded <today>]` and puts the replacement directly under it. The old
+      line is still in the file.
+- [ ] **File a lesson** goes into the room you choose — not one a model chose —
+      and appears in the diary for this month.
+- [ ] With no workspace active, the two fact controls are gone and a sentence says
+      why; filing a lesson still works.
+- [ ] Retire every diary room in **Settings → Session notes**, then file a lesson:
+      it says where rooms come back from rather than offering an empty picker.
+- [ ] Each of the three says a freshly written short line is not searchable yet —
+      and the page lists it immediately all the same.
+
 ## Searching them yourself
 
 Needs the model downloaded, which the block under **Settings → Session notes**

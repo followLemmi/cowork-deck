@@ -523,6 +523,106 @@ pub fn memory_notes() -> Result<Vec<corpus::Listed>, String> {
     Ok(corpus::Corpus::new(root.clone()).notes())
 }
 
+/// Every fact of one workspace that still stands.
+///
+/// What the "replace a fact" form picks from. Only the `[active]` ones: a
+/// superseded line's history is the point of keeping it (ADR-0004), and offering
+/// it again would mark a line that is already marked.
+#[tauri::command]
+pub fn memory_facts(workspace_id: String) -> Result<Vec<corpus::Fact>, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    corpus::Corpus::new(root.clone()).active_facts(&workspace_id).map_err(|e| e.to_string())
+}
+
+/// Record a fact by hand.
+///
+/// **The date and the `[active]` marker are the app's to write**, which is why
+/// this takes one line of prose and not a shaped record: a form that let somebody
+/// type the marker would let somebody type it wrong, and `grep` is what reads
+/// this file.
+#[tauri::command]
+pub fn memory_add_fact(workspace_id: String, fact: String) -> Result<(), String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    if fact.trim().is_empty() {
+        return Err("a fact needs something in it".to_string());
+    }
+    corpus::Corpus::new(root.clone())
+        .append_facts(&workspace_id, corpus::today(), &[fact])
+        .map_err(|e| e.to_string())?;
+    wrote();
+    Ok(())
+}
+
+/// Replace a fact that has stopped being true.
+///
+/// The old line is **marked, never rewritten** — ADR-0004's rule, and not a
+/// choice: "the history of a fact is the useful part, and a corpus that quietly
+/// loses the old value cannot answer 'when did this change, and to what'." The
+/// replacement goes directly under it.
+///
+/// `false` means nothing matched, which a caller should show rather than swallow:
+/// the file has moved under the form, and writing the replacement anyway would
+/// leave two active claims about the same thing.
+#[tauri::command]
+pub fn memory_supersede_fact(
+    workspace_id: String,
+    old: String,
+    replacement: String,
+) -> Result<bool, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    if replacement.trim().is_empty() {
+        return Err("a replacement needs something in it".to_string());
+    }
+    let done = corpus::Corpus::new(root.clone())
+        .supersede_fact(&workspace_id, corpus::today(), &old, &replacement)
+        .map_err(|e| e.to_string())?;
+    if done {
+        wrote();
+    }
+    Ok(done)
+}
+
+/// File a lesson into a room **the person picked**.
+///
+/// The room is a parameter rather than a routing decision, and that is the whole
+/// difference from a capture: `capture` asks the model which room a lesson
+/// belongs in because nobody is there to ask. Here somebody is.
+#[tauri::command]
+pub fn memory_add_lesson(
+    room: String,
+    workspace: String,
+    severity: String,
+    category: String,
+    what: String,
+    avoid: String,
+) -> Result<(), String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    if what.trim().is_empty() {
+        return Err("a lesson needs to say what happened".to_string());
+    }
+    corpus::Corpus::new(root.clone())
+        .append_diary(
+            &room,
+            corpus::today(),
+            &corpus::DiaryEntry { workspace, severity, category, what, avoid },
+        )
+        .map_err(|e| e.to_string())?;
+    wrote();
+    Ok(())
+}
+
+/// What every hand-written line owes afterwards: say the corpus moved, and bring
+/// the index up to date.
+///
+/// A note on disk the index has not seen is a note no search finds, and a line
+/// written by hand is exactly as stale to the index as one written by a capture.
+/// `spawn_reindex` is guarded against overlapping and does nothing on a build
+/// with no sidecar staged, so this is safe to call on every write.
+fn wrote() {
+    announce();
+    spawn_reindex();
+}
+
 /// One note, read back out of the corpus.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Note {
