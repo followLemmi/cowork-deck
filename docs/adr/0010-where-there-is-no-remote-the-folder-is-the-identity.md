@@ -72,6 +72,16 @@ compared to each other. A repository that reads like a path is not that folder,
 and a record that has a repository is identified by it alone — the folder is a
 fallback, not a second chance to match.
 
+**A remembered answer is only good for the question that produced it.**
+`WorkspaceRepo` already carried the folder it was read in, so an answer stops
+being trusted when the folder moves. It now also carries which version of the
+question it answers (`identity::RESOLVER`), and `refresh` re-asks anything
+stamped below the current one. Without this the widened lookup above would have
+been inert on exactly the installs that motivated it: the machine that reported
+#359 had already been told "this folder has no remote" by a build that only
+looked at `origin`, the folder never moved, and nothing would ever have asked
+again. One extra pass over the store on the upgrade cycle is the whole cost.
+
 **The folder never travels.** It is not published, it is not read off the wire,
 and it is not compared against another machine's paths. Both sides of a path
 comparison are records this machine holds; what the comparison produces is a
@@ -94,14 +104,21 @@ constraint ADR-0007 built the ledger for.
 
 Identity now depends on a fact that can change without the record changing: a
 folder is renamed, or a remote is added to a project that had none. `Workspace.repo`
-already remembers the folder its answer was read in and re-resolves when the
-folder moves, so the repository key follows the project. The path key is derived
-per comparison and never cached, so it follows by construction.
+re-resolves when the folder moves and when the question changes, so the
+repository key follows the project. The path key is derived per comparison and
+never cached, so it follows by construction.
 
 A machine running an older build publishes a null repository for a project whose
 remote is called something else, and the record arrives with no identity. Once it
 has been located here, the path fallback recognises it anyway — so the pair is
 recognisable from one upgraded machine, without waiting for the other.
+
+The path key is only as stable as the folder. Two records that differ by a
+symlink match while the folder is on disk and stop matching once it is not,
+because canonicalising is what made them equal in the first place — so an
+unanswered question can disappear along with the folder it was about. Accepted:
+the alternative is caching a resolution that may since have become wrong, and a
+question about a folder that no longer exists is not one worth keeping on screen.
 
 ## Alternatives considered
 

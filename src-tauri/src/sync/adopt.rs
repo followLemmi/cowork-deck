@@ -52,7 +52,7 @@ pub enum Question {
 }
 
 /// Which identity made two records one project (`identity_key`).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DuplicateBasis {
     /// The same remote URL, normalised — the identity that crosses machines.
@@ -295,9 +295,16 @@ fn identity_key(repo: Option<&str>, path: &str) -> Option<(String, DuplicateBasi
 /// One spelling of a folder: symlinks resolved and the trailing slash gone.
 ///
 /// A path that is not there is kept as written rather than dropped — it is still
-/// this machine's answer for that record, and two records that were located from
-/// the same typed-in path are still the same project after the folder is
-/// renamed out from under them.
+/// this machine's answer for that record, and two records spelled the same way
+/// are still the same project after the folder is renamed out from under them.
+///
+/// Only spelled the same way, though: two records that differ by a symlink —
+/// `/tmp/x` against `/private/tmp/x` — match while the folder exists and stop
+/// matching once it does not, because there is nothing left to resolve them
+/// against. An unanswered question can therefore disappear when the folder does.
+/// Left as it is: the alternative is remembering a resolution that may since have
+/// become wrong, and a question about a folder that is no longer there is not one
+/// worth keeping on screen.
 fn canonical_folder(path: &str) -> Option<String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
@@ -368,6 +375,7 @@ fn read_dir_of<T: serde::de::DeserializeOwned>(
 mod tests {
     use super::*;
     use crate::model::{Schedule, SchedulePreset, WorkspaceRepo};
+    use crate::sync::identity::RESOLVER;
     use crate::sync::projection::project_workspace;
     use std::fs;
     use std::path::PathBuf;
@@ -394,7 +402,15 @@ mod tests {
     /// The same workspace with its repository already resolved, as
     /// `identity::refresh` would have left it.
     fn at_repo(mut w: Workspace, url: &str) -> Workspace {
-        w.repo = Some(WorkspaceRepo { url: Some(url.into()), from: w.path.clone() });
+        w.repo =
+            Some(WorkspaceRepo { url: Some(url.into()), from: w.path.clone(), resolver: RESOLVER });
+        w
+    }
+
+    /// Asked, and there is no remote — the answer the cache exists to record,
+    /// and the one a folder-based identity has to live with.
+    fn asked_no_remote(mut w: Workspace) -> Workspace {
+        w.repo = Some(WorkspaceRepo { url: None, from: w.path.clone(), resolver: RESOLVER });
         w
     }
 
@@ -496,8 +512,7 @@ mod tests {
         publish(&r, &ws("ws-remote", "deck", "/elsewhere/deck"));
 
         // Asked, and there is none — the state the cache exists to record.
-        let mut here = ws("ws-local", "deck", "/here/deck");
-        here.repo = Some(WorkspaceRepo { url: None, from: "/here/deck".into() });
+        let here = asked_no_remote(ws("ws-local", "deck", "/here/deck"));
 
         let a = adopt(&r, std::slice::from_ref(&here), &[]);
         assert!(
@@ -540,10 +555,8 @@ mod tests {
         let with_slash = format!("{}/", dir.display());
 
         publish(&r, &ws("ws-remote", "claude-config", &with_slash));
-        let mut here = ws("ws-remote", "claude-config", &with_slash);
-        here.repo = Some(WorkspaceRepo { url: None, from: with_slash.clone() });
-        let mut also_here = ws("ws-local", "claude-config", &dir.display().to_string());
-        also_here.repo = Some(WorkspaceRepo { url: None, from: dir.display().to_string() });
+        let here = asked_no_remote(ws("ws-remote", "claude-config", &with_slash));
+        let also_here = asked_no_remote(ws("ws-local", "claude-config", &dir.display().to_string()));
 
         let a = adopt(&r, &[here, also_here], &[]);
         assert!(
@@ -556,14 +569,76 @@ mod tests {
         );
     }
 
+    /// The shape #359 actually reported: both records were made on this machine
+    /// and both are therefore on the wire, so neither reaches the comparison as
+    /// a local-only record. The pair still has to be recognised.
+    #[test]
+    fn one_folder_is_still_one_project_when_both_records_are_published() {
+        let r = root("bothpublished");
+        let dir = r.join("config");
+        fs::create_dir_all(&dir).unwrap();
+        let with_slash = format!("{}/", dir.display());
+        let plain = dir.display().to_string();
+
+        publish(&r, &ws("ws-one", "claude-config", &with_slash));
+        publish(&r, &ws("ws-two", "claude-config", &plain));
+        let here = asked_no_remote(ws("ws-one", "claude-config", &with_slash));
+        let also_here = asked_no_remote(ws("ws-two", "claude-config", &plain));
+
+        let a = adopt(&r, &[here, also_here], &[]);
+        assert_eq!(
+            a.questions
+                .iter()
+                .filter(|q| matches!(q, Question::Duplicate { basis: DuplicateBasis::Folder, .. }))
+                .count(),
+            1,
+            "one pair, one question: {:?}",
+            a.questions
+        );
+    }
+
+    /// A record has one identity per comparison, and which one it is can change
+    /// under it: the same pair is a folder match before `identity::refresh` has
+    /// filled the repository in and a repository match afterwards. What must not
+    /// change is that there is a question — ADR-0010 rejects giving a record both
+    /// keys precisely so this stays a change of wording rather than of answer.
+    #[test]
+    fn the_basis_follows_the_cache_without_the_question_coming_and_going() {
+        let r = root("basisflip");
+        let dir = r.join("project");
+        fs::create_dir_all(&dir).unwrap();
+        let plain = dir.display().to_string();
+
+        publish(&r, &ws("ws-one", "deck", &plain));
+        let unresolved = [
+            asked_no_remote(ws("ws-one", "deck", &plain)),
+            asked_no_remote(ws("ws-two", "deck", &plain)),
+        ];
+        let basis_of = |a: &Adopted| {
+            a.questions.iter().find_map(|q| match q {
+                Question::Duplicate { basis, .. } => Some(*basis),
+                _ => None,
+            })
+        };
+        assert_eq!(basis_of(&adopt(&r, &unresolved, &[])), Some(DuplicateBasis::Folder));
+
+        let resolved = [
+            at_repo(ws("ws-one", "deck", &plain), "git@github.com:me/deck.git"),
+            at_repo(ws("ws-two", "deck", &plain), "https://github.com/me/deck"),
+        ];
+        assert_eq!(
+            basis_of(&adopt(&r, &resolved, &[])),
+            Some(DuplicateBasis::Repository),
+            "the repository takes over, and the question survives the handover"
+        );
+    }
+
     #[test]
     fn two_folders_with_no_repository_are_two_projects() {
         let r = root("twofolders");
         publish(&r, &ws("ws-remote", "notes", "/here/notes"));
-        let mut here = ws("ws-remote", "notes", "/here/notes");
-        here.repo = Some(WorkspaceRepo { url: None, from: "/here/notes".into() });
-        let mut other = ws("ws-local", "notes", "/here/other-notes");
-        other.repo = Some(WorkspaceRepo { url: None, from: "/here/other-notes".into() });
+        let here = asked_no_remote(ws("ws-remote", "notes", "/here/notes"));
+        let other = asked_no_remote(ws("ws-local", "notes", "/here/other-notes"));
 
         let a = adopt(&r, &[here, other], &[]);
         assert!(

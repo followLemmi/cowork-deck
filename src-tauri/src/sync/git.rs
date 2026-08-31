@@ -388,9 +388,9 @@ pub fn remote_url(repo: &Path) -> Option<String> {
 
 /// One remote's fetch URL, or nothing when there is no remote by that name.
 fn get_url(repo: &Path, name: &str) -> Option<String> {
+    // `run` already trims what git printed.
     run(repo, "remote", &["remote", "get-url", name], &Auth::default(), LOCAL_DEADLINE)
         .ok()
-        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
 

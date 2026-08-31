@@ -149,9 +149,22 @@ describe("what a pull could not decide", () => {
     });
     expect(c.text).toContain("claude-config");
     expect(c.text).toMatch(/same folder/i);
-    expect(c.text).not.toMatch(/repository/i);
+    expect(c.text).not.toMatch(/same repository/i);
     expect(c.text).not.toMatch(/another machine/i);
     expect(c.text).toMatch(/nothing is deleted/i);
+  });
+
+  /** A folder match means "no repository *recorded*", which is all the deck
+   *  checked. A folder whose remote is called something the old build could not
+   *  see reaches this sentence too, and "it has no git remote" would be a claim
+   *  about that folder nobody made (#359). */
+  it("says the repository is unrecorded rather than absent", () => {
+    const c = questionCopy({
+      kind: "duplicate", arrivingId: "ws-a", localId: "ws-b", name: "claude-config",
+      basis: "folder",
+    });
+    expect(c.text).toMatch(/neither has a repository recorded/i);
+    expect(c.text).not.toMatch(/no git remote/i);
   });
 
   it("says what a workspace with no folder here can still do meanwhile", () => {

@@ -43,6 +43,18 @@ use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------- resolving
 
+/// Which question `resolve` currently asks, stamped on every answer it writes.
+///
+/// Bumped whenever `git::remote_url` would give a different answer for a folder
+/// it has already been asked about — which is to say, whenever a cached "this
+/// folder has no remote" might now be wrong. `refresh` re-asks anything stamped
+/// below this, once, and the store is rewritten with the new answer.
+///
+/// - `0` — never stamped: a store written before this existed, where the
+///   question was exactly `git remote get-url origin`.
+/// - `1` — `origin`, then `upstream`, then the sole remote (ADR-0010).
+pub const RESOLVER: u32 = 1;
+
 /// What repository this folder is, read from git rather than `gh`.
 ///
 /// `gh` is not asked: `owner/name` would be prettier, but it costs a network
@@ -58,20 +70,38 @@ pub fn resolve(path: &str) -> Option<WorkspaceRepo> {
     if trimmed.is_empty() || !Path::new(trimmed).is_dir() {
         return None;
     }
-    Some(WorkspaceRepo { url: git::remote_url(Path::new(trimmed)), from: trimmed.to_string() })
+    Some(WorkspaceRepo {
+        url: git::remote_url(Path::new(trimmed)),
+        from: trimmed.to_string(),
+        resolver: RESOLVER,
+    })
 }
 
-/// Fill in what has not been asked, and re-ask where the folder moved.
+/// Fill in what has not been asked, re-ask where the folder moved, and re-ask
+/// where the question itself has changed.
 ///
 /// Answers whether anything changed, so the caller can decide whether the store
 /// is worth rewriting. Cheap by construction: a workspace whose cached answer
-/// still names its current path is skipped, including the one whose answer was
-/// "this folder has no remote" — that is exactly the record that would otherwise
-/// be re-probed on every cycle for the rest of its life.
+/// still names its current path *and* answers the question this build asks is
+/// skipped, including the one whose answer was "this folder has no remote" —
+/// that is exactly the record that would otherwise be re-probed on every cycle
+/// for the rest of its life.
+///
+/// The second half of that condition is what makes a fix to `git::remote_url`
+/// reach an install that already has answers. Without it, a folder the old build
+/// recorded as having no remote keeps that answer forever, because the folder
+/// never moved — and the machine that reported #359 is precisely such an
+/// install. One extra pass over the store on the upgrade cycle is the whole
+/// cost, after which every answer is stamped `RESOLVER` and skipped again.
 pub fn refresh(workspaces: &mut [Workspace]) -> bool {
     let mut changed = false;
     for w in workspaces.iter_mut() {
-        if w.repo.as_ref().map(|r| r.from == w.path.trim()).unwrap_or(false) {
+        let fresh = w
+            .repo
+            .as_ref()
+            .map(|r| r.from == w.path.trim() && r.resolver >= RESOLVER)
+            .unwrap_or(false);
+        if fresh {
             continue;
         }
         let next = resolve(&w.path);
@@ -500,6 +530,19 @@ mod tests {
         fs::write(p, body).unwrap();
     }
 
+    /// Straight to git, because what is under test is what `resolve` reads back
+    /// out of a real repository rather than how it gets in.
+    fn run_git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .expect("git")
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
     fn ws(id: &str, path: &str) -> Workspace {
         Workspace {
             id: id.into(),
@@ -533,6 +576,51 @@ mod tests {
 
         assert!(!refresh(&mut items), "and the second pass must not look again");
         assert_eq!(repo_url(&items[0]), None, "which offers no identity to anyone");
+    }
+
+    /// The upgrade case, and the reason `resolver` exists (#359). The machine
+    /// that reported the bug had already been told "this folder has no remote"
+    /// by a build that only ever looked at `origin`. The folder never moved, so
+    /// the `from` check alone would trust that answer forever and the fix to
+    /// `git::remote_url` would never run on the one install that needed it.
+    #[test]
+    fn an_answer_to_the_question_an_older_build_asked_is_asked_again() {
+        let r = root("upgrade");
+        let dir = r.join("named-github");
+        fs::create_dir_all(&dir).unwrap();
+        run_git(&dir, &["init", "--quiet"]);
+        run_git(&dir, &["remote", "add", "github", "git@github.com:o/r.git"]);
+
+        // What the old build wrote: asked, no remote, and stamped with nothing.
+        let mut items = vec![ws("ws-1", dir.to_str().unwrap())];
+        items[0].repo =
+            Some(WorkspaceRepo { url: None, from: dir.display().to_string(), resolver: 0 });
+
+        assert!(refresh(&mut items), "an answer to the old question is not an answer");
+        assert_eq!(
+            repo_url(&items[0]),
+            Some("git@github.com:o/r.git"),
+            "the folder is re-asked, and this build can see the remote"
+        );
+        assert_eq!(items[0].repo.as_ref().unwrap().resolver, RESOLVER);
+
+        assert!(!refresh(&mut items), "and having been re-asked once, it is left alone");
+    }
+
+    /// The cost of the above is one pass, not a permanent re-probe: a folder
+    /// that genuinely has no remote is stamped with this build's question and
+    /// then trusted, exactly as before.
+    #[test]
+    fn a_re_asked_folder_that_still_has_no_remote_is_trusted_again() {
+        let r = root("reasked");
+        let mut items = vec![ws("ws-1", r.to_str().unwrap())];
+        items[0].repo =
+            Some(WorkspaceRepo { url: None, from: r.display().to_string(), resolver: 0 });
+
+        assert!(refresh(&mut items), "the stamp is stale even when the answer is not");
+        assert_eq!(repo_url(&items[0]), None);
+        assert_eq!(items[0].repo.as_ref().unwrap().resolver, RESOLVER);
+        assert!(!refresh(&mut items), "and the next cycle asks nothing");
     }
 
     #[test]
