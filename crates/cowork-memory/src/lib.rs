@@ -1,6 +1,7 @@
 pub mod corpus;
 pub mod embed;
 pub mod index;
+pub mod mcp;
 pub mod model;
 pub mod onnx;
 pub mod scan;

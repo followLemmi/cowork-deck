@@ -46,6 +46,17 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Serve the corpus over MCP on stdio, for a session to ask questions of.
+    ///
+    /// **Nothing but the protocol may reach stdout in this mode.** A stray line
+    /// is a parse error at the other end and the client drops the connection, so
+    /// the session simply has no memory with nothing on screen to say why.
+    Mcp {
+        /// The workspace this session belongs to. Omitted, the server serves the
+        /// global diaries alone — which is what a session with no workspace has.
+        #[arg(long)]
+        scope: Option<String>,
+    },
     /// Download or inspect the embedding model.
     Model {
         #[arg(long)]
@@ -174,6 +185,28 @@ fn main() -> Result<()> {
             if hits.is_empty() {
                 eprintln!("cowork_memory: no results above threshold");
             }
+        }
+        Cmd::Mcp { scope } => {
+            let served = cowork_memory::mcp::Served {
+                root: cli.root.clone(),
+                cache: cache.clone(),
+                workspace: scope,
+                min_score: cowork_memory::mcp::MIN_SCORE,
+            };
+            // The embedder is built on the first tool call that needs one, not
+            // here: loading the model costs seconds and 479 MB of mapped file,
+            // and a session that never asks memory anything should pay neither.
+            let root = cli.root.clone();
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let stdout = std::io::stdout();
+            let mut output = stdout.lock();
+            cowork_memory::mcp::serve(
+                &served,
+                &|| embedder(&root),
+                &mut input,
+                &mut output,
+            )?;
         }
         Cmd::Model { download, status } => {
             let dir = model_dir(&cli.root);
