@@ -90,6 +90,22 @@ repository), which lists what a pull could not decide.
 - [ ] Sync **A** twice more. The workspace count does not oscillate and the two machines do not take turns republishing the record that lost.
 - [ ] The run history for that project still lists runs from before the merge, under the surviving workspace.
 
+### With that workspace pulled out into its own window
+
+The case that cannot be answered by repointing anything (#369): a window's label
+is minted from the workspace id and is then that window's name for life, so a
+fold — or a deletion arriving in a pull — leaves the window pinned to an id the
+store no longer has. Its sessions used to collect under **Other**, the heading
+for a session whose workspace was deleted, and with no workspace row there was no
+"New session in …" row either: the window could not be given work at all.
+
+- [ ] On **B**, pull the colliding workspace out into its own window and start a session in it.
+- [ ] Answer **Same project**. The pulled-out window **closes**, and its session is in the main window under the surviving workspace — or under **Other** if the surviving record has no path yet, which is where an orphan has always lived. Nothing is killed: the session is still running and its scrollback is intact.
+- [ ] The main window is still open, still showing its own workspace. Only the pinned one went.
+- [ ] Do the same with a **deletion** rather than a fold: delete that workspace on **A**, sync **A**, then sync **B**. The pulled-out window on **B** closes the same way, on the tick that pulls it.
+- [ ] After either, **B**'s tree has no row for the record that went, without restarting the app.
+- [ ] Press the pull-out control on a row for a workspace that has just gone (before the next cycle, if you can catch it): it says the workspace is no longer in the store rather than opening a window, and the row disappears.
+
 ### Answering "different projects"
 
 Do this on a second pair, or undo the first by hand — the answer is meant to stick.

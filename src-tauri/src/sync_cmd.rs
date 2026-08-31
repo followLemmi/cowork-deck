@@ -176,13 +176,51 @@ pub fn sync_disconnect(state: State<AppState>) -> Result<(), String> {
 
 /// One cycle, on demand. The same call the loop makes.
 #[tauri::command(async)]
-pub fn sync_now(state: State<AppState>) -> Result<SyncState, String> {
+pub fn sync_now(app: tauri::AppHandle, state: State<AppState>) -> Result<SyncState, String> {
     let root = root(&state)?;
     let (workspaces, skills) = {
         let store = state.store.lock().map_err(|_| "store lock".to_string())?;
         (store.workspaces(), store.skills())
     };
-    Ok(run_once(&root, &workspaces, &skills))
+    let before = ids(&workspaces);
+    let st = run_once(&root, &workspaces, &skills);
+    announce_if_changed(&app, &before);
+    Ok(st)
+}
+
+/// The workspace ids, in order, for the one comparison this module makes.
+fn ids(workspaces: &[crate::model::Workspace]) -> Vec<String> {
+    workspaces.iter().map(|w| w.id.clone()).collect()
+}
+
+/// Tell every window the store's workspace list is not what it read at boot.
+///
+/// **A pull can delete a workspace record**, or fold two into one, because
+/// somebody answered that question on the other machine. Nothing in a webview
+/// can see that happen: `workspaces.json` is read once, during boot, so every
+/// window goes on drawing a row for a record that is gone — and a window pinned
+/// to that record goes on being pinned to nothing, with its sessions under
+/// "Other" and no row to start a session from (#369).
+///
+/// Emitted app-wide rather than to a chosen window: which windows care is not
+/// this side's business, and the main window has a stale row to drop whether or
+/// not a pinned window has to close.
+///
+/// Compared by id rather than by whole record, and that is deliberate: a name, a
+/// path or an account changing is the store answering for something a window
+/// already did, and re-reading the list on every such tick would rebuild the
+/// tree — and with it the containers the deck's session rows live in — every five
+/// minutes for nothing.
+fn announce_if_changed(app: &tauri::AppHandle, before: &[String]) {
+    let after = app
+        .try_state::<AppState>()
+        .and_then(|st| st.store.lock().ok().map(|s| ids(&s.workspaces())));
+    // A store that cannot be read says nothing. The alternative is announcing a
+    // change that may not have happened, which costs every window a re-read.
+    let Some(after) = after else { return };
+    if after != before {
+        let _ = app.emit("workspaces://changed", ());
+    }
 }
 
 /// A cycle plus the bookkeeping a person sees.
@@ -367,8 +405,13 @@ pub fn spawn(app: tauri::AppHandle) {
                 st.store.lock().ok().map(|s| (s.workspaces(), s.skills()))
             });
             if let Some((workspaces, skills)) = read {
+                let before = ids(&workspaces);
                 let st = run_once(&dir, &workspaces, &skills);
                 let _ = app.emit("sync://state", &st);
+                // What the cycle pulled may have taken a workspace with it. See
+                // `announce_if_changed`: this is the only moment anything in the
+                // app can notice.
+                announce_if_changed(&app, &before);
             }
             std::thread::sleep(job::TICK);
         }
@@ -403,13 +446,23 @@ pub fn sync_questions(state: State<AppState>) -> Result<Vec<crate::sync::adopt::
 /// it.
 #[tauri::command(async)]
 pub fn sync_merge_workspaces(
+    app: tauri::AppHandle,
     state: State<AppState>,
     from: String,
     into: String,
 ) -> Result<Vec<crate::model::Workspace>, String> {
-    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
-    let root = store.dir.clone();
-    merge_workspaces(&root, &store, &from, &into)
+    let merged = {
+        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let root = store.dir.clone();
+        merge_workspaces(&root, &store, &from, &into)?
+    };
+    // The one reference a fold cannot repoint is the label of a window pinned to
+    // the losing id — a label is minted once and is then that window's name for
+    // life. So the window has to be told, and this is the announcement it hears:
+    // it hands its sessions back to the main window and closes, rather than
+    // living on pinned to an id the store no longer has (#369).
+    let _ = app.emit("workspaces://changed", ());
+    Ok(merged)
 }
 
 /// The whole of the answer, taking a store rather than the app's state so it can

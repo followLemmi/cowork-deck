@@ -244,6 +244,19 @@ export const syncKeepDistinct = (a: string, b: string) =>
  *  to poll to stay honest. */
 export const onSyncState = (fn: (s: SyncState) => void): Promise<UnlistenFn> =>
   listen<SyncState>("sync://state", (e) => fn(e.payload));
+
+/** The store's workspace list is no longer what this window read at boot.
+ *
+ *  Sent when the list changed without a window asking for it: a pull that
+ *  brought a record, deleted one, or carried the answer somebody gave on the
+ *  other machine. A window reads `workspaces.json` once, during boot, so
+ *  without this it draws a row for a record that is gone — and a window pinned
+ *  to that record is pinned to nothing (#369).
+ *
+ *  No payload: the list is one file, and re-reading it says more than any
+ *  description of the change could. */
+export const onWorkspacesChanged = (fn: () => void): Promise<UnlistenFn> =>
+  listen("workspaces://changed", () => fn());
 export const hostPlatform = () => invoke<HostPlatform>("host_platform");
 
 /** Four distinct check states. `none` is not `passed`: nothing has built this.

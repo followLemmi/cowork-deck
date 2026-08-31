@@ -2295,6 +2295,25 @@ pub async fn open_workspace_window(
         return Err("that is not a workspace id a window can be opened for".to_string());
     }
 
+    // The workspace has to still be there, and this is the only place that can
+    // say so before a window exists. A window's label is minted from the id and
+    // is then immutable, so a window opened for an id the store does not have is
+    // pinned to nothing for as long as it lives: its sessions collect under
+    // "Other" and it has no workspace row, which means no way to start a session
+    // in it (#369).
+    //
+    // Reachable from an ordinary click. No window re-reads `workspaces.json`
+    // after boot, so a pull that folded or deleted a record leaves the main
+    // window drawing a row for it — and pressing that row landed here. Refusing
+    // is what turns a silently broken window into a sentence, and the caller
+    // re-reads its list when it hears this.
+    let title = {
+        // Scoped: the guard must not be held across the await below.
+        let store = state.store.lock().unwrap();
+        store.workspaces().into_iter().find(|w| w.id == workspace_id).map(|w| w.name)
+    }
+    .ok_or_else(|| "that workspace is no longer in the store".to_string())?;
+
     // Already open: raise it. Tauri refuses a second window with the same label,
     // and a person who asks twice means "show me that one".
     if let Some(existing) = app.get_webview_window(&label) {
@@ -2309,17 +2328,6 @@ pub async fn open_workspace_window(
     // one's. Cleared here as well as on `Destroyed` because only one of the two
     // is guaranteed to have run by now.
     state.windows_ready.forget(&label);
-
-    let title = {
-        // Scoped: the guard must not be held across the await below.
-        let store = state.store.lock().unwrap();
-        store
-            .workspaces()
-            .into_iter()
-            .find(|w| w.id == workspace_id)
-            .map(|w| w.name)
-            .unwrap_or_else(|| "cowork-deck".to_string())
-    };
 
     let window = tauri::WebviewWindowBuilder::new(
         &app,

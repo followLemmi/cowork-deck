@@ -17,6 +17,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
 
+/** What the workspaces panel answers with, this boot.
+ *
+ *  Mutable because the store's workspace list is: a pull can fold or delete a
+ *  record while a window pinned to it is open, which is the whole of #369. Reset
+ *  by `boot`. */
+let panelItems: (typeof WS)[] = [WS];
+
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
   claudeAvailable: vi.fn().mockResolvedValue(true),
@@ -57,8 +64,8 @@ const pinnedCalls: string[] = [];
 
 vi.mock("../src/workspaces", () => ({
   WorkspacesPanel: class {
-    get active() { return WS; }
-    get all() { return [WS]; }
+    get active() { return panelItems[0] ?? null; }
+    get all() { return panelItems; }
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
@@ -109,8 +116,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 /** The label of the window being booted. Varied by `boot`, because a window's
  *  own label is what narrows its addressed listeners — see the third describe. */
 let currentLabel = "main";
+/** `close()` on this window. A window pinned to a workspace the store has lost
+ *  closes rather than living on pinned to nothing — see the last describe. */
+const closeSpy = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ label: currentLabel, onCloseRequested: async () => () => {}, destroy: async () => {}, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
+  getCurrentWindow: () => ({ label: currentLabel, onCloseRequested: async () => () => {}, destroy: async () => {}, close: closeSpy, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
 }));
 
 import {
@@ -144,6 +154,7 @@ async function boot(role: WindowRole) {
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';
   pinnedCalls.length = 0;
+  panelItems = [WS];
   currentLabel = role.kind === "main" ? "main" : `workspace-${role.workspaceId}`;
   const { startApp } = await import("../src/app");
   startApp(role);
@@ -335,5 +346,69 @@ describe("the events a window may act on", () => {
     for (const event of ["session://waiting", "window://gone", "ui://scale"]) {
       expect(targetOf(event), event).toBeUndefined();
     }
+  });
+});
+
+/** #369: a window pinned to a workspace the store no longer has.
+ *
+ *  The list is read once, during boot, and until this it was the only read there
+ *  ever was — so a pull that deleted a workspace record, or carried the answer
+ *  somebody gave to a duplicate question on the other machine, left the window
+ *  pinned to an id nothing answers for. Its sessions collected under "Other", the
+ *  heading for a session whose workspace was deleted, and with no workspace row
+ *  there was no "New session in …" row either: the window could not be given work
+ *  at all.
+ *
+ *  Here rather than in a file of its own for the reason the two describes above
+ *  are: this is `startApp(role)`'s boundary again — what a window does about its
+ *  own workspace disappearing is decided by which kind of window it is.
+ */
+describe("a workspace that leaves the store", () => {
+  /** The announcement, delivered the way Tauri would. `onWorkspacesChanged`
+   *  wraps the handler and drops the payload, so the argument is a formality. */
+  const announce = () => {
+    const call = vi.mocked(listen).mock.calls.find(([e]) => e === "workspaces://changed");
+    expect(call, "nothing listens for the store's workspace list changing").toBeDefined();
+    (call![1] as (e: unknown) => void)({ event: "workspaces://changed", id: 0, payload: null });
+  };
+
+  /* Both kinds of window: the row to drop is the main window's business and the
+     window to close is the pinned one's, and neither can be decided by whichever
+     side wrote the file. */
+  it("is listened for in either kind of window", async () => {
+    await boot({ kind: "main" });
+    expect(vi.mocked(listen).mock.calls.map(([e]) => e)).toContain("workspaces://changed");
+
+    vi.clearAllMocks();
+    await boot({ kind: "workspace", workspaceId: "w" });
+    expect(vi.mocked(listen).mock.calls.map(([e]) => e)).toContain("workspaces://changed");
+  });
+
+  it("closes a pinned window whose workspace has gone", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" });
+    panelItems = []; // the pull took it
+    announce();
+    await flush();
+    expect(closeSpy).toHaveBeenCalled();
+  });
+
+  /* The common case, and the one a close would be a disaster in: the list changed
+     because something else in it did. */
+  it("keeps a pinned window whose workspace is still there", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" });
+    announce();
+    await flush();
+    expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  /* The main window is not pinned to anything, so there is nothing it can be
+     pinned to nothing about — and it is where the sessions of a window that did
+     close land. */
+  it("never closes the main window, whatever the store lost", async () => {
+    await boot({ kind: "main" });
+    panelItems = [];
+    announce();
+    await flush();
+    expect(closeSpy).not.toHaveBeenCalled();
   });
 });
