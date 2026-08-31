@@ -510,6 +510,19 @@ fn mcp_flags(
 /// guessable at startup."
 pub const MEMORY_INSTRUCTION: &str = "This deck keeps a searchable memory of what earlier sessions in this project did and decided, plus lessons carried across every project, reachable through the `search_memory` tool. Consult it before changing code in an area you have not seen yet, and before settling a question that looks like one somebody here has already settled.";
 
+/// Every note the corpus holds, newest first.
+///
+/// **Not a search, and that is the point.** [`memory_search`] needs the sidecar
+/// spawned and the 479 MB model downloaded; a page that could only list what
+/// search returns would be blank on every machine that has downloaded nothing,
+/// which is every machine at first run. This walks a layout [`corpus`] owns and
+/// reads no further into a file than its first heading.
+#[tauri::command]
+pub fn memory_notes() -> Result<Vec<corpus::Listed>, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    Ok(corpus::Corpus::new(root.clone()).notes())
+}
+
 /// One note, read back out of the corpus.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Note {

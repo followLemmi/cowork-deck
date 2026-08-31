@@ -495,6 +495,214 @@ impl Corpus {
     }
 }
 
+/// One note as the corpus holds it, without having been read whole.
+///
+/// Everything here is either the path's or the filesystem's, except the title,
+/// which costs the first few lines of the file. That is the whole bargain of
+/// this listing: a corpus that has been filling for a year is hundreds of
+/// files, and reading them whole to draw a column of names would be a page that
+/// gets slower every month it is useful.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Listed {
+    /// Relative to the corpus root, slash-separated — what
+    /// [`crate::memory::memory_read_note`] takes back.
+    pub file: String,
+    /// The workspace id, or [`DIARIES`] for a lesson.
+    pub scope: String,
+    /// The room, for a diary, and nothing otherwise.
+    pub room: Option<String>,
+    /// `session`, `facts`, `diary`, or `other` for a file somebody put here
+    /// themselves.
+    pub kind: &'static str,
+    /// `YYYY-MM-DD` for a session note, `YYYY-MM` for a diary, empty otherwise.
+    ///
+    /// From the path, which is where the day the work happened on is recorded.
+    /// The mtime cannot say it: editing a note two months later would move it.
+    pub when: String,
+    /// The first `# ` heading, or the file stem when there is none.
+    pub title: String,
+    pub size: u64,
+    /// Seconds since the epoch, and the only sort key that spans the three
+    /// shapes: a session note's name carries a day, a diary's a month, and
+    /// `Facts.md` carries nothing at all.
+    pub mtime: f64,
+}
+
+/// How far into a file the title is looked for.
+///
+/// A note written by this module has its `# ` heading within a dozen lines —
+/// frontmatter, a blank line, the heading. The cap is what keeps a stray
+/// megabyte of markdown in the corpus from being read in full by a listing, and
+/// a file whose heading is past it is shown by its stem, which is the same
+/// fallback a file with no heading at all gets.
+const TITLE_SCAN_BYTES: u64 = 8 * 1024;
+
+impl Corpus {
+    /// Every note in the corpus, newest first.
+    ///
+    /// **A directory walk, not a search**, and that difference is the reason the
+    /// memory page is useful on a machine that has downloaded nothing: searching
+    /// needs the sidecar spawned and a 479 MB model, and this needs neither. The
+    /// layout is this module's own, so walking it here is a second reader of a
+    /// thing we already own rather than a second guess at somebody else's.
+    ///
+    /// It skips exactly what the sidecar's `scan::scan` skips — a dotted name, a
+    /// symlink, anything that is not `.md`, and anything too shallow to have a
+    /// scope — because a listing that showed a `.tmp` the index can never return
+    /// would be a page promising a note that no search will ever find.
+    pub fn notes(&self) -> Vec<Listed> {
+        let mut out = Vec::new();
+        list_dir(&self.root, &self.root, &mut out);
+        // Newest first, and by mtime because it is the only key all three shapes
+        // have. Ties broken by path so the order is stable between reads — two
+        // notes written in the same second are otherwise in whatever order the
+        // directory happened to be walked in, which changes under a person for
+        // no reason they can see.
+        out.sort_by(|a, b| b.mtime.total_cmp(&a.mtime).then_with(|| a.file.cmp(&b.file)));
+        out
+    }
+}
+
+fn list_dir(root: &Path, dir: &Path, out: &mut Vec<Listed>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        // Best-effort, exactly as the sidecar's walk is: one unreadable subtree
+        // must not empty the page.
+        eprintln!("memory: could not list {}", dir.display());
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // The dot rule, and it is load-bearing rather than tidy: `.index/`,
+        // `.model/` and a half-written `.tmp` all live in this tree, and
+        // `write_atomic` names its temporary file with a leading dot precisely
+        // so that neither the indexer nor this sees it.
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        // `file_type` does not follow the link, unlike `Path::is_dir`: a symlink
+        // out of the corpus would list somebody's home directory, and a loop
+        // would recurse until the stack ran out.
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            list_dir(root, &path, out);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(root) else { continue };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        // Two segments at least, which is the sidecar's `detect_scope` rule: a
+        // note at the root has no scope and is not indexed, so listing it would
+        // promise something search cannot deliver.
+        let Some((scope, room, kind, when)) = locate(&rel) else { continue };
+        let (size, mtime) = match entry.metadata() {
+            Ok(md) => (
+                md.len(),
+                md.modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0),
+            ),
+            Err(_) => continue,
+        };
+        out.push(Listed {
+            title: title_of(&path, &rel),
+            file: rel,
+            scope,
+            room,
+            kind,
+            when,
+            size,
+            mtime,
+        });
+    }
+}
+
+/// What a relative path says about the note at it: its scope, its room, its
+/// shape and its date.
+///
+/// The three shapes are the ones this module writes and `sync::manifest::ALLOWED`
+/// allows, so the fourth arm is not a fallback for a bug — it is a file somebody
+/// put in the corpus themselves, which is a directory of markdown and theirs.
+/// Shown by what can be read off it rather than dropped.
+fn locate(rel: &str) -> Option<(String, Option<String>, &'static str, String)> {
+    let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    if parts[0] == DIARIES {
+        if parts.len() != 3 {
+            return None;
+        }
+        let month = parts[2].trim_end_matches(".md").to_string();
+        return Some((
+            DIARIES.to_string(),
+            Some(parts[1].to_string()),
+            "diary",
+            if is_month(&month) { month } else { String::new() },
+        ));
+    }
+    if parts.len() == 2 && parts[1] == FACTS {
+        return Some((parts[0].to_string(), None, "facts", String::new()));
+    }
+    if parts.len() == 4 && parts[1] == SESSIONS {
+        let month = parts[2];
+        let day = &parts[3][..parts[3].len().min(2)];
+        let when = if is_month(month) && day.len() == 2 && day.chars().all(|c| c.is_ascii_digit()) {
+            format!("{month}-{day}")
+        } else {
+            String::new()
+        };
+        return Some((parts[0].to_string(), None, "session", when));
+    }
+    Some((parts[0].to_string(), None, "other", String::new()))
+}
+
+fn is_month(s: &str) -> bool {
+    s.len() == 7
+        && s.as_bytes()[4] == b'-'
+        && s[..4].chars().all(|c| c.is_ascii_digit())
+        && s[5..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// The first `# ` heading, or the file stem.
+///
+/// The same answer the sidecar's `corpus::find_title` gives, including its
+/// insistence on the space — `#нет пробела` is not a heading — so a note is not
+/// called one thing in the index and another on the page. It reads only as far
+/// as the heading, and never past [`TITLE_SCAN_BYTES`].
+fn title_of(path: &Path, rel: &str) -> String {
+    use std::io::{BufRead, Read};
+    let stem = || {
+        Path::new(rel)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let Ok(file) = std::fs::File::open(path) else { return stem() };
+    let mut reader = std::io::BufReader::new(file).take(TITLE_SCAN_BYTES);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return stem(),
+            Ok(_) => {}
+        }
+        if let Some(rest) = line.strip_prefix("# ") {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                return rest.to_string();
+            }
+        }
+    }
+}
+
 /// The text after the `[active]` marker of a fact bullet, if it is one.
 #[allow(dead_code)] // Reached only from `supersede_fact` and the tests; see above.
 fn active_fact_body(line: &str) -> Option<&str> {
@@ -573,6 +781,150 @@ mod tests {
             tldr: tldr.into(),
             sections: vec![Section { heading: "What we did".into(), body: "- read the script".into() }],
         }
+    }
+
+    // ----- the listing -----
+
+    /// A corpus with one of each shape, so the walk has something to name.
+    fn filled(root: &Path) {
+        let c = Corpus::new(root.to_path_buf());
+        c.write_session_note("ws-1", d(2026, 8, 31), "the wrapup queue", &note("It drains."))
+            .unwrap();
+        c.append_facts("ws-1", d(2026, 8, 31), &["memory — is — a port".to_string()])
+            .unwrap();
+        c.append_diary(
+            "reviewer",
+            d(2026, 8, 31),
+            &DiaryEntry {
+                workspace: "cowork-deck".into(),
+                severity: "medium".into(),
+                category: "review".into(),
+                what: "a listing read every file whole".into(),
+                avoid: "read as far as the heading".into(),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn every_shape_is_listed_with_its_scope_its_date_and_its_title() {
+        let root = tmp("listing");
+        filled(&root);
+        let notes = Corpus::new(root.clone()).notes();
+
+        let session = notes.iter().find(|n| n.kind == "session").unwrap();
+        assert_eq!(session.file, "ws-1/Sessions/2026-08/31-the-wrapup-queue.md");
+        assert_eq!(session.scope, "ws-1");
+        assert_eq!(session.room, None);
+        assert_eq!(session.when, "2026-08-31");
+        // Verbatim, including the date `Note::render` puts in the H1: the title
+        // is what the file says, and a listing that edited it would disagree with
+        // the note a person then opens. A row showing the date beside it is what
+        // has to avoid saying it twice (#382).
+        assert_eq!(session.title, "2026-08-31 — the sidecar staged for the wrong target");
+        assert!(session.size > 0);
+
+        let facts = notes.iter().find(|n| n.kind == "facts").unwrap();
+        assert_eq!(facts.file, "ws-1/Facts.md");
+        assert_eq!(facts.scope, "ws-1");
+        // `Facts.md` carries no date at all, which is why the sort key cannot be
+        // one — see `notes`.
+        assert_eq!(facts.when, "");
+
+        let diary = notes.iter().find(|n| n.kind == "diary").unwrap();
+        assert_eq!(diary.file, "Diaries/reviewer/2026-08.md");
+        assert_eq!(diary.scope, DIARIES);
+        assert_eq!(diary.room.as_deref(), Some("reviewer"));
+        assert_eq!(diary.when, "2026-08");
+    }
+
+    /// The dot rule, and it is the same one `scan.rs` applies. A listing that
+    /// showed `.index/`, `.model/` or a torn `.tmp` would offer a person a note
+    /// no search can ever return.
+    #[test]
+    fn the_walk_skips_what_the_indexer_skips() {
+        let root = tmp("listing-skips");
+        filled(&root);
+        std::fs::create_dir_all(root.join(".index")).unwrap();
+        std::fs::write(root.join(".index/cache.md"), "# not a note\n").unwrap();
+        std::fs::write(root.join("ws-1/.31-torn.md.tmp"), "# torn\n").unwrap();
+        std::fs::write(root.join("ws-1/notes.txt"), "not markdown").unwrap();
+        // Two segments at least, which is `detect_scope`'s floor: a note at the
+        // root has no scope and is not indexed.
+        std::fs::write(root.join("loose.md"), "# loose\n").unwrap();
+
+        let files: Vec<String> = Corpus::new(root).notes().into_iter().map(|n| n.file).collect();
+        assert_eq!(
+            files.iter().filter(|f| f.contains(".index") || f.contains("tmp")).count(),
+            0,
+        );
+        assert!(!files.contains(&"loose.md".to_string()));
+        assert!(!files.iter().any(|f| f.ends_with(".txt")));
+        assert_eq!(files.len(), 3);
+    }
+
+    /// A file somebody put here themselves is theirs, and is shown rather than
+    /// dropped — the same choice `labelHit` makes on the other side of the IPC.
+    #[test]
+    fn a_hand_written_file_is_listed_by_what_can_be_read_off_it() {
+        let root = tmp("listing-hand");
+        std::fs::create_dir_all(root.join("ws-1")).unwrap();
+        std::fs::write(root.join("ws-1/scratch.md"), "no heading at all\n").unwrap();
+
+        let notes = Corpus::new(root).notes();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].kind, "other");
+        assert_eq!(notes[0].scope, "ws-1");
+        // The stem, which is what `find_title` falls back to in the sidecar.
+        assert_eq!(notes[0].title, "scratch");
+    }
+
+    /// Newest first, by mtime, because it is the only key the three shapes share.
+    #[test]
+    fn the_newest_note_comes_first() {
+        let root = tmp("listing-order");
+        filled(&root);
+        let c = Corpus::new(root.clone());
+        // Written last, so it is the newest whatever the filenames say — and its
+        // filename deliberately sorts before the other session note's.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        c.write_session_note("ws-2", d(2026, 1, 2), "an older day", &note("Still newest."))
+            .unwrap();
+
+        let notes = c.notes();
+        assert_eq!(notes[0].file, "ws-2/Sessions/2026-01/02-an-older-day.md");
+        assert_eq!(notes[0].when, "2026-01-02", "the date shown is the path's, not the clock's");
+    }
+
+    /// The scale the page has to survive: a corpus filling for a year is
+    /// hundreds of files, and the listing reads the first lines of each rather
+    /// than any of them whole.
+    #[test]
+    fn a_corpus_of_several_hundred_notes_is_listed() {
+        let root = tmp("listing-scale");
+        let c = Corpus::new(root.clone());
+        for i in 0..300 {
+            let day = 1 + (i % 28);
+            c.write_session_note("ws-1", d(2026, 1, day), &format!("topic {i}"), &note("Done."))
+                .unwrap();
+        }
+        let notes = c.notes();
+        assert_eq!(notes.len(), 300);
+        assert!(notes.iter().all(|n| !n.title.is_empty()));
+    }
+
+    /// The bargain of the listing, asserted rather than assumed: a note whose
+    /// heading is past the cap is named by its stem instead of being read whole.
+    #[test]
+    fn a_title_is_looked_for_only_so_far_into_a_file() {
+        let root = tmp("listing-title-cap");
+        std::fs::create_dir_all(root.join("ws-1")).unwrap();
+        let mut body = "x".repeat(TITLE_SCAN_BYTES as usize + 1024);
+        body.push_str("\n# far too late\n");
+        std::fs::write(root.join("ws-1/late.md"), body).unwrap();
+
+        let notes = Corpus::new(root).notes();
+        assert_eq!(notes[0].title, "late");
     }
 
     // ----- slug -----

@@ -385,6 +385,7 @@ fn main() {
             memory::memory_status,
             memory::memory_search,
             memory::memory_read_note,
+            memory::memory_notes,
             memory::memory_download_model,
             memory::memory_rooms,
             memory::memory_save_room,

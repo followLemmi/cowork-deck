@@ -690,6 +690,31 @@ export interface MemoryNote {
 /** Read a note. The path is relative and checked against the corpus root on the
  *  Rust side — a command taking an absolute one would be a command any window
  *  could ask to read any file. */
+/** One note as the corpus holds it, read off its path and its first heading. */
+export interface MemoryNoteEntry {
+  /** Relative to the corpus root — what `memoryReadNote` takes back. */
+  file: string;
+  /** The workspace id, or `Diaries` for a lesson. */
+  scope: string;
+  room: string | null;
+  kind: "session" | "facts" | "diary" | "other";
+  /** `2026-08-31` for a session note, `2026-08` for a diary, empty otherwise —
+   *  from the path, which is where the day the work happened is recorded. */
+  when: string;
+  /** The first `# ` heading, or the file stem. Verbatim: a session note's own
+   *  heading begins with its date, and a row showing both must not say it
+   *  twice. */
+  title: string;
+  size: number;
+  /** Seconds since the epoch. The only sort key the three shapes share. */
+  mtime: number;
+}
+/** Everything ever written down, newest first.
+ *
+ *  A directory walk rather than a search, which is why the memory page is useful
+ *  on a machine that has downloaded nothing: `memorySearch` needs the sidecar and
+ *  the model, and this needs neither. */
+export const memoryNotes = () => invoke<MemoryNoteEntry[]>("memory_notes");
 export const memoryReadNote = (file: string) =>
   invoke<MemoryNote>("memory_read_note", { file });
 /** Start fetching the embedding model. Resolves whether a download was started —
