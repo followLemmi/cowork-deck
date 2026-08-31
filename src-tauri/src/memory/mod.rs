@@ -10,6 +10,7 @@
 //!
 //! - [`corpus`] — where a note goes and what it looks like when it gets there.
 //! - [`queue`] — the durable queue that makes capture a promise.
+//! - [`capture`] — one `claude -p` per closed session, billed to the person.
 //!
 //! The root is the app's config directory, which is also the store's directory
 //! and the sync repository root (ADR-0006). Neither module resolves it: both are
@@ -17,13 +18,7 @@
 //! there can write into a real corpus by accident. The process-wide wiring below
 //! is where the real directory is named, once.
 
-// Capture (#365) is what will call into `corpus`, and the surfaces (#366, #367)
-// are what will read the queue. Until then the build prints a dead-code warning
-// for every item in both modules, which is a wall of noise that hides the next
-// real warning. **Remove this line with #365**, at which point everything here
-// has a caller and the warnings would be true.
-#![allow(dead_code)]
-
+pub mod capture;
 pub mod corpus;
 pub mod queue;
 
@@ -85,6 +80,85 @@ pub fn recover_wrapup_queue() {
             }
         }
         Err(e) => eprintln!("warning: could not recover the wrapup queue ({e})"),
+    }
+}
+
+/// The diary rooms a capture may route a lesson to.
+///
+/// Empty until #367, which owns where the list comes from and how it is edited.
+/// Empty is a working state rather than a stub: the prompt then asks for no
+/// lessons at all, and `capture::run` drops any that arrive anyway — a room
+/// nobody configured is a directory nobody reads.
+fn rooms() -> Vec<capture::Room> {
+    Vec::new()
+}
+
+/// Whether a drain is already running.
+///
+/// The queue's own `next` stops one job being taken twice, but two *drains*
+/// would each take a different job and spawn `claude` side by side. This is what
+/// keeps "one at a time" true across the two things that start a drain: the
+/// startup pass, and a close (#366).
+fn draining() -> &'static std::sync::atomic::AtomicBool {
+    static DRAINING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &DRAINING
+}
+
+/// Run whatever is on the queue, on a thread of its own.
+///
+/// Detached and never awaited, following `sync_cmd::spawn`: #35 is explicit that
+/// memory stays off the session launch path, and a summary is worth exactly none
+/// of the delay it would cost a window to open. Returns whether a drain was
+/// started — `false` when one already is.
+pub fn spawn_drain() -> bool {
+    use std::sync::atomic::Ordering;
+    if draining()
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+    std::thread::spawn(|| {
+        drain_now();
+        draining().store(false, Ordering::SeqCst);
+    });
+    true
+}
+
+/// One drain pass, on the calling thread.
+fn drain_now() {
+    let Some(q) = wrapup_queue() else { return };
+    let Some(dir) = dir().get() else { return };
+    let corpus = corpus::Corpus::new(dir.clone());
+    let rooms = rooms();
+
+    let report = q.drain(|job| {
+        capture::run(job, &corpus, &rooms).map(|c| {
+            if let Some(cost) = c.cost {
+                // The one line in the app that says what memory cost. Worth
+                // saying out loud while there is no panel to show it (#35's
+                // phase 3), because the person is paying for it.
+                eprintln!(
+                    "memory: captured {} — {} in, {} out{}",
+                    job.session_name.as_deref().unwrap_or(&job.session_id),
+                    cost.input_tokens,
+                    cost.output_tokens,
+                    cost.usd.map(|u| format!(", ${u:.4}")).unwrap_or_default(),
+                );
+            }
+            (c.note, c.cost)
+        })
+    });
+    match report {
+        Ok(r) => {
+            if r.wrote > 0 || r.failed > 0 || r.requeued > 0 {
+                announce();
+            }
+            if r.failed > 0 {
+                eprintln!("memory: gave up on {} capture job(s)", r.failed);
+            }
+        }
+        Err(e) => eprintln!("warning: the wrapup queue could not be drained ({e})"),
     }
 }
 

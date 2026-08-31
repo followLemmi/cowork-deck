@@ -163,6 +163,11 @@ fn main() {
             // this point and so every `running` job on disk is one of those.
             memory::init(dir.clone(), handle.clone());
             memory::recover_wrapup_queue();
+            // And then drain it, on a thread of its own. Whatever was queued
+            // before the last quit is summarised while the window opens rather
+            // than before it — #35 is explicit that memory stays off the session
+            // launch path, and a summary is worth none of that delay.
+            memory::spawn_drain();
 
             // Start the status listener on the tokio runtime Tauri provides.
             let handle_for_cb = handle.clone();

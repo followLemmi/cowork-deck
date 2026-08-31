@@ -414,6 +414,12 @@ impl Corpus {
     /// is already a defect, and marking one of two leaves the fact still
     /// asserted by the other — a half-superseded fact is worse than either
     /// state, because grep finds both and neither is wrong.
+    // No caller yet, and worth saying why rather than deleting: ADR-0004 makes
+    // "marked, never rewritten" the rule for facts, and this is that rule made
+    // executable and tested. What is missing is something that *knows* a fact
+    // has been superseded, which means showing the model the existing Facts.md
+    // and asking — a feature with a cost, and not one #365 was asked for.
+    #[allow(dead_code)]
     pub fn supersede_fact(
         &self,
         workspace_id: &str,
@@ -490,6 +496,7 @@ impl Corpus {
 }
 
 /// The text after the `[active]` marker of a fact bullet, if it is one.
+#[allow(dead_code)] // Reached only from `supersede_fact` and the tests; see above.
 fn active_fact_body(line: &str) -> Option<&str> {
     let rest = line.trim_start().strip_prefix("- ")?;
     let at = rest.find("[active]")?;

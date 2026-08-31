@@ -101,6 +101,9 @@ fn now_ms() -> i64 {
 /// **Nothing here is resolved later**, and that is the point of the type. See
 /// [`Queue::enqueue`] for the specific thing that makes late resolution
 /// impossible rather than merely untidy.
+// Constructed by the close path, which is #366. Named here rather than left to
+// a module-wide allow, so the next unused thing in this file is a real warning.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnqueueRequest {
     /// The deck's own session id — the tile that was closed. Kept for the
@@ -176,6 +179,16 @@ pub struct JobDone {
     /// fault.
     #[serde(rename = "notePath", default, skip_serializing_if = "Option::is_none")]
     pub note_path: Option<String>,
+    /// What the model call cost, straight off the CLI's own envelope.
+    ///
+    /// Recorded because capture spends the person's money on every closed tile,
+    /// which is the one thing about this feature somebody could reasonably be
+    /// annoyed to discover late. The figure arrives with the reply; throwing it
+    /// away would mean re-running the model to get it back. Absent for a job
+    /// that never called anything — an empty session — and for a CLI that
+    /// reported no usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<super::capture::CaptureCost>,
 }
 
 /// A job is given up on, and stays visible saying why.
@@ -256,6 +269,8 @@ pub struct WrapupJob {
     pub last_error: Option<String>,
     #[serde(rename = "notePath")]
     pub note_path: Option<String>,
+    /// What the model call cost, for a job that made one.
+    pub cost: Option<super::capture::CaptureCost>,
 }
 
 /// Read one line, or say why it was skipped.
@@ -334,6 +349,7 @@ pub fn fold_events(content: &str) -> Vec<WrapupJob> {
                     attempts: 0,
                     last_error: None,
                     note_path: None,
+                    cost: None,
                 });
             }
             JobEvent::Started(e) => {
@@ -352,6 +368,7 @@ pub fn fold_events(content: &str) -> Vec<WrapupJob> {
                 if let Some(job) = at_mut(&mut order, &index, &e.job_id) {
                     job.state = JobState::Done;
                     job.note_path = e.note_path;
+                    job.cost = e.cost;
                 }
             }
             JobEvent::Failed(e) => {
@@ -399,6 +416,8 @@ impl Queue {
         Queue { path: dir.join(FILE) }
     }
 
+    /// Called by the tests, and by #366 when it reports where a queue lives.
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -418,6 +437,7 @@ impl Queue {
     /// perfectly every time it was drained promptly, and find nothing at all
     /// after a restart — a failure that only appears in the case the queue
     /// exists for.
+    #[allow(dead_code)] // The caller is the close path, #366.
     pub fn enqueue(&self, req: &EnqueueRequest) -> io::Result<String> {
         if req.session_id.trim().is_empty() {
             return Err(invalid("a wrapup job with no session id"));
@@ -505,12 +525,18 @@ impl Queue {
     }
 
     /// The job wrote its note, or decided there was nothing to write.
-    pub fn finish(&self, job_id: &str, note_path: Option<String>) -> io::Result<()> {
+    pub fn finish(
+        &self,
+        job_id: &str,
+        note_path: Option<String>,
+        cost: Option<super::capture::CaptureCost>,
+    ) -> io::Result<()> {
         self.append(&JobEvent::Done(JobDone {
             v: WRAPUP_QUEUE_VERSION,
             job_id: job_id.to_string(),
             at: now_ms(),
             note_path,
+            cost,
         }))
     }
 
@@ -548,7 +574,7 @@ impl Queue {
     /// happened.
     ///
     /// `run` returns the note it wrote — `None` for a session that deliberately
-    /// produced nothing — or the reason it could not.
+    /// produced nothing — with what the call cost, or the reason it could not.
     ///
     /// **One at a time, and each of these jobs at most once.** Serial because
     /// the handler spawns `claude` (#365) and a queue that drained in parallel
@@ -559,7 +585,7 @@ impl Queue {
     /// have changed in the intervening millisecond.
     pub fn drain<F>(&self, mut run: F) -> io::Result<DrainReport>
     where
-        F: FnMut(&WrapupJob) -> Result<Option<String>, String>,
+        F: FnMut(&WrapupJob) -> Result<CaptureOutcome, String>,
     {
         let planned: Vec<String> = self
             .jobs()
@@ -581,9 +607,9 @@ impl Queue {
             let Some(job) = self.next()? else { continue };
             debug_assert_eq!(job.job_id, job_id, "next() must take the oldest queued job");
             match run(&job) {
-                Ok(note) => {
+                Ok((note, cost)) => {
                     let wrote = note.is_some();
-                    self.finish(&job.job_id, note)?;
+                    self.finish(&job.job_id, note, cost)?;
                     if wrote {
                         report.wrote += 1;
                     } else {
@@ -683,6 +709,10 @@ impl Queue {
         }
     }
 }
+
+/// What a drained job produced: the note it wrote, if any, and what the model
+/// call cost, if it made one.
+pub type CaptureOutcome = (Option<String>, Option<super::capture::CaptureCost>);
 
 /// What one drain pass did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -817,7 +847,7 @@ mod tests {
         let report = q
             .drain(|job| {
                 seen.push(job.session_id.clone());
-                Ok(Some(format!("/notes/{}.md", job.session_id)))
+                Ok((Some(format!("/notes/{}.md", job.session_id)), None))
             })
             .unwrap();
 
@@ -833,7 +863,7 @@ mod tests {
     fn a_job_that_wrote_nothing_still_succeeded() {
         let q = Queue::new(tmp("drain-empty"));
         let id = q.enqueue(&req("s-1")).unwrap();
-        let report = q.drain(|_| Ok(None)).unwrap();
+        let report = q.drain(|_| Ok((None, None))).unwrap();
         assert_eq!(report, DrainReport { wrote: 0, empty: 1, requeued: 0, failed: 0 });
         let job = one(&q, &id);
         assert_eq!(job.state, JobState::Done);
@@ -891,7 +921,7 @@ mod tests {
         let report = q
             .drain(|_| {
                 calls += 1;
-                Ok(None)
+                Ok((None, None))
             })
             .unwrap();
         assert_eq!(calls, 0);
@@ -930,7 +960,7 @@ mod tests {
         let mut calls = 0;
         q.drain(|_| {
             calls += 1;
-            Ok(Some("/notes/s-1.md".into()))
+            Ok((Some("/notes/s-1.md".into()), None))
         })
         .unwrap();
         assert_eq!(calls, 1);
@@ -959,7 +989,7 @@ mod tests {
         let mut calls = 0;
         q.drain(|_| {
             calls += 1;
-            Ok(None)
+            Ok((None, None))
         })
         .unwrap();
         assert_eq!(calls, 0);
@@ -1058,7 +1088,7 @@ mod tests {
         let q = Queue::new(dir);
         let id = q.enqueue(&req("s-1")).unwrap();
         q.next().unwrap();
-        q.finish(&id, Some("/notes/a.md".into())).unwrap();
+        q.finish(&id, Some("/notes/a.md".into()), None).unwrap();
 
         // A stale writer trying to reopen it.
         q.append(&JobEvent::Started(JobStarted {
@@ -1111,7 +1141,7 @@ mod tests {
         for i in 0..KEEP_TERMINAL + 5 {
             let id = q.enqueue(&req(&format!("s-{i}"))).unwrap();
             q.next().unwrap();
-            q.finish(&id, None).unwrap();
+            q.finish(&id, None, None).unwrap();
             ids.push(id);
         }
 

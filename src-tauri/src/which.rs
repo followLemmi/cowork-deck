@@ -205,6 +205,204 @@ fn marked_path(stdout: &str) -> Option<String> {
     (!path.is_empty()).then(|| path.to_string())
 }
 
+/// Why a bounded run did not produce an answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunFault {
+    /// The program could not be started at all.
+    Spawn(String),
+    /// The deadline passed and the child was killed.
+    Timeout,
+    /// It ran and exited non-zero. `stderr` is the program's own, lossily
+    /// decoded.
+    Exit { code: Option<i32>, stderr: String },
+}
+
+impl std::fmt::Display for RunFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunFault::Spawn(e) => write!(f, "could not start it ({e})"),
+            RunFault::Timeout => write!(f, "it did not answer in time"),
+            RunFault::Exit { code, stderr } => {
+                let code = code.map(|c| c.to_string()).unwrap_or_else(|| "signal".into());
+                let tail = stderr.trim();
+                if tail.is_empty() {
+                    write!(f, "it exited {code} and said nothing")
+                } else {
+                    write!(f, "it exited {code}: {tail}")
+                }
+            }
+        }
+    }
+}
+
+/// Run a program with a body on stdin and a time limit, and give back its
+/// stdout.
+///
+/// [`output_with_deadline`] cannot do this job, for two reasons rather than one.
+/// It nulls stdin, so there is nowhere to put a body; and it reads both pipes
+/// only *after* the child exits, which is fine for a probe whose output is a
+/// version string and a deadlock for anything that writes more than a pipe
+/// buffer before it finishes. Here stdin, stdout and stderr each get a thread,
+/// so no combination of who-writes-how-much can wedge either side.
+///
+/// # Why the body goes on stdin and never in argv
+///
+/// A prompt built from a session transcript is the person's own work and
+/// possibly their secrets. `argv` is world-readable through `ps` for the
+/// lifetime of the process; a pipe is not. It is also unbounded where `argv` is
+/// capped by `ARG_MAX`, so the same choice removes a size limit that would
+/// otherwise have to be guessed at.
+pub fn output_with_stdin_and_deadline(
+    mut cmd: std::process::Command,
+    stdin_body: &str,
+    deadline: std::time::Duration,
+) -> Result<String, RunFault> {
+    use std::io::{Read, Write};
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| RunFault::Spawn(e.to_string()))?;
+
+    // Owned by the thread so the pipe is closed when it finishes: a child
+    // waiting for an EOF on stdin that never comes is a child that never exits,
+    // and the deadline would be the only thing ending the call.
+    let body = stdin_body.to_string();
+    let sink = child.stdin.take();
+    let writer = std::thread::spawn(move || {
+        if let Some(mut sink) = sink {
+            // Deliberately not fatal. The program may have exited already — a
+            // bad argument, no credentials — and a `BrokenPipe` here would
+            // report that as a write failure instead of letting its own message
+            // through, which is the rule `run_gh_with_stdin` follows.
+            let _ = sink.write_all(body.as_bytes());
+        }
+    });
+
+    let mut out_pipe = child.stdout.take();
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(s) = out_pipe.as_mut() {
+            let _ = s.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let mut err_pipe = child.stderr.take();
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(s) = err_pipe.as_mut() {
+            let _ = s.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RunFault::Timeout);
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(e) => return Err(RunFault::Spawn(e.to_string())),
+        }
+    };
+
+    // The pipes are closed by the child's exit, so these return promptly.
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+    let _ = writer.join();
+
+    if !status.success() {
+        return Err(RunFault::Exit {
+            code: status.code(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
+}
+
+#[cfg(test)]
+mod stdin_deadline_tests {
+    use super::*;
+    use std::process::Command;
+    use std::time::Duration;
+
+    /// The property the capture prompt depends on: a body of any size goes in
+    /// and comes back whole, with no size limit borrowed from `ARG_MAX`.
+    #[test]
+    #[cfg(unix)]
+    fn a_body_goes_in_on_stdin_and_comes_back_on_stdout() {
+        let body = "a".repeat(500_000);
+        let out =
+            output_with_stdin_and_deadline(Command::new("cat"), &body, Duration::from_secs(30))
+                .expect("cat");
+        assert_eq!(out.len(), body.len(), "half a megabyte round-trips");
+    }
+
+    /// The deadlock `output_with_deadline` would hit here: a child that writes
+    /// more than a pipe buffer before exiting, while nobody is reading.
+    #[test]
+    #[cfg(unix)]
+    fn a_child_that_writes_more_than_a_pipe_buffer_does_not_wedge() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "yes abcdefghij | head -n 40000"]);
+        let out = output_with_stdin_and_deadline(cmd, "", Duration::from_secs(30))
+            .expect("it must finish rather than stall until the deadline");
+        assert_eq!(out.lines().count(), 40_000);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_child_that_never_answers_is_reaped_at_the_deadline() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
+        let started = std::time::Instant::now();
+        let fault = output_with_stdin_and_deadline(cmd, "", Duration::from_millis(300))
+            .expect_err("a hung child must not be waited on forever");
+        assert_eq!(fault, RunFault::Timeout);
+        assert!(started.elapsed() < Duration::from_secs(5), "and reaped promptly");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_child_that_exits_non_zero_reports_its_own_message() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo 'it went wrong' >&2; exit 3"]);
+        let fault = output_with_stdin_and_deadline(cmd, "", Duration::from_secs(30))
+            .expect_err("a non-zero exit is a fault");
+        match fault {
+            RunFault::Exit { code, ref stderr } => {
+                assert_eq!(code, Some(3));
+                assert!(stderr.contains("it went wrong"), "{stderr}");
+            }
+            other => panic!("expected an exit fault, got {other:?}"),
+        }
+        assert!(fault.to_string().contains("it went wrong"), "{fault}");
+    }
+
+    /// A child that exits without draining stdin must not turn its own message
+    /// into a write failure — the rule `run_gh_with_stdin` follows.
+    #[test]
+    #[cfg(unix)]
+    fn a_child_that_ignores_stdin_is_not_reported_as_a_broken_pipe() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo done"]);
+        let out = output_with_stdin_and_deadline(cmd, &"x".repeat(500_000), Duration::from_secs(30))
+            .expect("the child's own success, not a BrokenPipe");
+        assert_eq!(out.trim(), "done");
+    }
+
+    #[test]
+    fn a_program_that_is_not_there_says_so() {
+        let cmd = Command::new("cowork-deck-no-such-program-anywhere");
+        let fault = output_with_stdin_and_deadline(cmd, "", Duration::from_secs(5))
+            .expect_err("a missing program is a fault");
+        assert!(matches!(fault, RunFault::Spawn(_)), "{fault:?}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
