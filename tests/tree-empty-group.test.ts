@@ -86,17 +86,17 @@ function treeDeck() {
   return { deck, hosts, waiting, rows, closeTile };
 }
 
-describe("a workspace whose last session closes", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    startMock.mockResolvedValue(undefined);
-    stateCb = null;
-    onStateMock.mockImplementation(async (cb: (s: string, st: SessionState) => void) => {
-      stateCb = cb;
-      return () => {};
-    });
+beforeEach(() => {
+  vi.clearAllMocks();
+  startMock.mockResolvedValue(undefined);
+  stateCb = null;
+  onStateMock.mockImplementation(async (cb: (s: string, st: SessionState) => void) => {
+    stateCb = cb;
+    return () => {};
   });
+});
 
+describe("a workspace whose last session closes", () => {
   it("empties its host in the tree, not just on the way to the last sibling", async () => {
     const { deck, rows, closeTile } = treeDeck();
     await deck.launch(A as never, null);
@@ -153,5 +153,38 @@ describe("a workspace whose last session closes", () => {
     // and the emptied workspace no longer has a group in it.
     const forA = waiting.mock.calls.filter((c) => c[0] === A.id);
     expect(forA[forA.length - 1]).toEqual([A.id, 0]);
+  });
+});
+
+/* Restoring keyboard focus across a render is not new — `renderList` has done it
+   since the rows became buttons — but its capture was scoped to `listEl`, and
+   with a tree every focusable row goes into a workspace's host instead. So the
+   restore never fired for the rows a person actually tabs through, and the poll
+   dropped their focus every five seconds. The create row is the one this branch
+   put at risk: it used to be built once and then skipped, and is now rebuilt on
+   every pass like everything else. */
+describe("keyboard focus on a row inside a workspace's host", () => {
+  it("survives a render, on a session row", async () => {
+    const { deck, hosts } = treeDeck();
+    await deck.launch(A as never, null);
+    const session = deck.liveSessions()[0];
+    hosts.get(A.id)!.querySelector<HTMLElement>(".sess-row")!.focus();
+
+    // Any state change re-renders the list; the poll produces one unprompted.
+    stateCb!(session, "waitingInput");
+
+    expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(`session:${session}`);
+  });
+
+  it("survives a render, on the create row of a workspace with nothing in it", async () => {
+    const { deck, hosts } = treeDeck();
+    // A carries the session whose state change drives the render; B is the empty
+    // workspace whose create row that render now rebuilds.
+    await deck.launch(A as never, null);
+    hosts.get(B.id)!.querySelector<HTMLElement>(".sess-add")!.focus();
+
+    stateCb!(deck.liveSessions()[0], "waitingInput");
+
+    expect((document.activeElement as HTMLElement).dataset.focusKey).toBe(`add:${B.id}`);
   });
 });

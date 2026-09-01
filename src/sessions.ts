@@ -1833,9 +1833,17 @@ export class Deck {
     // focus; now that rows are buttons, the focused key has to be remembered
     // and restored, or keyboard focus would jump to the top of the page twice
     // a minute.
-    const focusKey = this.listEl.contains(document.activeElement)
-      ? (document.activeElement as HTMLElement).dataset.focusKey ?? null
-      : null;
+    //
+    // Read off the document rather than out of `this.listEl`, and restored the
+    // same way at the end: with a tree, every focusable row this function paints
+    // goes into a workspace's host in the sidebar's panel — the heading is not
+    // painted at all — so `listEl` holds none of them in the arrangement the app
+    // ships. Scoped to `listEl`, the capture was blind there and the restore
+    // never fired: the rows a person tabs through were the ones losing focus.
+    // Nothing outside this function writes `data-focus-key`, and the two passes
+    // below paint any one workspace exactly once, so reading and querying wider
+    // cannot reach a row this function did not paint or find two of the same.
+    const focusKey = (document.activeElement as HTMLElement | null)?.dataset.focusKey ?? null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
     this.onCounts?.({
@@ -2074,7 +2082,7 @@ export class Deck {
        an orphan group appearing is what fills this again. */
     this.listEl.hidden = this.listEl.childElementCount === 0;
     if (focusKey) {
-      this.listEl.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
+      document.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
     }
   }
 }
