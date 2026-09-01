@@ -1,33 +1,42 @@
 /** Draw the status-area icons.
  *
- *  Two PNGs:
+ *  Three PNGs, and the first two are the same mark for two different platform
+ *  conventions:
  *
- *  - `tray-mac.png` — 36x36, **the app's own icon at status-area size, in
- *    colour**. macOS scales a status item's image to 18 points tall
- *    (`tray-icon`'s `set_icon_for_ns_status_item`), so 36 pixels is exactly 2x
- *    and nothing is resampled on a Retina display. Used on every platform: a
- *    Windows notification area and a Linux panel want colour too, and this is a
- *    better source for them than the 512px app icon scaled down by the system.
+ *  - `tray-template.png` — 36x36, monochrome, **for macOS**. A template image:
+ *    the system reads the alpha channel alone and tints it — white against a
+ *    dark menu bar, black against a light one, inverted while the panel is open.
+ *    That is why every other icon up there is white on grey, and it is the only
+ *    way to be one of them.
+ *  - `tray-colour.png` — 36x36, the app's icon in colour, **for Windows and
+ *    Linux**. Neither tints anything: a notification-area icon and a panel icon
+ *    are drawn as they are, and both platforms' own convention is colour. A
+ *    monochrome white glyph would simply vanish on a light Windows 11 taskbar.
  *  - `badge-win.png` — 16x16, the Windows taskbar overlay icon.
  *
- *  ## Why this is not a template image
+ *  macOS scales a status item's image to 18 points tall (`tray-icon`'s
+ *  `set_icon_for_ns_status_item`), so 36 pixels is exactly 2x and nothing is
+ *  resampled on a Retina display.
  *
- *  It was one — black on transparent, tinted by macOS for a light menu bar, a
- *  dark one, and the inverted state while the panel is open. That is Apple's own
- *  guidance for a status item, and it was the wrong call here for two reasons,
- *  both reported from a real menu bar rather than argued from the guidance:
+ *  ## The template mark is a SIMPLIFICATION of the logo, and had to be
  *
- *  1. A template image is one hue by construction, so against a light menu bar
- *    it is a black smudge — which is what it looked like.
- *  2. A monochrome mark cannot be the app's icon. The icon is a dark rounded
- *    frame, four black tiles, a white chevron and a **blue** cursor block; take
- *    the colour away and you have four squares, which is a different mark. The
- *    person scanning a menu bar for this app is looking for the thing on their
- *    dock, and it has to be that thing.
+ *  The logo is a rounded frame, four black tiles, a white chevron and a blue
+ *  cursor block. Two of those four cannot survive at 18 points:
  *
- *  So: colour, and the same composition as `icons/icon.png`. What that gives up
- *  is the automatic light/dark adaptation, and the ground carries a lit hairline
- *  to make up for it — see `EDGE_ALPHA` below. Recorded in ADR-0011 decision 5.
+ *  - **The tiles go.** A template has one ink, so tiles darker than their frame
+ *    can only be drawn as the frame minus the tiles — which leaves a cross of
+ *    gutters, and at 18 points that cross and the chevron cannot both be read.
+ *    Rendered and looked at: the cross wins and the chevron disappears, so the
+ *    icon reads as a window-tiling utility. The chevron is the half that says
+ *    which app this is, so the tiles are what gives way.
+ *  - **The colour goes**, by definition. The cursor block keeps its shape and
+ *    loses its blue.
+ *
+ *  What is left — the frame's outline, the chevron, the cursor block — is the
+ *  logo's silhouette, and it is legible at 16, 18 and 22 points. Five other
+ *  candidates were drawn and compared against a light bar and a dark bar before
+ *  this one was picked; ADR-0011 decision 5 records the sequence, because it took
+ *  three attempts and two of them shipped.
  *
  *  ## Where the numbers come from
  *
@@ -37,7 +46,7 @@
  *  tiles, one live" — with a #1d1f21 ground, tiles LIGHTER than the ground, and
  *  the top-left one tinted with the accent. The shipped icon has a #27292C
  *  ground, black tiles, and none of them lit. The icon a person recognises is
- *  the shipped one, so that is what this reproduces.
+ *  the shipped one, so that is what these reproduce.
  *
  *  ## Why by hand
  *
@@ -196,7 +205,7 @@ function paint(buf, size, sdf, colour, { alpha = 1, clip = null } = {}) {
   return buf;
 }
 
-/* --- The status-area icon ------------------------------------------------- */
+/* --- The two status-area icons -------------------------------------------- */
 
 /** The shipped icon's own colours, sampled from `icons/icon.png` at 512. */
 const GROUND = "#27292c";
@@ -204,55 +213,70 @@ const TILE = "#000000";
 const CHEVRON = "#ebebeb";
 const CURSOR = "#72bef2";
 
-/** A lit hairline along the inside of the ground's edge, and the one thing here
- *  that is not in the app icon at full size.
+/** A lit hairline along the inside of the colour icon's frame, and the one thing
+ *  in it that is not in the app icon at full size.
  *
  *  The icon has one — `rgba(255,255,255,.09)` at three units of 1024 — and at
  *  this size that is a tenth of a pixel, which is nothing. It is thickened and
- *  brightened instead, because a #27292C square against a dark menu bar has no
- *  edge at all: without this the mark is a chevron and a blue dash floating in
- *  the bar with no frame around them. Giving up the template image gave up
- *  automatic adaptation, and this is what pays for it.
+ *  brightened instead, because a #27292C square against a dark taskbar has no
+ *  edge at all: without it the mark is a chevron and a blue dash floating in the
+ *  bar with no frame around them. The template icon needs none of this — its
+ *  frame is an outline, and the system tints it to contrast with whatever it is
+ *  drawn on.
  */
 const EDGE_INK = "#ffffff";
 const EDGE_ALPHA = 0.22;
 const EDGE_WIDTH = 1.0;
 
+/** How heavy the template's frame outline is, in pixels of 36 — so half a point
+ *  at the size it is drawn.
+ *
+ *  Picked by looking: at 1.1 the frame thins out and nearly leaves at 16 points,
+ *  and past about 2 it starts to crowd the chevron inside it.
+ */
+const FRAME_STROKE = 1.6;
+
 /** From the shipped icon's 512 grid onto 36. Every number below is measured, not
- *  guessed: the ground is 36..475 at radius 100, a tile is 154 across at radius
- *  18 with its neighbour 182 further on, the chevron is stroked 35 wide, and the
- *  cursor block is 75 by 42. */
+ *  guessed: the frame is 36..475 at radius 100, a tile is 154 across at radius
+ *  18 with its neighbour 182 further on, the chevron's centreline is
+ *  199,196 → 278,256 → 199,316 at radius 17.5, and the cursor block is 75 by 42
+ *  at radius 10. */
 const S = 36 / 512;
 const at = (v) => v * S;
 
 const SIZE = 36;
-const ground = roundedRect(at(36), at(36), at(440), at(440), at(100));
+const frame = roundedRect(at(36), at(36), at(440), at(440), at(100));
 const tile = (col, row) =>
   roundedRect(at(88 + col * 182), at(88 + row * 182), at(154), at(154), at(18));
-
-const icon = canvas(SIZE);
-paint(icon, SIZE, ground, GROUND);
-// Clipped to the ground, so a tile's corner cannot bleed past the frame's.
-for (const col of [0, 1]) {
-  for (const row of [0, 1]) paint(icon, SIZE, tile(col, row), TILE, { clip: ground });
-}
-// The ring straddles the edge; clipping it to the ground keeps its inner half,
-// or the icon grows a halo half a pixel wider than the frame it traces.
-paint(icon, SIZE, ring(ground, EDGE_WIDTH), EDGE_INK, { alpha: EDGE_ALPHA, clip: ground });
-// The chevron's centreline, which is what `capsules` takes — its round caps
-// carry the ends out to the mark's real bounds. The icon's own polyline is
-// 398,392 → 556,512 → 398,632 on a 1024 grid at stroke-width 70; halved onto
-// this one that is 199,196 → 278,256 → 199,316 at RADIUS 17.5. Half of half:
-// the stroke is a width and a capsule takes a radius, and using 35 here made a
-// `>` into a blob that swallowed the tiles behind it.
-paint(
-  icon,
-  SIZE,
-  capsules([[at(199), at(196)], [at(278), at(256)], [at(199), at(316)]], at(17.5)),
-  CHEVRON,
+const chevron = capsules(
+  [[at(199), at(196)], [at(278), at(256)], [at(199), at(316)]],
+  at(17.5),
 );
-paint(icon, SIZE, roundedRect(at(295), at(235), at(75), at(42), at(10)), CURSOR);
-writeFileSync(join(ICONS, "tray-mac.png"), png(SIZE, SIZE, icon));
+const cursor = roundedRect(at(295), at(235), at(75), at(42), at(10));
+
+/* The colour icon: the app's own, for the platforms that tint nothing. */
+const colour = canvas(SIZE);
+paint(colour, SIZE, frame, GROUND);
+// Clipped to the frame, so a tile's corner cannot bleed past the frame's.
+for (const col of [0, 1]) {
+  for (const row of [0, 1]) paint(colour, SIZE, tile(col, row), TILE, { clip: frame });
+}
+// The ring straddles the edge; clipping it to the frame keeps its inner half,
+// or the icon grows a halo half a pixel wider than the frame it traces.
+paint(colour, SIZE, ring(frame, EDGE_WIDTH), EDGE_INK, { alpha: EDGE_ALPHA, clip: frame });
+paint(colour, SIZE, chevron, CHEVRON);
+paint(colour, SIZE, cursor, CURSOR);
+writeFileSync(join(ICONS, "tray-colour.png"), png(SIZE, SIZE, colour));
+
+/* The template: the same mark with the tiles and the colour taken out. Black,
+   and the black is never displayed — macOS reads the alpha channel and supplies
+   its own ink. Painting it in black rather than white is the convention and it
+   makes the file legible in a viewer. */
+const template = canvas(SIZE);
+paint(template, SIZE, ring(frame, FRAME_STROKE), "#000000");
+paint(template, SIZE, chevron, "#000000");
+paint(template, SIZE, cursor, "#000000");
+writeFileSync(join(ICONS, "tray-template.png"), png(SIZE, SIZE, template));
 
 /* --- The Windows taskbar overlay ------------------------------------------ */
 
@@ -266,4 +290,4 @@ paint(badge, 16, disc(8, 8, 7.5), GROUND);
 paint(badge, 16, disc(8, 8, 6), "#efc845");
 writeFileSync(join(ICONS, "badge-win.png"), png(16, 16, badge));
 
-console.log("wrote src-tauri/icons/tray-mac.png and src-tauri/icons/badge-win.png");
+console.log("wrote tray-template.png, tray-colour.png and badge-win.png into src-tauri/icons");

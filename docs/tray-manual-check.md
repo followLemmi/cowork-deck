@@ -15,8 +15,8 @@ different with the same call, and Linux gets a different surface entirely.
 ## Everywhere
 
 - [ ] The icon appears in the status area within a second or two of launch, before any session is started.
-- [ ] It is the app's icon — the dark frame, the four tiles, the white chevron, the blue block. Put the dock beside the menu bar: it is recognisably the same mark.
-- [ ] It is not a black smudge. If it is, `icon_as_template` has come back or the art has gone monochrome again; see ADR-0011 decision 5.
+- [ ] It is recognisably this app: the rounded frame with the chevron and the cursor block inside it. Put the dock beside the status area — the same mark, simplified.
+- [ ] It is not a black smudge and not a blank space. Either means the art and the `icon_as_template` flag have come apart again — they are returned as a pair by `icon()` precisely so they cannot; see ADR-0011 decision 5.
 - [ ] Quit the app and launch it again. The icon comes back.
 - [ ] Every limit row carries a tier word — Reported, Observed, Estimated or Unknown — beside its number. A row with a bare percentage is a bug, not a nicety (ADR-0009).
 - [ ] The reading and the meter in the panel match the same provider's row in the deck's own Limits block, word for word and fill for fill. They are the same component; if they differ, something has been reimplemented.
@@ -33,13 +33,16 @@ different with the same call, and Linux gets a different surface entirely.
 
 ## macOS
 
-The icon is **colour, not a template**, which means it does not adapt on its own
-and both appearances have to be looked at rather than assumed. `node
-scripts/tray-icon.mjs` regenerates it if you change the art.
+The icon here is a **template image** (`icons/tray-template.png`): monochrome art
+that the system tints. Everything below is checking that the system is in fact
+tinting it, which is what makes it one of the row rather than a picture stuck in
+it. `node scripts/tray-icon.mjs` regenerates the art.
 
-- [ ] Light menu bar (System Settings → Appearance → Light): the frame reads as a dark rounded square, and the chevron and the blue block read inside it.
-- [ ] Dark menu bar (Appearance → Dark): the frame still has an **edge**. That is the lit hairline doing its job; without it the mark is a chevron and a blue dash floating in the bar.
+- [ ] Dark menu bar (System Settings → Appearance → Dark): the mark is **white**, the same white as Wi-Fi, the battery and the clock beside it.
+- [ ] Light menu bar (Appearance → Light): the same mark is **black**. If it is white on both, or black on both, the flag is not reaching the image.
+- [ ] Open the panel. While it is open the icon **inverts** with the highlighted status item. If it stays dark on a blue highlight, it is not being treated as a template.
 - [ ] A light wallpaper behind a translucent menu bar, and a dark one. Both.
+- [ ] The frame is a visible outline at 18 points, not a smudge, and the chevron inside it is readable.
 - [ ] The mark is not blurry. It is drawn at 18 points from a 36-pixel image, so at 2× it is 1:1; a soft edge means something resampled it.
 - [ ] Left click and right click both open the panel. That is the platform's convention for a status item.
 
@@ -68,7 +71,9 @@ scripts/tray-icon.mjs` regenerates it if you change the art.
 
 ## Windows
 
-- [ ] The icon is in the notification area, and it is the app's icon rather than the 512px one squashed by the system. If Windows has hidden it in the overflow, dragging it out is the person's business, not a bug.
+- [ ] The icon is in the notification area, in **colour** (`icons/tray-colour.png`) — Windows tints nothing, and colour is the convention there. If it is a monochrome glyph, the macOS art is being used.
+- [ ] It reads against both a light and a dark taskbar. The frame's lit hairline is what carries the dark case.
+- [ ] If Windows has hidden it in the overflow, dragging it out is the person's business, not a bug.
 - [ ] **Right** click opens the panel.
 - [ ] **Left** click raises the deck rather than opening the panel.
 - [ ] The panel opens **above** the icon, not below it — the notification area is at the foot of the screen, and there is no room under it.
@@ -85,7 +90,7 @@ desktops, so a panel opened on a click would never open. Expect part of this
 section to be "not on this desktop", and record which desktop you were on. That
 is the honest result, not a failure.
 
-- [ ] The icon is in the top panel. On GNOME this needs an AppIndicator extension; without one, no icon appears, and that is the desktop's decision rather than the app's.
+- [ ] The icon is in the top panel, in **colour** — like Windows, nothing here tints. On GNOME this needs an AppIndicator extension; without one, no icon appears, and that is the desktop's decision rather than the app's.
 - [ ] The **menu** opens, with the same sections and the same headings the panel has on the other platforms — Limits, then Sessions, then Open and Quit.
 - [ ] Every limit row in it carries its tier. The menu has no meter, by necessity; it must not have lost the word beside the number.
 - [ ] A waiting session's row raises the window that holds it.

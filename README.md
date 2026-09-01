@@ -96,9 +96,11 @@ Three surfaces, and they answer different questions on purpose.
 - **The dock**, or the taskbar, carries the number of sessions waiting. It clears the moment you look
   at the deck — a badge you have learned to ignore is worse than none.
 
-On Linux the icon carries a **native menu** with the same sections instead of the panel, because an
-indicator's click is not deliverable to the application on most desktops and a panel opened on a click
-would never open. Both are built from one list, so adding a section is a list entry rather than a
+The icon follows the platform: on macOS it is a template image, so the system tints it white on a dark
+menu bar and black on a light one, the way every other icon up there behaves; on Windows and Linux,
+where nothing tints, it is the app's icon in colour. On Linux it also carries a **native menu** with the
+same sections instead of the panel, because an indicator's click is not deliverable to the application
+on most desktops and a panel opened on a click would never open. Both are built from one list, so adding a section is a list entry rather than a
 layout change in either. The decision, and why the panel is a window rather than a menu everywhere, is
 [ADR-0011](docs/adr/0011-the-tray-panel-is-a-window-and-a-menu-is-the-linux-fallback.md).
 

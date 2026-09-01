@@ -411,25 +411,35 @@ fn on_icon<R: Runtime>(tray: &TrayIcon<R>, event: TrayIconEvent) {
     }
 }
 
-/// The image the status area shows: the app's own icon, in colour, drawn for this
-/// size by `scripts/tray-icon.mjs`.
+/// The image the status area shows, **and whether the platform should treat it
+/// as a template**. Both drawn for this size by `scripts/tray-icon.mjs`.
 ///
-/// **Not a template image, and not `icon_as_template`.** It was one, and it was
-/// wrong twice over. A template is monochrome by construction — the system reads
-/// the alpha channel and tints it — so it cannot be the app's icon, which is a
-/// dark frame, four black tiles, a white chevron and a *blue* cursor block. And
-/// dropping the flag while keeping the black-on-transparent art, which is what
-/// the panel rework did, leaves the platform drawing that art literally: a black
-/// smudge in the menu bar. Colour art with no flag has neither failure. ADR-0011
-/// decision 5 carries the trade this makes — no automatic light/dark adaptation,
-/// paid for by the lit hairline the icon carries along its own edge.
+/// One function returning both, and that is deliberate: they are one decision,
+/// and the two ways of getting it wrong are what shipped twice.
 ///
-/// One image for all three platforms. A Windows notification area and a Linux
-/// panel tint nothing either, and a 36px drawing is a better source for them than
-/// the 512px app icon downscaled by the system.
-fn icon() -> Option<Image<'static>> {
-    match Image::from_bytes(include_bytes!("../icons/tray-mac.png")) {
-        Ok(img) => Some(img.to_owned()),
+/// - Monochrome art with the flag OFF is a black smudge. That is exactly what
+///   happened — the panel rework dropped `icon_as_template(true)` along with the
+///   macOS branch that carried it, and left the black-on-transparent art behind
+///   to be drawn literally.
+/// - The flag ON with colour art throws the colour away, because a template
+///   image is the alpha channel and nothing else.
+///
+/// Returned as a pair so `install` cannot set one without the other.
+///
+/// **macOS gets the template**, because that is the only way to be one of the
+/// icons already up there: the system tints it white against a dark menu bar,
+/// black against a light one, and inverts it while the panel is open. **Windows
+/// and Linux get the colour icon**, because neither tints anything — a
+/// notification-area icon and a panel icon are drawn as they are, colour is both
+/// platforms' own convention, and a white glyph would vanish on a light Windows
+/// 11 taskbar. ADR-0011 decision 5.
+fn icon() -> Option<(Image<'static>, bool)> {
+    #[cfg(target_os = "macos")]
+    let (bytes, template) = (&include_bytes!("../icons/tray-template.png")[..], true);
+    #[cfg(not(target_os = "macos"))]
+    let (bytes, template) = (&include_bytes!("../icons/tray-colour.png")[..], false);
+    match Image::from_bytes(bytes) {
+        Ok(img) => Some((img.to_owned(), template)),
         Err(e) => {
             eprintln!("error: the status-area icon could not be decoded ({e})");
             None
@@ -450,8 +460,11 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         // Never a count, and never a title — the pill owns the glance. ADR-0011.
         .tooltip("cowork-deck")
         .on_tray_icon_event(on_icon);
+    // One expression, so the art and the flag travel together — see `icon`.
+    // `icon_as_template` is documented macOS-only and is a no-op elsewhere, which
+    // is why it needs no `cfg` and cannot be separated from the image by one.
     let builder = match icon() {
-        Some(img) => builder.icon(img),
+        Some((img, template)) => builder.icon(img).icon_as_template(template),
         None => builder,
     };
     // A menu attached to the icon is what swallows the click, so the two

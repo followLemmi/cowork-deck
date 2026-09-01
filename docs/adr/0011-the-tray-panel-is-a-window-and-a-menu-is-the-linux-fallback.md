@@ -134,49 +134,84 @@ This does overlap the pill's count, and knowingly. The badge and the pill are
 visible in different places — the dock is what a person looks at when deciding
 whether to switch to the deck; the pill is what they see while they are not.
 
-### 5. The status-area icon is the app's icon, in colour, and not a template
+### 5. A template image on macOS, the colour icon on Windows and Linux
 
-`icons/tray-mac.png`, 36×36, drawn by `scripts/tray-icon.mjs` from the geometry
-and the colours of the shipped `icons/icon.png`: the dark rounded frame, the four
-black tiles, the white chevron, the blue cursor block. One image on all three
-platforms.
+Two files, both 36×36, both drawn by `scripts/tray-icon.mjs` from the geometry
+and colours of the shipped `icons/icon.png`:
 
-**It was a template image and that was wrong twice over.** Apple's guidance for a
-status item is a template — monochrome art, tinted by the system for a light menu
-bar, a dark one, and the inverted state while the panel is open — and this record
-originally followed it, with the tiles alone as the mark. Two reports from a real
-menu bar, in order:
+- **`icons/tray-template.png`** — monochrome, installed with
+  `icon_as_template(true)`. macOS reads its alpha channel alone and supplies the
+  ink: white against a dark menu bar, black against a light one, inverted while
+  the panel is open. That is why every other icon in a menu bar is white on
+  grey, and it is the only way to be one of them.
+- **`icons/tray-colour.png`** — the app's icon, in colour, for Windows and
+  Linux. Neither tints anything; a notification-area icon and a panel icon are
+  drawn as they are, colour is both platforms' own convention, and a white glyph
+  would vanish on a light Windows 11 taskbar.
 
-1. *"You can't see the tiles"* — the first draft was the icon's chevron and
-   cursor block, on the theory that four squares would be noise at 18 points. It
-   was not: 36 pixels is room for four tiles with a gutter. But the tiles alone
-   were not the answer either, because —
-2. *"The icon doesn't match the app's logo, and it's black."* Both true. A
-   monochrome mark **cannot** be this icon: take the colour away and what is left
-   is four squares, a different mark from the one on the dock. And the black was
-   a plain regression — decision 1's rework dropped `icon_as_template(true)`
-   along with the macOS branch that carried it, leaving the platform to draw
-   black-on-transparent art literally.
+`icon()` returns the image **and the flag together**, as a pair, and `install`
+sets both in one expression. That is a fix for a class of bug rather than a
+tidy-up — see the sequence below.
 
-The person scanning a menu bar for this app is looking for the thing on their
-dock. So it is that thing, in colour, and the flag is gone rather than restored.
+#### The template mark is a simplification, and had to be
 
-What that gives up is the automatic light/dark adaptation, and it is paid for
-explicitly: the frame carries a lit hairline along its inside edge — one pixel at
-22%, where the app icon has three units of 1024 at 9% — because a #27292C square
-against a dark menu bar otherwise has no edge at all, leaving a chevron and a
-blue dash floating in the bar. Checked against a light bar, a dark bar and a mid
-grey before shipping.
+The logo is a rounded frame, four black tiles, a white chevron and a blue cursor
+block. At 18 points, two of those four cannot survive a single ink:
+
+- **The tiles go.** One ink cannot draw tiles *darker* than their frame — only
+  the frame minus the tiles, which leaves a cross of gutters. Drawn and looked
+  at: at 18 points that cross and the chevron cannot both be read, the cross
+  wins, the chevron disappears, and the icon becomes a window-tiling utility.
+  The chevron is the half that says which app this is, so the tiles give way.
+- **The colour goes**, by definition. The cursor block keeps its shape and loses
+  its blue.
+
+What is left — the frame's outline, the chevron, the cursor block — is the
+logo's silhouette, legible at 16, 18 and 22 points. Six candidates were drawn
+and compared against a light bar and a dark bar before this one.
+
+#### How this took three attempts, two of which shipped
+
+Recorded because the failures were not random and the last one is a design rule:
+
+1. **The chevron and cursor block, as a template.** *"You can't see the tiles."*
+   Fair: the first draft dropped the frame as well, on the theory that four
+   squares would be noise at 18 points.
+2. **The four tiles, as a template.** *"It's black, and it doesn't match the
+   logo."* Two separate faults in one report. The black was a plain regression —
+   decision 1's rework dropped `icon_as_template(true)` along with the macOS
+   branch that carried it, leaving black-on-transparent art to be drawn
+   literally. And four squares is not this app's mark.
+3. **The app's icon, in colour, everywhere.** *"Now it's colour and it stands out
+   — the others are all white on grey."* Correct, and the question that came with
+   it — does that depend on the OS theme? — is the answer: on macOS it does, and
+   a template image is the mechanism. On Windows and Linux it does not, and there
+   colour is right.
+
+The rule that falls out: **the art and the `icon_as_template` flag are one
+decision.** Monochrome art with the flag off is a black smudge; the flag on with
+colour art throws the colour away. Holding them in separate places is what let
+attempt 2 happen, so `icon()` returns them as a pair and they cannot be set
+independently.
+
+#### The rest of it
 
 36×36 because `tray-icon` scales a status item's image to 18 points tall, so 36
 pixels is exactly 2× and nothing is resampled. Drawn rather than downscaled:
-there is no SVG rasteriser in this project's toolchain and none on a stock macOS,
-and a 14× reduction of the 512px icon turns a 2.5-pixel chevron into a grey
-smear. Every shape has an exact distance function, so the edges are right at this
-size.
+there is no SVG rasteriser in this project's toolchain and none on a stock
+macOS, and a 14× reduction of the 512px icon turns a 2.5-pixel chevron into a
+grey smear. Every shape has an exact distance function, so the edges are right
+at this size.
 
-`icons/tray-source.svg` carries the same numbers so the shapes can be looked at;
-the script is the thing that runs, and the PNG is committed.
+The colour icon carries one thing the app icon does not: a lit hairline along the
+inside of its frame, a pixel at 22% where the app icon has three units of 1024 at
+9%. Without an edge a #27292C square has none against a dark taskbar, and the
+mark becomes a chevron and a blue dash floating in the bar. The template needs
+none of this — its frame is an outline and the system tints it to contrast.
+
+`icons/tray-template.svg` and `icons/tray-colour.svg` carry the same numbers so
+the shapes can be looked at; the script is the thing that runs, and both PNGs are
+committed.
 
 **A note for whoever touches `icons/icon-source.svg`:** its geometry is exact to
 the pixel and its colours are stale. It is an earlier candidate — its own comment
@@ -252,8 +287,16 @@ webview created hidden at startup that never navigates again.
 - **A tray icon that shows the waiting count as its title.** Free on macOS and
   Linux, unsupported on Windows, and a duplicate of the pill on the two where it
   works. Decision 3.
-- **A template (monochrome) icon, per Apple's guidance for status items.** What
-  shipped first, and rejected on two reports from a real menu bar. Decision 5.
+- **The colour icon on macOS too.** What attempt 3 shipped, and it is the app's
+  icon exactly — which is its whole problem: a menu bar is a row of tinted
+  glyphs, and a colour square in it is the one thing that does not belong.
+  Decision 5.
+- **A monochrome mark on Windows and Linux too, for consistency.** Consistency
+  with what? Neither platform tints, so the mark would be one fixed ink against
+  a taskbar that can be light or dark. Decision 5.
+- **The tiles in the template, as the frame minus a cross of gutters.** The
+  faithful reading of the logo in one ink, and illegible at 18 points: the cross
+  wins and the chevron goes. Decision 5.
 - **An icon that changes to signal a spent budget.** Attractive, and forbidden by
   ADR-0009's own rule: a mark is a reading with no tier beside it. Decision 3.
 - **Downscaling `icons/icon.png` to 36 with `sips`.** One command, and soft: a

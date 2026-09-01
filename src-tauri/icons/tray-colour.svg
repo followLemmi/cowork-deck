@@ -1,10 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 512 512">
-  <!-- cowork-deck status-area icon — the app's icon, at status-area size.
-       In COLOUR, and not a template image. A template is monochrome by
-       construction, so it cannot be this icon: the mark is a dark frame, four
-       black tiles, a white chevron and a BLUE cursor block, and without the
-       colour it is four squares, which is a different mark. See docs/adr/0011
-       decision 5, and `scripts/tray-icon.mjs` for what that costs.
+  <!-- cowork-deck status-area icon, Windows and Linux — the app's icon, at
+       status-area size, in colour.
+
+       Colour because neither platform tints anything: a notification-area icon
+       and a panel icon are drawn as they are, colour is both platforms' own
+       convention, and a monochrome white glyph would vanish on a light Windows
+       11 taskbar. macOS gets `tray-template.svg` instead, which its system
+       tints. See docs/adr/0011 decision 5.
 
        The viewBox is 512, the grid the shipped `icon.png` is measured on. Every
        number here was read off that file rather than copied from
@@ -13,11 +15,11 @@
        and the top-left one tinted. The shipped icon has none of that.
 
        Two things differ from the app icon, both because this is drawn at 36
-       pixels rather than 512:
+       pixels rather than 512 and neither platform will help:
 
        - The lit hairline along the frame is 1 unit of 36 at 22%, where the app
          icon has 3 units of 1024 at 9%. At this size the original is a tenth of
-         a pixel, and without an edge the frame vanishes into a dark menu bar.
+         a pixel, and without an edge the frame vanishes into a dark taskbar.
        - The frame's own faint outer stroke is dropped: it would land on the same
          pixels as the hairline.
 

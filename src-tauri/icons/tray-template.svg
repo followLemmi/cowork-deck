@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 512 512">
+  <!-- cowork-deck status-area icon, macOS — a TEMPLATE image.
+       Monochrome by requirement, not by taste: macOS reads a template image's
+       alpha channel alone and supplies its own ink, tinting it white against a
+       dark menu bar, black against a light one, and inverting it while the panel
+       is open. That is why every other icon up there is white on grey, and it is
+       the only way to be one of them. The black here is never displayed.
+
+       It is a SIMPLIFICATION of the app icon, and had to be. The logo is a
+       rounded frame, four black tiles, a white chevron and a blue cursor block;
+       at 18 points two of those four cannot survive:
+
+       - The tiles go. One ink cannot draw tiles darker than their frame — only
+         the frame minus the tiles, which leaves a cross of gutters, and at this
+         size that cross and the chevron cannot both be read. Drawn and looked
+         at: the cross wins, the chevron disappears, and the icon reads as a
+         window-tiling utility. The chevron is the half that says which app this
+         is, so the tiles are what gives way.
+       - The colour goes, by definition. The cursor block keeps its shape and
+         loses its blue.
+
+       Five other candidates were drawn and compared against a light bar and a
+       dark bar before this one; docs/adr/0011 decision 5 records the sequence.
+
+       The frame is an OUTLINE where the app icon's is a fill, because a filled
+       frame in one ink is a solid block with a hole in it. 23 units of 512 is
+       1.6 pixels of 36 — half a point at the size it is drawn. Below about 1.1
+       the frame thins out and leaves at 16 points; past about 2 it crowds the
+       chevron inside it.
+
+       Rasterised by scripts/tray-icon.mjs, which carries the same numbers and is
+       the thing that runs. Editing this file does not change the PNG. -->
+  <g fill="none" stroke="#000">
+    <rect x="36" y="36" width="440" height="440" rx="100" stroke-width="23"/>
+    <polyline points="199,196 278,256 199,316" stroke-width="35"
+      stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <rect x="295" y="235" width="75" height="42" rx="10" fill="#000"/>
+</svg>
