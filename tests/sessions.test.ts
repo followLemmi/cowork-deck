@@ -416,6 +416,183 @@ describe("Deck zoom edge cases", () => {
   });
 });
 
+// A zoom belongs to the workspace it was made in, not to the deck. Leaving a
+// workspace used to drop it: you came back to a grid, with nothing to say that
+// one of those sessions had been filling the stage a moment ago. See #224.
+describe("Zoom is remembered per workspace", () => {
+  const WS2 = { id: "w2", name: "Q", path: "/q", color: "#000" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.body.innerHTML = "";
+    startMock.mockResolvedValue(undefined);
+  });
+
+  /** Four tiles — "a" and "b" in WS, "c" and "d" in WS2 — with WS active.
+   *
+   *  Two per workspace because a zoom needs something to minimize: with one
+   *  visible tile `zoomParticipants` answers "grid", and the test would be
+   *  asserting that refusal rather than the memory. */
+  async function twoWorkspaces() {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS, WS2]);
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("a" as any)
+      .mockReturnValueOnce("b" as any)
+      .mockReturnValueOnce("c" as any)
+      .mockReturnValueOnce("d" as any);
+
+    deck.setActiveWorkspace(WS.id);
+    await deck.launch(WS as any, null);
+    await deck.launch(WS as any, null);
+    await deck.launch(WS2 as any, null);
+    await deck.launch(WS2 as any, null);
+    // The launches above ran with WS active, so WS2's tiles have not been
+    // through the filter yet; this switch is what applies it.
+    deck.setActiveWorkspace(WS.id);
+    return { deck, deckEl };
+  }
+
+  const tileEl = (deck: Deck, session: string) =>
+    (deck as any).tiles.get(session).el as HTMLElement;
+
+  it("restores the zoomed session when the workspace comes back", async () => {
+    const { deck, deckEl } = await twoWorkspaces();
+
+    // "b", not "a": "a" is the first visible tile, and the switch back focuses
+    // one — a focus that lands on the wrong tile juggles the zoom onto it, which
+    // would leave the deck zoomed and this assertion passing on the wrong tile.
+    deck.zoomTo("b");
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(tileEl(deck, "b"));
+
+    deck.setActiveWorkspace(WS2.id);
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+
+    deck.setActiveWorkspace(WS.id);
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(tileEl(deck, "b"));
+    expect(tileEl(deck, "a").classList.contains("minimized")).toBe(true);
+  });
+
+  it("keeps one zoom per workspace, not one for the deck", async () => {
+    const { deck, deckEl } = await twoWorkspaces();
+
+    deck.zoomTo("b");
+    deck.setActiveWorkspace(WS2.id);
+    deck.zoomTo("d");
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(tileEl(deck, "d"));
+
+    deck.setActiveWorkspace(WS.id);
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(tileEl(deck, "b"));
+    // One zoom is on screen at a time, and only the tiles of the workspace on
+    // screen wear its roles: the previous workspace's zoomed tile is undressed
+    // and its minimized sibling is out of the strip. Two workspaces' zooms used
+    // to be impossible — the switch dropped the first — so nothing undressed
+    // them but the grid branch this switch no longer takes.
+    expect(deckEl.querySelectorAll(".tile.zoomed").length).toBe(1);
+    const strip = deckEl.querySelector(".deck-strip") as HTMLElement;
+    expect([...strip.children]).toEqual([tileEl(deck, "a")]);
+
+    deck.setActiveWorkspace(WS2.id);
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(tileEl(deck, "d"));
+    expect(deckEl.querySelectorAll(".tile.zoomed").length).toBe(1);
+    expect([...(deckEl.querySelector(".deck-strip") as HTMLElement).children])
+      .toEqual([tileEl(deck, "c")]);
+  });
+
+  it("leaves zoom behind for good when a launch takes the stage", async () => {
+    const { deck, deckEl } = await twoWorkspaces();
+
+    deck.zoomTo("b");
+    vi.spyOn(crypto, "randomUUID").mockReturnValueOnce("e" as any);
+    // A new session grabs the keyboard and the stage, which drops the zoom. The
+    // round trip is the point: the entry has to be gone, not merely un-rendered.
+    await deck.launch(WS as any, null);
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+
+    deck.setActiveWorkspace(WS2.id);
+    deck.setActiveWorkspace(WS.id);
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+  });
+
+  it("forgets a zoomed session that is closed in a workspace off screen", async () => {
+    const { deck } = await twoWorkspaces();
+
+    deck.zoomTo("b");
+    deck.setActiveWorkspace(WS2.id);
+    // Closed while its workspace is hidden, so `applyLayout` — which only ever
+    // reconciles the workspace on screen — never sees the entry. Asserted on the
+    // map because a stale entry has no rendering of its own: it re-zooms nothing
+    // for as long as the deck lives, which is exactly what makes it invisible.
+    (deck as any).remove("b");
+    await settled();
+    expect([...(deck as any).zoomedByWorkspace.values()]).not.toContain("b");
+
+    deck.setActiveWorkspace(WS.id);
+    expect((deck as any).deckEl.classList.contains("is-zoomed")).toBe(false);
+  });
+
+  // The workspace panel borrows a zoom to take the deck's width for a diff, and
+  // gives it back when the diff closes. The panel stays wide across a workspace
+  // switch and the diff does not, so the giving back can land in a workspace
+  // that never lent anything.
+  it("gives a borrowed zoom back to the workspace that lent it", async () => {
+    const { deck, deckEl } = await twoWorkspaces();
+
+    deck.zoomTo("b");                 // what the panel took, in WS
+    deck.setActiveWorkspace(WS2.id);
+    deck.zoomTo("d");                 // and a zoom the person made themselves
+    expect(deck.exitZoomIn(WS.id)).toBe(true);
+
+    // WS2's zoom is untouched: it is not the one that was borrowed.
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(tileEl(deck, "d"));
+    // And WS is a grid again rather than holding a zoom nothing will give back.
+    deck.setActiveWorkspace(WS.id);
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+    expect(deck.exitZoomIn(WS.id)).toBe(false); // nothing left to give back
+  });
+
+  // `applyLayout` tells the zoom listener, and the listener closes the workspace
+  // panel — which can hand a borrowed zoom back, re-entering `applyLayout`. Told
+  // from the middle of the zoom branch, that dropped the strip under the outer
+  // call, which then appended `null` and threw.
+  it("survives a listener that leaves the zoom on being told about it", async () => {
+    const { deck, deckEl } = await twoWorkspaces();
+
+    deck.zoomTo("b");
+    deck.setActiveWorkspace(WS2.id);
+    let armed = true;
+    deck.setZoomListener((zoomed) => { if (zoomed && armed) { armed = false; deck.exitZoom(); } });
+
+    deck.setActiveWorkspace(WS.id);   // restores b's zoom, and the listener drops it
+
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+    expect(deckEl.querySelector(".deck-strip")).toBe(null);
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(null);
+  });
+
+  // Entering and leaving zoom is what the listener is for. It collapses a panel
+  // and closes a page, and `applyLayout` runs on every launch, close and switch —
+  // so being told again on each of those closed a panel the person had reopened.
+  it("tells the zoom listener on the edge, not on every layout", async () => {
+    const { deck } = await twoWorkspaces();
+
+    deck.zoomTo("b");
+    deck.setActiveWorkspace(WS2.id);
+    deck.zoomTo("d");
+
+    const told: boolean[] = [];
+    deck.setZoomListener((zoomed) => { told.push(zoomed); });
+    deck.setActiveWorkspace(WS.id);   // zoomed before, zoomed after
+    expect(told).toEqual([]);
+
+    deck.exitZoom();
+    expect(told).toEqual([false]);
+  });
+});
+
 // The list is rebuilt via innerHTML on every poll — five seconds apart. Rows
 // only became focusable once they were buttons, which made that rebuild a
 // focus-stealing bug waiting to happen.

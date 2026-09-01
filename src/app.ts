@@ -842,11 +842,18 @@ export function startApp(role: WindowRole): Promise<void> {
   let boardVisible = false;
   let boardTimer: ReturnType<typeof setTimeout> | null = null;
   let currentPage: PanelPage = "sessions";
-  /** Whether the panel took the deck's width, and whether taking it is what
-   *  zoomed the deck. Both halves matter: leaving the page has to give back
+  /** The workspace the panel took the deck's width in, or `undefined` when it
+   *  has taken nothing. Both halves matter: leaving the page has to give back
    *  exactly what was taken, and a tile a person zoomed themselves must not be
-   *  un-zoomed by a panel narrowing under them. */
-  let wideZoomed = false;
+   *  un-zoomed by a panel narrowing under them.
+   *
+   *  The workspace and not merely a flag, because a zoom belongs to the
+   *  workspace it was made in (#224) and this borrowing outlives a switch: the
+   *  panel stays wide across one, while the diff that asked for the width does
+   *  not. `undefined` rather than `null` for "nothing taken" — `null` is a
+   *  workspace key like any other, the one a window with no workspace selected
+   *  zooms under. */
+  let wideZoomedIn: string | null | undefined = undefined;
 
   function stopBoardPolling() {
     if (boardTimer !== null) { clearTimeout(boardTimer); boardTimer = null; }
@@ -897,10 +904,13 @@ export function startApp(role: WindowRole): Promise<void> {
   function setWspWide(on: boolean) {
     wspEl.classList.toggle("is-wide", on);
     if (on) {
-      if (!deck.isZoomed()) wideZoomed = deck.zoomActive();
-    } else if (wideZoomed) {
-      deck.exitZoom();
-      wideZoomed = false;
+      if (!deck.isZoomed() && deck.zoomActive()) wideZoomedIn = workspaces.active?.id ?? null;
+    } else if (wideZoomedIn !== undefined) {
+      // Given back where it was taken. The workspace on screen may not be the
+      // one that lent it, and un-zooming that one instead would take a zoom the
+      // person made themselves and leave the borrowed one on for good.
+      deck.exitZoomIn(wideZoomedIn);
+      wideZoomedIn = undefined;
     }
     deck.refit();
   }
