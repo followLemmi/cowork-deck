@@ -24,6 +24,7 @@ import {
   stateClass,
   formatReset,
   limitFoot,
+  tierNote,
 } from "./usage";
 
 /** The least this block needs from the deck: somewhere to run the command that
@@ -124,7 +125,7 @@ export class LimitsBlock {
       [
         snap.label,
         win ? `${win.label}: ${readingOf(win)}` : "no windows",
-        win ? sourceLabel(win.source) : "",
+        win ? tierNote(win) : "",
         win?.resetsAt ? `resets ${formatReset(win.resetsAt, now)}` : "",
         "— open the detail",
       ]
@@ -140,11 +141,14 @@ export class LimitsBlock {
     line.className = "lim-line";
     line.append(span("lim-name", snap.label));
     if (win) {
-      // The tier, beside the number and in the same size as it. Not a tooltip
-      // and not a footnote: two numbers that look alike and mean different
-      // things are worse than one number and a blank (ADR-0009).
-      line.append(span(`lim-src lim-src--${win.source}`, sourceLabel(win.source)));
       line.append(span("lim-reading", readingOf(win)));
+      // What qualifies the number, AFTER it, and only when there is something to
+      // qualify — see `tierNote`. It used to be the tier's own name, always, and
+      // before the reading; ADR-0009's amendment is why it is neither now. Two
+      // numbers that look alike and mean different things are still worse than
+      // one number and a blank, and this is what keeps them apart.
+      const note = tierNote(win);
+      if (note) line.append(span(`lim-src lim-src--${win.source}`, note));
     }
     open.append(line);
 

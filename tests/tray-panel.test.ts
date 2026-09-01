@@ -73,22 +73,24 @@ describe("the shape of the panel", () => {
 });
 
 describe("the limits section", () => {
-  /** ADR-0009 in a menu. A bare percentage here would break the same rule the
-   *  deck's rows were built to keep. */
-  it("carries the tier beside every reading", () => {
+  /** ADR-0009 as amended: the account's own figure stands alone, because an
+   *  unqualified number is what a person already assumes it to be. */
+  it("gives the account's own figure no qualifier", () => {
     const f = facts({ usage: [snap({
       windows: [win({ usedFraction: 0.23, state: "ok", source: "reported" })],
       source: "reported",
     })] });
-    expect(texts(f, "Limits")[0]).toBe("Claude · Reported · 23% used");
+    expect(texts(f, "Limits")[0]).toBe("Claude · 23% used");
   });
 
-  it("says which tier a weaker number is on, in the same place", () => {
+  /** And the direction that misleads is still stopped, in the same words the
+   *  block uses — one `tierNote`, two surfaces. */
+  it("says when a number is this app's own counting", () => {
     const f = facts({ usage: [snap({
       windows: [win({ amount: { used: 412_000, limit: null, unit: "tokens" }, source: "observed" })],
       source: "observed",
     })] });
-    expect(texts(f, "Limits")[0]).toBe("Claude · Observed · 412k tokens");
+    expect(texts(f, "Limits")[0]).toBe("Claude · 412k tokens · this app only");
   });
 
   /** The same sentence the block prints, because it is the same function —
@@ -102,7 +104,8 @@ describe("the limits section", () => {
     })] });
     const clock = new Date(resetsAt)
       .toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-    expect(texts(f, "Limits")[0]).toBe(`Claude · Observed · no reading · nothing moves until ${clock}`);
+    expect(texts(f, "Limits")[0])
+      .toBe(`Claude · no reading · this app only · nothing moves until ${clock}`);
   });
 
   it("says plainly when a spent window's reset is not known", () => {
@@ -329,14 +332,24 @@ describe("the panel, drawn", () => {
     expect(fill.style.width).toBe("23%");
   });
 
-  /** ADR-0009 survives the change of surface: the tier is beside the number
-   *  here exactly as it is in the deck's own block. */
-  it("prints the tier beside the reading", () => {
+  /** ADR-0009 survives the change of surface: the qualifier is beside the
+   *  number here exactly as it is in the deck's own block, because it is drawn
+   *  by the deck's own block. */
+  it("prints the qualifier beside the reading", () => {
     const f = facts({ usage: [snap({
       windows: [win({ usedFraction: 0.5, state: "ok", source: "observed" })],
     })] });
     const row = draw(f).root.querySelector(".lim-row")!;
-    expect(row.querySelector(".lim-src")!.textContent).toBe("Observed");
+    expect(row.querySelector(".lim-src")!.textContent).toBe("this app only");
+    expect(row.querySelector(".lim-reading")!.textContent).toBe("50% used");
+  });
+
+  it("leaves the account's own figure unqualified", () => {
+    const f = facts({ usage: [snap({
+      windows: [win({ usedFraction: 0.5, state: "ok", source: "reported" })],
+    })] });
+    const row = draw(f).root.querySelector(".lim-row")!;
+    expect(row.querySelector(".lim-src")).toBeNull();
     expect(row.querySelector(".lim-reading")!.textContent).toBe("50% used");
   });
 

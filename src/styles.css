@@ -4282,17 +4282,24 @@ h6.md-head { font-size: var(--fs-sm); }
 .lim-open:hover { background: var(--bg-hover); }
 .lim-line { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
 .lim-name { flex: none; font-size: var(--fs-sm); font-weight: var(--fw-medium); }
-/* The tier, at the same size as the number it qualifies. A tooltip would be a
+/* What qualifies a number, at the same size as the number. A tooltip would be a
    footnote, and a footnote is what ADR-0009 exists to refuse: the source of a
-   number is part of the number. */
+   number is part of the number.
+   In a ROW this is now a caveat rather than a tier name, and the strongest tier
+   prints nothing at all — see `tierNote` and ADR-0009's amendment. The dialog
+   still prints every tier by name, which is what the caps are for: there it is
+   a label, and here it is the tail of a sentence. */
 .lim-src {
   flex: none; font-size: var(--fs-xs); text-transform: uppercase;
   letter-spacing: var(--ls-caps); color: var(--fg-dim);
 }
-/* Only the weakest tier is coloured, and it is coloured with the *quiet* step
-   rather than a hue: "unknown" is not a warning, it is an absence, and giving it
-   amber would put a fourth meaning on a colour that already has one. */
-.lim-src--reported { color: var(--fg-mid); }
+/* Nothing per-tier any more. The rule here used to colour `--reported` a step
+   brighter, under a comment claiming it coloured the WEAKEST tier — the comment
+   and the selector had disagreed since the palette port. The strongest tier no
+   longer reaches the DOM in a row, and in the dialog every tier is equal
+   furniture, so there is nothing left for the modifier to say. The class is
+   still written onto the element: it is a hook worth having, and `[class]` is
+   how the dialog's tests find a tier. */
 .lim-reading {
   flex: 1; min-width: 0; font-size: var(--fs-xs); color: var(--fg-mid);
   text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

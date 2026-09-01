@@ -18,7 +18,8 @@ different with the same call, and Linux gets a different surface entirely.
 - [ ] It is recognisably this app: the rounded frame with the chevron and the cursor block inside it. Put the dock beside the status area — the same mark, simplified.
 - [ ] It is not a black smudge and not a blank space. Either means the art and the `icon_as_template` flag have come apart again — they are returned as a pair by `icon()` precisely so they cannot; see ADR-0011 decision 5.
 - [ ] Quit the app and launch it again. The icon comes back.
-- [ ] Every limit row carries a tier word — Reported, Observed, Estimated or Unknown — beside its number. A row with a bare percentage is a bug, not a nicety (ADR-0009).
+- [ ] A limit read from the account's own accounting shows a **bare** number — no word beside it. That is ADR-0009 as amended: an unqualified number is the account's.
+- [ ] A limit the app counted for itself says **"this app only"** after the number. A bare percentage *there* is the bug ADR-0009 exists to prevent.
 - [ ] The reading and the meter in the panel match the same provider's row in the deck's own Limits block, word for word and fill for fill. They are the same component; if they differ, something has been reimplemented.
 - [ ] Start a session and let it ask for permission. It appears at the top of **Sessions** with an amber rail and "waiting for input", and clicking it raises the deck and focuses that tile.
 - [ ] Pull a workspace out into its own window and let one of its sessions wait. Clicking the row raises **that** window, not the main one — the deck must not flash forward first.

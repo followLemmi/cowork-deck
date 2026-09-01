@@ -153,23 +153,29 @@ describe("the limits block", () => {
     expect(el.querySelector(".lim-out-text")!.textContent).toContain("no reset time known");
   });
 
-  /** The tier is on the row itself, at the same size as the number. Not a
-   *  tooltip, not a title attribute — see ADR-0009. */
-  it("prints the tier of the number it is showing", () => {
+  /** The account's own figure needs no word beside it: an unqualified number is
+   *  what a person already assumes it to be. ADR-0009's amendment — the tier
+   *  name in a row was read by the record's own author, who asked what it
+   *  meant. */
+  it("prints the account's own figure with nothing beside it", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok", source: "reported" })] })], NOW);
-    const tier = el.querySelector(".lim-src")!;
-    expect(tier.textContent).toBe("Reported");
-    expect(tier.classList.contains("lim-src--reported")).toBe(true);
+    expect(el.querySelector(".lim-reading")!.textContent).toBe("20% used");
+    expect(el.querySelector(".lim-src")).toBe(null);
   });
 
-  it("prints the observed tier where the number is this app's own counting", () => {
+  /** And the direction that DOES mislead is still stopped: this app's own
+   *  narrower count says so, in words rather than in a tier's name. */
+  it("says a number is this app's own counting, after the number", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({
       amount: { used: 1_250_000, limit: null, unit: "tokens" }, source: "observed",
     })] })], NOW);
-    expect(el.querySelector(".lim-src")!.textContent).toBe("Observed");
+    expect(el.querySelector(".lim-src")!.textContent).toBe("this app only");
     expect(el.querySelector(".lim-reading")!.textContent).toBe("1.2M tokens");
+    // After, not before: it qualifies the reading, so it follows it.
+    const line = [...el.querySelector(".lim-line")!.children].map((c) => c.className);
+    expect(line.indexOf("lim-reading")).toBeLessThan(line.findIndex((c) => c.startsWith("lim-src")));
   });
 
   /** A row's accessible name has to be the row's whole meaning: a reader should
@@ -183,8 +189,20 @@ describe("the limits block", () => {
     expect(name).toContain("Claude");
     expect(name).toContain("Current session");
     expect(name).toContain("42% used");
-    expect(name).toContain("Reported");
     expect(name).toContain("resets");
+  });
+
+  /** EVERYTHING it shows, and nothing it does not: the name says what the row
+   *  says. A qualifier that reached a screen reader but not the screen would be
+   *  two different rows for two different people. */
+  it("carries the qualifier in the name exactly when the row carries it", () => {
+    const { el, block } = mount();
+    const nameOf = (source: "reported" | "observed") => {
+      block.render([snap({ windows: [win({ usedFraction: 0.42, state: "ok", source })] })], NOW);
+      return el.querySelector(".lim-open")!.getAttribute("aria-label")!;
+    };
+    expect(nameOf("observed")).toContain("this app only");
+    expect(nameOf("reported")).not.toContain("this app only");
   });
 
   /** Data from outside this app reaches the DOM as text and never as markup. */

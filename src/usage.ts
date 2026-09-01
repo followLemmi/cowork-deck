@@ -86,7 +86,53 @@ export function stateClass(state: LimitState): string {
   }
 }
 
-/** What to call a tier on screen. One word, always shown, never a tooltip. */
+/** What a ROW says about where its number came from, or `null` when it needs to
+ *  say nothing.
+ *
+ *  ADR-0009 decision 1 required the tier beside every reading, in every row, in
+ *  the tier's own name — "Reported", "Observed". The person who wrote that
+ *  record then read `Claude · REPORTED · 29% used` in the status-area panel and
+ *  asked what the word meant, which is as clear a verdict on a label as there
+ *  is. The record is amended rather than abandoned; this function is the
+ *  amendment, and the reasoning is there.
+ *
+ *  Two changes, and the second is what makes the first safe:
+ *
+ *  1. **The strongest tier says nothing.** An unqualified number is the
+ *     account's own figure, which is what a person assumes anyway — and the
+ *     failure ADR-0009 exists to prevent is the other direction: this app's own
+ *     narrower count being read as the account's. Labelling only the weaker
+ *     tiers prevents exactly that, and stops spending a quarter of a 340px row
+ *     on a word that changes nothing.
+ *  2. **The weaker tiers say what they mean, not what they are called.**
+ *     "Observed" is the tier's name; "this app only" is the fact a person can
+ *     act on. The names live on in the dialog, next to the sentence that
+ *     defines them (`sourceExplanation`) — that is where a vocabulary is taught,
+ *     and a row is not.
+ *
+ *  `unknown` also says nothing, because `readingOf` has already said "no
+ *  reading" and two ways of saying nothing read as two facts — the same rule
+ *  `limitFoot` keeps about an absent reset.
+ */
+export function tierNote(w: LimitWindow): string | null {
+  switch (w.source) {
+    case "reported":
+      return null;
+    case "observed":
+      return "this app only";
+    case "estimated":
+      return "estimate";
+    default:
+      // Not reachable from any provider today: a window with no quantity is
+      // where `unknown` comes from. Kept honest rather than assumed — a source
+      // that says it does not know, over a number, is worth printing.
+      return w.usedFraction === null && w.amount === null ? null : "source not known";
+  }
+}
+
+/** What to call a tier by name, for the dialog. One word, and there it is always
+ *  shown — the dialog is where the vocabulary is defined, beside
+ *  `sourceExplanation`. A ROW uses `tierNote` instead; see the note there. */
 export function sourceLabel(source: UsageSource): string {
   switch (source) {
     case "reported":

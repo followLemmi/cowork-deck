@@ -24,7 +24,7 @@
 import type { AiUsage, SessionState, TrayPanel, TrayRow } from "./ipc";
 import type { RemoteSession } from "./cross-window";
 import { LimitsBlock } from "./usage-block";
-import { limitFoot, primaryWindow, readingOf, sourceLabel } from "./usage";
+import { limitFoot, primaryWindow, readingOf, tierNote } from "./usage";
 
 /** Everything a section is allowed to look at. */
 export interface TrayFacts {
@@ -170,7 +170,11 @@ const PANEL: PanelSection[] = [
             action: ACTIONS.usage(snap.provider),
           };
         }
-        const parts = [snap.label, sourceLabel(win.source), readingOf(win)];
+        const parts = [snap.label, readingOf(win)];
+        // After the reading, and only when there is one to qualify — the same
+        // rule and the same words as the block's own row (`tierNote`).
+        const tier = tierNote(win);
+        if (tier) parts.push(tier);
         const foot = limitFoot(win, snap.error, now);
         if (foot) parts.push(foot);
         return { text: parts.join(" · "), action: ACTIONS.usage(snap.provider) };

@@ -88,7 +88,8 @@ Three surfaces, and they answer different questions on purpose.
   to the session that is waiting.
 - **The status area** — the menu bar on macOS, the notification area on Windows — is always there, and
   it answers on demand rather than at a glance. Click the icon and a small panel drops under it, drawn
-  with the deck's own components: every connected AI's **meter** with its tier beside the reading, and
+  with the deck's own components: every connected AI's **meter**, with the caveat beside the reading
+  where there is one, and
   the deck's sessions ordered by what wants a person, each one a row that takes you to it. A limit row
   opens that provider's detail; a session row raises the window it lives in, even if that is a
   workspace window on another monitor. It never carries a count, because that is the pill's sentence
@@ -161,18 +162,23 @@ for a session the deck did not start. A CLI with no reader says so rather than s
 A dozen sessions draw on **one** budget, and when it runs out they stall together. A block at the foot
 of the panel says what each connected AI has left — one row apiece, a thin meter, and when it lifts.
 
-**The source of a number is part of the number**, and it is on the row beside it rather than in a
-tooltip:
+**The source of a number is part of the number**, and where that changes what you would do it is on
+the row beside it rather than in a tooltip. There are three ways this app can know such a number:
 
-- **Reported** — the account's own accounting, the figure `/usage` draws. Obtained by asking `claude`
-  itself, the way this app asks `gh` about GitHub: it costs nothing from your budget and no password
-  passes through the app. Switch it off in Settings if you would rather nothing started a short-lived
-  process every few minutes to ask.
-- **Observed** — what the app can see for itself, from the sessions it runs. Real, and *narrower than
-  your account*: other terminals, other machines and anything outside this app are not in it. The
-  dialog says so in words, and no meter is drawn for it — the app knows what it spent, not what was
-  allowed, and it will not divide by a ceiling it invented.
-- **Unknown** — it says so, and offers the one command that would answer it, in a tile.
+- **The account's own accounting**, the figure `/usage` draws. Obtained by asking `claude` itself, the
+  way this app asks `gh` about GitHub: it costs nothing from your budget and no password passes through
+  the app. Switch it off in Settings if you would rather nothing started a short-lived process every
+  few minutes to ask. A row shows this one **plain** — an unqualified number is the account's.
+- **What the app saw for itself**, from the sessions it runs. Real, and *narrower than your account*:
+  other terminals, other machines and anything outside this app are not in it. A row says **"this app
+  only"** after the number, because that is the one direction that can mislead you into thinking you
+  have more runway than you do. No meter is drawn for it either — the app knows what it spent, not what
+  was allowed, and it will not divide by a ceiling it invented.
+- **Nothing at all** — the row says "no reading" and offers the one command that would answer it, in a
+  tile.
+
+The dialog behind a row names all three by their tier — Reported, Observed, Estimated — with a sentence
+saying what each means. That is where the vocabulary is taught; a row carries only the caveat.
 
 The reading that matters most needs no percentage at all. When a session is refused, the app reads the
 limit banner on its way to the screen and the pill stops saying *3 waiting for input* — which is true

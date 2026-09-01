@@ -1,5 +1,6 @@
 ---
-status: Accepted
+status: Accepted (amended 2026-09-01 — see "Amendment: the row and the dialog say
+  different things")
 date: 2026-08-27
 deciders:
   - evgenykharetski
@@ -51,6 +52,11 @@ On screen means on screen: beside the number, in the same size, in the sidebar r
 and again in the dialog. Not a tooltip, not a title attribute, not a commit
 message. Two numbers that look alike and mean different things are worse than one
 number and a blank.
+
+> **Amended.** The clause about the ROW — every tier, in the tier's own name —
+> did not survive contact and is narrowed at the foot of this record. The rule
+> above still holds for the dialog, and the *purpose* of the rule still holds
+> everywhere. Read the amendment before changing anything here.
 
 Three rules fall out of this and are enforced in code rather than left to
 judgement:
@@ -185,6 +191,80 @@ Recorded so it is not re-litigated every six months:
 - Nothing here reports money, and a future decision to do so has to argue with
   decision 5 rather than around it.
 
+## Amendment: the row and the dialog say different things
+
+*2026-09-01, prompted by #393 and decided by this record's own author.*
+
+### What happened
+
+The status-area panel (ADR-0011) draws the deck's limits block, so a row of it
+appeared in a 340-pixel window in a menu bar:
+
+```
+Claude  REPORTED  29% used
+```
+
+The person who wrote this record read that and asked **what the word meant.**
+
+That is not a small usability report. If the author of the rule cannot read the
+label the rule mandates, the label is not carrying the meaning — it is carrying
+the *name of a category defined in this document*, which is a different thing and
+is only legible to somebody who has read this document.
+
+### What was actually being protected
+
+The failure this record exists to prevent runs in **one direction**: this app's
+own narrower count — what it saw in its own sessions — being read as the
+account's figure, and someone believing they have three times the runway they do.
+
+The other direction costs nothing. Reading the account's own figure as though it
+were this app's own count makes a person *more* conservative, not less.
+
+That asymmetry was never used. Decision 1 labelled all four tiers equally, and
+three quarters of the labelling was spent on the case that cannot mislead.
+
+### The narrowing
+
+**A row prints a qualifier when there is something to qualify, and nothing when
+there is not.** `tierNote` in `src/usage.ts`:
+
+| Tier | A row says | Why |
+|---|---|---|
+| `reported` | *nothing* | An unqualified number is the account's own figure — which is what a person assumes anyway. |
+| `observed` | "this app only" | The direction that misleads, stopped in words a person can act on. |
+| `estimated` | "estimate" | Same. |
+| `unknown` | *nothing* | `readingOf` has already printed "no reading". Two ways of saying nothing read as two facts — the rule `limitFoot` keeps about an absent reset. |
+
+Two consequences, both deliberate:
+
+- **The tier's NAME leaves the row and stays in the dialog.** "Observed" is what
+  the tier is called; "this app only" is what it means. A dialog is where a
+  vocabulary is taught, next to `sourceExplanation`, and a row is not. Every
+  window in the dialog still carries its tier by name, including `Reported`.
+- **The qualifier moves after the reading.** It qualifies the number, so it
+  follows it. Before, it sat between the provider's name and the number and
+  interrupted the one thing the row is for.
+
+### Why this is not decision 1 being abandoned
+
+The rejected alternative below — *"one number, best available, unlabelled"* —
+remains rejected, and this is not it. Under that alternative a reported 23% and
+an observed 23% are indistinguishable. Under this amendment they are not: one
+carries a caveat and the other does not, and the reader's default reading of an
+unqualified number is the correct one.
+
+What is given up is the ability to tell "the account's own figure" from "this app
+forgot to label the row" by looking at the row alone. That is a real loss and a
+small one: the dialog answers it in one click, and every path that produces a
+reading also produces its tier (`AiUsage::from_windows`), so a missing label is
+not a state the model can reach.
+
+### The rule that replaces it
+
+**Print the tier where it changes what a person would do.** That is what decision
+1 meant; "always, everywhere, by name" was a proxy for it, and the proxy is what
+broke.
+
 ## Alternatives considered
 
 - **Wait for a documented API and ship nothing until then.** A screen that waits
@@ -193,7 +273,14 @@ Recorded so it is not re-litigated every six months:
   landed first (#303) and the reported one was a spike (#306).
 - **One number, best available, unlabelled.** Simpler to read and the reason this
   record exists. It makes a reported 23% and an observed 23% — which can mean
-  wildly different amounts of remaining runway — indistinguishable.
+  wildly different amounts of remaining runway — indistinguishable. Still
+  rejected after the amendment above, which is a different proposal: there, one
+  of the two carries a caveat.
+- **Keeping the tier's name in the row and only making it quieter** — smaller
+  type, a lighter grey. Considered and rejected during the amendment: the
+  complaint was not that the word was loud, it was that it did not mean anything
+  to the person reading it. A quieter word nobody understands is a word nobody
+  understands.
 - **Borrow the OAuth credential and call `/api/oauth/usage`.** Richer, and
   discussed under decision 2. Rejected because a subprocess gets the same numbers
   without narrowing ADR-0001's invariant or depending on an undocumented endpoint.

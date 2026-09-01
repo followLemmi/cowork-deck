@@ -12,6 +12,7 @@ import {
   sourceExplanation,
   sourceLabel,
   stateClass,
+  tierNote,
 } from "../src/usage";
 
 const win = (over: Partial<LimitWindow> = {}): LimitWindow => ({
@@ -130,6 +131,30 @@ describe("saying where a number came from", () => {
     const labels = tiers.map(sourceLabel);
     expect(labels).toEqual(["Reported", "Observed", "Estimated", "Unknown"]);
     expect(new Set(labels).size).toBe(4);
+  });
+
+  /** What a ROW says, which is no longer the tier's name — see ADR-0009's
+   *  amendment. The dialog still uses `sourceLabel` above; this is the row. */
+  it("says nothing beside the account's own figure", () => {
+    expect(tierNote(win({ usedFraction: 0.23, source: "reported" }))).toBeNull();
+  });
+
+  /** The failure ADR-0009 exists to prevent runs one way: this app's own
+   *  narrower count being read as the account's. Labelling that direction is
+   *  what keeps the protection while the strong tier goes quiet. */
+  it("says what a weaker number is, in words a person can act on", () => {
+    expect(tierNote(win({ usedFraction: 0.5, source: "observed" }))).toBe("this app only");
+    expect(tierNote(win({ usedFraction: 0.5, source: "estimated" }))).toBe("estimate");
+  });
+
+  /** `readingOf` has already said "no reading", and two ways of saying nothing
+   *  read as two facts — the rule `limitFoot` keeps about an absent reset. */
+  it("adds nothing to a window that has no reading at all", () => {
+    expect(tierNote(win({ source: "unknown" }))).toBeNull();
+  });
+
+  it("does say so if a quantity ever turns up with no known source", () => {
+    expect(tierNote(win({ usedFraction: 0.4, source: "unknown" }))).toBe("source not known");
   });
 
   it("explains unknown as an absence rather than as a zero", () => {
