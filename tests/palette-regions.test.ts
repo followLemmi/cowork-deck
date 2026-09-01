@@ -42,6 +42,7 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    setSessionsSource = vi.fn();
     setTreeHooks = vi.fn();
     sessionHost = vi.fn().mockReturnValue(null);
     showWaiting = vi.fn();
