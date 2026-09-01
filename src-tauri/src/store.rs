@@ -272,6 +272,55 @@ impl Store {
         Self::write_vec(&self.layout_path(), &merged)
     }
 
+    /// Write down which conversation each session is in, over whatever the file
+    /// already says, for every id in `ids`.
+    ///
+    /// The fork a `/clear` produces is learned by a hook, kept in
+    /// [`crate::resume_ids`] for the life of the app run, and reaches this file
+    /// through the frontend's poll. That leaves a window: a `/clear` and then a
+    /// quit before the next tick wrote a layout with no `resumeId`, and the next
+    /// launch resumed the conversation the person cleared away — #199 again. The
+    /// quit path calls this, so the last thing the app does is agree with what it
+    /// learned.
+    ///
+    /// The window is not five seconds wide, either. Since #251 the poll is armed
+    /// only while the deck has focus, so a session cleared in a window the person
+    /// then tabbed away from is never polled again — and without this, never
+    /// written down.
+    ///
+    /// Every window's entries at once, which is why this is not `save_layout`:
+    /// at exit there is no window to attribute a write to, and which conversation
+    /// a session is in is a fact about the conversation rather than about who was
+    /// showing it. Entries this does not recognise are left exactly as they are.
+    ///
+    /// `try_read_vec` for the reason `save_layout` gives — a read-before-write
+    /// that took an unreadable file for an empty one would replace every other
+    /// session in it with nothing.
+    pub fn update_resume_ids(
+        &self,
+        ids: &std::collections::HashMap<String, String>,
+    ) -> std::io::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut existing: Vec<SessionEntry> = Self::try_read_vec(&self.layout_path())?;
+        let mut touched = false;
+        for entry in existing.iter_mut() {
+            let Some(id) = ids.get(&entry.session_id) else { continue };
+            if entry.resume_id.as_deref() == Some(id.as_str()) {
+                continue;
+            }
+            entry.resume_id = Some(id.clone());
+            touched = true;
+        }
+        // A write that would change nothing is not worth the rename, and at exit
+        // it is the common case: the poll tick has usually already been here.
+        if !touched {
+            return Ok(());
+        }
+        Self::write_vec(&self.layout_path(), &existing)
+    }
+
     fn terminals_path(&self) -> PathBuf { self.dir.join("terminals.json") }
     /// The drawer's tabs. A missing or damaged file is an empty drawer, the same
     /// forgiveness the deck layout gets: a person who loses their terminal tabs
@@ -665,6 +714,79 @@ mod tests {
         assert!(after.is_empty());
     }
 
+    /// A layout entry for the resume-id tests: a session, and whatever the file
+    /// already says about which conversation it should resume.
+    fn entry_for(session_id: &str, resume_id: Option<&str>) -> SessionEntry {
+        SessionEntry { resume_id: resume_id.map(Into::into), ..entry(session_id, None) }
+    }
+
+    /// The quit path's last word. A `/clear` inside the final five seconds never
+    /// reached the file through the poll tick, and resuming what the file said
+    /// would bring back the conversation the person cleared away (#199).
+    #[test]
+    fn update_resume_ids_writes_what_the_tick_did_not() {
+        let dir = tmp();
+        let s = Store::new(dir);
+        s.save_layout(MAIN_WINDOW, &[entry_for("s1", None), entry_for("s2", None)]).unwrap();
+        let mut ids = std::collections::HashMap::new();
+        ids.insert("s2".to_string(), "after-the-clear".to_string());
+        s.update_resume_ids(&ids).unwrap();
+
+        let back = s.layout();
+        // The one that was cleared, and only it.
+        assert_eq!(back.iter().find(|e| e.session_id == "s2").unwrap().resume_id.as_deref(),
+                   Some("after-the-clear"));
+        assert_eq!(back.iter().find(|e| e.session_id == "s1").unwrap().resume_id, None);
+    }
+
+    /// An id for a session the file has never heard of changes nothing — a tile
+    /// closed before the quit, or one another machine's layout owns.
+    #[test]
+    fn update_resume_ids_leaves_sessions_it_does_not_know() {
+        let dir = tmp();
+        let s = Store::new(dir);
+        s.save_layout(MAIN_WINDOW, &[entry_for("s1", Some("already-here"))]).unwrap();
+        let mut ids = std::collections::HashMap::new();
+        ids.insert("gone".to_string(), "nowhere".to_string());
+        s.update_resume_ids(&ids).unwrap();
+
+        let back = s.layout();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].resume_id.as_deref(), Some("already-here"));
+    }
+
+    /// Every other window's sessions survive it: this is the one writer with no
+    /// window to attribute itself to, so a whole-file rewrite is what it does and
+    /// leaving the rest alone is the whole requirement.
+    #[test]
+    fn update_resume_ids_does_not_disturb_another_window() {
+        let dir = tmp();
+        let s = Store::new(dir);
+        s.save_layout(MAIN_WINDOW, &[entry_for("s1", None)]).unwrap();
+        s.save_layout("w2", &[entry_for("s2", None)]).unwrap();
+        let mut ids = std::collections::HashMap::new();
+        ids.insert("s1".to_string(), "after-the-clear".to_string());
+        s.update_resume_ids(&ids).unwrap();
+
+        assert_eq!(s.layout().len(), 2);
+        assert_eq!(s.layout_for("w2").len(), 1, "the other window is still there");
+        assert_eq!(s.layout_for(MAIN_WINDOW)[0].resume_id.as_deref(), Some("after-the-clear"));
+    }
+
+    /// An unreadable file refuses rather than replacing every session in it with
+    /// nothing — `save_layout`'s rule (#117), in a third place.
+    #[test]
+    fn update_resume_ids_refuses_an_unreadable_layout() {
+        let dir = tmp();
+        let s = Store::new(dir.clone());
+        std::fs::write(dir.join("sessions.json"), "[{\"sessionId\": ").unwrap();
+        let mut ids = std::collections::HashMap::new();
+        ids.insert("s1".to_string(), "after-the-clear".to_string());
+        assert!(s.update_resume_ids(&ids).is_err());
+        // And the half-written file is still there to be recovered by hand.
+        assert!(std::fs::read_to_string(dir.join("sessions.json")).unwrap().contains("sessionId"));
+    }
+
     #[test]
     fn read_vec_returns_empty_for_missing_file_not_found() {
         let dir = tmp();
@@ -740,7 +862,7 @@ mod tests {
                 workspace_id: Some("w1".into()), task_id: Some("01AAA".into()),
                 scheduled_skill_id: None, user_name: None,
                 name_kind: Some(NameKind::Context), skill_id: None, run_id: None,
-                owner: None, cli_kind: None,
+                owner: None, cli_kind: None, resume_id: None,
             },
             SessionEntry {
                 session_id: "s2".into(), cwd: "/tmp/b".into(), name: "terminal · P".into(),
@@ -748,7 +870,9 @@ mod tests {
                 // The whole point of the field: this one survives the round trip.
                 user_name: Some("the one I must not close".into()),
                 name_kind: Some(NameKind::Placeholder), skill_id: None, run_id: None,
-                owner: None, cli_kind: None,
+                // The other field a stale copy of which would lose work: this
+                // one says which conversation the next launch resumes.
+                owner: None, cli_kind: None, resume_id: Some("after-the-clear".into()),
             },
         ];
         s.save_layout(MAIN_WINDOW, &entries).unwrap();
@@ -769,7 +893,7 @@ mod tests {
             session_id: session_id.into(), cwd: "/tmp".into(), name: session_id.into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: None, name_kind: None, skill_id: None, run_id: None,
-            owner: owner.map(Into::into), cli_kind: None,
+            owner: owner.map(Into::into), cli_kind: None, resume_id: None,
         }
     }
 

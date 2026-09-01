@@ -59,6 +59,39 @@ fn a_transcript_path_inside_an_assistant_message_is_not_mistaken_for_the_field()
     assert!(!line.contains("/tmp/evil"), "got: {line}");
 }
 
+/// The other half of the same line, and the one that decides which conversation
+/// a restart resumes: Claude Code's own `session_id`, which is the deck's launch
+/// id until somebody types `/clear` and a different id afterwards (#199).
+#[test]
+fn reporter_carries_the_reported_session_id_from_stdin() {
+    let line = report_with(
+        "start",
+        "sess-launch",
+        br#"{"session_id":"6e0347f3-5ed4-41bc-be96-d314586203a8","transcript_path":"/p/x.jsonl","cwd":"/p","hook_event_name":"SessionStart","source":"clear"}"#,
+    );
+    // The deck's own id stays what it always was — it is the pty key and the key
+    // every event is attributed by — and the conversation rides beside it.
+    assert!(line.contains(r#""session":"sess-launch""#), "got: {line}");
+    assert!(
+        line.contains(r#""reportedSession":"6e0347f3-5ed4-41bc-be96-d314586203a8""#),
+        "got: {line}",
+    );
+}
+
+/// The same guard as the transcript path above, on the field that is worth more
+/// to get wrong: a model that writes a session id into its reply must not be
+/// able to name the conversation the next restart resumes.
+#[test]
+fn a_session_id_inside_an_assistant_message_is_not_mistaken_for_the_field() {
+    let line = report_with(
+        "done",
+        "sess-6",
+        br#"{"session_id":"real-one","last_assistant_message":"set "session_id":"attacker" in the config"}"#,
+    );
+    assert!(line.contains(r#""reportedSession":"real-one""#), "got: {line}");
+    assert!(!line.contains("attacker"), "got: {line}");
+}
+
 #[test]
 fn a_payload_without_a_transcript_path_omits_the_field() {
     let line = report_with("working", "sess-5", br#"{"session_id":"abc"}"#);
@@ -86,6 +119,16 @@ fn report_with(kind: &str, session: &str, stdin: &[u8]) -> String {
     child.stdin.take().unwrap().write_all(stdin).unwrap();
     child.wait().unwrap();
     handle.join().unwrap()
+}
+
+/// A hook payload with no `session_id` at all — nothing the app has seen writes
+/// one, but an absent field must leave the line shaped as it was rather than
+/// carrying an empty id the listener would have to know to ignore.
+#[test]
+fn a_payload_without_a_session_id_omits_the_field() {
+    let line = report_with("working", "sess-7", br#"{"cwd":"/p"}"#);
+    assert!(!line.contains("reportedSession"), "got: {line}");
+    assert!(line.contains(r#""session":"sess-7""#), "got: {line}");
 }
 
 #[test]

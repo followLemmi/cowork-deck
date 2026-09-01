@@ -17,6 +17,7 @@ mod run_journal;
 mod runs;
 mod scheduler;
 mod tasks_cmd;
+mod resume_ids;
 mod transcripts;
 mod usage;
 mod which;
@@ -461,6 +462,22 @@ fn main() {
             }
             tauri::RunEvent::Exit => {
                 if let Some(state) = app.try_state::<AppState>() {
+                    // Before the PTYs go, and this is the ordering that matters:
+                    // which conversation each session is in is learned from a
+                    // hook and kept in memory, and it reaches `sessions.json`
+                    // through the deck's poll. A `/clear` and then a quit before
+                    // the next tick left the file naming the conversation the
+                    // person cleared away, which the next launch would then
+                    // resume — #199, through the one gap the poll leaves. Not a
+                    // five-second gap either, since #251: the chain is armed only
+                    // while the window has focus, so a person who clears, tabs
+                    // away and quits an hour later never ticked at all. A hard
+                    // kill still loses it, as it loses every other unsaved thing.
+                    if let Ok(store) = state.store.lock() {
+                        if let Err(e) = store.update_resume_ids(&resume_ids::all()) {
+                            eprintln!("warning: could not write the conversations to resume ({e})");
+                        }
+                    }
                     state.pty.kill_all();
                 }
             }

@@ -541,6 +541,27 @@ pub struct SessionEntry {
     /// activity reader would dispatch on a field that is never there.
     #[serde(rename = "cliKind", default, skip_serializing_if = "Option::is_none")]
     pub cli_kind: Option<String>,
+    /// Which conversation this tile should resume, when it is no longer the one
+    /// it was launched with.
+    ///
+    /// `session_id` above stays the launch id and is not negotiable: it is the
+    /// PTY key, the `COWORK_SESSION` in the session's argv, and the key every
+    /// hook event is attributed by. What `/clear` changes is the conversation —
+    /// Claude Code mints a new id, and `claude --resume <launch-id>` then
+    /// succeeds and brings back the conversation the person cleared away, with
+    /// the one they were working in orphaned on disk (#199). So: an additional
+    /// field, **absent until a clear happens**, and absent for every layout
+    /// written before it existed — which is exactly what a session still in its
+    /// launch conversation means.
+    ///
+    /// This is the only copy that survives a restart: `crate::resume_ids` holds
+    /// the same fact in memory for the life of the app run, and auto-restore is
+    /// the path where that map is empty. Read the NOTE on `task_id` before
+    /// touching the rename — without it serde writes `resume_id` while TS reads
+    /// `resumeId`, and a restored tile would silently resume the wrong
+    /// conversation, which is the whole of #199 back again.
+    #[serde(rename = "resumeId", default, skip_serializing_if = "Option::is_none")]
+    pub resume_id: Option<String>,
 }
 
 /// Which of the two kinds of launch name `SessionEntry::name` holds.
@@ -904,6 +925,16 @@ pub struct ReporterEvent {
     /// hence `default`.
     #[serde(rename = "transcriptPath", default)]
     pub transcript_path: Option<String>,
+    /// Which conversation Claude Code says this session is in *now* — its own
+    /// `session_id`, which is the deck's launch id until somebody types
+    /// `/clear` and a different id afterwards. Present on every hook payload;
+    /// absent from a line written by an older reporter, hence `default`.
+    ///
+    /// Recorded, never used as a key: the deck knows a session by the id it
+    /// launched it with, and `ReporterEvent::session` above is that id. See
+    /// `crate::resume_ids`.
+    #[serde(rename = "reportedSession", default)]
+    pub reported_session: Option<String>,
     /// Which workspace the session was launched in, on the one kind that asks a
     /// question rather than reporting a fact (`memory`, #388). A dash from the
     /// reporter — a session launched outside a workspace — reads as absent here,
@@ -1064,7 +1095,7 @@ mod tests {
         let entry = SessionEntry {
             session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
             task_id: None, scheduled_skill_id: None, user_name: None, name_kind: None,
-            skill_id: None, run_id: None, owner: None, cli_kind: None,
+            skill_id: None, run_id: None, owner: None, cli_kind: None, resume_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
@@ -1100,7 +1131,7 @@ mod tests {
             session_id: "s3".into(), cwd: "/c".into(), name: "session · deck".into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: Some("relay".into()), name_kind: Some(NameKind::Placeholder),
-            skill_id: None, run_id: None, owner: None, cli_kind: None,
+            skill_id: None, run_id: None, owner: None, cli_kind: None, resume_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""userName":"relay""#), "got {json}");
@@ -1145,13 +1176,52 @@ mod tests {
             session_id: "s4".into(), cwd: "/d".into(), name: "n".into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: None, name_kind: None, skill_id: None, run_id: None,
-            owner: None, cli_kind: Some("copilot".into()),
+            owner: None, cli_kind: Some("copilot".into()), resume_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""cliKind":"copilot""#), "got {json}");
         assert!(!json.contains("cli_kind"), "snake_case would never be read back, got {json}");
         let bare = SessionEntry { cli_kind: None, ..entry };
         assert!(!serde_json::to_string(&bare).unwrap().contains("cliKind"));
+    }
+
+    /// The four directions once more, for the field that decides which
+    /// conversation a restart resumes (#199). The rename is the whole risk here
+    /// too, and this one is the worst of the three: serde would write
+    /// `resume_id` while TS reads `resumeId`, so a cleared session would restore
+    /// into the conversation the person cleared away — silently, because the
+    /// launch id still names a real conversation and `--resume` succeeds.
+    #[test]
+    fn session_entry_resume_id_is_backward_compatible() {
+        // Every layout written before the field exists has no key for it, and
+        // that is also what an uncleared session means: resume the launch id.
+        let old = r#"[{"sessionId":"s1","cwd":"/a","name":"session · deck"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(old).unwrap();
+        assert_eq!(v[0].resume_id, None);
+
+        // A new file carries it under the camelCase name TS writes.
+        let new = r#"[{"sessionId":"s2","cwd":"/b","name":"n","resumeId":"after-the-clear"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(new).unwrap();
+        // The tile's identity is untouched — it is still the id the deck
+        // launched with, and the conversation is the additional fact.
+        assert_eq!(v[0].session_id, "s2");
+        assert_eq!(v[0].resume_id.as_deref(), Some("after-the-clear"));
+
+        // The key serde writes is the key TS reads.
+        let entry = SessionEntry {
+            session_id: "s3".into(), cwd: "/c".into(), name: "n".into(),
+            workspace_id: None, task_id: None, scheduled_skill_id: None,
+            user_name: None, name_kind: None, skill_id: None, run_id: None,
+            owner: None, cli_kind: None, resume_id: Some("after-the-clear".into()),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""resumeId":"after-the-clear""#), "got {json}");
+        assert!(!json.contains("resume_id"), "snake_case would never be read back, got {json}");
+
+        // And `None` is omitted, so a layout of sessions nobody has cleared
+        // stays byte-identical to what it was.
+        let bare = SessionEntry { resume_id: None, ..entry };
+        assert!(!serde_json::to_string(&bare).unwrap().contains("resumeId"));
     }
 
     /// The record stays visible: one unreadable *provider* must not cost the

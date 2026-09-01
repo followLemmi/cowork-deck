@@ -106,6 +106,7 @@ mod tests {
             run_id: None,
             owner: None,
             cli_kind: cli.map(Into::into),
+            resume_id: None,
         }
     }
 

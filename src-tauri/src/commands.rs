@@ -131,13 +131,20 @@ pub struct AppState {
 
 /// Build the argv (after the program name) for launching an interactive claude
 /// session. First launch pins our own session id via `--session-id`; restart/
-/// restore resumes that same conversation via `--resume` (no prompt — context
-/// already lives in the resumed session).
+/// restore resumes a conversation via `--resume` (no prompt — context already
+/// lives in the resumed session).
+///
+/// `resume` names the conversation rather than merely asking for one, and that
+/// is deliberate: it used to be a `bool`, and the id it resumed was
+/// `session_id` — the id the deck launched with, which stops naming the
+/// conversation the person is in the moment they type `/clear` (#199). A caller
+/// that has to state the id cannot reintroduce that by omission. See
+/// [`resume_target`] for where the id comes from.
 pub fn build_claude_args(
     settings_json: &str,
     initial_prompt: &Option<String>,
     session_id: &str,
-    resume: bool,
+    resume: Option<&str>,
     memory: &[String],
 ) -> Vec<String> {
     let mut args = vec!["--settings".to_string(), settings_json.to_string()];
@@ -156,9 +163,9 @@ pub fn build_claude_args(
     // variadic stops where it should. `no_positional_follows_the_mcp_config`
     // pins that.
     args.extend_from_slice(memory);
-    if resume {
+    if let Some(conversation) = resume {
         args.push("--resume".to_string());
-        args.push(session_id.to_string());
+        args.push(conversation.to_string());
     } else {
         args.push("--session-id".to_string());
         args.push(session_id.to_string());
@@ -167,6 +174,65 @@ pub fn build_claude_args(
         }
     }
     args
+}
+
+/// Which conversation a restart or a restore should resume, for a tile the deck
+/// knows as `session`.
+///
+/// Three sources, in this order, and each one covers a case the next cannot:
+///
+/// 1. [`crate::resume_ids`] — what a hook reported during **this** app run. The
+///    freshest answer, and the only one that is right for a `/clear` followed by
+///    a ⟳ before the frontend's next poll tick has persisted anything.
+/// 2. `resume_id` on the layout entry — the only copy that survives a restart,
+///    and so the answer on the auto-restore path, where the map above is empty
+///    for the whole of a restored tile's life until its first hook arrives.
+/// 3. The launch id itself, which is what a session that has never been cleared
+///    means, and what every layout written before the field existed says.
+///
+/// Resolved here rather than passed in from the frontend, and that is the point:
+/// a caller that forgot to pass it would resume the pre-`/clear` conversation
+/// with **nothing failing** — the launch id still names a real, resumable
+/// conversation. That is #199 exactly, and it is not a mistake a second caller
+/// should be able to make. The same reasoning put transcript recording inside
+/// the listener rather than behind a callback.
+///
+/// The id is not checked against the transcripts on disk. A `--resume` naming a
+/// conversation that has been deleted fails visibly — the tile goes to `error`
+/// and offers ⟳ — whereas quietly falling back to the launch id is the silent
+/// wrong answer this whole issue is about.
+///
+/// The layout is read best-effort all the same, and that is a decision rather
+/// than an oversight. `layout()` reads an unparseable `sessions.json` as an
+/// empty one, so a file damaged *while the app runs* would send a cleared tile
+/// back to its launch id without a word — the failure above, by another route.
+/// Refusing instead would mean no session restarts at all while the file is
+/// damaged, uncleared ones included, and those are the great majority and would
+/// all have been right. A tile that loses one `/clear` is the smaller harm than
+/// a deck that will not restart anything, so this reads what it can get.
+fn resume_target(store: &Mutex<Store>, session: &str) -> String {
+    if let Some(current) = crate::resume_ids::get(session) {
+        return current;
+    }
+    // One small JSON file in the app's own directory, and the lock is taken and
+    // released here rather than held into the launch — see the note at the top
+    // of this file about what `start_session` may and may not do.
+    //
+    // Every window's entries, not this window's: a session that was handed to
+    // another deck is owned by that one, and the id it should resume is a fact
+    // about the conversation rather than about who is showing it.
+    store
+        .lock()
+        .ok()
+        .and_then(|store| {
+            store
+                .layout()
+                .into_iter()
+                .find(|e| e.session_id == session)
+                .and_then(|e| e.resume_id)
+        })
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| session.to_string())
 }
 
 /// Environment a session needs to file its own tickets. When the workspace has
@@ -1769,7 +1835,13 @@ pub fn start_session(
     // formats a JSON string. #35's rule that memory stays off the session launch
     // path is about the *index* and the model, neither of which is touched here.
     let memory = crate::memory::session_args(workspace_id.as_deref());
-    let args = build_claude_args(&settings, &initial_prompt, &session, resume, &memory);
+    // The conversation, not merely the fact that there is one to resume: after a
+    // `/clear` the launch id names the conversation the person left, and
+    // resuming it succeeds — see `resume_target` (#199).
+    let resuming = resume.then(|| resume_target(&state.store, &session));
+    let args = build_claude_args(
+        &settings, &initial_prompt, &session, resuming.as_deref(), &memory,
+    );
 
     // Замок стора берётся и отпускается ДО резолва токена: gh::token блокирует
     // до пяти секунд, и удерживать общий мьютекс всё это время означало бы
@@ -2259,6 +2331,10 @@ pub fn close_session(
     state.pty.kill(&session);
     state.session_owners.release(&session);
     crate::transcripts::forget(&session);
+    // And which conversation it was in, for the same reason: the id belongs to a
+    // tile that is gone, and the next session to be given this id is a different
+    // conversation entirely.
+    crate::resume_ids::forget(&session);
     // The trailing output buffer, for the same reason the transcript goes: a
     // tile that is gone should not contribute a half-drawn banner to whatever
     // reuses its id.
@@ -2485,10 +2561,30 @@ pub fn load_layout(window: tauri::WebviewWindow, state: State<AppState>) -> Vec<
 /// Write this window's tiles into `sessions.json` without disturbing another
 /// window's. See `Store::save_layout` for what the merge holds and why a
 /// failed read refuses rather than truncating.
+///
+/// The conversation each session is in is taken from [`crate::resume_ids`] and
+/// not from the caller, wherever this app run has learned one. The frontend does
+/// send it — it reads it off the poll tick and keeps it on the tile — but the
+/// backend is the one that knows, and two saves in the same tick used to be able
+/// to lose it: `persistLayout` serialises the tiles it can see at the moment it
+/// is called, so a save fired for tile A carried tile B's fork as still absent,
+/// and if that save landed last the id was gone from the file with nothing left
+/// to notice — the in-memory copy already matched, so nothing would write it
+/// again (#199). Taking it from the map instead makes every save carry the
+/// freshest answer, whatever order they arrive in.
+///
+/// What the caller sent still stands where the map has nothing: a restored tile
+/// carries its fork from the layout for the whole of its life until its first
+/// hook arrives, and that copy is the only one there is.
 #[tauri::command]
 pub fn save_layout(
-    window: tauri::WebviewWindow, state: State<AppState>, sessions: Vec<SessionEntry>,
+    window: tauri::WebviewWindow, state: State<AppState>, mut sessions: Vec<SessionEntry>,
 ) -> Result<(), String> {
+    for entry in sessions.iter_mut() {
+        if let Some(current) = crate::resume_ids::get(&entry.session_id) {
+            entry.resume_id = Some(current);
+        }
+    }
     let store = state.store.lock().unwrap();
     store.save_layout(window.label(), &sessions).map_err(|e| e.to_string())
 }
@@ -3080,6 +3176,16 @@ pub struct SessionSnapshot {
     /// Those are two different sentences and one number cannot carry both — the
     /// distinction this whole feature is drawn around.
     pub calls: Option<u32>,
+    /// The conversation this session is in now, when a hook has reported one
+    /// other than the id the deck launched it with — i.e. after a `/clear`.
+    ///
+    /// Read off `crate::resume_ids` rather than out of the transcript, and it
+    /// rides this batch because the tick is what the frontend already has: the
+    /// deck persists it into its layout entry, which is the only copy that
+    /// survives a restart and so the only thing auto-restore can resume by
+    /// (#199). `None` is a session still in its launch conversation.
+    #[serde(rename = "resumeId")]
+    pub resume_id: Option<String>,
 }
 
 /// One read, one pass, both results — for every requested session at once.
@@ -3104,7 +3210,12 @@ pub async fn session_snapshots(
         .into_iter()
         .map(|id| {
             tokio::task::spawn_blocking(move || {
-                let snap = read_session_snapshot(&id);
+                let mut snap = read_session_snapshot(&id);
+                // Set here rather than inside `read_session_snapshot`, which
+                // returns an empty snapshot the moment there is no transcript to
+                // read — and a session that was cleared thirty seconds ago is
+                // exactly one whose new transcript may not be on disk yet.
+                snap.resume_id = crate::resume_ids::get(&id);
                 (id, snap)
             })
         })
@@ -3184,6 +3295,11 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
         title,
         title_source,
         calls: Some(calls),
+        // Not a fact about the transcript, and this function only reads one.
+        // `session_snapshots` fills it from `resume_ids` after this returns —
+        // which is also what gets it onto the snapshot of a session whose new
+        // transcript is not on disk yet.
+        resume_id: None,
     }
 }
 
@@ -3986,7 +4102,7 @@ branch refs/heads/feature/y\n";
 
     #[test]
     fn builds_claude_args_first_launch_with_session_id_and_prompt() {
-        let args = build_claude_args("{\"hooks\":{}}", &Some("collect email report".into()), "sess-1", false, &[]);
+        let args = build_claude_args("{\"hooks\":{}}", &Some("collect email report".into()), "sess-1", None, &[]);
         assert_eq!(args, vec![
             "--settings".to_string(), "{\"hooks\":{}}".to_string(),
             "--session-id".to_string(), "sess-1".to_string(),
@@ -3996,7 +4112,7 @@ branch refs/heads/feature/y\n";
 
     #[test]
     fn builds_claude_args_first_launch_without_prompt() {
-        let args = build_claude_args("{}", &None, "sess-1", false, &[]);
+        let args = build_claude_args("{}", &None, "sess-1", None, &[]);
         assert_eq!(args, vec![
             "--settings".to_string(), "{}".to_string(),
             "--session-id".to_string(), "sess-1".to_string(),
@@ -4014,12 +4130,12 @@ branch refs/heads/feature/y\n";
             "--append-system-prompt".to_string(),
             "consult it".to_string(),
         ];
-        for resume in [false, true] {
+        for resume in [None, Some("sess-1")] {
             let args = build_claude_args("{}", &Some("p".into()), "sess-1", resume, &memory);
-            assert!(args.iter().any(|a| a == "--mcp-config"), "resume={resume}: {args:?}");
+            assert!(args.iter().any(|a| a == "--mcp-config"), "resume={resume:?}: {args:?}");
             assert!(
                 args.iter().any(|a| a == "--append-system-prompt"),
-                "resume={resume}: {args:?}",
+                "resume={resume:?}: {args:?}",
             );
         }
     }
@@ -4038,7 +4154,7 @@ branch refs/heads/feature/y\n";
             "--append-system-prompt".to_string(),
             "consult it".to_string(),
         ];
-        for resume in [false, true] {
+        for resume in [None, Some("sess-1")] {
             let args =
                 build_claude_args("{}", &Some("a prompt".into()), "sess-1", resume, &memory);
             let at = args.iter().position(|a| a == "--mcp-config").expect("the flag");
@@ -4046,7 +4162,7 @@ branch refs/heads/feature/y\n";
             let after = args.get(at + 2).map(String::as_str);
             assert!(
                 after.is_none_or(|a| a.starts_with('-')),
-                "resume={resume}: {after:?} would be eaten by --mcp-config in {args:?}",
+                "resume={resume:?}: {after:?} would be eaten by --mcp-config in {args:?}",
             );
         }
     }
@@ -4055,7 +4171,7 @@ branch refs/heads/feature/y\n";
     /// it was before memory existed — no empty flag, no `--mcp-config {}`.
     #[test]
     fn no_memory_to_offer_adds_no_arguments() {
-        let with = build_claude_args("{}", &None, "sess-1", false, &[]);
+        let with = build_claude_args("{}", &None, "sess-1", None, &[]);
         assert_eq!(with, vec!["--settings", "{}", "--session-id", "sess-1"]);
     }
 
@@ -4063,7 +4179,7 @@ branch refs/heads/feature/y\n";
     /// tests read that position.
     #[test]
     fn the_settings_stay_where_they_were() {
-        let args = build_claude_args("{\"hooks\":{}}", &None, "s", false, &["--x".to_string()]);
+        let args = build_claude_args("{\"hooks\":{}}", &None, "s", None, &["--x".to_string()]);
         assert_eq!(args[0], "--settings");
         assert_eq!(args[1], "{\"hooks\":{}}");
     }
@@ -4076,7 +4192,7 @@ branch refs/heads/feature/y\n";
             "{}",
             &Some("collect the report".into()),
             "s",
-            false,
+            None,
             &["--mcp-config".to_string(), "{}".to_string()],
         );
         assert_eq!(args.last().unwrap(), "collect the report");
@@ -4084,11 +4200,113 @@ branch refs/heads/feature/y\n";
 
     #[test]
     fn builds_claude_args_resume_uses_resume_flag_and_ignores_prompt() {
-        let args = build_claude_args("{}", &Some("ignored".into()), "sess-1", true, &[]);
+        let args = build_claude_args("{}", &Some("ignored".into()), "sess-1", Some("sess-1"), &[]);
         assert_eq!(args, vec![
             "--settings".to_string(), "{}".to_string(),
             "--resume".to_string(), "sess-1".to_string(),
         ]);
+    }
+
+    /// #199, at the one line that decides it. A cleared session's tile is still
+    /// `sess-1` — its pty key, its `COWORK_SESSION`, the key its hooks are
+    /// attributed by — but the conversation it is in is a different id, and that
+    /// is what `--resume` must name. The old signature took a `bool` and could
+    /// only ever resume `session_id`, which succeeds and brings back the
+    /// conversation the person cleared away.
+    #[test]
+    fn a_cleared_session_resumes_the_conversation_it_is_in_not_its_launch_id() {
+        let args = build_claude_args("{}", &None, "sess-1", Some("after-the-clear"), &[]);
+        assert_eq!(args, vec![
+            "--settings".to_string(), "{}".to_string(),
+            "--resume".to_string(), "after-the-clear".to_string(),
+        ]);
+        assert!(!args.iter().any(|a| a == "sess-1"), "the launch id is not resumed: {args:?}");
+        // And it is still not pinned: `--session-id` belongs to a first launch.
+        assert!(!args.iter().any(|a| a == "--session-id"), "{args:?}");
+    }
+
+    fn store_in_a_temp_dir() -> Mutex<Store> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cowork-resume-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Mutex::new(Store::new(dir))
+    }
+
+    fn entry(session: &str, resume_id: Option<&str>) -> SessionEntry {
+        SessionEntry {
+            session_id: session.to_string(),
+            cwd: "/tmp".to_string(),
+            name: "session".to_string(),
+            workspace_id: None,
+            task_id: None,
+            scheduled_skill_id: None,
+            user_name: None,
+            name_kind: None,
+            skill_id: None,
+            run_id: None,
+            owner: None,
+            cli_kind: None,
+            resume_id: resume_id.map(str::to_string),
+        }
+    }
+
+    /// A session that has never been cleared resumes itself, which is every
+    /// session before #199 and the great majority after it.
+    #[test]
+    fn resume_target_falls_back_to_the_launch_id() {
+        let store = store_in_a_temp_dir();
+        assert_eq!(resume_target(&store, "t-plain"), "t-plain");
+        // Including one whose layout entry exists and says nothing.
+        store.lock().unwrap().save_layout("main", &[entry("t-stored-none", None)]).unwrap();
+        assert_eq!(resume_target(&store, "t-stored-none"), "t-stored-none");
+    }
+
+    /// The auto-restore path: the app has been closed and reopened, so nothing
+    /// is in memory and the layout entry is the only copy of the fact left.
+    #[test]
+    fn resume_target_reads_the_layout_when_nothing_is_in_memory() {
+        let store = store_in_a_temp_dir();
+        store
+            .lock()
+            .unwrap()
+            .save_layout("main", &[entry("t-restored", Some("conversation-2"))])
+            .unwrap();
+        assert_eq!(resume_target(&store, "t-restored"), "conversation-2");
+    }
+
+    /// A `/clear` followed by a ⟳ before the poll tick has persisted anything —
+    /// what a hook reported during this app run outranks the file, which may be
+    /// one conversation behind.
+    #[test]
+    fn resume_target_prefers_what_a_hook_reported_over_the_layout() {
+        let store = store_in_a_temp_dir();
+        store
+            .lock()
+            .unwrap()
+            .save_layout("main", &[entry("t-live", Some("conversation-2"))])
+            .unwrap();
+        crate::resume_ids::record("t-live", "conversation-3");
+        assert_eq!(resume_target(&store, "t-live"), "conversation-3");
+        crate::resume_ids::forget("t-live");
+    }
+
+    /// A blank field is the launch id, not a `--resume ""`. Nothing this app
+    /// writes produces one, and a hand-edited or half-written `sessions.json`
+    /// should cost a tile its `/clear` rather than its launch.
+    #[test]
+    fn resume_target_ignores_a_blank_stored_id() {
+        let store = store_in_a_temp_dir();
+        store
+            .lock()
+            .unwrap()
+            .save_layout("main", &[entry("t-blank", Some("   "))])
+            .unwrap();
+        assert_eq!(resume_target(&store, "t-blank"), "t-blank");
     }
 
     #[test]
