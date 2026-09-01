@@ -8,7 +8,7 @@
  *  placed by its directory rather than by an id, a session in another window,
  *  and a tile that is nothing but scrollback. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { SessionState } from "../src/ipc";
+import type { SessionEntry, SessionState } from "../src/ipc";
 
 const { onStateMock } = vi.hoisted(() => ({ onStateMock: vi.fn() }));
 
@@ -58,8 +58,10 @@ describe("Deck.liveSessionNamesIn", () => {
     return deck;
   }
 
-  const tile = (sessionId: string, name: string, cwd: string, workspaceId?: string) =>
-    ({ sessionId, cwd, name, nameKind: "user" as const, userName: name, workspaceId });
+  /* `userName` rather than `name` alone: what a person typed outranks everything,
+     so this is the one slot that fixes what `resolveTileName` will return. */
+  const tile = (sessionId: string, name: string, cwd: string, workspaceId?: string): SessionEntry =>
+    ({ sessionId, cwd, name, userName: name, workspaceId });
 
   beforeEach(() => {
     vi.clearAllMocks();
