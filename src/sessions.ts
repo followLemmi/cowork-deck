@@ -606,8 +606,9 @@ export class Deck {
           // Not the only thing that writes it, and deliberately not trusted to
           // be: the backend takes the id from its own map on every `save_layout`
           // and writes what it knows once more at exit, so neither two saves in
-          // one tick nor a quit before the next tick can lose it. This is the
-          // path that keeps the tile itself honest.
+          // one tick nor a quit before the next tick can lose it — which matters
+          // more than it reads, because since #251 an unfocused window does not
+          // tick at all. This is the path that keeps the tile itself honest.
           //
           // A `null` never clears the slot, for the reason the title below does
           // not: the backend answers `null` for a restored tile until its first

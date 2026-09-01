@@ -277,11 +277,16 @@ impl Store {
     ///
     /// The fork a `/clear` produces is learned by a hook, kept in
     /// [`crate::resume_ids`] for the life of the app run, and reaches this file
-    /// through the frontend's five-second poll tick. That leaves a window: a
-    /// `/clear` and then a quit inside the same tick wrote a layout with no
-    /// `resumeId`, and the next launch resumed the conversation the person
-    /// cleared away — #199 again, narrowly. The quit path calls this, so the last
-    /// thing the app does is agree with what it learned.
+    /// through the frontend's poll. That leaves a window: a `/clear` and then a
+    /// quit before the next tick wrote a layout with no `resumeId`, and the next
+    /// launch resumed the conversation the person cleared away — #199 again. The
+    /// quit path calls this, so the last thing the app does is agree with what it
+    /// learned.
+    ///
+    /// The window is not five seconds wide, either. Since #251 the poll is armed
+    /// only while the deck has focus, so a session cleared in a window the person
+    /// then tabbed away from is never polled again — and without this, never
+    /// written down.
     ///
     /// Every window's entries at once, which is why this is not `save_layout`:
     /// at exit there is no window to attribute a write to, and which conversation

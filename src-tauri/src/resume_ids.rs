@@ -63,9 +63,10 @@ pub fn get(launch: &str) -> Option<String> {
 /// Every fork this app run has seen, for writing them all down at once.
 ///
 /// The map is the freshest copy of the fact and the layout file is the only one
-/// that survives a restart, and between the two sits a five-second poll tick.
-/// `/clear` and then a quit inside that tick used to lose the fork — the whole
-/// of #199 back again for one narrow window — so the quit path takes this and
+/// that survives a restart, and between the two sits the deck's poll — armed
+/// only while the window has focus, since #251.
+/// `/clear` and then a quit before the next tick used to lose the fork — the
+/// whole of #199 back again — so the quit path takes this and
 /// hands it to [`crate::store::Store::update_resume_ids`]. A clone rather than a
 /// borrow: nothing may hold this lock while a file is being written.
 pub fn all() -> HashMap<String, String> {
