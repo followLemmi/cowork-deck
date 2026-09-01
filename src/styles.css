@@ -4017,7 +4017,19 @@ h6.md-head { font-size: var(--fs-sm); }
    `flex: 1` rather than being negotiated away. */
 .term-drawer {
   flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
+  /* AN ISLAND, the same four-part shape as `.tile`, `#wspanel` and
+     `.deck-empty`: the fill, the hairline, the 14px corners and the shadow. It
+     was the fill alone, and that made the drawer the one content surface in the
+     app with square corners and no edge — a strip butted into three window
+     edges, twelve pixels under a deck of rounded cards.
+     The gutter is on three sides and not four: `#deck` has
+     `padding: var(--sp-3)`, so the gap above is already drawn, and a second one
+     there would read as a mistake — the argument `#wspanel`'s `margin` records
+     for its own missing left edge. */
+  margin: 0 var(--sp-3) var(--sp-3);
   background: var(--bg-island);
+  border: 1px solid var(--line); border-radius: var(--r-island);
+  box-shadow: var(--sh-island);
 }
 .term-drawer[hidden] { display: none; }
 
@@ -4041,7 +4053,13 @@ h6.md-head { font-size: var(--fs-sm); }
    above rather than breaking it: what the drawer must never be is the thing the
    deck is drawn ON TOP OF, and here the drawer is on top, for as long as a
    person asked for and no longer. */
-.term-drawer.is-full { position: absolute; inset: 0; z-index: 6; }
+/* The margin is not ignored here, which is why it is restated rather than
+   dropped: with `left` and `right` both `0` an absolutely positioned box honours
+   its own margins, so the cover would keep the three gutters above and grow a
+   fourth edge flush to the top of `#workarea`. `var(--sp-3)` on all four sides
+   instead, which is `#deck`'s own padding — so the cover lands exactly on the
+   box the tiles occupy rather than a few pixels above it. */
+.term-drawer.is-full { position: absolute; inset: 0; z-index: 6; margin: var(--sp-3); }
 /* The grip stays reachable while full — dragging it takes the drawer back into
    flow under the pointer (see `setRows`) — but its negative margin would hang it
    outside the cover, where it would be four pixels of drag surface over the
@@ -4055,8 +4073,48 @@ h6.md-head { font-size: var(--fs-sm); }
 .term-grip {
   flex: 0 0 auto; height: 4px; cursor: ns-resize; background: transparent;
   margin-top: -4px; padding-top: 4px; box-sizing: content-box;
+  /* Positioned for the four pixels above the drawer, and it is those four pixels
+     that need it. `#deck` is `position: relative`, so it paints — and therefore
+     hit-tests — in a later step than a sibling that is not positioned, whatever
+     the tree order says; the overhang lay under `#deck`'s own opaque `--bg-void`.
+     Three of the eight pixels the comment above promises took no `pointerdown` at
+     all, and the focus ring below was cut off along its top. `position: relative`
+     puts the grip in the same step, where tree order decides and the grip comes
+     later. No `z-index`: there is nothing in that step to rank it against. */
+  position: relative;
+  /* The hit area is the element and the drawing is the bar inside it, which is
+     `.pr-drawer-grip`'s shape turned on its side. It became necessary with the
+     corners: the fill used to be on the element itself, and a full-width band
+     across a rounded top edge hangs its square ends out past both curves —
+     unclippable from here, because the 4px above the drawer is hit area the
+     island's `overflow` must not cut off. */
+  display: flex; align-items: flex-end; justify-content: center;
 }
-.term-grip:hover, .term-grip:focus-visible { background: var(--accent); outline: none; }
+/* Short, centred, and only there once the control is being used: at rest the
+   drawer's own top edge is the seam, and a bar drawn permanently across it would
+   be a second hairline a pixel below the first. */
+.term-grip::before {
+  content: ""; width: 2.4rem; height: 4px; border-radius: var(--r-pill);
+  background: transparent;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.term-grip:hover::before { background: var(--accent); }
+.term-grip:focus-visible { outline: none; }
+/* The ring goes on the bar for the shape, which is not the reason
+   `.pr-drawer-grip` gives for its own: nothing paints over this one — `.term-bar`
+   below sets no fill at all — but around the element the ring is a full-width
+   lozenge, and a full-width anything across this edge hangs its square ends past
+   both corners. The same argument as the fill above, and the same answer. */
+.term-grip:focus-visible::before { background: var(--accent); box-shadow: var(--focus-ring); }
+
+/* The bar's whole drawing is a fill, and forced colours replace a fill with the
+   ground. Named system colours instead, the pair `.pr-drawer-grip` uses — and
+   drawn at rest here rather than on hover only, because a control whose only
+   state is a colour the mode has taken away is a control that is not there. */
+@media (forced-colors: active) {
+  .term-grip::before { background: CanvasText; }
+  .term-grip:hover::before, .term-grip:focus-visible::before { background: Highlight; }
+}
 
 .term-bar {
   flex: 0 0 auto; display: flex; align-items: stretch; gap: 2px;
@@ -4135,7 +4193,17 @@ h6.md-head { font-size: var(--fs-sm); }
    is the drawer's own. What the active tab has left to say "this one" with is its
    `--line-strong` edge and its brighter name — the shared fill said it too while the
    fills differed, and one channel of three is what the change costs here. */
-.term-bodies { flex: 1; min-height: 0; position: relative; background: var(--bg-terminal); }
+/* The clip that rounds the terminal is HERE and not on the island, for the
+   reason `#wsp-body` gives about its own: `.term-grip` hangs four pixels above
+   the drawer's top edge on a negative margin, and an `overflow: hidden` up there
+   would cut that hit area in half. This is the only child whose content can
+   reach a corner. Minus the 1px border, or the terminal's fill shows outside the
+   hairline at the curve. */
+.term-bodies {
+  flex: 1; min-height: 0; position: relative; background: var(--bg-terminal);
+  overflow: hidden;
+  border-radius: 0 0 calc(var(--r-island) - 1px) calc(var(--r-island) - 1px);
+}
 .term-body { position: absolute; inset: 0; padding: 4px var(--sp-2); }
 .term-body.hidden { display: none; }
 
