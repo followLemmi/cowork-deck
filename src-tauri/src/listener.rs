@@ -83,6 +83,18 @@ where
                             let _ = wr.shutdown().await;
                             return;
                         }
+                        /* The other kind that is not a report: a second
+                           launch, refused by the guard in `instance`, asking
+                           the app that already holds this config directory to
+                           come forward (#361). It carries no session and
+                           changes no state, so it is answered and dropped
+                           before anything below can read a session id out of
+                           it. */
+                        if ev.kind == "focus" {
+                            crate::instance::focus_requested();
+                            let _ = wr.shutdown().await;
+                            return;
+                        }
                         // Recorded here rather than handed to a second callback:
                         // every event carries it, and a caller that forgot to
                         // wire it up would leave a tile reading the transcript
@@ -165,6 +177,27 @@ mod tests {
             crate::transcripts::get("sess-clear").as_deref(),
             Some("/home/u/.claude/projects/-p/new.jsonl"),
         );
+    }
+
+    /// What a second launch sends instead of starting an app (#361). Nothing
+    /// is focused in a test binary — no instance claimed anything — so what
+    /// this asserts is that the line is accepted, reports no state, and is not
+    /// mistaken for a session's event.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_focus_request_changes_no_session_state() {
+        let (tx, rx) = mpsc::channel::<(String, SessionState)>();
+        let port = start_listener(move |sess, state| { let _ = tx.send((sess, state)); })
+            .await
+            .unwrap();
+
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(b"{\"session\":\"-\",\"kind\":\"focus\"}\n")
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
     /// The one kind that asks a question rather than reporting a fact (#388).

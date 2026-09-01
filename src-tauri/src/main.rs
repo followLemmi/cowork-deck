@@ -8,6 +8,7 @@ mod sync_cmd;
 mod gh;
 mod gh_pr;
 mod hooks;
+mod instance;
 mod listener;
 mod memory;
 mod pty;
@@ -111,6 +112,12 @@ fn ready_to_quit(app: &tauri::AppHandle) -> bool {
 
 fn main() {
     tauri::Builder::default()
+        // First, and the ordering is the whole of it: plugins are initialised in
+        // `Builder::build`, and the window declared in `tauri.conf.json` is
+        // created later, when the event loop reports ready. A second launch
+        // therefore exits from inside this call — before a window, before the
+        // run journal is swept, before anything below has run at all (#361).
+        .plugin(instance::plugin())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         // Geometry survives a restart; visibility does not. The plugin's restore
@@ -183,6 +190,11 @@ fn main() {
                 .await
                 .expect("listener bind")
             });
+            // And now the guard can say where to knock. Until this line the
+            // claim on the config directory names a pid and nothing else, so a
+            // second launch in the meantime exits without focusing anything —
+            // which is a launch that quietly does nothing, not a second app.
+            instance::publish_port(&dir, port);
 
             let scheduler_ready = std::sync::Arc::new(tokio::sync::Notify::new());
             // One flag, held by both the state and the Claude provider inside the
