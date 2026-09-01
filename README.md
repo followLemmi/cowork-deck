@@ -132,11 +132,13 @@ for a session the deck did not start. A CLI with no reader says so rather than s
 
 ## Limits: what each AI has left, and where that number came from
 
-A dozen sessions draw on **one** budget, and when it runs out they stall together. A block at the foot
-of the panel says what each connected AI has left — one row apiece, a thin meter, and when it lifts.
+A dozen sessions draw on **one** budget, and when it runs out they stall together. One line at the foot
+of the panel says whether you can keep working: the AI that is worst off, its reading, and a count of
+the others behind it. Press it and the rest unfold above it — a row apiece, a thin meter, and when it
+lifts — worst off first, so the list opens on the AI the line just named.
 
-**The source of a number is part of the number**, and it is on the row beside it rather than in a
-tooltip:
+**The source of a number is part of the number**, and it is beside the reading rather than in a
+tooltip — on the line and on every row:
 
 - **Reported** — the account's own accounting, the figure `/usage` draws. Obtained by asking `claude`
   itself, the way this app asks `gh` about GitHub: it costs nothing from your budget and no password
