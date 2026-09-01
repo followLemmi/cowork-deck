@@ -11,6 +11,7 @@ import {
   sourceExplanation,
   sourceLabel,
   stateClass,
+  usageGlance,
 } from "../src/usage";
 
 const win = (over: Partial<LimitWindow> = {}): LimitWindow => ({
@@ -65,6 +66,81 @@ describe("which window a one-line row draws", () => {
 
   it("has nothing to draw for a provider with no windows", () => {
     expect(primaryWindow(snap())).toBe(null);
+  });
+});
+
+describe("what the one line at the foot of the panel names", () => {
+  it("has nothing to say about no AI at all", () => {
+    expect(usageGlance([])).toBe(null);
+  });
+
+  /** The same ordering the rows use, one level up: the strip must name the AI at
+   *  the top of the list it opens, or the two surfaces disagree about "worst". */
+  it("names the AI that is refusing work, whatever order they arrived in", () => {
+    const g = usageGlance([
+      snap({ provider: "a", windows: [win({ usedFraction: 0.99, state: "near" })] }),
+      snap({ provider: "b", windows: [win({ state: "exhausted" })] }),
+    ])!;
+    expect(g.snap.provider).toBe("b");
+    expect(g.window!.state).toBe("exhausted");
+  });
+
+  it("prefers a nearly-spent AI to a merely full one", () => {
+    const g = usageGlance([
+      snap({ provider: "a", windows: [win({ usedFraction: 0.5, state: "ok" })] }),
+      snap({ provider: "b", windows: [win({ usedFraction: 0.8, state: "near" })] }),
+    ])!;
+    expect(g.snap.provider).toBe("b");
+  });
+
+  it("names the fullest of a healthy set, because that is the one to watch", () => {
+    const g = usageGlance([
+      snap({ provider: "a", windows: [win({ usedFraction: 0.1, state: "ok" })] }),
+      snap({ provider: "b", windows: [win({ usedFraction: 0.6, state: "ok" })] }),
+      snap({ provider: "c", windows: [win({ usedFraction: 0.3, state: "ok" })] }),
+    ])!;
+    expect(g.snap.provider).toBe("b");
+    expect(g.others).toBe(2);
+  });
+
+  /** An AI nobody can read is not the worst news, it is no news — and a strip
+   *  that named it would be hiding a real reading behind an absence. */
+  it("puts an AI with no reading behind every AI that has one", () => {
+    const g = usageGlance([
+      snap({ provider: "a", windows: [win({ state: "unknown" })] }),
+      snap({ provider: "b", windows: [win({ usedFraction: 0.2, state: "ok" })] }),
+    ])!;
+    expect(g.snap.provider).toBe("b");
+  });
+
+  it("puts an AI with no windows at all behind one that at least says it cannot tell", () => {
+    const g = usageGlance([
+      snap({ provider: "a", windows: [] }),
+      snap({ provider: "b", windows: [win({ state: "unknown" })] }),
+    ])!;
+    expect(g.snap.provider).toBe("b");
+    expect(g.others).toBe(1);
+  });
+
+  /** The two counts the line has room for, and they are the two that change what
+   *  a person does next. */
+  it("counts how many of the others are near their limit and how many are spent", () => {
+    const g = usageGlance([
+      snap({ provider: "a", windows: [win({ state: "exhausted" })] }),
+      snap({ provider: "b", windows: [win({ state: "exhausted" })] }),
+      snap({ provider: "c", windows: [win({ usedFraction: 0.95, state: "near" })] }),
+      snap({ provider: "d", windows: [win({ usedFraction: 0.1, state: "ok" })] }),
+    ])!;
+    expect(g.others).toBe(3);
+    expect(g.othersSpent).toBe(1);
+    expect(g.othersNear).toBe(1);
+  });
+
+  it("counts nothing beside a single connected AI", () => {
+    const g = usageGlance([snap({ windows: [win({ usedFraction: 0.4, state: "ok" })] })])!;
+    expect(g.others).toBe(0);
+    expect(g.othersNear).toBe(0);
+    expect(g.othersSpent).toBe(0);
   });
 });
 

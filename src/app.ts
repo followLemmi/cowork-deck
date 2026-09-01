@@ -2115,9 +2115,11 @@ export function startApp(role: WindowRole): Promise<void> {
   }
 
   /* --- What every connected AI has left -----------------------------------
-     The block lives in the panel of every window, including one pinned to a
+     One line at the foot of the panel of every window, including one pinned to a
      workspace: a shared ceiling above twelve sessions is not a property of a
      repository, and a person in a detached window needs it as much as anybody.
+     What that line holds, and why it is a line rather than a row per AI, is
+     `usage-block.ts` and ADR-0011; nothing here changed when it shrank.
 
      Read on a timer of its own and NOT on the five-second poll tick. The
      registry behind it holds a TTL cache, so this interval is how often the

@@ -45,37 +45,277 @@ function mount(): { el: HTMLElement; block: LimitsBlock } {
   return { el, block };
 }
 
+/** The one press that turns the glance into the list. */
+function unfold(el: HTMLElement): void {
+  el.querySelector<HTMLButtonElement>(".lim-summary")!.click();
+}
+
+const strip = (el: HTMLElement) => el.querySelector<HTMLElement>(".lim-strip")!;
+const list = (el: HTMLElement) => el.querySelector<HTMLElement>(".lim-list")!;
+/** What the strip says on its own line, in the order a person reads it. */
+const stripText = (el: HTMLElement, sel: string) =>
+  strip(el).querySelector<HTMLElement>(sel)?.textContent ?? null;
+
 beforeEach(() => { opened = []; });
 
-describe("the limits block", () => {
+describe("the limits strip: the one line that is always there", () => {
   it("draws nothing at all when no AI is detected", () => {
     const { el, block } = mount();
     block.render([], NOW);
     expect(el.hidden).toBe(true);
-    expect(el.querySelector(".lim-block")).toBe(null);
+    expect(el.querySelector(".lim-strip")).toBe(null);
   });
 
-  it("draws one row per detected AI, under one heading", () => {
+  /** The defect this shape exists to fix (#392): the height the panel gives up
+   *  must not grow with the number of connected AIs. */
+  it("stays one strip and one folded list however many AIs are connected", () => {
+    const { el, block } = mount();
+    const four = ["claude", "gemini", "codex", "copilot"].map((provider, i) =>
+      snap({ provider, label: provider, windows: [win({ usedFraction: 0.1 * i, state: "ok" })] }));
+    block.render(four.slice(0, 1), NOW);
+    expect(el.querySelectorAll(".lim-strip").length).toBe(1);
+    block.render(four, NOW);
+    expect(el.querySelectorAll(".lim-strip").length).toBe(1);
+    // Every row is drawn, and none of them is taking panel height: the list is
+    // folded, and folded is `display: none` rather than a shorter row.
+    expect(list(el).querySelectorAll(".lim-row").length).toBe(4);
+    expect(list(el).hidden).toBe(true);
+    expect(getComputedStyle(list(el)).display).toBe("none");
+  });
+
+  /** And when it does open, it is bounded and scrolls — the one thing a fixed
+   *  slab could not do. */
+  it("caps the rows it opens rather than letting them push the page above", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] })], NOW);
+    const style = getComputedStyle(list(el));
+    expect(style.maxHeight).toContain("min(");
+    expect(style.overflowY).toBe("auto");
+  });
+
+  /** The answer to "can I keep working" is whichever AI is worst off; the others
+   *  cannot make that answer better. */
+  it("names the AI that is worst off, not the first one detected", () => {
+    const { el, block } = mount();
+    block.render([
+      snap({ provider: "a", label: "Alpha", windows: [win({ usedFraction: 0.1, state: "ok" })] }),
+      snap({ provider: "b", label: "Beta", windows: [win({ state: "exhausted", resetsAt: RESET })] }),
+      snap({ provider: "c", label: "Gamma", windows: [win({ usedFraction: 0.9, state: "near" })] }),
+    ], NOW);
+    expect(stripText(el, ".lim-name")).toBe("Beta");
+    expect(strip(el).dataset.state).toBe("exhausted");
+  });
+
+  /** ADR-0009 on the surface that is always on screen: a bare percentage is not
+   *  an acceptable compression of a reading. */
+  it("carries the tier beside the reading it is showing", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.42, state: "ok", source: "reported" })] })], NOW);
+    expect(stripText(el, ".lim-src")).toBe("Reported");
+    expect(stripText(el, ".lim-reading")).toBe("42% used");
+    expect(strip(el).querySelector(".lim-src")!.classList.contains("lim-src--reported")).toBe(true);
+  });
+
+  /** Four things fit on this line and five did not, and the meter was the one of
+   *  the five that said what the reading beside it already said. So the state's
+   *  hue moved to the words underneath rather than being dropped. */
+  it("draws no meter, and takes the state's colour on its words instead", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.93, state: "near", resetsAt: RESET })] })], NOW);
+    expect(strip(el).querySelector(".lim-meter")).toBe(null);
+    const said = strip(el).querySelector(".lim-near-text")!;
+    expect(said.textContent).toContain("nearly spent");
+    expect(getComputedStyle(said).color).toContain("--st-waiting");
+  });
+
+  it("takes the spent hue on the same line, with the same words as a row", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ state: "exhausted", resetsAt: RESET })] })], NOW);
+    const said = strip(el).querySelector(".lim-out-text")!;
+    expect(said.textContent).toContain("nothing moves until");
+    expect(getComputedStyle(said).color).toContain("--st-error");
+  });
+
+  it("counts the AIs it is not naming", () => {
+    const { el, block } = mount();
+    block.render([
+      snap({ provider: "a", windows: [win({ usedFraction: 0.5, state: "ok" })] }),
+      snap({ provider: "b", windows: [win({ usedFraction: 0.2, state: "ok" })] }),
+      snap({ provider: "c", windows: [win({ usedFraction: 0.1, state: "ok" })] }),
+    ], NOW);
+    expect(stripText(el, ".lim-rest")).toBe("+2");
+  });
+
+  /** A bare `+2` over two spent accounts would hide the thing the strip exists to
+   *  surface — so it is said in words, on the second line, which the AI being
+   *  named has already earned by being at least as badly off as any of them. */
+  it("says in words when one of the others is spent too", () => {
+    const { el, block } = mount();
+    block.render([
+      snap({ provider: "a", label: "Alpha", windows: [win({ state: "exhausted", resetsAt: RESET })] }),
+      snap({ provider: "b", label: "Beta", windows: [win({ state: "exhausted", resetsAt: RESET })] }),
+      snap({ provider: "c", label: "Gamma", windows: [win({ usedFraction: 0.1, state: "ok" })] }),
+    ], NOW);
+    expect(stripText(el, ".lim-rest")).toBe("+2");
+    expect(stripText(el, ".lim-others")).toBe("(1 more spent)");
+  });
+
+  it("says so when one of the others is nearly spent", () => {
+    const { el, block } = mount();
+    block.render([
+      snap({ provider: "a", windows: [win({ state: "exhausted", resetsAt: RESET })] }),
+      snap({ provider: "b", windows: [win({ usedFraction: 0.95, state: "near" })] }),
+    ], NOW);
+    expect(stripText(el, ".lim-others")).toBe("(1 more nearly spent)");
+  });
+
+  it("says nothing about the others when there is nothing wrong with them", () => {
+    const { el, block } = mount();
+    block.render([
+      snap({ provider: "a", windows: [win({ usedFraction: 0.95, state: "near", resetsAt: RESET })] }),
+      snap({ provider: "b", windows: [win({ usedFraction: 0.1, state: "ok" })] }),
+    ], NOW);
+    expect(stripText(el, ".lim-rest")).toBe("+1");
+    expect(strip(el).querySelector(".lim-others")).toBe(null);
+  });
+
+  /** One line while the answer is "keep working". Two only when being larger is
+   *  the point rather than the complaint. */
+  it("adds no second line while the reading is healthy", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok", resetsAt: RESET })] })], NOW);
+    expect(strip(el).querySelector(".lim-foot")).toBe(null);
+  });
+
+  it("says when a nearly-spent reading lifts, since that is when waiting is a plan", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.93, state: "near", resetsAt: RESET })] })], NOW);
+    expect(stripText(el, ".lim-foot")).toContain("resets");
+  });
+
+  /** Open, the rows above say everything this line was saying, so it stops being
+   *  a copy of the row at the top of them and becomes the block's name. */
+  it("gives up the glance for the block's name while the rows are open", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] })], NOW);
+    expect(getComputedStyle(strip(el).querySelector(".lim-word")!).display).toBe("none");
+    unfold(el);
+    expect(strip(el).dataset.open).toBe("true");
+    expect(getComputedStyle(strip(el).querySelector(".lim-word")!).display).toBe("block");
+    expect(getComputedStyle(strip(el).querySelector(".lim-reading")!).display).toBe("none");
+  });
+
+  it("puts an error where the second line would be, because that one is actionable", () => {
+    const { el, block } = mount();
+    block.render([snap({ error: "not signed in — run `claude auth login`", windows: [win()] })], NOW);
+    expect(stripText(el, ".lim-foot")).toContain("claude auth login");
+  });
+
+  /** The way out of an unreadable reading cannot be behind the fold — that is the
+   *  one row with nothing to show for itself. */
+  it("offers the probe beside the strip when the AI it names cannot be read", () => {
+    const { el, block } = mount();
+    block.render([snap({ probeCommand: 'claude -p "/usage"', windows: [win()] })], NOW);
+    const ask = strip(el).querySelector<HTMLButtonElement>(".lim-probe")!;
+    expect(ask).not.toBe(null);
+    ask.click();
+    expect(opened).toEqual([
+      { title: "Claude: limits", command: 'claude -p "/usage"', cwd: "/home/dev/code/relay" },
+    ]);
+  });
+
+  it("offers no probe beside a strip whose reading is fine", () => {
+    const { el, block } = mount();
+    block.render([snap({ probeCommand: "x", windows: [win({ usedFraction: 0.3, state: "ok" })] })], NOW);
+    expect(strip(el).querySelector(".lim-probe")).toBe(null);
+  });
+
+  /** One sentence carrying everything the line shows, starting with the word the
+   *  sighted reader gets from the strip's position and its tooltip instead. */
+  it("gives the line one accessible name, and it names the block", () => {
+    const { el, block } = mount();
+    block.render([
+      snap({ label: "Claude", windows: [win({ usedFraction: 0.93, state: "near", source: "reported", resetsAt: RESET })] }),
+      snap({ provider: "b", label: "Gemini", windows: [win({ usedFraction: 0.1, state: "ok" })] }),
+    ], NOW);
+    const name = strip(el).querySelector(".lim-summary")!.getAttribute("aria-label")!;
+    expect(name.startsWith("Limits")).toBe(true);
+    expect(name).toContain("Claude");
+    expect(name).toContain("93% used");
+    expect(name).toContain("Reported");
+    expect(name).toContain("nearly spent");
+    expect(name).toContain("1 more");
+    // The visible label while the rows are open, so the name still starts with
+    // what a person can see on it (WCAG 2.5.3).
+    expect(name.startsWith("Limits")).toBe(true);
+  });
+
+  it("puts a provider's own strings in as text", () => {
+    const { el, block } = mount();
+    block.render([snap({
+      label: "<img src=x onerror=alert(1)>",
+      windows: [win({ usedFraction: 0.1, state: "ok" })],
+    })], NOW);
+    expect(el.querySelector("img")).toBe(null);
+    expect(stripText(el, ".lim-name")).toBe("<img src=x onerror=alert(1)>");
+  });
+});
+
+describe("the rows behind the strip", () => {
+  it("are a disclosure: one press shows them, another puts them away", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] })], NOW);
+    const summary = el.querySelector<HTMLButtonElement>(".lim-summary")!;
+    expect(summary.getAttribute("aria-expanded")).toBe("false");
+    expect(summary.getAttribute("aria-controls")).toBe(list(el).id);
+    unfold(el);
+    expect(summary.getAttribute("aria-expanded")).toBe("true");
+    expect(list(el).hidden).toBe(false);
+    unfold(el);
+    expect(list(el).hidden).toBe(true);
+  });
+
+  /** Folded in place rather than through a re-render, so a keyboard is not thrown
+   *  back to the top of the panel by its own press. */
+  it("keep the focus on the control that opened them", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] })], NOW);
+    const summary = el.querySelector<HTMLButtonElement>(".lim-summary")!;
+    summary.focus();
+    summary.click();
+    expect(document.activeElement).toBe(summary);
+  });
+
+  /** The sixty-second read must not fold a list somebody is reading. */
+  it("stay open across a repaint", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] })], NOW);
+    unfold(el);
+    block.render([snap({ windows: [win({ usedFraction: 0.3, state: "ok" })] })], NOW);
+    expect(list(el).hidden).toBe(false);
+    expect(el.querySelector(".lim-summary")!.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("draw one row per detected AI, in the order they were detected", () => {
     const { el, block } = mount();
     block.render([
       snap({ windows: [win({ usedFraction: 0.2, state: "ok", source: "reported" })] }),
       snap({ provider: "gemini", label: "Gemini", windows: [win({ id: "rpd", label: "Requests today" })] }),
     ], NOW);
-    expect(el.querySelectorAll("h3").length).toBe(1);
     expect(el.querySelectorAll(".lim-row").length).toBe(2);
-    expect([...el.querySelectorAll(".lim-name")].map((n) => n.textContent))
+    expect([...el.querySelectorAll(".lim-row .lim-name")].map((n) => n.textContent))
       .toEqual(["Claude", "Gemini"]);
   });
 
   /** The three states, and the absence of a fourth. */
-  it("paints three distinct classes, and none of them is the working green", () => {
+  it("paint three distinct classes, and none of them is the working green", () => {
     const { el, block } = mount();
     block.render([
       snap({ provider: "a", windows: [win({ usedFraction: 0.2, state: "ok" })] }),
       snap({ provider: "b", windows: [win({ usedFraction: 0.9, state: "near" })] }),
       snap({ provider: "c", windows: [win({ state: "exhausted", resetsAt: RESET })] }),
     ], NOW);
-    const meters = [...el.querySelectorAll(".lim-meter")];
+    const meters = [...list(el).querySelectorAll(".lim-row .lim-meter")];
     expect(meters.length).toBe(3);
     const classes = meters.map((m) => [...m.classList].find((c) => c.startsWith("lim-") && c !== "lim-meter"));
     expect(new Set(classes).size).toBe(3);
@@ -86,17 +326,18 @@ describe("the limits block", () => {
     expect(fill(1)).toContain("--st-waiting");
     expect(fill(2)).toContain("--st-error");
     // And no rule anywhere in this block reaches for the working green.
-    const block4 = css.slice(css.indexOf("--- Limits:"));
-    expect(block4).not.toContain("--st-working");
+    const rules = css.slice(css.indexOf("--- Limits:"));
+    expect(rules).not.toContain("--st-working");
   });
 
   /** An unknown row is the one a person can do something about, so it gets the
    *  action rather than a meter drawn at an arbitrary width. */
-  it("gives an unknown row the action and no meter", () => {
+  it("give an unknown row the action and no meter", () => {
     const { el, block } = mount();
     block.render([snap({ probeCommand: 'claude -p "/usage"', windows: [win()] })], NOW);
-    expect(el.querySelector(".lim-meter")).toBe(null);
-    const ask = el.querySelector<HTMLButtonElement>(".lim-probe")!;
+    const row = el.querySelector<HTMLElement>(".lim-row")!;
+    expect(row.querySelector(".lim-meter")).toBe(null);
+    const ask = row.querySelector<HTMLButtonElement>(".lim-probe")!;
     expect(ask).not.toBe(null);
     ask.click();
     expect(opened).toEqual([
@@ -107,20 +348,28 @@ describe("the limits block", () => {
   /** Two ways of saying nothing read as two facts. An unknown row says it has no
    *  reading once, and what it adds is the action rather than a second word for
    *  the same absence. */
-  it("does not restate an absent reading in the row's foot", () => {
+  it("do not restate an absent reading in the row's foot", () => {
     const { el, block } = mount();
     block.render([snap({ probeCommand: "x", windows: [win()] })], NOW);
-    expect(el.querySelector(".lim-foot")).toBe(null);
-    expect(el.querySelector(".lim-reading")!.textContent).toBe("no reading");
+    const row = el.querySelector<HTMLElement>(".lim-row")!;
+    expect(row.querySelector(".lim-foot")).toBe(null);
+    expect(row.querySelector(".lim-reading")!.textContent).toBe("no reading");
   });
 
-  it("does put an error in the foot, because that one is actionable", () => {
+  it("do put an error in the foot, because that one is actionable", () => {
     const { el, block } = mount();
     block.render([snap({ error: "not signed in — run `claude auth login`", windows: [win()] })], NOW);
-    expect(el.querySelector(".lim-foot")!.textContent).toContain("claude auth login");
+    expect(el.querySelector(".lim-row .lim-foot")!.textContent).toContain("claude auth login");
   });
 
-  it("offers no action when the provider named no command", () => {
+  it("keep a healthy row's reset time, which is the one thing the strip drops", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok", resetsAt: RESET })] })], NOW);
+    expect(el.querySelector(".lim-row .lim-reset")!.textContent).toContain("resets");
+    expect(strip(el).querySelector(".lim-foot")).toBe(null);
+  });
+
+  it("offer no action when the provider named no command", () => {
     const { el, block } = mount();
     block.render([snap({ probeCommand: null, windows: [win()] })], NOW);
     expect(el.querySelector(".lim-probe")).toBe(null);
@@ -129,7 +378,7 @@ describe("the limits block", () => {
   /** The window the registry padded is drawn as unknown, and a window nobody
    *  declared is simply not there — so the block never grows a row of its own
    *  accord and never loses one either. */
-  it("draws exactly the windows the snapshot carries", () => {
+  it("draw exactly the windows the snapshot carries", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [
       win({ id: "session", usedFraction: 0.3, state: "ok" }),
@@ -137,44 +386,44 @@ describe("the limits block", () => {
     ] })], NOW);
     // One row, showing the window that has something to say.
     expect(el.querySelectorAll(".lim-row").length).toBe(1);
-    expect(el.querySelector(".lim-reading")!.textContent).toBe("30% used");
+    expect(el.querySelector(".lim-row .lim-reading")!.textContent).toBe("30% used");
   });
 
-  it("says what a spent row means in words, not only in colour", () => {
+  it("say what a spent row means in words, not only in colour", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({ state: "exhausted", resetsAt: RESET })] })], NOW);
-    expect(el.querySelector(".lim-out-text")!.textContent).toContain("nothing moves until");
+    expect(el.querySelector(".lim-row .lim-out-text")!.textContent).toContain("nothing moves until");
     expect(el.querySelector(".lim-row")!.getAttribute("data-state")).toBe("exhausted");
   });
 
-  it("says so when a spent row has no reset time rather than leaving a gap", () => {
+  it("say so when a spent row has no reset time rather than leaving a gap", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({ state: "exhausted", resetsAt: null })] })], NOW);
-    expect(el.querySelector(".lim-out-text")!.textContent).toContain("no reset time known");
+    expect(el.querySelector(".lim-row .lim-out-text")!.textContent).toContain("no reset time known");
   });
 
   /** The tier is on the row itself, at the same size as the number. Not a
    *  tooltip, not a title attribute — see ADR-0009. */
-  it("prints the tier of the number it is showing", () => {
+  it("print the tier of the number they are showing", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok", source: "reported" })] })], NOW);
-    const tier = el.querySelector(".lim-src")!;
+    const tier = el.querySelector(".lim-row .lim-src")!;
     expect(tier.textContent).toBe("Reported");
     expect(tier.classList.contains("lim-src--reported")).toBe(true);
   });
 
-  it("prints the observed tier where the number is this app's own counting", () => {
+  it("print the observed tier where the number is this app's own counting", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({
       amount: { used: 1_250_000, limit: null, unit: "tokens" }, source: "observed",
     })] })], NOW);
-    expect(el.querySelector(".lim-src")!.textContent).toBe("Observed");
-    expect(el.querySelector(".lim-reading")!.textContent).toBe("1.2M tokens");
+    expect(el.querySelector(".lim-row .lim-src")!.textContent).toBe("Observed");
+    expect(el.querySelector(".lim-row .lim-reading")!.textContent).toBe("1.2M tokens");
   });
 
   /** A row's accessible name has to be the row's whole meaning: a reader should
    *  not have to assemble five spans into a sentence. */
-  it("gives the row one accessible name carrying everything it shows", () => {
+  it("give the row one accessible name carrying everything it shows", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({
       usedFraction: 0.42, state: "ok", source: "reported", resetsAt: RESET,
@@ -187,23 +436,11 @@ describe("the limits block", () => {
     expect(name).toContain("resets");
   });
 
-  /** Data from outside this app reaches the DOM as text and never as markup. */
-  it("puts a provider's own strings in as text", () => {
-    const { el, block } = mount();
-    block.render([snap({
-      label: "<img src=x onerror=alert(1)>",
-      windows: [win({ usedFraction: 0.1, state: "ok" })],
-    })], NOW);
-    expect(el.querySelector("img")).toBe(null);
-    expect(el.querySelector(".lim-name")!.textContent).toBe("<img src=x onerror=alert(1)>");
-  });
-
-  it("keeps the block laid out by the stylesheet rather than by inline styles", () => {
+  it("stay laid out by the stylesheet rather than by inline styles", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({ usedFraction: 0.25, state: "ok" })] })], NOW);
-    const island = el.querySelector<HTMLElement>(".lim-block")!;
-    expect(island.classList.contains("island")).toBe(true);
-    expect(getComputedStyle(island).display).toBe("flex");
+    expect(getComputedStyle(el).display).toBe("flex");
+    expect(getComputedStyle(list(el)).flexDirection).toBe("column");
     // The one inline style there is: how full the meter is, which is data.
     expect(el.querySelector<HTMLElement>(".lim-fill")!.style.width).toBe("25%");
   });

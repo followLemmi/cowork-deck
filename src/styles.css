@@ -697,11 +697,15 @@ body {
      the widest thing a page could not shrink (a workspace row's controls) and the
      panel, at `overflow: hidden`, clipped the difference. At 1180px that was 31px
      of every row's right-hand end, including the button that deletes it. */
-  /* Three rows now: the head, the stack of pages, and the limits block under
+  /* Three rows now: the head, the stack of pages, and the limits strip under
      them. The third is declared rather than left implicit, so it is visible here
-     that the block is `auto` and the STACK is the one that takes the slack — an
+     that the strip is `auto` and the STACK is the one that takes the slack — an
      implicit row would have worked and would have said nothing. `.panel-grip` is
-     absolutely positioned and stays out of this. */
+     absolutely positioned and stays out of this.
+
+     `auto` is doing more work since #392: the strip is one line, so what this row
+     takes no longer grows with the number of connected AIs, and the rows it opens
+     are capped and scroll rather than pushing the stack. */
   display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr);
   transition: width var(--dur-3) var(--ease-out);
   /* In `rem` rather than px, because this column exists to hold text and the text
@@ -4266,13 +4270,93 @@ h6.md-head { font-size: var(--fs-sm); }
    meanings: something has stopped, and something is about to want you. A person
    who has learned those two colours anywhere in this app has learned them here.
    `npm run contrast` measures every pair below. */
-#limits { flex: none; }
+/* A strip at the foot of the panel, not an island in it (#392, ADR-0011).
+   One row per AI at three lines each made this a slab that grew with the number
+   of accounts and never yielded — `flex: none` above a `1fr` stack means the
+   space came out of the page being worked in. So the always-there part is ONE
+   line, and the rows are behind it.
+
+   Chrome rather than a card, and the hairline is the whole treatment: the islands
+   above are lists you work in, and this is the panel's own footer. A one-line
+   island would have been a card with less in it than its own border. */
+#limits {
+  flex: none; display: flex; flex-direction: column;
+  border-top: 1px solid var(--line); background: var(--bg-void);
+}
 #limits[hidden] { display: none; }
-.lim-block { display: flex; flex-direction: column; gap: var(--sp-1); }
+/* Bounded, and that is the point of the number rather than the number itself: the
+   rows open on demand, and a deck with eight accounts connected must not be able
+   to push the page above out of the window by unfolding. Past the cap it scrolls,
+   which is the one thing the fixed slab could not do. */
+.lim-list {
+  max-height: min(38vh, 15rem); overflow-y: auto;
+  padding: var(--sp-1) var(--sp-2) 0;
+  display: flex; flex-direction: column; gap: var(--sp-1);
+}
+.lim-list[hidden] { display: none; }
 /* A row is a button and, when there is nothing to read, a second one beside it.
    Not one button containing another — that is invalid, and a screen reader
    handed a nested control announces neither properly. */
 .lim-row { display: flex; align-items: stretch; gap: var(--sp-1); }
+/* The strip is the same shape as a row, and for the same reason: the summary is a
+   control and the way out of an unreadable reading is a second one beside it. */
+.lim-strip { display: flex; align-items: stretch; gap: var(--sp-1); padding: var(--sp-1) var(--sp-2); }
+.lim-summary {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+  padding: var(--sp-1) var(--sp-2); border: 0; border-radius: var(--r-ctl);
+  background: transparent; color: var(--fg); text-align: left; cursor: pointer;
+  font: inherit;
+}
+.lim-summary:hover { background: var(--bg-hover); }
+.lim-summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* Gaps at `--sp-1` rather than `--sp-2`, which is not a preference: name, tier,
+   reading, meter and count are five things in a 280px column, and at 8px apart
+   there was not room for all five. */
+.lim-strip .lim-line { gap: var(--sp-1); }
+/* And the reading is the item that must NOT give way. `.lim-reading` is `flex: 1`
+   in a row, where the row has a line to itself and nothing to compete with; on
+   the strip that made it the first thing to shrink, and "23% us…" is the one word
+   this line exists to say. So the NAME flexes and truncates here instead — a
+   clipped label still identifies an AI, a clipped number identifies nothing.
+
+   Which is also why there is no meter on this line and why the count is a bare
+   `+3` with the words about the others on the line below: four things fit here,
+   five did not, and the reading and the tier are two of the four by ADR-0009. */
+/* `0 1 auto`, not `1`: basis `auto` means the name keeps its own width and gives
+   ground only when the line genuinely will not fit, which at 246px it now does. */
+.lim-strip .lim-name {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lim-strip .lim-reading { flex: none; text-align: left; }
+/* Open, the rows above carry all of it, so the strip stops being a copy of the
+   row at the top of them and becomes the block's name and the way to put it away.
+   The same caps treatment an island's head takes, on the one surface in this
+   column that has no island to put a head on. */
+.lim-word {
+  display: none; flex: 1; font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--fg-dim);
+}
+.lim-strip[data-open="true"] .lim-word { display: block; }
+.lim-strip[data-open="true"] .lim-name,
+.lim-strip[data-open="true"] .lim-src,
+.lim-strip[data-open="true"] .lim-reading,
+.lim-strip[data-open="true"] .lim-rest,
+.lim-strip[data-open="true"] .lim-foot,
+.lim-strip[data-open="true"] .lim-probe { display: none; }
+/* How many AIs are not the one being named, and what is wrong with them when
+   something is. Never a bare count in that case — see `restOf`. */
+/* The padding is the whole reason this is not butted against the reading: "62%
+   used +3" reads as one figure, and they are two facts about two different
+   things. */
+.lim-rest { flex: none; padding-left: var(--sp-1); font-size: var(--fs-xs); color: var(--fg-dim); }
+/* Pushed to the end whether or not there is a reading before it, so the line
+   ends the same way when a provider has nothing to say. */
+.lim-caret { display: inline-flex; align-items: center; flex: none; margin-left: auto; color: var(--fg-dim); }
+.lim-caret .icon { transition: transform var(--dur-2) var(--ease-out); transform: rotate(-90deg); }
+/* Up while folded, down while open: the rows are ABOVE this line, so the chevron
+   points at where they are rather than at the angle a downward list would use. */
+.lim-summary[aria-expanded="true"] .lim-caret .icon { transform: rotate(90deg); }
+.lim-summary:hover .lim-caret { color: var(--fg-mid); }
 .lim-open {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;
   padding: var(--sp-2); border: 0; border-radius: var(--r-ctl);
@@ -4306,8 +4390,24 @@ h6.md-head { font-size: var(--fs-sm); }
 .lim-fill { display: block; height: 100%; background: var(--fg-dim); }
 .lim-meter.lim-near .lim-fill { background: var(--st-waiting); }
 .lim-meter.lim-out .lim-fill { background: var(--st-error); }
-.lim-foot { display: flex; font-size: var(--fs-xs); color: var(--fg-dim); }
+/* Wraps as a LINE rather than inside its words: with the state's sentence and the
+   count about the other AIs both on it, the two together can outrun 246px, and a
+   flex item that shrinks breaks "nothing moves until\A07:00 PM" across two lines
+   with the count beside the first of them. Nothing here shrinks, so the count
+   drops to a line of its own instead — which only happens when a second AI is
+   also spent, and a person in that state is being told the truth in three lines
+   rather than a mangled version of it in two. The error text is the exception: it
+   is prose from a provider and wrapping is what prose does. */
+.lim-foot { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--fs-xs); color: var(--fg-dim); }
+.lim-out-text, .lim-near-text { white-space: nowrap; }
 .lim-out-text { color: var(--st-error); }
+/* Amber in words, and both halves matter: the hue is how this is read without
+   being read, and "nearly spent" is how it is read by somebody the hue does not
+   reach. The strip has no meter to put the hue on, so this line carries it. */
+.lim-near-text { color: var(--st-waiting); }
+/* What is wrong with the AIs this line is not about. The quiet ink, because it is
+   the count and not the reading — and never the only thing on the line. */
+.lim-others { flex: none; white-space: nowrap; color: var(--fg-dim); }
 /* The action a row nobody can read offers instead of a blank meter. */
 .lim-probe {
   flex: none; align-self: center; padding: var(--sp-1) var(--sp-2);

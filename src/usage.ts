@@ -20,19 +20,71 @@ import type { AiUsage, LimitState, LimitWindow, UsageSource } from "./ipc";
  */
 export function primaryWindow(u: AiUsage): LimitWindow | null {
   if (!u.windows.length) return null;
-  const rank = (w: LimitWindow): number => {
-    if (w.state === "exhausted") return 0;
-    if (w.state === "near") return 1;
-    if (w.usedFraction !== null || w.amount !== null) return 2;
-    return 3;
+  return [...u.windows].sort(byUrgency)[0];
+}
+
+/** How much a window's answer changes what a person does next. Lower is more
+ *  urgent.
+ *
+ *  Written once and used twice, which is the point: `primaryWindow` ranks the
+ *  windows of one AI and `usageGlance` ranks the AIs against each other, and if
+ *  those two used different ideas of "worst" the strip would name an AI that is
+ *  not the one at the top of the list it opens. A snapshot with no windows at all
+ *  ranks behind one that at least knows it does not know. */
+function urgency(w: LimitWindow | null): number {
+  if (!w) return 4;
+  if (w.state === "exhausted") return 0;
+  if (w.state === "near") return 1;
+  if (w.usedFraction !== null || w.amount !== null) return 2;
+  return 3;
+}
+
+/** Most urgent first, and within a rank the fuller one. `?? -1` keeps a window
+ *  with no share behind one that has any share at all, including zero. */
+function byUrgency(a: LimitWindow | null, b: LimitWindow | null): number {
+  const r = urgency(a) - urgency(b);
+  if (r !== 0) return r;
+  return (b?.usedFraction ?? -1) - (a?.usedFraction ?? -1);
+}
+
+/** What the one line at the foot of the panel says, out of every connected AI at
+ *  once.
+ *
+ *  One AI is named and the rest are counted, because the question a glance asks
+ *  is "can I keep working" and that is answered by whichever AI is worst off —
+ *  the others cannot make the answer better. The count is there so the line never
+ *  reads as the whole truth: `+3` is what says there is a list behind it.
+ *
+ *  The two counts beside it are the only thing about the others that changes the
+ *  answer. Everything else about them is one press away. */
+export interface UsageGlance {
+  /** The AI the line names: the worst off of them. */
+  snap: AiUsage;
+  /** Its primary window — the same one its own row draws. `null` when the
+   *  provider declared none, which is a state and not an error. */
+  window: LimitWindow | null;
+  /** How many AIs are connected and not named here. */
+  others: number;
+  /** Of those, how many are nearly spent, and how many are refusing work. */
+  othersNear: number;
+  othersSpent: number;
+}
+
+export function usageGlance(snaps: AiUsage[]): UsageGlance | null {
+  if (!snaps.length) return null;
+  const ranked = snaps
+    .map((snap) => ({ snap, window: primaryWindow(snap) }))
+    .sort((a, b) => byUrgency(a.window, b.window));
+  const [worst, ...rest] = ranked;
+  return {
+    snap: worst.snap,
+    window: worst.window,
+    others: rest.length,
+    // A snapshot's primary window is its most urgent one, so an AI with anything
+    // exhausted anywhere is counted here — no need to look past the primary.
+    othersNear: rest.filter((r) => r.window?.state === "near").length,
+    othersSpent: rest.filter((r) => r.window?.state === "exhausted").length,
   };
-  return [...u.windows].sort((a, b) => {
-    const r = rank(a) - rank(b);
-    if (r !== 0) return r;
-    // Within a rank, the fuller one. `?? -1` keeps a window with no share
-    // behind one that has any share at all, including zero.
-    return (b.usedFraction ?? -1) - (a.usedFraction ?? -1);
-  })[0];
 }
 
 /** What the whole deck is up against, out of every provider at once. */
