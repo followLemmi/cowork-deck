@@ -5,7 +5,7 @@ panel says is pure and unit-tested (`tests/tray-panel.test.ts`), and so are the
 rules the Rust half holds — where the panel lands, when the badge shows, and the
 re-open guard (`src-tauri/src/tray.rs`). What is left is everything the desktop
 does with them, and no suite can open a window positioned under a status icon.
-The design behind it is ADR-0011.
+The design behind it is ADR-0013.
 
 Work through the list for the platform you are on and record the result in the
 pull request description. **The three platform sections are not
@@ -16,7 +16,7 @@ different with the same call, and Linux gets a different surface entirely.
 
 - [ ] The icon appears in the status area within a second or two of launch, before any session is started.
 - [ ] It is recognisably this app: the rounded frame with the chevron and the cursor block inside it. Put the dock beside the status area — the same mark, simplified.
-- [ ] It is not a black smudge and not a blank space. Either means the art and the `icon_as_template` flag have come apart again — they are returned as a pair by `icon()` precisely so they cannot; see ADR-0011 decision 5.
+- [ ] It is not a black smudge and not a blank space. Either means the art and the `icon_as_template` flag have come apart again — they are returned as a pair by `icon()` precisely so they cannot; see ADR-0013 decision 5.
 - [ ] Quit the app and launch it again. The icon comes back.
 - [ ] A limit read from the account's own accounting shows a **bare** number — no word beside it. That is ADR-0009 as amended: an unqualified number is the account's.
 - [ ] A limit the app counted for itself says **"this app only"** after the number. A bare percentage *there* is the bug ADR-0009 exists to prevent.
@@ -30,7 +30,7 @@ different with the same call, and Linux gets a different surface entirely.
 - [ ] On an unreadable row, "Ask" opens the probe command in a tile in the deck.
 - [ ] **Open the deck** raises the deck from minimised and from hidden, and the panel goes as it does.
 - [ ] **Quit** with a session running asks the same question Cmd+Q asks, rather than killing it. Cancel, and the app is still there with its icon.
-- [ ] Hover the icon. The tooltip says `cowork-deck`, or names what is waiting or what has run out. It never carries a bare count — that is the pill's sentence.
+- [ ] Hover the icon. The tooltip says `cowork-deck`, or names what is waiting or what has run out. It never carries a bare count — that is the dock badge's number.
 
 ## macOS
 
@@ -93,15 +93,15 @@ is the honest result, not a failure.
 
 - [ ] The icon is in the top panel, in **colour** — like Windows, nothing here tints. On GNOME this needs an AppIndicator extension; without one, no icon appears, and that is the desktop's decision rather than the app's.
 - [ ] The **menu** opens, with the same sections and the same headings the panel has on the other platforms — Limits, then Sessions, then Open and Quit.
-- [ ] Every limit row in it carries its tier. The menu has no meter, by necessity; it must not have lost the word beside the number.
+- [ ] Every limit row in it carries its caveat where the reading has one — "this app only", "estimate" — and nothing where it does not (ADR-0009 as amended). The menu has no meter, by necessity; it must not have lost the words beside the number too.
 - [ ] A waiting session's row raises the window that holds it.
 - [ ] Nothing anywhere tries to open a window under the icon.
 - [ ] Installed from the `.deb`, `libayatana-appindicator3-1` is pulled in as a dependency rather than being something you had to install by hand.
 - [ ] On a desktop with the Unity launcher API (Ubuntu's dock): the launcher icon carries the count, and it clears on focus and on quit.
 - [ ] On a desktop without it: no badge, and nothing breaks. Best-effort is the whole promise here.
 
-## The pill, which must not have become a duplicate
+## The two surfaces, which must not have become one
 
-- [ ] With a session waiting and the deck not in front: the pill says "N waiting for input" and the tray icon says nothing at all — no count, no title, no changed image.
-- [ ] With the budget spent: the pill says so, and the icon is still unchanged. The panel is where the tray says it, with the tier beside it. The icon never signals state — a mark is a reading with no tier beside it (ADR-0009).
-- [ ] With the deck idle and nothing waiting: the pill is down and the icon is still there. That is the tray's own reason to exist.
+- [ ] With a session waiting and the deck not in front: the dock badge carries the number and the tray icon says nothing at all — no count, no title, no changed image.
+- [ ] With the budget spent: the panel says so, with the caveat beside the reading where there is one, and the icon is still unchanged. The icon never signals state — a mark is a reading with no tier beside it (ADR-0009).
+- [ ] With the deck idle and nothing waiting: the badge is clear and the icon is still there. That is the tray's own reason to exist.

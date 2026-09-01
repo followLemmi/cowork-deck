@@ -11,8 +11,9 @@
       <!-- There are no screens any more. `#stage` is a row of three: the rail
            that selects what the panel holds, the panel, and the deck — and the
            deck never leaves it. What used to be four tab labels was not a
-           structure but four states of one window, and the floating pill exists
-           because that window could not show the deck and anything else at once.
+           structure but four states of one window, and the floating pill existed
+           because that window could not show the deck and anything else at once —
+           which is why #394 could simply delete it.
            `#board` is a page of the panel now; `#pr` and `#history` join it there
            from `app.ts`, which is also what fills `#rail`, `#panel-head` and
            `#ledger`. -->
@@ -38,11 +39,15 @@
                side of the deck, where the thing they are about is named above them. -->
           <div id="panel-stack"></div>
           <!-- What every connected AI has left, and where each number came from.
-               A block in the panel rather than a page of it, and that is the whole
+               In the panel rather than as a page of it, and that is the whole
                decision: a limit is something you glance at WHILE working, so a
                screen you have to navigate to would be consulted once, on the day
-               you first found it, and never at the moment it matters. Empty here —
-               `app.ts` fills it, and draws nothing at all when no AI is detected. -->
+               you first found it, and never at the moment it matters.
+               ONE LINE of it, though — the worst-off AI, its tier and its reading,
+               with the rest counted and the rows one press away. A row per AI at
+               three lines each grew with the number of accounts and took the height
+               out of the page above (#392, ADR-0011). Empty here — `app.ts` fills
+               it, and draws nothing at all when no AI is detected. -->
           <div id="limits"></div>
         </aside>
         <!-- The deck and the terminal drawer are one column: the drawer is a

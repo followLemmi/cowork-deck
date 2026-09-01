@@ -915,11 +915,28 @@ export const quitCancelled = () => invoke<void>("quit_cancelled");
 /** Released once, after the fire listener below is attached, so the backend
  *  scheduler's first (catch-up) tick has somewhere to land. */
 export const schedulerReady = () => invoke<void>("scheduler_ready");
+/** One occurrence coming due, as the backend resolved it.
+ *
+ *  `workspaceId` is where the run belongs, decided by the scheduler against
+ *  `workspaces.json` rather than by whichever workspace this window happens to
+ *  have selected (#249). `null` means the scenario's pin names no workspace that
+ *  exists: the fire is still delivered, so the refusal is journalled instead of
+ *  the schedule going quiet. */
+export interface ScheduledFire {
+  skillId: string;
+  workspaceId: string | null;
+  occurrenceMs: number;
+  catchUp: boolean;
+}
 export const onScheduledFire = (
-  cb: (skillId: string, occurrenceMs: number, catchUp: boolean) => void,
+  cb: (fire: ScheduledFire) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ skillId: string; occurrenceMs: number; catchUp: boolean }>("schedule://fire", (e) =>
-    cb(e.payload.skillId, e.payload.occurrenceMs, e.payload.catchUp ?? false));
+  listen<ScheduledFire>("schedule://fire", (e) => cb({
+    skillId: e.payload.skillId,
+    workspaceId: e.payload.workspaceId ?? null,
+    occurrenceMs: e.payload.occurrenceMs,
+    catchUp: e.payload.catchUp ?? false,
+  }));
 
 /** Report what a fire produced. The backend records only that it attempted a
  *  run; `lastRun` advances only when this says a session actually started.
@@ -1417,7 +1434,7 @@ export const onUsageChanged = (cb: () => void): Promise<UnlistenFn> =>
 
 /* --- The status-area menu -------------------------------------------------
    The model is composed in `tray-panel.ts` and rendered by `src-tauri/src/tray.rs`,
-   which knows nothing about what is in it. See ADR-0011. */
+   which knows nothing about what is in it. See ADR-0013. */
 
 /** One row of the menu.
  *
@@ -1431,7 +1448,8 @@ export interface TraySection { heading: string; rows: TrayRow[] }
 
 export interface TrayPanel {
   sections: TraySection[];
-  /** One line on hover. Never a count — the pill owns the glance (ADR-0011). */
+  /** One line on hover. Never a count — the dock badge owns the glance
+   *  (ADR-0013). */
   tooltip: string;
   /** Sessions waiting for input, for the dock badge. */
   waiting: number;

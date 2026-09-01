@@ -82,6 +82,7 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn(() => (loadRejects ? Promise.reject(loadRejects) : Promise.resolve(undefined)));
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    setSessionsSource = vi.fn();
     // The tree's half of the panel: the workspace row is this panel's and the
     // sessions under it are the deck's, so `startApp` hands each the other.
     /* Captured, because the board and the pull requests are opened through this
@@ -210,19 +211,6 @@ describe("the singletons a second window must not run", () => {
     }
   });
 
-  /** One click on the pill used to raise every window, each focusing its own
-   *  next waiting tile. The main window is the only participant that can answer
-   *  properly — it sees its own sessions, the orphans, and the proxy rows for
-   *  detached workspaces (#243, #244). */
-  it("answers the pill in the main window and nowhere else", async () => {
-    await boot({ kind: "main" });
-    expect(vi.mocked(listen).mock.calls.map(([e]) => e)).toContain("pill://focus-next");
-
-    vi.clearAllMocks();
-    await boot({ kind: "workspace", workspaceId: "w" });
-    expect(vi.mocked(listen).mock.calls.map(([e]) => e)).not.toContain("pill://focus-next");
-  });
-
   /** A window going away is invisible from inside another one, so Rust says it.
    *  Without the main window listening, its picture of what the other windows
    *  hold outlives them — and a workspace brought back by closing its window
@@ -323,7 +311,8 @@ describe("the shape of a window pinned to one workspace", () => {
  *  addressed to. So `emitTo(workspaceLabel(id), "workspace://gone")` reached the
  *  main window too, whose handler closes the window it is in — deleting a
  *  workspace took the main window with it, with no error anywhere and a process
- *  left running behind the status pill.
+ *  left running behind the floating status pill, which nothing ever destroyed.
+ *  The pill is gone (#394); a workspace window left up does the same thing.
  */
 describe("the events a window may act on", () => {
   /** Every event one window addresses to another, and what each would do in a

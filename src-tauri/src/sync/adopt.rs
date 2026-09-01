@@ -748,6 +748,7 @@ mod tests {
                 defaults: Default::default(),
                 enabled: true,
             }),
+            pinned_by_migration: false,
         };
         let dir = r.join("scenarios");
         fs::create_dir_all(&dir).unwrap();

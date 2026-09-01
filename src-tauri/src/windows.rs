@@ -12,15 +12,12 @@ use tokio::sync::Notify;
 /// The window the app opens with, and the only one that outlives every other.
 pub const MAIN: &str = "main";
 
-/// The floating "N waiting" status pill.
-pub const PILL: &str = "pill";
-
 /// The panel behind the status-area icon.
 ///
 /// A window rather than a native menu, because a menu cannot draw a meter and a
-/// meter is what a limit wants — see ADR-0011. Hidden by default and positioned
-/// under the icon each time it is shown, so nothing about where it was last
-/// helps: unlike the pill, this one is not somewhere the person dragged it.
+/// meter is what a limit wants — see ADR-0013. Hidden by default and positioned
+/// under the icon each time it is shown, so where it was last is of no use: it
+/// belongs to the icon, not to wherever somebody last put it.
 pub const TRAY: &str = "tray";
 
 /// What a workspace window's label begins with.
@@ -44,7 +41,7 @@ pub fn workspace_label(workspace_id: &str) -> String {
 }
 
 /// The workspace a label names, or `None` if it names something else — the main
-/// window, the pill, or anything added later.
+/// window, or anything added later.
 pub fn workspace_id_of(label: &str) -> Option<&str> {
     label.strip_prefix(WORKSPACE_PREFIX).filter(|id| !id.is_empty())
 }
@@ -70,8 +67,10 @@ pub fn clamp_to_work_area(size: (u32, u32), work_area: (u32, u32)) -> (u32, u32)
 /// event, so a target that does not exist yet — or has just gone — is a silent
 /// no-op at both ends. **Creating a window is not the same as its JavaScript
 /// having called `listen`**, and anything emitted in that gap is lost with no
-/// error anywhere. The comment above `pill://count` in `src/sessions.ts` records
-/// learning this the hard way, and it generalises to every window.
+/// error anywhere. The comment above the `session://waiting` emit in
+/// `src/sessions.ts` records learning this the hard way — a window's first
+/// report was dropped, and the only way back was to re-send on every render —
+/// and it generalises to every window.
 ///
 /// So a new window says when it is listening and the backend does not speak
 /// before that. The shape is the one `AppState::scheduler_ready` already uses
@@ -145,13 +144,12 @@ mod tests {
         assert_eq!(workspace_id_of(&label), Some(id));
     }
 
-    /// The two windows that existed before this epic must not be mistaken for
-    /// workspace windows — `is_workspace` is what decides whether a window is
-    /// pinned to one workspace or is the whole app.
+    /// The main window must not be mistaken for a workspace window — parsing a
+    /// label is what decides whether a window is pinned to one workspace or is
+    /// the whole app.
     #[test]
     fn the_windows_that_are_not_workspaces_say_so() {
         assert_eq!(workspace_id_of(MAIN), None);
-        assert_eq!(workspace_id_of(PILL), None);
         // The bare prefix names no workspace, so it is not one either. Otherwise
         // an empty workspace id would mint a label that parses back to "".
         assert_eq!(workspace_id_of(WORKSPACE_PREFIX), None);
@@ -179,7 +177,7 @@ mod tests {
     #[test]
     fn every_fixed_label_is_in_the_capability_file() {
         let capabilities = include_str!("../capabilities/default.json");
-        for label in [MAIN, PILL, TRAY] {
+        for label in [MAIN, TRAY] {
             assert!(
                 capabilities.contains(&format!("\"{label}\"")),
                 "capabilities/default.json must list \"{label}\" among its windows",

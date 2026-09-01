@@ -2332,7 +2332,7 @@ const WINDOW_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// `allow-create-webview-window`, and granting window-spawning to a webview that
 /// renders untrusted agent output buys less than it costs — the label scheme and
 /// the window cap belong on this side anyway. `WebviewUrl::App` is same-origin,
-/// exactly as the pill already is, so the CSP is not a factor.
+/// exactly as the main window is, so the CSP is not a factor.
 ///
 /// Returns only once the new window has announced itself, so a caller holding the
 /// label may address it at once. A window that never announces itself is closed

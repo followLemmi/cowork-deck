@@ -22,8 +22,7 @@ export default defineConfig({
     outDir: "dist",
     rollupOptions: {
       input: {
-        main: "index.html", pill: "pill.html", tray: "tray.html",
-        workspace: "workspace.html",
+        main: "index.html", tray: "tray.html", workspace: "workspace.html",
       },
     },
   },

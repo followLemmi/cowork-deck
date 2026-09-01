@@ -1,10 +1,11 @@
-/** The decisions the limits block, the dialog and the pill all have to agree on
- *  — and none of them knows the name of a provider.
+/** The decisions the limits block, the dialog and the limit notification all
+ *  have to agree on — and none of them knows the name of a provider.
  *
  *  Pure: no DOM, no IPC, no timers, so every rule in here is unit-tested as a
- *  rule. That is the same reason `pill-util.ts` is a separate file, and it
- *  matters more here: three surfaces draw from one snapshot, and a rule about
- *  which window a row shows is a rule that must not be written twice.
+ *  rule. Three surfaces draw from one snapshot, and a rule about which window a
+ *  row shows is a rule that must not be written twice — which is what happened
+ *  when the floating pill carried its own copy of the shorter reset format
+ *  (#394 removed it, and the copy with it).
  */
 
 import type { AiUsage, LimitState, LimitWindow, UsageSource } from "./ipc";
@@ -20,19 +21,90 @@ import type { AiUsage, LimitState, LimitWindow, UsageSource } from "./ipc";
  */
 export function primaryWindow(u: AiUsage): LimitWindow | null {
   if (!u.windows.length) return null;
-  const rank = (w: LimitWindow): number => {
-    if (w.state === "exhausted") return 0;
-    if (w.state === "near") return 1;
-    if (w.usedFraction !== null || w.amount !== null) return 2;
-    return 3;
+  return [...u.windows].sort(byUrgency)[0];
+}
+
+/** How much a window's answer changes what a person does next. Lower is more
+ *  urgent.
+ *
+ *  Written once and used twice, which is the point: `primaryWindow` ranks the
+ *  windows of one AI and `usageGlance` ranks the AIs against each other, and if
+ *  those two used different ideas of "worst" the strip would name an AI that is
+ *  not the one at the top of the list it opens. A snapshot with no windows at all
+ *  ranks behind one that at least knows it does not know. */
+function urgency(w: LimitWindow | null): number {
+  if (!w) return 4;
+  if (w.state === "exhausted") return 0;
+  if (w.state === "near") return 1;
+  if (w.usedFraction !== null || w.amount !== null) return 2;
+  return 3;
+}
+
+/** Most urgent first, and within a rank the fuller one. `?? -1` keeps a window
+ *  with no share behind one that has any share at all, including zero. */
+function byUrgency(a: LimitWindow | null, b: LimitWindow | null): number {
+  const r = urgency(a) - urgency(b);
+  if (r !== 0) return r;
+  return (b?.usedFraction ?? -1) - (a?.usedFraction ?? -1);
+}
+
+/** What the one line at the foot of the panel says, out of every connected AI at
+ *  once.
+ *
+ *  One AI is named and the rest are counted, because the question a glance asks
+ *  is "can I keep working" and that is answered by whichever AI is worst off —
+ *  the others cannot make the answer better. The count is there so the line never
+ *  reads as the whole truth: `+3` is what says there is a list behind it.
+ *
+ *  The two counts beside it are the only thing about the others that changes the
+ *  answer. Everything else about them is one press away. */
+export interface UsageGlance {
+  /** The AI the line names: the worst off of them. */
+  snap: AiUsage;
+  /** Its primary window — the same one its own row draws. `null` when the
+   *  provider declared none, which is a state and not an error. */
+  window: LimitWindow | null;
+  /** How many AIs are connected and not named here. */
+  others: number;
+  /** Of those, how many are nearly spent, and how many are refusing work. */
+  othersNear: number;
+  othersSpent: number;
+}
+
+/** One AI and the window its row draws, as `rankedAis` pairs them. */
+export interface RankedAi {
+  snap: AiUsage;
+  /** `null` when the provider declared no window at all, which is a state and
+   *  not an error. */
+  window: LimitWindow | null;
+}
+
+/** Every connected AI, worst off first.
+ *
+ *  The one ordering both surfaces take, and that is the point of it being a
+ *  function rather than a sort written twice: the strip names the first of these
+ *  and the list is drawn in this order, so pressing the strip opens a list topped
+ *  by the AI the strip just named. Ranked in the order they were DETECTED, the
+ *  two agreed only by luck — an exhausted AI found last sat at the bottom of a
+ *  list capped at 15rem, below the fold, while the strip pointed at it. */
+export function rankedAis(snaps: AiUsage[]): RankedAi[] {
+  return snaps
+    .map((snap) => ({ snap, window: primaryWindow(snap) }))
+    .sort((a, b) => byUrgency(a.window, b.window));
+}
+
+export function usageGlance(snaps: AiUsage[]): UsageGlance | null {
+  const [worst, ...rest] = rankedAis(snaps);
+  if (!worst) return null;
+  return {
+    snap: worst.snap,
+    window: worst.window,
+    others: rest.length,
+    // A snapshot's primary window is its most urgent one, so an AI with anything
+    // exhausted anywhere is counted here — no need to look past the primary.
+    othersNear: rest.filter((r) => r.window?.state === "near").length,
+    othersSpent: rest.filter((r) => r.window?.state === "exhausted").length,
   };
-  return [...u.windows].sort((a, b) => {
-    const r = rank(a) - rank(b);
-    if (r !== 0) return r;
-    // Within a rank, the fuller one. `?? -1` keeps a window with no share
-    // behind one that has any share at all, including zero.
-    return (b.usedFraction ?? -1) - (a.usedFraction ?? -1);
-  })[0];
 }
 
 /** What the whole deck is up against, out of every provider at once. */
@@ -222,7 +294,20 @@ export function meterFraction(w: LimitWindow): number | null {
  *  tray and anything after them must not each have their own opinion about what
  *  "exhausted with no known reset" reads as. A row saying one thing in the panel
  *  and another in the menu bar is the bug the pure helpers in this file exist to
- *  prevent.
+ *  prevent. `usage-block.ts` adds the tone and drops the sentence where its
+ *  surface has no room for it; the words are all decided here.
+ *
+ *  Three states worth a sentence and one that is not:
+ *
+ *  - **Spent.** When it lifts, or that nobody said. The whole answer to "can I
+ *    keep working" is here and nowhere else.
+ *  - **Nearly spent.** Said in words as well as in a hue, because a difference
+ *    carried by hue alone is one a person who cannot see the hue does not get.
+ *    The reset when there is one and the ERROR when there is not: an error
+ *    arrives beside the windows rather than instead of them, so a near reading
+ *    and "token expired" can be true at once, and a reading nobody can refresh
+ *    is worth less than the reason why.
+ *  - **Working, with a known reset.** The time, plainly.
  *
  *  `null` is a row with nothing to add: the reading beside it already said
  *  everything. An unknown row deliberately does NOT get "not known" here — that
@@ -233,6 +318,10 @@ export function limitFoot(w: LimitWindow, error: string | null, now: number): st
     return w.resetsAt === null
       ? "nothing moves — no reset time known"
       : `nothing moves until ${formatReset(w.resetsAt, now)}`;
+  }
+  if (w.state === "near") {
+    const why = w.resetsAt !== null ? `resets ${formatReset(w.resetsAt, now)}` : error;
+    return why ? `nearly spent — ${why}` : "nearly spent";
   }
   if (w.resetsAt !== null) return `resets ${formatReset(w.resetsAt, now)}`;
   return error;

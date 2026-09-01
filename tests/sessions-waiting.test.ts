@@ -54,12 +54,13 @@ async function makeDeck() {
 
 /** How many sessions each `session://waiting` said were waiting, in order.
  *
- *  The deck used to send `pill://count` with a number, and the pill trusted it
+ *  The deck used to send a count of its own, which the floating pill trusted
  *  absolutely — which made two windows flap between two partial totals every
- *  five seconds. A window now reports **its own sessions** and the main window
- *  does the adding, because it is the only participant that hears everybody
- *  (#243). What is asserted here is unchanged in substance: this deck says what
- *  it has, on every render, including when nothing moved. */
+ *  five seconds. A window reports **its own sessions** instead, and the main
+ *  window works out the rest, because it is the only participant that hears
+ *  everybody (#243). The pill is gone (#394) and this is not about it: the
+ *  report is what draws a pulled-out workspace's rows in the main window and
+ *  what lets `focusNextWaiting` reach the other monitor. */
 const counts = () =>
   vi.mocked(emit).mock.calls
     .filter(([name]) => name === "session://waiting")
@@ -68,18 +69,17 @@ const counts = () =>
       return sessions.filter((x) => x.state === "waitingInput").length;
     });
 
-describe("Deck — the pill count on the wire", () => {
+describe("Deck — what a window reports about its own sessions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     document.body.innerHTML = "";
   });
 
   // `renderList` runs on every state transition of every session and on every
-  // poll tick, and says the count each time even when it has not moved. The
-  // pill window registers its listener asynchronously and drops what arrives
-  // before it is ready, so the repeat is the only way an early count lands at
-  // all — and the pill no longer re-shows itself on hearing it.
-  it("repeats the count on a re-render that left it where it was", async () => {
+  // poll tick, and reports each time even when nothing moved. A window
+  // registers its listener asynchronously and drops what arrives before it is
+  // ready, so the repeat is the only way an early report lands at all.
+  it("repeats the report on a re-render that left it where it was", async () => {
     const { deck, emitState } = await makeDeck();
     await deck.launch(WS as never, null);
     await deck.launch(WS as never, null);

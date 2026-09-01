@@ -27,6 +27,12 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # `tray-icon` puts the status-area icon up; `image-png` is what decodes the
 # template image behind it (`Image::from_bytes`). Both are off by default.
+#
+# `macos-private-api` is back, and this time with a caller: the tray panel is a
+# transparent window. It moves as a pair with `macOSPrivateApi` in
+# `tauri.conf.json` — the build fails on a config asking for an API the crate
+# was not compiled with. Whatever removes the last transparent window turns
+# both off in the same commit.
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-notification = "2"
 portable-pty = "0.8"

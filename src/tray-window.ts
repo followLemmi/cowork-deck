@@ -1,7 +1,7 @@
 /** The panel behind the status-area icon.
  *
  *  A window rather than a native menu, so a limit can be a meter and a waiting
- *  session can be a row you click — see ADR-0011. It draws with the deck's own
+ *  session can be a row you click — see ADR-0013. It draws with the deck's own
  *  stylesheet and, for the limits, with the deck's own `LimitsBlock`; what goes
  *  in it is `tray-panel.ts`'s `PANEL`, the one list both this and the Linux menu
  *  are built from.

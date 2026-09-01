@@ -2,7 +2,7 @@ import { WorkspacesPanel } from "./workspaces";
 import { mountMemory } from "./memory-page";
 import { NoteReader } from "./note-reader";
 import { SkillsPanel } from "./skills";
-import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
+import { Deck, type SessionCounts } from "./sessions";
 import {
   applyPanel, applyWorkspacePanel, firstFocusable,
   PANEL_TITLE, WORKSPACE_PAGES, WORKSPACE_TITLE,
@@ -70,15 +70,14 @@ import { appMark, iconButton, installSprite, type IconName } from "./icons";
 import { openGithubScreen } from "./github-screen";
 import { fillPlaceholders, resolvePrompt } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
+import { syncDotPhase } from "./dot-phase";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { listen, emit, emitTo } from "@tauri-apps/api/event";
-import {
-  allSessions, sumWaiting, windowOf,
-  type RemoteSession, type SessionsByWindow, type WindowSessions,
-} from "./cross-window";
+import { allSessions, windowOf } from "./cross-window";
+import type { RemoteSession, SessionsByWindow, WindowSessions } from "./cross-window";
 import { addressedTo, MAIN_WINDOW_LABEL, workspaceIdOf, workspaceLabel } from "./window-role";
 import { hasLeftWindow, pressStartsOnControl, startsTearOut } from "./tear-out";
 import { getCurrentWindow, cursorPosition } from "@tauri-apps/api/window";
@@ -260,9 +259,9 @@ export function startApp(role: WindowRole): Promise<void> {
      The tab bar was answering "which of four states is this window in", which is
      not a question anybody has. The question people do have is "does anything need
      me", and the app already shipped an answer to it: a floating always-on-top pill
-     counting blocked sessions, which exists because the window could not show the
-     deck and anything else at the same time. Now it can, and the ledger in the top
-     bar says the number where the eye already is.
+     counting blocked sessions, which existed because the window could not show the
+     deck and anything else at the same time. Now it can, the ledger in the top bar
+     says the number where the eye already is, and the pill is gone (#394).
 
      Vertical, and 44px wide, because the panel beside it is a column: a horizontal
      switch over a column has to be as wide as the column, which is how the old one
@@ -487,8 +486,9 @@ export function startApp(role: WindowRole): Promise<void> {
   /* --- The ledger ---------------------------------------------------------
      What replaced four tab labels: not where to go, but what wants me. Written
      from the deck's own counts rather than typed beside them — the two numbers
-     that used to be stated in the app (a sidebar heading and the pill) came from
-     two different places and could disagree. */
+     that used to be stated in the app (a sidebar heading and the floating pill)
+     came from two different places and could disagree. Both are gone; this is the
+     one reading. */
   const ledgerEl = document.querySelector<HTMLElement>("#ledger")!;
 
   // The rest of the top bar: the wordmark on the left, the global actions on the
@@ -727,8 +727,8 @@ export function startApp(role: WindowRole): Promise<void> {
       }
       setPanel("sessions");
       // The tile may live in another workspace — an unpinned scenario runs
-      // wherever it was launched — so this goes through the same path the pill
-      // and a notification click take, which switches workspace first.
+      // wherever it was launched — so this goes through the same path a
+      // notification click takes, which switches workspace first.
       deck.focusSession(rec.sessionId);
     },
     onRerun: (rec, skill) => { void rerunScenario(rec, skill); },
@@ -845,11 +845,18 @@ export function startApp(role: WindowRole): Promise<void> {
   let boardVisible = false;
   let boardTimer: ReturnType<typeof setTimeout> | null = null;
   let currentPage: PanelPage = "sessions";
-  /** Whether the panel took the deck's width, and whether taking it is what
-   *  zoomed the deck. Both halves matter: leaving the page has to give back
+  /** The workspace the panel took the deck's width in, or `undefined` when it
+   *  has taken nothing. Both halves matter: leaving the page has to give back
    *  exactly what was taken, and a tile a person zoomed themselves must not be
-   *  un-zoomed by a panel narrowing under them. */
-  let wideZoomed = false;
+   *  un-zoomed by a panel narrowing under them.
+   *
+   *  The workspace and not merely a flag, because a zoom belongs to the
+   *  workspace it was made in (#224) and this borrowing outlives a switch: the
+   *  panel stays wide across one, while the diff that asked for the width does
+   *  not. `undefined` rather than `null` for "nothing taken" — `null` is a
+   *  workspace key like any other, the one a window with no workspace selected
+   *  zooms under. */
+  let wideZoomedIn: string | null | undefined = undefined;
 
   function stopBoardPolling() {
     if (boardTimer !== null) { clearTimeout(boardTimer); boardTimer = null; }
@@ -900,10 +907,13 @@ export function startApp(role: WindowRole): Promise<void> {
   function setWspWide(on: boolean) {
     wspEl.classList.toggle("is-wide", on);
     if (on) {
-      if (!deck.isZoomed()) wideZoomed = deck.zoomActive();
-    } else if (wideZoomed) {
-      deck.exitZoom();
-      wideZoomed = false;
+      if (!deck.isZoomed() && deck.zoomActive()) wideZoomedIn = workspaces.active?.id ?? null;
+    } else if (wideZoomedIn !== undefined) {
+      // Given back where it was taken. The workspace on screen may not be the
+      // one that lent it, and un-zooming that one instead would take a zoom the
+      // person made themselves and leave the borrowed one on for good.
+      deck.exitZoomIn(wideZoomedIn);
+      wideZoomedIn = undefined;
     }
     deck.refit();
   }
@@ -1189,11 +1199,14 @@ export function startApp(role: WindowRole): Promise<void> {
       // The backend emits one `schedule://fire`. Every window listening would
       // launch the scenario and acknowledge it, so a nightly job would run as
       // many times as there are windows open.
-      ...(isMain ? [() => onScheduledFire((skillId, occurrenceMs, catchUp) => {
+      ...(isMain ? [() => onScheduledFire(({ skillId, workspaceId: where, occurrenceMs, catchUp }) => {
         const missedAt = catchUp
           ? new Date(occurrenceMs).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
           : undefined;
-        void handleScheduledFire(skillId, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
+        // Where it runs comes down with the fire: the backend resolved the pin
+        // against `workspaces.json`, so this window's own selection has no say
+        // in which repository an unattended session works in (#249).
+        void handleScheduledFire(skillId, where, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
           if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
           // Tell the backend what came of it: an occurrence it emitted counts as
           // a run only once a session has actually started. Anything else also
@@ -1912,15 +1925,24 @@ export function startApp(role: WindowRole): Promise<void> {
 
   // Focus is the other half of "only while watched": a minimised or background
   // window polls nothing, and coming back refreshes at once rather than at the
-  // next tick.
+  // next tick. All three of this window's polls are here, so there is one place
+  // that answers "what stops when nobody is looking".
   window.addEventListener("focus", () => {
     if (prVisible()) void refreshPrs();
     // Coming back refreshes at once rather than at the next tick, which is the
     // whole point of pausing on blur — and `boardTick` re-arms the chain the blur
     // cleared.
     if (boardVisible) void boardTick();
+    // The deck has no view to be on: its tiles are on screen whenever any exist,
+    // so focus is its only gate. It decides for itself whether it has anything to
+    // resume, and its own tick re-arms its chain.
+    deck.resumePolling();
   });
-  window.addEventListener("blur", () => { stopPrPolling(); stopBoardPolling(); });
+  window.addEventListener("blur", () => {
+    stopPrPolling();
+    stopBoardPolling();
+    deck.pausePolling();
+  });
 
   /** ▶ on a row: a worktree for the branch, then an ordinary session inside it. */
   async function launchFromPr(pr: PullRequest) {
@@ -2029,6 +2051,10 @@ export function startApp(role: WindowRole): Promise<void> {
    *  scheduled run cannot ask) and launch it as a fresh tile. */
   async function handleScheduledFire(
     skillId: string,
+    /** The workspace the run belongs in. Never the active one: for a scheduled
+     *  fire this is what the backend resolved, and for the ⏰ button it is the
+     *  scenario's own pin. */
+    workspaceId: string | null,
     /** Which path the fire came down. Both are journalled — the question a
      *  history answers is "when did this scenario last run", not "who pressed
      *  it" — and both are told apart, so the screen can filter one out. */
@@ -2037,7 +2063,7 @@ export function startApp(role: WindowRole): Promise<void> {
   ): Promise<FireResult> {
     const skill = skills.find(skillId);
     if (!skill?.schedule?.enabled) return { outcome: "not-scheduled", workspaceId: null };
-    const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
+    const res = resolveScheduledWorkspace(workspaceId, workspaces.all);
     if (!res.ok) return { outcome: res.reason, workspaceId: null };
     const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
     const launched = await deck.launchScheduled(res.workspace, skill, filled, trigger, catchUpFor);
@@ -2054,36 +2080,15 @@ export function startApp(role: WindowRole): Promise<void> {
    *  loop, so the regular occurrence still fires. Unlike a backend-driven fire,
    *  a click must say why nothing happened. */
   async function runScheduledNow(skill: Skill) {
-    const { outcome } = await handleScheduledFire(skill.id, "runNow");
+    const { outcome } = await handleScheduledFire(skill.id, skill.workspaceId ?? null, "runNow");
     if (outcome === "skipped-overlap") {
       await alertModal("Run skipped: the previous one is still active.");
     } else if (outcome === "no-workspace") {
-      await alertModal("This scenario has no workspace available: pin it to one or pick a workspace.");
+      await alertModal(
+        "This scenario is not pinned to a workspace that exists, so there is nowhere to run it. "
+        + "Edit it with the workspace it belongs to open.");
     }
   }
-
-  // Clicking the floating status pill raises the main window (same raise
-  // sequence as notify.ts's OS-notification click handler) and focuses the
-  // next session that's waiting for input.
-  //
-  // One addressee, and it is this window. Every window used to answer, so a
-  // single click raised all of them and each focused its own next waiting tile.
-  // The main window is the one that can answer properly: it is the only
-  // participant that sees every session — its own, the orphans, and the proxy
-  // rows for detached workspaces (#243, #244).
-  if (isMain) void listen("pill://focus-next", async () => {
-    // Across every window, not just this one. "Who is blocked on me" is the one
-    // command whose entire purpose is that question, and answering it for one
-    // monitor is answering the wrong question.
-    const target = nextWaitingAcross(allSessions(sessionsByWindow), null);
-    const where = target ? windowOf(sessionsByWindow, target.session) : null;
-    if (target && where && where !== myLabel) {
-      await emitTo(where, "session://focus", { session: target.session });
-      return;
-    }
-    await raiseThisWindow();
-    deck.focusNextWaiting();
-  });
 
   /** A row of the status-area menu was chosen.
    *
@@ -2129,8 +2134,9 @@ export function startApp(role: WindowRole): Promise<void> {
     openUsageDialog(snap, limitsHost, () => limits.redraw(Date.now()));
   });
 
-  /** Focus a session because another window asked — the far end of the routing
-   *  above, and of a click on a detached workspace's session row (#244).
+  /** Focus a session because another window asked — the far end of `onRemoteFocus`
+   *  below, of the tray routing above, and of a click on a detached workspace's
+   *  session row (#244).
    *
    *  Raising happens here rather than at the sender, and only on an explicit
    *  gesture. `set_focus` on a window living on another macOS Space yanks the
@@ -2162,9 +2168,11 @@ export function startApp(role: WindowRole): Promise<void> {
   }
 
   /* --- What every connected AI has left -----------------------------------
-     The block lives in the panel of every window, including one pinned to a
+     One line at the foot of the panel of every window, including one pinned to a
      workspace: a shared ceiling above twelve sessions is not a property of a
      repository, and a person in a detached window needs it as much as anybody.
+     What that line holds, and why it is a line rather than a row per AI, is
+     `usage-block.ts` and ADR-0011; nothing here changed when it shrank.
 
      Read on a timer of its own and NOT on the five-second poll tick. The
      registry behind it holds a TTL cache, so this interval is how often the
@@ -2180,8 +2188,8 @@ export function startApp(role: WindowRole): Promise<void> {
     cwd: () => workspaces.active?.path ?? ".",
   };
   const limits = new LimitsBlock(limitsEl, limitsHost);
-  /** The last snapshot, so the pill's payload and the block agree on one reading
-   *  rather than each asking for its own. */
+  /** The last snapshot, so the block on screen, the notification and the tray
+   *  report agree on one reading rather than each asking for its own. */
   let lastUsage: AiUsage[] = [];
   const limitNotifier = new LimitNotifier();
 
@@ -2198,12 +2206,15 @@ export function startApp(role: WindowRole): Promise<void> {
     announceLimit();
   }
 
-  /** Tell the pill, and tell somebody who is not looking at the window.
+  /** Tell somebody who is not looking at the window.
    *
-   *  Both go through `deckLimit`, so the pill's story and the notification's are
-   *  the same story — and the notifier holds its own state, once for the whole
-   *  deck, because twelve notifications about one ceiling is the bug #305 exists
-   *  to prevent. */
+   *  One of the two, and the only one that interrupts: the status-area panel is
+   *  where the same `deckLimit` is read at a glance, and `announceOutside` below
+   *  is what keeps the two a tick apart at most. On screen the same reading is
+   *  the limits block above.
+   *
+   *  Once for the whole deck, because the notifier holds its own state and twelve
+   *  notifications about one ceiling is the bug #305 exists to prevent. */
   function announceLimit(): void {
     if (!isMain) return;
     announceOutside();
@@ -2214,18 +2225,17 @@ export function startApp(role: WindowRole): Promise<void> {
 
   /** Tell everything that speaks for the deck while its window is not in front.
    *
-   *  Three surfaces now — the pill, the status-area menu and the dock badge —
-   *  and one call, because they are answers to the same two questions and must
-   *  never be a tick apart. Only the main window sends: it is the only
-   *  participant that hears every window's sessions, which is the same reason
-   *  `sumWaiting` is added up here (#243).
+   *  Two surfaces — the status-area panel and the dock badge — and one call,
+   *  because they are answers to the same two questions and must never be a tick
+   *  apart. Only the main window sends: it is the only participant that hears
+   *  every window's sessions, which is why the count behind both is added up
+   *  here (#243).
    *
    *  Safe on every tick. An identical tray report is dropped in Rust rather than
-   *  rebuilding a native menu under an open cursor — see ADR-0011.
+   *  rebuilding a native menu under an open cursor — see ADR-0013.
    */
   function announceOutside(): void {
     if (!isMain) return;
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
     const sessions = allSessions(sessionsByWindow);
     // Twice, and they are not the same message. Rust gets the composed report —
     // the tooltip, the badge count, and the sentences the Linux menu is built
@@ -2235,7 +2245,7 @@ export function startApp(role: WindowRole): Promise<void> {
     const panel = trayPanel({ usage: lastUsage, sessions, now: Date.now() });
     // A surface that stopped updating looks exactly like a deck with nothing to
     // report, so the failure is said rather than swallowed — but it is not worth
-    // a modal: the next tick is the recovery, as it is for the pill.
+    // a modal: the next tick is the recovery.
     void trayUpdate(panel).catch((e) => console.debug("tray: could not update the surface", e));
     void emit(TRAY_FACTS, {
       usage: lastUsage,
@@ -2264,9 +2274,10 @@ export function startApp(role: WindowRole): Promise<void> {
   const waitingListener = listen<WindowSessions>("session://waiting", (e) => {
     if (!isMain) return;
     sessionsByWindow.set(e.payload.label, e.payload.sessions);
-    // The count is added up here, where the whole picture is, and the ceiling
-    // travels with it: `pillLabel` decides which of the two stories to tell, and
-    // it cannot decide without both. See `pill-util.ts`.
+    // Kept here, where the whole picture is: this window is the only participant
+    // that hears every other one. What it is for is `showElsewhere` below,
+    // `focusNextWaiting` reaching the other monitor through the proxies it sets,
+    // and the count the status area and the dock badge are told.
     announceOutside();
     showElsewhere();
   });
@@ -2301,12 +2312,20 @@ export function startApp(role: WindowRole): Promise<void> {
   function showElsewhere() {
     const detached = new Set<string>();
     const proxies: (RemoteSession & { label: string })[] = [];
-    for (const [label, sessions] of sessionsByWindow) {
+    // Sorted by label, and it is not cosmetic. `Map` iterates in insertion
+    // order, which is the order the windows happened to report in after a
+    // restart — so "the next session waiting elsewhere" would mean a different
+    // session on two runs with the same windows open, and `setRemoteSessions`
+    // would see its serialised comparison change for a list that had not.
+    // `allSessions` used to carry this rule; it was the only thing left using it
+    // when #394 took the pill's event handler, so the rule moved here, where the
+    // list is actually built.
+    for (const label of [...sessionsByWindow.keys()].sort()) {
       if (label === myLabel) continue;
       const id = workspaceIdOf(label);
-      if (id === null) continue; // the pill, and anything added later
+      if (id === null) continue; // the main window, and anything added later
       detached.add(id);
-      for (const s of sessions) proxies.push({ ...s, label });
+      for (const s of sessionsByWindow.get(label) ?? []) proxies.push({ ...s, label });
     }
     workspaces.setDetached(detached);
     deck.setRemoteSessions(proxies);
@@ -2480,10 +2499,14 @@ export function startApp(role: WindowRole): Promise<void> {
     (skill) => { void launchScenario(skill); },
     (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
      () => workspaces.active?.name ?? null,
-     (skill) => openHistoryFor(skill));
+     (skill) => openHistoryFor(skill),
+     (id) => workspaces.all.find((w) => w.id === id)?.name ?? null);
   // Deleting a workspace strands the scenarios pinned to it — the confirmation
   // says how many before it happens.
   workspaces.setSkillsSource(() => skills.all);
+  // And it cuts loose the sessions running in it, which the confirmation used to
+  // say nothing about at all — so it names them too.
+  workspaces.setSessionsSource((id) => deck.liveSessionNamesIn(id));
   /** Create a session in a NAMED workspace. The row that was pressed says which
    *  one, and it is not necessarily the active one — which is the whole of
    *  "creation is positional".
@@ -2543,6 +2566,10 @@ export function startApp(role: WindowRole): Promise<void> {
       if (n === 0) return;
       const b = document.createElement("button");
       b.className = `led led--${kind}`;
+      // `drawLedger` replaces its children outright and runs on every list
+      // render, so the waiting lamp is a new element every five seconds. See
+      // `src/dot-phase.ts`.
+      syncDotPhase(b);
       const num = document.createElement("b");
       num.textContent = String(n);
       b.append(num, document.createTextNode(` ${words}`));
@@ -2743,7 +2770,7 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "close-active", title: "Close active session", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
       { id: "rename-active", title: "Rename active session", hotkey: "F2", run: () => deck.renameActive() },
       { id: "next-waiting", title: "Go to next session waiting for input", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
-      { id: "zoom", title: "Zoom active session", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
+      { id: "zoom", title: "Zoom active session, or leave zoom", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
       { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
       { id: "clear", title: "Clear terminal", run: () => deck.clearActive() },
       { id: "toggle-terminals", title: "Terminals: show or hide the drawer", hotkey: hotkeyLabel("J"), run: () => { void terminals.toggle(); } },
@@ -2753,7 +2780,12 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "expand-terminals", title: "Terminals: fill the window, or restore", hotkey: isMacPlatform() ? "Cmd+Shift+E" : "Ctrl+Shift+E", run: () => { void terminals.toggleFull(); } },
       { id: "new-terminal", title: "New terminal", run: () => { void terminals.newTerminal(); } },
       { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
+      /* Both directions, because the palette is where a binding is discoverable
+         and one that is not listed may as well not exist. The key is in the title
+         as well as the `hotkey` column: the filter matches titles only, so this is
+         what makes typing "f6" find them. */
       { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
+      { id: "prev-region", title: "Go to previous region (Shift+F6)", hotkey: "Shift+F6", run: () => cycleRegion(-1) },
       /* One entry per page the rail can select, and the wording says what they are
          now: pages of one panel rather than screens that replace the deck. The rail
          has no digits of its own — ⌘1…⌘5 are "focus session N" in this app — so this
@@ -3049,6 +3081,32 @@ export function startApp(role: WindowRole): Promise<void> {
     return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
   }
 
+  /** Whether the keystroke came from a terminal — the pty's keyboard, not the
+   *  app's.
+   *
+   *  `isTextEntry` answers false for the terminal's hidden textarea on purpose,
+   *  because `Cmd+N` and `Cmd+W` have to keep working with the caret in one. That
+   *  is right for the hotkey table and wrong for `Escape`, which no table claims:
+   *  `Escape` belongs to whatever has the keyboard, and in a terminal that is the
+   *  program — `vim`, `less`, `htop`, `fzf`, claude's own "esc to interrupt" (#269).
+   *
+   *  Second line rather than first. xterm consumes `Escape` while its own textarea
+   *  has focus: it writes the byte to the pty and then calls `preventDefault` *and*
+   *  `stopPropagation`, so the event never reaches this listener at all — the same
+   *  fact `diff-drawer.ts` binds its own `Escape` on `.pr-view` for. The first line
+   *  is therefore that focus is really in the terminal, which is what
+   *  `Deck.applyLayout` now keeps true across a zoom.
+   *
+   *  This guard is what makes the rule the app's own rather than a dependency's. It
+   *  holds for anything focusable inside `.xterm` that is not that textarea, and
+   *  for the next person to move this listener somewhere it fires ahead of xterm —
+   *  which is precisely the mistake `diff-drawer.ts` documents not making. */
+  function isTerminalCaret(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    if (!el || !(el instanceof HTMLElement)) return false;
+    return el.classList.contains("xterm-helper-textarea") || el.closest(".xterm") !== null;
+  }
+
   window.addEventListener("keydown", (e) => {
     if (document.querySelector(".modal-overlay")) return; // do not intercept while a modal, the palette or a form is open
     // Without this, Cmd+N spawned a session and Cmd+W closed the tile while the
@@ -3065,7 +3123,12 @@ export function startApp(role: WindowRole): Promise<void> {
       if (!noteReader.isEditing()) noteReader.close();
       return;
     }
-    if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
+    /* Unzooming is what `Escape` means when focus is anywhere but a terminal. With
+       focus in one the deck stays exactly as it is and the byte is the program's,
+       so the keyboard way out of a zoom is the zoom key itself — `Cmd+Enter` /
+       `Ctrl+Shift+Enter`, which `matchHotkey` claims above the pty and which is in
+       the palette by name — or `F6` out of the terminal region first. */
+    if (e.key === "Escape" && !isTerminalCaret(e.target) && deck.exitZoom()) { e.preventDefault(); return; }
     const id = matchHotkey(e, isMacPlatform());
     if (!id) return;
     if (id.startsWith("focus-")) {

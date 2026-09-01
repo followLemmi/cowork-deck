@@ -1,10 +1,10 @@
 /* The panel behind the status-area icon.
  *
  * IT LOADS THE APP'S OWN STYLESHEET, and that is the decision this file exists
- * to make. `pill.css` copies four colours out of the palette by hand, because
- * the pill is a 200px readout whose whole bundle would otherwise double — and
- * the comment there records what it cost: the pill was left behind by two
- * palettes in a row and came to look like a different program's.
+ * to make. The obvious alternative — copying the handful of colours a small
+ * window needs out of the palette — is what the floating pill did, and the
+ * pill was left behind by two palettes in a row and came to look like a
+ * different program's before #394 removed it.
  *
  * This window cannot afford that, and does not have to. What it draws is the
  * deck's limits block — `.lim-row`, `.lim-meter`, `.lim-src`, the state classes
@@ -45,7 +45,7 @@ html, body {
   background: var(--bg-island);
   /* `--line-strong` and not `--line`: this floats over a desktop rather than
      over the app's own stage, and the edge is the only thing separating it from
-     whatever is behind. The same reasoning, and the same token, as the pill. */
+     whatever is behind. */
   border: 1px solid var(--line-strong);
   border-radius: var(--r-island);
   box-shadow: var(--sh-island), 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -166,10 +166,16 @@ html, body {
 .tray-foot .tray-quiet { flex: 0 0 auto; color: var(--fg-mid); background: none; }
 .tray-foot .tray-quiet:hover { background: var(--bg-hover); color: var(--fg); }
 
-/* The block is the deck's, and it needs two things it does not need there: no
-   island padding of its own (this window is the island), and rows that can use
-   the full width of a narrow panel. */
-#tray .lim-block { gap: 2px; }
+/* The block is the deck's, and it needs three things it does not need there.
+   No strip: this window IS the glance, and it is drawn with `strip: false`, so
+   the list arrives on its own — the deck's `#limits` rules never applied here
+   anyway, since the block is mounted in a section body rather than at the foot
+   of a panel. No cap on the list: `.lim-list` is bounded in the deck so
+   unfolding cannot push the page out of the window, and here there is no page
+   above it to protect — the panel sizes to its content and Rust is told how
+   tall that came out (`tray-window.ts`). And rows that can use the full width
+   of a narrow panel. */
+#tray .lim-list { max-height: none; overflow: visible; padding: 0; gap: 2px; }
 #tray .lim-open { padding: var(--sp-1) var(--sp-2); border-radius: var(--r-sm); }
 
 @media (forced-colors: active) {

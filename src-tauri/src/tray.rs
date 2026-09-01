@@ -2,15 +2,15 @@
 //!
 //! An icon in the menu bar on macOS, the top panel on Linux and the notification
 //! area on Windows — plus the count on the dock icon. Two halves of one problem:
-//! the app has things to say while its window is not in front, and until now the
-//! floating pill was the only thing that could say them.
+//! the app has things to say while its window is not in front, and since #394
+//! took the floating pill there has been nothing to say them with.
 //!
 //! **The panel behind the icon is a webview window** (`windows::TRAY`), so it
 //! draws the deck's own meters and rows rather than a list of sentences. On
 //! Linux it is a native menu instead, because a StatusNotifierItem's click is
 //! not deliverable to us on most desktops and a menu is all the platform
 //! guarantees. Both are fed the same report and rendered from the same section
-//! list; ADR-0011 is the decision and the reasoning.
+//! list; ADR-0013 is the decision and the reasoning.
 //!
 //! **This file knows nothing about limits or sessions.** It positions a window,
 //! turns a list of sections into a menu, routes a click back, and tells the dock
@@ -92,8 +92,8 @@ pub struct TraySection {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TrayPanel {
     pub sections: Vec<TraySection>,
-    /// What the icon says on hover. One line, and never a count — see ADR-0011
-    /// decision 3 on why the pill keeps that job.
+    /// What the icon says on hover. One line, and never a count — see ADR-0013
+    /// decision 3 on why the dock badge keeps that job.
     pub tooltip: String,
     /// Sessions waiting for input, for the dock badge.
     pub waiting: i64,
@@ -117,8 +117,8 @@ struct TrayAction {
 /// in a frame or two later. Opening it is then a `show`, which is instant.
 ///
 /// Not `always_on_top` by accident: it has to survive being over a full-screen
-/// app, and it has to go away when it loses focus, which is why — unlike the
-/// pill — it is focusable.
+/// app, and it has to go away when it loses focus, which is why it is focusable
+/// — the one window in this app that is.
 fn build_panel<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     tauri::WebviewWindowBuilder::new(app, windows::TRAY, tauri::WebviewUrl::App("tray.html".into()))
         .inner_size(PANEL_WIDTH, PANEL_HEIGHT)
@@ -135,10 +135,11 @@ fn build_panel<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         // around the panel, which is what this turns off. The shadow that is
         // wanted is the one in the stylesheet, under the panel's own corners.
         .shadow(false)
-        // The one window in this app that WANTS the keyboard, and only because
-        // losing it is how it knows to go away. The pill is `focusable(false)`
-        // for the opposite reason — it is a readout and must never take a
-        // keystroke from the session being typed into.
+        // This window WANTS the keyboard, and only because losing it is how it
+        // knows to go away. Nothing else in the app does: a surface that speaks
+        // while the deck is not in front must never take a keystroke from the
+        // session being typed into, which is why the icon has no window of its
+        // own to focus and why this one gives the keyboard straight back.
         .focusable(true)
         .build()?;
     Ok(())
@@ -353,8 +354,8 @@ fn build_menu<R: Runtime>(
 /// the deck that knows which window holds a session and which provider a row is
 /// about — so a row's action is forwarded and nothing is raised: raising the
 /// main window before the deck routed the click to a workspace window would
-/// flash the wrong window forward, which is the mistake `pill://focus-next`
-/// already avoids by letting the far end raise itself.
+/// flash the wrong window forward. The deck raises whichever window it routes
+/// to, and nothing is raised here.
 #[cfg(target_os = "linux")]
 fn on_menu<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) {
     match event.id().as_ref() {
@@ -432,7 +433,7 @@ fn on_icon<R: Runtime>(tray: &TrayIcon<R>, event: TrayIconEvent) {
 /// and Linux get the colour icon**, because neither tints anything — a
 /// notification-area icon and a panel icon are drawn as they are, colour is both
 /// platforms' own convention, and a white glyph would vanish on a light Windows
-/// 11 taskbar. ADR-0011 decision 5.
+/// 11 taskbar. ADR-0013 decision 5.
 fn icon() -> Option<(Image<'static>, bool)> {
     #[cfg(target_os = "macos")]
     let (bytes, template) = (&include_bytes!("../icons/tray-template.png")[..], true);
@@ -457,7 +458,8 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     build_panel(app)?;
 
     let builder = TrayIconBuilder::with_id(TRAY_ID)
-        // Never a count, and never a title — the pill owns the glance. ADR-0011.
+        // Never a count, and never a title — the dock badge owns the glance.
+        // ADR-0013.
         .tooltip("cowork-deck")
         .on_tray_icon_event(on_icon);
     // One expression, so the art and the flag travel together — see `icon`.

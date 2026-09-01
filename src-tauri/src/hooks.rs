@@ -21,6 +21,15 @@ pub fn build_settings_json(
     task_bin: &str,
     workspace: Option<&str>,
 ) -> String {
+    // **`Stop` does not run when the person interrupts the turn.** Documented
+    // behaviour of the hook rather than a gap here, and there is no other event
+    // that fires in its place — so the `working` the last `PreToolUse` set would
+    // stand for the rest of the session's life, and `working` is what the
+    // scheduler's overlap guard and a card's status read (#333). The end of a
+    // turn nobody reports is read off the terminal's own screen instead; see
+    // `src/interrupt.ts` and ADR-0011. Nothing about this table changes for it:
+    // a hook that does run is still the better answer, and this one stays the
+    // only source for every turn that ends on its own.
     let mapping = [
         ("SessionStart", "start"),
         ("UserPromptSubmit", "working"),

@@ -80,21 +80,18 @@ four things worth knowing about a session you are not watching.*
 
 ## When the window is not in front
 
-Three surfaces, and they answer different questions on purpose.
+Two surfaces, and they answer different questions on purpose.
 
-- **The pill** floats over whatever you are working in and says one sentence — *3 waiting for input*,
-  or *limit · resets 19:00* when the budget is spent, because a queue of questions is not the useful
-  fact when nothing can move. It is up only while there is something to say, and clicking it takes you
-  to the session that is waiting.
 - **The status area** — the menu bar on macOS, the notification area on Windows — is always there, and
   it answers on demand rather than at a glance. Click the icon and a small panel drops under it, drawn
   with the deck's own components: every connected AI's **meter**, with the caveat beside the reading
   where there is one, and
   the deck's sessions ordered by what wants a person, each one a row that takes you to it. A limit row
   opens that provider's detail; a session row raises the window it lives in, even if that is a
-  workspace window on another monitor. It never carries a count, because that is the pill's sentence
-  and two surfaces saying it would be one too many.
-- **The dock**, or the taskbar, carries the number of sessions waiting. It clears the moment you look
+  workspace window on another monitor. It never carries a count, because that is the dock's number and
+  two surfaces saying it would be one too many.
+- **The dock**, or the taskbar, carries the number of sessions waiting. It is the glance: a number on
+  the icon you are already looking at when you decide whether to switch. It clears the moment you look
   at the deck — a badge you have learned to ignore is worse than none.
 
 The icon follows the platform: on macOS it is a template image, so the system tints it white on a dark
@@ -103,7 +100,7 @@ where nothing tints, it is the app's icon in colour. On Linux it also carries a 
 same sections instead of the panel, because an indicator's click is not deliverable to the application
 on most desktops and a panel opened on a click would never open. Both are built from one list, so adding a section is a list entry rather than a
 layout change in either. The decision, and why the panel is a window rather than a menu everywhere, is
-[ADR-0011](docs/adr/0011-the-tray-panel-is-a-window-and-a-menu-is-the-linux-fallback.md).
+[ADR-0013](docs/adr/0013-the-tray-panel-is-a-window-and-a-menu-is-the-linux-fallback.md).
 
 ## Sessions
 
@@ -159,8 +156,10 @@ for a session the deck did not start. A CLI with no reader says so rather than s
 
 ## Limits: what each AI has left, and where that number came from
 
-A dozen sessions draw on **one** budget, and when it runs out they stall together. A block at the foot
-of the panel says what each connected AI has left — one row apiece, a thin meter, and when it lifts.
+A dozen sessions draw on **one** budget, and when it runs out they stall together. One line at the foot
+of the panel says whether you can keep working: the AI that is worst off, its reading, and a count of
+the others behind it. Press it and the rest unfold above it — a row apiece, a thin meter, and when it
+lifts — worst off first, so the list opens on the AI the line just named.
 
 **The source of a number is part of the number**, and where that changes what you would do it is on
 the row beside it rather than in a tooltip. There are three ways this app can know such a number:
@@ -181,9 +180,9 @@ The dialog behind a row names all three by their tier — Reported, Observed, Es
 saying what each means. That is where the vocabulary is taught; a row carries only the caveat.
 
 The reading that matters most needs no percentage at all. When a session is refused, the app reads the
-limit banner on its way to the screen and the pill stops saying *3 waiting for input* — which is true
-and useless — and says **nothing moves until 19:00**. That survives a restart, and you are told again
-when it lifts.
+limit banner on its way to the screen and says **nothing moves until 19:00** — in the limits block on
+screen, and in a notification while you are looking at something else. That survives a restart, and
+you are told again when it lifts.
 
 ## A GitHub account per workspace
 
@@ -271,7 +270,9 @@ form at launch; a prompt with no placeholders asks nothing. Placeholder names ar
 rather than by ASCII, so a prompt written in any script names its fields in that script.
 
 Attach a **schedule** (hourly, daily at `HH:MM`, weekly) and it fires unattended into a fresh session
-using stored defaults. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra
+using stored defaults. A schedule belongs to **one workspace** — the one open when it was saved — and the
+scheduler resolves that before the fire, so an unattended run cannot land in whatever project happened to
+be on screen at 03:00. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra
 cost, full local context and permissions. A scenario whose previous run is still working or waiting
 skips rather than stacking a second one.
 

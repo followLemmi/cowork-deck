@@ -5,14 +5,15 @@ deciders:
   - evgenykharetski
 ---
 
-# ADR-0011 — The tray panel is a window, and a menu is the Linux fallback
+# ADR-0013 — The tray panel is a window, and a menu is the Linux fallback
 
 ## Context
 
-The app existed only as its windows. Everything it knows — what each AI has left,
-which sessions are waiting — was readable only with the deck on screen and in
-front. The floating pill was the one exception, and it is a single sentence with
-no way to ask it anything.
+The app exists only as its windows. Everything it knows — what each AI has left,
+which sessions are waiting — is readable only with the deck on screen and in
+front. The floating pill was the one exception, and it was a single sentence with
+no way to ask it anything; #394 removed it while this was being built, which
+leaves the app with nothing at all outside its own windows.
 
 #393 asks for a second, permanent surface: an icon in the menu bar on macOS, the
 top panel on Linux and the notification area on Windows, with a panel behind it,
@@ -46,14 +47,15 @@ sentence has to be read; a bar is seen. The whole reason the deck's limits block
 is a block and not a fifth page (`usage-block.ts`) is that a limit is something
 you glance at — and a menu is the one form of UI that cannot be glanced at,
 because it does not exist until you have already committed to opening it. Having
-paid the click, the person deserves more than the pill already tells them.
+paid the click, the person deserves more than a sentence.
 
 Two further things bear on the choice, and are not general:
 
 1. **The rendering rules for a limit are already pure functions in TypeScript** —
-   `primaryWindow`, `readingOf`, `sourceLabel`, `formatReset` in `src/usage.ts`,
-   written that way so the block, the dialog and the pill cannot disagree about a
-   number. A menu built in Rust would reimplement every one of them.
+   `primaryWindow`, `readingOf`, `tierNote`, `limitFoot`, `formatReset` in
+   `src/usage.ts`, written that way so the block, the dialog and anything after
+   them cannot disagree about a number. A menu built in Rust would reimplement
+   every one of them.
 2. **On Linux the click may never reach us.** On most desktops a
    StatusNotifierItem's left click is not deliverable to the application, and
    some environments only ever show the menu. A design whose panel is a window
@@ -96,22 +98,35 @@ menu, routes a click back and tells the dock a number. It contains no provider
 name, no window name, no reading and no reset time.
 
 **`LimitsBlock` is reused, not copied.** Three optional hooks on `LimitsHost` —
-`heading`, `openDetail`, `openProbe` — are the whole difference between the two
-surfaces, and each defaults to what the deck already did. A second implementation
-of a row is how the two would come to disagree about a number, which is what
-`usage.ts` exists to prevent.
+`strip`, `openDetail`, `openProbe` — are the whole difference between the two
+surfaces, and each defaults to what the deck already does. A second
+implementation of a row is how the two would come to disagree about a number,
+which is what `usage.ts` exists to prevent.
 
-### 3. The tray icon never carries the count. The pill does.
+`strip: false` is the one that is about this surface rather than about what it
+lacks. In the deck the block is a folded line at the foot of the panel with the
+rows behind it (ADR-0011), because the panel is a page being worked in and the
+rows would take height from it. This window is nothing but the glance: it draws
+its own "Limits" heading, it was opened deliberately, and folding the rows inside
+it would put them two presses deep in a surface that exists to show them in one.
 
-#393 is explicit that the two must not both answer the same question. They do not:
+### 3. The tray icon never carries the count. The dock badge does.
 
-- **The pill is the glance.** It floats over every other application, says "3
-  waiting for input" or "limit · resets 19:00" with no interaction at all, and is
-  up only while there is something to say.
+#393 is explicit that no two surfaces may answer the same question. Two answer
+different ones:
+
+- **The dock badge is the glance.** A number on an icon the person is already
+  looking at when they decide whether to switch, with no interaction at all, and
+  up only while there is something to say. Decision 4.
 - **The tray is the question.** It is permanently present, including when the
-  deck is idle and the pill is down, and it answers on demand — every connected
+  deck is idle and the badge is clear, and it answers on demand — every connected
   AI's meter with its tier, and every session that is waiting, each one a row you
   can click.
+
+This was first written with the floating pill as the glance; #394 removed the
+pill, and the decision came out unchanged because it was never about the pill.
+The count belongs on the surface a person is already looking at, and a status
+icon is not that surface — it is where you go to ask.
 
 So the status icon has **no title text and no count**, on any platform, and its
 image never changes. A hueless glyph that changed shape to mean "spent" would be
@@ -130,9 +145,10 @@ first is a rule rather than an event: while the main window has focus the badge
 is suppressed, so the next report does not put it back. A stale badge trains
 people to ignore the badge.
 
-This does overlap the pill's count, and knowingly. The badge and the pill are
-visible in different places — the dock is what a person looks at when deciding
-whether to switch to the deck; the pill is what they see while they are not.
+Nothing else in the app says this number. It overlapped the floating pill's count
+while both existed, knowingly and briefly — the dock is what a person looks at
+when deciding whether to switch to the deck, and the pill was what they saw while
+they were not. The pill went with #394; the badge is now the whole of the glance.
 
 ### 5. A template image on macOS, the colour icon on Windows and Linux
 
@@ -223,9 +239,11 @@ from it.
 
 ### 6. The panel loads the app's whole stylesheet
 
-`src/tray.css` begins `@import "./styles.css"`. `pill.css` copies four colours by
-hand instead, and its own comment records the cost: the pill was left behind by
-two palettes in a row and came to look like a different program's.
+`src/tray.css` begins `@import "./styles.css"`. The obvious alternative — copying
+the handful of colours a small window needs out of the palette — is what the
+floating pill's stylesheet did, and the cost is on record: the pill was left
+behind by two palettes in a row and came to look like a different program's
+before #394 removed it.
 
 This window cannot afford that and does not have to. What it draws *is* the
 deck's limits block. Copying `.lim-row`, `.lim-meter` and the state classes here
@@ -266,8 +284,9 @@ webview created hidden at startup that never navigates again.
 - `tauri`'s `tray-icon` and `image-png` features are on, which pulls in the
   `image` crate's PNG decoder. Linux packages need `libayatana-appindicator3-1`
   at runtime; CI already installs the `-dev` package.
-- The pill and the dock badge say the same number in two places. Decision 4 owns
-  that; a future decision to drop one should argue with it rather than around it.
+- The dock badge is the only thing that speaks the count. Nothing polls it and
+  nothing else may print it: a second surface with the same number is what
+  decision 3 forbids, and a future one has to argue with it rather than around it.
 
 ## Alternatives considered
 
@@ -285,8 +304,8 @@ webview created hidden at startup that never navigates again.
   trying it, and a surface that sometimes does nothing is worse than one that
   always shows a menu.
 - **A tray icon that shows the waiting count as its title.** Free on macOS and
-  Linux, unsupported on Windows, and a duplicate of the pill on the two where it
-  works. Decision 3.
+  Linux, unsupported on Windows, and a duplicate of the dock badge on the two
+  where it works. Decision 3.
 - **The colour icon on macOS too.** What attempt 3 shipped, and it is the app's
   icon exactly — which is its whole problem: a menu bar is a row of tinted
   glyphs, and a colour square in it is the one thing that does not belong.
@@ -302,9 +321,11 @@ webview created hidden at startup that never navigates again.
 - **Downscaling `icons/icon.png` to 36 with `sips`.** One command, and soft: a
   14× reduction smears a 2.5-pixel chevron. Decision 5.
 - **Copying the limit styles into `tray.css` rather than importing the
-  stylesheet.** What the pill does, and what the pill's own comment advises
-  against. Decision 6.
-- **Dropping the pill in favour of the tray.** Considered seriously, since it
-  would settle decision 3 by subtraction. Rejected because the pill answers
-  without being opened and the tray does not, and "how many are waiting" is a
-  question worth answering at a glance.
+  stylesheet.** What the floating pill's stylesheet did, and what its own comment
+  advised against. Decision 6.
+- **Dropping the pill in favour of the tray.** Considered seriously while this
+  record was being written, since it would settle decision 3 by subtraction, and
+  rejected then because the pill answered without being opened and the tray does
+  not. #394 dropped it anyway, on its own reasoning, and the question it answered
+  went to the dock badge rather than to the icon — which is decision 3, arrived at
+  from the other direction.

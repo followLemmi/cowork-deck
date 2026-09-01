@@ -13,6 +13,7 @@ import {
 import { sessionRefusal, SESSION_GONE, SESSION_NOT_OWNER } from "./session-refusal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import { terminalKeyBytes } from "./terminal-keys";
+import { isInterruptKey, showsInterruptHint } from "./interrupt";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
 
 /** How long a size has to stand still before the PTY is told about it.
@@ -29,6 +30,34 @@ import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
  *  xterm's own geometry is not held back by it: the terminal follows the pointer, and
  *  it is only the child process that waits. */
 const PTY_RESIZE_QUIET_MS = 100;
+
+/** How often the screen is re-read while waiting for an interrupt to land, and
+ *  how many times before the wait is given up.
+ *
+ *  100 ms is a poll a person cannot perceive. Thirty of them is three seconds,
+ *  and the budget is deliberately generous rather than tight, because the two
+ *  ways of being wrong cost wildly different things:
+ *
+ *  - **Too short and a real interrupt is missed silently.** An `Escape` between
+ *    two tool calls takes a frame, but one that lands inside a `Bash` running
+ *    for a minute has to unwind that call first, and how long that takes is not
+ *    something this file can know. A miss leaves the session exactly as stuck as
+ *    #333 describes, and looks identical to the bug being unfixed.
+ *  - **Too long costs almost nothing.** The only consequence of an open wait is
+ *    that it may still be watching when the turn ends for some other reason —
+ *    and then it reports `done`, which is what `Stop` reports for that same
+ *    ending. `interruptedTurn` can only ever move a tile from busy to free, so a
+ *    late reading agrees with the hooks instead of fighting them.
+ *
+ *  Giving up is the ordinary outcome for an `Escape` Claude Code spent on
+ *  something else, not a failure: nothing is reported and the hooks stay in
+ *  charge, which is where the session started.
+ *
+ *  Reading the screen is a walk of `rows` lines of the buffer xterm is already
+ *  holding, and only ever while a wait is open — at most one wait per `Escape`,
+ *  and none at all on a terminal nobody is listening to. */
+const INTERRUPT_POLL_MS = 100;
+const INTERRUPT_POLL_TRIES = 30;
 
 /** How many terminals may hold a WebGL context at the same time.
  *
@@ -95,6 +124,17 @@ export class TerminalPanel {
   private onScaleEvent = (e: Event) => {
     this.setFontSize((e as CustomEvent<number>).detail);
   };
+  /** The wait for an interrupt to land, while one is open. See `awaitInterrupt`. */
+  private interruptTimer: ReturnType<typeof setInterval> | null = null;
+  /** Told when a turn on this terminal ended because the person interrupted it —
+   *  the end of turn Claude Code's `Stop` hook does not report (#333).
+   *
+   *  A field rather than a constructor argument because only one of the three
+   *  places that build a panel has anything to say here: the deck, which owns
+   *  the tile whose state this corrects. A drawer terminal is a shell, and a
+   *  shell prints no hint, so leaving this null there costs nothing and claims
+   *  nothing. */
+  onInterrupt: ((session: string) => void) | null = null;
   constructor(
     private session: string,
     private mount: HTMLElement,
@@ -229,6 +269,13 @@ export class TerminalPanel {
       // prompt. Modifier hotkeys survive it only because xterm leaves
       // `result.key` undefined for them and bails before `cancel`.
       if (e.isComposing || e.keyCode === 229) return true;
+      // Before the table below and after `matchHotkey`, which is the only order
+      // that can be right: an `Escape` the app has claimed never reaches the
+      // process, so there is no interrupt to wait for, and `terminalKeyBytes`
+      // has nothing to say about `Escape` either way. This watches; it does not
+      // consume — the keystroke goes on to xterm and to the pty exactly as it
+      // did, and the wait resolves out of the frames that come back.
+      if (isInterruptKey(e)) this.awaitInterrupt();
       const bytes = terminalKeyBytes(e);
       if (bytes === null) return true;
       // `input`, not `write`: these are input for the process, not output to
@@ -349,6 +396,72 @@ export class TerminalPanel {
   private paint(bytes: Uint8Array) {
     if (this.heldOutput) this.heldOutput.push(bytes);
     else this.term.write(bytes);
+  }
+
+  /** The terminal's visible screen, one string per row.
+   *
+   *  `baseY`, not `viewportY`: the question is what the program is drawing, and
+   *  a person who has scrolled up to read something is not thereby less
+   *  interrupted. `viewportY` would answer for whatever they scrolled to.
+   *
+   *  Empty when there is no buffer to read — the mocked terminal a unit test
+   *  builds, and any xterm that has yet to open — which reads as "no hint", so
+   *  the wait below simply never starts. */
+  private screenLines(): string[] {
+    const buf = this.term.buffer?.active;
+    if (!buf) return [];
+    const lines: string[] = [];
+    for (let y = 0; y < this.term.rows; y++) {
+      const line = buf.getLine(buf.baseY + y);
+      if (!line) continue;
+      // A row xterm wrapped is the tail of the one above it rather than a line
+      // of its own, and a hint split across the two would match neither half.
+      // Joined UNTRIMMED — `translateToString(false)` — because a wrap can fall
+      // on the space between two of the words, and trimming it away would join
+      // them into one that matches nothing.
+      const text = line.translateToString(false);
+      if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    return lines;
+  }
+
+  /** Wait for an `Escape` just passed through to end the turn, and say so.
+   *
+   *  The keystroke has not been consumed and is on its way to the pty; what this
+   *  decides is whether it *was* an interrupt, which only the frames coming back
+   *  can say. Claude Code's own hint is the evidence at both ends — up when the
+   *  key was pressed, gone once the turn is over — and `interrupt.ts` carries
+   *  why that pair is the signal rather than the keystroke alone.
+   *
+   *  Three ways out, and only one of them reports:
+   *
+   *  - the hint is not up when the key is pressed: there is no turn, and this
+   *    `Escape` is the person clearing a prompt or leaving a menu. Nothing
+   *    starts.
+   *  - the hint goes: the turn is over. `onInterrupt` is called once, and the
+   *    tile stops reading as busy for the scheduler, the card and the pill.
+   *  - the hint is still up after `INTERRUPT_POLL_TRIES`: Claude Code spent the
+   *    key on something else. The wait ends and nothing is reported, which
+   *    leaves the hooks in charge exactly as they were.
+   *
+   *  A second `Escape` while a wait is open is not a second wait: the first one
+   *  is already watching the same screen for the same thing. */
+  private awaitInterrupt() {
+    if (!this.onInterrupt || this.interruptTimer !== null) return;
+    if (!showsInterruptHint(this.screenLines())) return;
+    let left = INTERRUPT_POLL_TRIES;
+    this.interruptTimer = setInterval(() => {
+      const busy = showsInterruptHint(this.screenLines());
+      if (busy && --left > 0) return;
+      this.stopAwaitingInterrupt();
+      if (!busy) this.onInterrupt?.(this.session);
+    }, INTERRUPT_POLL_MS);
+  }
+
+  private stopAwaitingInterrupt() {
+    if (this.interruptTimer !== null) clearInterval(this.interruptTimer);
+    this.interruptTimer = null;
   }
 
   /** Ask for a WebGL context when the panel comes on screen and give it back when
@@ -674,6 +787,9 @@ export class TerminalPanel {
     if (this.sizeTimer !== null) clearTimeout(this.sizeTimer);
     this.sizeTimer = null;
     this.pendingSize = null;
+    // Same reasoning, and one more: a timer left running holds this panel and
+    // its disposed terminal alive, and would read `buffer` off it every 100 ms.
+    this.stopAwaitingInterrupt();
     this.ro?.disconnect();
     this.ro = null;
     this.io?.disconnect();

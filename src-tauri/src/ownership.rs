@@ -183,12 +183,13 @@ mod tests {
     }
 
     /// Releasing a window that owns nothing is not an error and not a surprise:
-    /// the pill owns no session and is destroyed like any other window.
+    /// a workspace window pulled out and closed again before a session was
+    /// started in it owns nothing, and is destroyed like any other window.
     #[test]
     fn destroying_a_window_that_owns_nothing_takes_nothing() {
         let owners = SessionOwners::default();
         owners.claim("s1", "main");
-        assert!(owners.release_window("pill").is_empty());
+        assert!(owners.release_window("workspace-w1").is_empty());
         assert_eq!(owners.check("s1", "main"), Ok(()));
     }
 }

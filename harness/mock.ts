@@ -278,25 +278,17 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
 
     /* The window plugin.
      *
-     * These used to fall through to the `plugin:` case below, which answers
-     * `null` and logs nothing — so the pill's show/hide, the focus a
-     * notification click produces, and the raise a detached workspace's row asks
-     * for could not be exercised or screenshot at all. They are answered
-     * truthfully now, against a per-label visibility the harness keeps, which is
-     * what `pill.ts` reads back before deciding whether to show itself.
+     * Listed rather than left to the `plugin:` fallback below so that a call the
+     * app makes here is a call somebody chose to answer. `null` is the honest
+     * answer for all of them: a raise is three fire-and-forget calls
+     * (`raiseThisWindow` in `app.ts`) and nothing reads a window back.
      *
-     * The `pill://count` path in particular is a state machine over `isVisible`
-     * — `show()` is `makeKeyAndOrderFront:` on macOS and is not idempotent — and
-     * a stub that always said "hidden" would have exercised the wrong branch
-     * every time. */
-    case "plugin:window|is_visible":
-      return F.windowVisible(String(args.label ?? "main"));
+     * There used to be a per-label visibility map behind these, because the
+     * floating pill's show/hide was a state machine over `isVisible` and a stub
+     * that always said "hidden" exercised one branch of it for ever. #394
+     * removed that window and with it the only caller of `is_visible`, so the
+     * map went too rather than stay as scenery. */
     case "plugin:window|show":
-      F.setWindowVisible(String(args.label ?? "main"), true);
-      return null;
-    case "plugin:window|hide":
-      F.setWindowVisible(String(args.label ?? "main"), false);
-      return null;
     case "plugin:window|unminimize":
     case "plugin:window|set_focus":
     case "plugin:window|destroy":

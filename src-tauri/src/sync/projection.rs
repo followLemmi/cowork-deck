@@ -264,14 +264,22 @@ pub struct WireSkill {
 ///
 /// Without that, a scenario firing at 03:00 fires at 03:00 on both machines: two
 /// commits, two pull requests, or two digests.
+///
+/// A **migrated** pin stays behind for the same reason. `pinned_by_migration`
+/// marks a `workspace_id` the #249 migration read off this machine's
+/// `ui_state.activeWorkspaceId`, which is a statement about this machine and not
+/// about the scenario. Published, it would arrive on a machine that never chose
+/// that workspace and move an unattended nightly job into it — the very thing
+/// #249 is about, taking the long way round. A pin somebody ticked carries no
+/// mark and travels normally.
 pub fn project_skill(sk: &Skill) -> WireSkill {
-    let Skill { id, name, icon, prompt, workspace_id, schedule } = sk;
+    let Skill { id, name, icon, prompt, workspace_id, schedule, pinned_by_migration } = sk;
     WireSkill {
         id: id.clone(),
         name: name.clone(),
         icon: icon.clone(),
         prompt: prompt.clone(),
-        workspace_id: workspace_id.clone(),
+        workspace_id: if *pinned_by_migration { None } else { workspace_id.clone() },
         schedule: schedule.as_ref().map(|s| {
             let Schedule { preset, defaults, enabled: _this_machines_choice } = s;
             WireSchedule {
@@ -285,18 +293,29 @@ pub fn project_skill(sk: &Skill) -> WireSkill {
 /// Arriving scenario into a local one. A schedule that is already enabled here
 /// stays enabled; one arriving for the first time is off until someone says
 /// otherwise on this machine.
+///
+/// A migrated pin survives an arrival that carries none, which is the other half
+/// of leaving it behind in `project_skill`: the publisher's copy is unpinned
+/// precisely *because* this machine's answer was never sent, so taking its
+/// `None` would erase the pin here and leave an enabled schedule refusing with
+/// `no-workspace`. A pin somebody ticked is unmarked and still yields to the
+/// wire — unpinning a scenario on one machine has to reach the others.
 pub fn merge_skill(wire: &WireSkill, local: Option<&Skill>) -> Skill {
     let was_enabled = local
         .and_then(|l| l.schedule.as_ref())
         .map(|s| s.enabled)
         .unwrap_or(false);
+    let migrated_pin = local
+        .filter(|l| l.pinned_by_migration && wire.workspace_id.is_none())
+        .and_then(|l| l.workspace_id.clone());
 
     Skill {
         id: wire.id.clone(),
         name: wire.name.clone(),
         icon: wire.icon.clone(),
         prompt: wire.prompt.clone(),
-        workspace_id: wire.workspace_id.clone(),
+        pinned_by_migration: migrated_pin.is_some(),
+        workspace_id: migrated_pin.or_else(|| wire.workspace_id.clone()),
         schedule: wire.schedule.as_ref().map(|s| Schedule {
             preset: s.preset.clone(),
             defaults: s.defaults.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -385,6 +404,7 @@ mod tests {
                 defaults: [("branch".to_string(), "dev".to_string())].into_iter().collect(),
                 enabled: true,
             }),
+            pinned_by_migration: false,
         }
     }
 
@@ -524,6 +544,59 @@ mod tests {
             again.schedule.unwrap().enabled,
             "a pull must not clobber this machine's choice"
         );
+    }
+
+    /// The migration's pin is this machine's answer, and #249 is exactly about
+    /// an unattended session landing in a workspace nobody chose — publishing it
+    /// would hand every other machine that same coin flip, one pull later.
+    #[test]
+    fn a_migrated_pin_does_not_travel() {
+        let mut local = sk();
+        local.pinned_by_migration = true;
+        let wire = project_skill(&local);
+        assert_eq!(wire.workspace_id, None, "the inferred pin stays on this machine");
+        assert!(
+            !serde_json::to_string(&wire).unwrap().contains("workspaceId"),
+            "and is not on the wire at all"
+        );
+        assert_eq!(project_skill(&sk()).workspace_id.as_deref(), Some("ws-1"), "a real pin still travels");
+    }
+
+    /// The other half of leaving it behind: the publisher's copy is unpinned
+    /// *because* we never sent ours, so a pull must not read its `None` as
+    /// "somebody unpinned this" and strand an enabled schedule with no
+    /// workspace to run in.
+    #[test]
+    fn a_pull_does_not_erase_a_migrated_pin() {
+        let mut here = sk();
+        here.pinned_by_migration = true;
+        let elsewhere = WireSkill { workspace_id: None, ..project_skill(&sk()) };
+
+        let back = merge_skill(&elsewhere, Some(&here));
+        assert_eq!(back.workspace_id.as_deref(), Some("ws-1"));
+        assert!(back.pinned_by_migration, "still this machine's guess, still off the wire");
+    }
+
+    /// And unpinning by hand still reaches the other machines: only the mark
+    /// buys the exemption above.
+    #[test]
+    fn a_pull_does_erase_a_pin_somebody_chose() {
+        let here = sk();
+        let elsewhere = WireSkill { workspace_id: None, ..project_skill(&sk()) };
+        assert_eq!(merge_skill(&elsewhere, Some(&here)).workspace_id, None);
+    }
+
+    /// A repin made anywhere wins over the guess — the arriving answer is
+    /// somebody's, and this machine's was not.
+    #[test]
+    fn an_arriving_pin_replaces_a_migrated_one() {
+        let mut here = sk();
+        here.pinned_by_migration = true;
+        let elsewhere = WireSkill { workspace_id: Some("ws-2".into()), ..project_skill(&sk()) };
+
+        let back = merge_skill(&elsewhere, Some(&here));
+        assert_eq!(back.workspace_id.as_deref(), Some("ws-2"));
+        assert!(!back.pinned_by_migration);
     }
 
     #[test]

@@ -197,7 +197,7 @@ Recorded so it is not re-litigated every six months:
 
 ### What happened
 
-The status-area panel (ADR-0011) draws the deck's limits block, so a row of it
+The status-area panel (ADR-0013) draws the deck's limits block, so a row of it
 appeared in a 340-pixel window in a menu bar:
 
 ```

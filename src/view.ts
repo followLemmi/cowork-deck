@@ -3,9 +3,10 @@
  *  What this replaces was a switch between four SCREENS: picking "Board" hid the
  *  deck, and the deck is the reason the app exists. Two things followed from
  *  that, and both were shipped rather than argued about — a floating pill that
- *  counts blocked sessions, because the window could not show the deck and
+ *  counted blocked sessions, because the window could not show the deck and
  *  anything else at once, and four tab labels that were not a structure but four
- *  states of one window.
+ *  states of one window. Both are gone: the tabs with this file, and the pill with
+ *  #394, which had this layout as its whole justification.
  *
  *  So: the rail on the left selects what the PANEL beside it holds, and the deck
  *  never moves. `applyPanel` is the whole of that — DOM only, no IPC and no

@@ -3,7 +3,7 @@
  *  Behind the icon is a small window (`tray.html`), drawn with the deck's own
  *  stylesheet: meters, tier chips, state rails. On Linux it is a native menu
  *  instead, because a StatusNotifierItem's click is not deliverable to us on
- *  most desktops — see ADR-0011.
+ *  most desktops — see ADR-0013.
  *
  *  **`PANEL` below is the extensibility claim, and it is deliberately boring.**
  *  A section is one entry: a heading, the rows it would be as text, and how it
@@ -43,8 +43,9 @@ export const ACTIONS = {
   usage: (provider: string) => `usage:${provider}`,
   /** Run the command that would answer an unreadable row, in a tile. */
   probe: (provider: string) => `probe:${provider}`,
-  /** Focus one session, wherever it lives. Routed exactly as a click on the pill
-   *  is routed — see `pill://focus-next` in `app.ts`. */
+  /** Focus one session, wherever it lives. The main window is what routes it,
+   *  because it is the only one that knows which window holds a session — see
+   *  `onTrayAction` in `app.ts`. */
   session: (id: string) => `session:${id}`,
 } as const;
 
@@ -81,9 +82,9 @@ const MAX_PANEL_ROWS = 10;
 
 /** What a session's state is called on this surface.
  *
- *  "waiting for input" rather than the ledger's "waiting for a decision",
- *  because this is the pill's phrasing and the pill is the other thing that
- *  speaks from outside the window. `done` is deliberately not folded into
+ *  "waiting for input" rather than the ledger's "waiting for a decision": this
+ *  surface is read at a glance from outside the window, and "input" is the word
+ *  for the thing being asked of you. `done` is deliberately not folded into
  *  `idle`: an agent that has finished its turn parked at the prompt is not the
  *  same as one that never started, and keeping them apart is a decision the deck
  *  already made (README, "Sessions").
@@ -185,12 +186,13 @@ const PANEL: PanelSection[] = [
      *  This is the whole reason the panel is a window: the block already draws
      *  the meter, the tier chip, the state colour and the accessible name, and
      *  #393 asked for that rendering to be reused rather than reimplemented. The
-     *  three hooks below are all that differs — the surface has its own heading,
-     *  has no room for a dialog, and has no tiles to open.
+     *  three hooks below are all that differs — the surface is already a glance
+     *  and needs no strip to fold behind, has no room for a dialog, and has no
+     *  tiles to open.
      */
     fill: (body, f, act) => {
       const block = new LimitsBlock(body, {
-        heading: false,
+        strip: false,
         openDetail: (snap) => act(ACTIONS.usage(snap.provider)),
         openProbe: (snap) => act(ACTIONS.probe(snap.provider)),
         // Neither is reachable — `openDetail` and `openProbe` take every path
@@ -309,9 +311,10 @@ function plural(n: number, one: string, many: string): string {
 /** What the icon says on hover.
  *
  *  One line, and it answers the question the icon is there for. Never the
- *  waiting count on its own: that is the pill's sentence, and two surfaces
- *  saying it is the duplication #393 forbids. What this adds is the thing the
- *  pill cannot say — that the deck is running and has nothing to report.
+ *  waiting count on its own: the dock badge is already that number, and a
+ *  tooltip repeating it is the duplication ADR-0013 decision 3 forbids. What
+ *  this adds is the thing a badge cannot say — that the deck is running and has
+ *  nothing to report.
  */
 function tooltipFor(f: TrayFacts): string {
   const waiting = waitingIn(f.sessions);

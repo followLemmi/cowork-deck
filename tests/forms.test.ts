@@ -391,6 +391,119 @@ describe("skillForm", () => {
     expect((await p)!.schedule!.defaults).toEqual({ branch: "main" });
   });
 
+  // #249: a schedule decides which repository an unattended `claude` works in,
+  // so the form ties it to the workspace that is open rather than letting it
+  // follow whichever one happens to be active when it fires.
+  it("pins a scheduled scenario to the current workspace, checkbox or not", async () => {
+    const p = skillForm("ws-1");
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
+    (document.querySelector(".form-prompt") as HTMLTextAreaElement).value = "go";
+    const sched = document.querySelector(".form-sched-enabled") as HTMLInputElement;
+    const scope = document.querySelector(".form-scope") as HTMLInputElement;
+    expect(scope.checked).toBe(false);
+    sched.checked = true;
+    sched.dispatchEvent(new Event("change"));
+    // Ticked *and* frozen: the scope is no longer the person's to answer, and a
+    // checkbox that silently disagreed with what was saved would be worse.
+    expect(scope.checked).toBe(true);
+    expect(scope.disabled).toBe(true);
+
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)!.workspaceId).toBe("ws-1");
+  });
+
+  // And it gives the person's own answer back, rather than leaving the scenario
+  // pinned because a schedule was ticked and untuned again.
+  it("restores the scope choice when the schedule is switched back off", async () => {
+    const p = skillForm("ws-1");
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
+    (document.querySelector(".form-prompt") as HTMLTextAreaElement).value = "go";
+    const sched = document.querySelector(".form-sched-enabled") as HTMLInputElement;
+    const scope = document.querySelector(".form-scope") as HTMLInputElement;
+    sched.checked = true; sched.dispatchEvent(new Event("change"));
+    sched.checked = false; sched.dispatchEvent(new Event("change"));
+    expect(scope.checked).toBe(false);
+    expect(scope.disabled).toBe(false);
+
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)!.workspaceId).toBeNull();
+  });
+
+  // Nothing to pin it to: refused before saving, which is the only moment this
+  // can be prevented rather than discovered at 03:00.
+  it("blocks a schedule when no workspace is open", async () => {
+    const p = skillForm(null);
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
+    (document.querySelector(".form-prompt") as HTMLTextAreaElement).value = "go";
+    const sched = document.querySelector(".form-sched-enabled") as HTMLInputElement;
+    sched.checked = true; sched.dispatchEvent(new Event("change"));
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const err = document.querySelector(".form-sched-error") as HTMLElement;
+    expect(err.style.display).toBe("");
+    expect(err.textContent).toContain("one workspace");
+
+    // Still open — switch the schedule off and resolve it so nothing dangles.
+    sched.checked = false; sched.dispatchEvent(new Event("change"));
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)!.schedule).toBeNull();
+  });
+
+  // The other half of #249, and the one an edit reaches. A scheduled scenario is
+  // listed in every workspace — it fires regardless of what is on screen — so
+  // the pencil beside a job pinned to "ws-2" is reachable while "ws-1" is open.
+  // Recomputing the pin there would move an unattended session into another
+  // repository on an edit of the hour, and say nothing about it.
+  it("keeps the scenario's own pin when edited from another workspace", async () => {
+    const p = skillForm("ws-1", {
+      name: "Nightly", icon: "play", prompt: "go", workspaceId: "ws-2",
+      schedule: { preset: { kind: "daily", hour: 3, minute: 0 }, defaults: {}, enabled: true },
+    }, "One", "Two");
+    (document.querySelector(".form-sched-hour") as HTMLInputElement).value = "4";
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const res = await p;
+    expect(res!.workspaceId).toBe("ws-2");
+    expect(res!.schedule!.preset).toEqual({ kind: "daily", hour: 4, minute: 0 });
+  });
+
+  // And says so: a form that kept the pin while the label and the preview named
+  // the workspace on screen would be lying about where the job runs.
+  it("names the pinned workspace rather than the open one", async () => {
+    const p = skillForm("ws-1", {
+      name: "Nightly", icon: "play", prompt: "go", workspaceId: "ws-2",
+      schedule: { preset: { kind: "daily", hour: 3, minute: 0 }, defaults: {}, enabled: true },
+    }, "One", "Two");
+    expect(document.querySelector(".form-sched-preview")!.textContent).toContain("Two");
+    expect(document.querySelector(".form-sched-preview")!.textContent).not.toContain("One");
+    expect(document.body.textContent).toContain("Only for “Two”");
+
+    document.querySelector<HTMLButtonElement>(".modal-cancel")!.click();
+    expect(await p).toBeNull();
+  });
+
+  // Unpinning still works from anywhere: the checkbox decides *whether* there is
+  // a pin, and only the schedule takes that decision away.
+  it("unticking the scope drops a pin made elsewhere", async () => {
+    const p = skillForm("ws-1", {
+      name: "Chore", icon: "play", prompt: "go", workspaceId: "ws-2", schedule: null,
+    }, "One", "Two");
+    const scope = document.querySelector(".form-scope") as HTMLInputElement;
+    expect(scope.checked).toBe(true);
+    scope.checked = false; scope.dispatchEvent(new Event("change"));
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)!.workspaceId).toBeNull();
+  });
+
+  // A pinned scenario is saveable with no workspace open at all — the pin it
+  // already has is the answer `validateSchedule` wants.
+  it("saves a pinned schedule while no workspace is active", async () => {
+    const p = skillForm(null, {
+      name: "Nightly", icon: "play", prompt: "go", workspaceId: "ws-2",
+      schedule: { preset: { kind: "daily", hour: 3, minute: 0 }, defaults: {}, enabled: true },
+    }, null, "Two");
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)!.workspaceId).toBe("ws-2");
+  });
+
   it("prefills the schedule section when editing", async () => {
     const p = skillForm("ws-1", {
       name: "Report", icon: "▶", prompt: "go", workspaceId: "ws-1",

@@ -3,7 +3,7 @@
  *
  *  Both renderings, from the one `PANEL` list: the rows the Linux menu is built
  *  from, and the panel window's own DOM. Tested here rather than through either
- *  surface, which is the point of ADR-0011's split — no test can open a native
+ *  surface, which is the point of ADR-0013's split — no test can open a native
  *  menu or a window positioned under a status icon, and every rule about what a
  *  row says is a function of a snapshot. The Rust half is tested where it lives
  *  (`src-tauri/src/tray.rs`) and knows none of this.

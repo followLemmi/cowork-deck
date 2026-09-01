@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  allSessions, notifyIdSeed, sumWaiting, windowOf,
+  allSessions, notifyIdSeed, windowOf,
   type SessionsByWindow,
 } from "../src/cross-window";
 
@@ -19,33 +19,9 @@ const two = (): SessionsByWindow => new Map([
   ]],
 ]);
 
-describe("sumWaiting", () => {
-  /** The defect: each window computed the number from its own tiles and then
-   *  broadcast it as though it were the app's, so the pill flapped between two
-   *  partial counts every five seconds — whichever arrived last winning. */
-  it("adds up every window rather than trusting one", () => {
-    expect(sumWaiting(two())).toBe(2);
-  });
-
-  it("is zero when nothing is waiting, and when nobody has reported", () => {
-    expect(sumWaiting(new Map())).toBe(0);
-    expect(sumWaiting(new Map([["main", [
-      { session: "a", name: "A", state: "working" as const },
-    ]]]))).toBe(0);
-  });
-
-  /** A window that has gone is dropped by its label, so its sessions leave with
-   *  it rather than being counted for ever. */
-  it("forgets a window that is no longer reporting", () => {
-    const byWindow = two();
-    byWindow.delete("workspace-w1");
-    expect(sumWaiting(byWindow)).toBe(1);
-  });
-});
-
 describe("windowOf", () => {
-  /** What lets "who is blocked on me" reach the other monitor: the main window
-   *  works out which session is next, and this says where to send the request. */
+  /** What lets a click on a status-area row reach the other monitor: the panel
+   *  is composed in the main window, and this says where to send the click. */
   it("finds the window holding a session", () => {
     expect(windowOf(two(), "c")).toBe("workspace-w1");
     expect(windowOf(two(), "a")).toBe("main");
@@ -58,9 +34,9 @@ describe("windowOf", () => {
 
 describe("allSessions", () => {
   /** Ordered by window label and then as each window listed them. Without that,
-   *  "the next one waiting" would depend on `Map` insertion order — which
-   *  depends on which window happened to report first after a restart, so the
-   *  same gesture would land somewhere different run to run. */
+   *  the panel's rows would depend on `Map` insertion order — which depends on
+   *  which window happened to report first after a restart, so the same gesture
+   *  would land somewhere different run to run. */
   it("is stable regardless of which window reported first", () => {
     const a: SessionsByWindow = new Map([
       ["workspace-w1", [{ session: "c", name: "C", state: "waitingInput" as const }]],
@@ -86,7 +62,7 @@ describe("notifyIdSeed", () => {
   /** Wide enough that no window will ever walk into its neighbour's range: a
    *  million notifications in one run is not a thing that happens. */
   it("leaves a million ids between neighbours", () => {
-    const seeds = ["main", "pill", "workspace-a", "workspace-b"]
+    const seeds = ["main", "workspace-a", "workspace-b", "workspace-c"]
       .map(notifyIdSeed)
       .sort((x, y) => x - y);
     for (let i = 1; i < seeds.length; i++) {
