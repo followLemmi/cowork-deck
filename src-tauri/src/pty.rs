@@ -763,13 +763,26 @@ mod tests {
     /// A session moving between windows keeps running; only the far end of its
     /// pipe changes. The process must not notice, and no byte may be lost or
     /// doubled at the seam.
+    ///
+    /// "Later" is enforced by a handshake, not by a clock. The script blocks on
+    /// `read` until the test writes a newline, which it only does once `retarget`
+    /// has returned — so `after` is *provably* written after the swap. The
+    /// earlier version slept five seconds instead and raced its own five-second
+    /// wait: on a loaded runner the sleep overshot the deadline and the test
+    /// reported lost output where a shell had merely been slow (#337). A timed
+    /// version has a second failure mode too, and shortening the sleep makes it
+    /// worse — stall the test thread past the sleep and `after` reaches the old
+    /// window. Neither mode survives a handshake, so there is no margin left to
+    /// tune.
+    // The script needs a POSIX shell's `read`.
+    #[cfg(unix)]
     #[test]
     fn retargeting_sends_later_output_to_the_new_window_and_the_process_carries_on() {
         let mgr = PtyManager::new();
         let (first_tx, first_rx) = mpsc::channel();
         spawn_sh(
             &mgr, "s1",
-            "printf before; sleep 5; printf after",
+            "printf before; read _; printf after",
             false,
             move |b| { let _ = first_tx.send(b); },
             |_| {},
@@ -779,6 +792,11 @@ mod tests {
 
         let (second_tx, second_rx) = mpsc::channel();
         mgr.retarget("s1", move |b| { let _ = second_tx.send(b); }).unwrap();
+
+        // Release the `read`. Anything the script writes from here on is output
+        // the new window is owed. The newline may sit in the tty input queue if
+        // the shell has not reached `read` yet; it is consumed when it does.
+        mgr.write("s1", b"\n").unwrap();
 
         assert!(
             wait_for(&second_rx, "after").contains("after"),
