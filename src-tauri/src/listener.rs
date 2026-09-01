@@ -102,8 +102,24 @@ where
                         // the conversation the person cleared away, with nothing
                         // to notice. See `resume_ids`, which ignores an id equal
                         // to the launch one.
-                        if let Some(reported) = ev.reported_session.as_deref() {
-                            crate::resume_ids::record(&ev.session, reported);
+                        //
+                        // Every kind but `ended`, and that exclusion is the whole
+                        // of a race. `/clear` is one of Claude Code's documented
+                        // `SessionEnd` reasons, so a clear fires *two* reporters:
+                        // `SessionEnd` naming the conversation being left and
+                        // `SessionStart` naming the new one. They are separate
+                        // processes on separate connections handled by separate
+                        // tasks — nothing orders them, and `record` is last-wins.
+                        // The first clear survives that by luck, because the id
+                        // being ended is the launch id and `record` drops it; the
+                        // second would not, and a lost race would leave the map
+                        // naming the conversation just cleared away. An `ended`
+                        // event reports where the session *was*, which is never
+                        // the answer to what a restart should resume.
+                        if ev.kind != "ended" {
+                            if let Some(reported) = ev.reported_session.as_deref() {
+                                crate::resume_ids::record(&ev.session, reported);
+                            }
                         }
                         if let Some(state) =
                             event_kind_to_state(&ev.kind, ev.notification_type.as_deref())
@@ -255,6 +271,39 @@ mod tests {
         );
         // The deck's own key is untouched: the tile is still this session.
         assert_eq!(crate::resume_ids::get("sess-after-clear"), None);
+    }
+
+    /// The conversation a session is *leaving* is not the one a restart should
+    /// resume. `/clear` is a documented `SessionEnd` reason, so it fires two
+    /// reporters — `SessionEnd` naming the old conversation, `SessionStart`
+    /// naming the new — on separate connections with nothing ordering them. From
+    /// the second clear onwards the old id is a real fork, so recording it would
+    /// make a lost race leave the map one conversation behind.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_ended_event_does_not_move_the_conversation_backwards() {
+        let (tx, rx) = mpsc::channel::<(String, SessionState)>();
+        let port = start_listener(move |s, st| { tx.send((s, st)).unwrap(); }).await.unwrap();
+        // Where the session is now, from the `SessionStart` the clear produced.
+        crate::resume_ids::record("sess-ends", "conversation-3");
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        // And the `SessionEnd` of the conversation it just left, arriving after.
+        stream
+            .write_all(
+                b"{\"session\":\"sess-ends\",\"kind\":\"ended\",\
+                  \"reportedSession\":\"conversation-2\"}\n",
+            )
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+
+        // Waited for through the state, which arrives on the same line.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().1, SessionState::Ended);
+        assert_eq!(
+            crate::resume_ids::get("sess-ends").as_deref(),
+            Some("conversation-3"),
+            "an ended event must not name what a restart resumes",
+        );
+        crate::resume_ids::forget("sess-ends");
     }
 
     /// Every event of an uncleared session reports the id it was launched with,

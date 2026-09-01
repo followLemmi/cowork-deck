@@ -467,6 +467,19 @@ fn main() {
             }
             tauri::RunEvent::Exit => {
                 if let Some(state) = app.try_state::<AppState>() {
+                    // Before the PTYs go, and this is the ordering that matters:
+                    // which conversation each session is in is learned from a
+                    // hook and kept in memory, and it reaches `sessions.json`
+                    // through a five-second poll tick. A `/clear` and then a quit
+                    // inside that tick left the file naming the conversation the
+                    // person cleared away, which the next launch would then
+                    // resume — #199, through the one gap the tick leaves. A hard
+                    // kill still loses it, as it loses every other unsaved thing.
+                    if let Ok(store) = state.store.lock() {
+                        if let Err(e) = store.update_resume_ids(&resume_ids::all()) {
+                            eprintln!("warning: could not write the conversations to resume ({e})");
+                        }
+                    }
                     state.pty.kill_all();
                 }
             }

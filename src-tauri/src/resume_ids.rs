@@ -8,8 +8,9 @@
 //!
 //! What `/clear` changes is the *conversation*. Claude Code mints a new session
 //! id, opens a new transcript, and never writes to the launch id's file again —
-//! measured in `docs/superpowers/spikes/2026-08-05-clear-and-the-pinned-session-id.md`
-//! (#155). The launch id still names a real, resumable conversation, so
+//! measured with raw hook output on #155, which is where that evidence lives now
+//! that the spike document it was written into is gone. The launch id still
+//! names a real, resumable conversation, so
 //! `claude --resume <launch-id>` does not fail: it succeeds and brings back the
 //! conversation the person left, orphaning the one they were working in (#199).
 //!
@@ -59,6 +60,18 @@ pub fn get(launch: &str) -> Option<String> {
     ids().lock().ok()?.get(launch).cloned()
 }
 
+/// Every fork this app run has seen, for writing them all down at once.
+///
+/// The map is the freshest copy of the fact and the layout file is the only one
+/// that survives a restart, and between the two sits a five-second poll tick.
+/// `/clear` and then a quit inside that tick used to lose the fork — the whole
+/// of #199 back again for one narrow window — so the quit path takes this and
+/// hands it to [`crate::store::Store::update_resume_ids`]. A clone rather than a
+/// borrow: nothing may hold this lock while a file is being written.
+pub fn all() -> HashMap<String, String> {
+    ids().lock().map(|m| m.clone()).unwrap_or_default()
+}
+
 /// Drop a closed session, beside [`crate::transcripts::forget`] — a tile that is
 /// gone should not keep answering questions, least of all about which
 /// conversation to resume.
@@ -102,6 +115,19 @@ mod tests {
         record("", "cleared");
         assert_eq!(get("r-empty"), None);
         assert_eq!(get(""), None);
+    }
+
+    #[test]
+    fn all_hands_over_every_fork_seen() {
+        record("r-all-one", "cleared-one");
+        record("r-all-two", "cleared-two");
+        let every = all();
+        assert_eq!(every.get("r-all-one").map(String::as_str), Some("cleared-one"));
+        assert_eq!(every.get("r-all-two").map(String::as_str), Some("cleared-two"));
+        // A snapshot, not a view: forgetting after the fact does not empty it.
+        forget("r-all-one");
+        assert_eq!(every.get("r-all-one").map(String::as_str), Some("cleared-one"));
+        forget("r-all-two");
     }
 
     #[test]

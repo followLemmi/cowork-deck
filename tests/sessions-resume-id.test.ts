@@ -138,6 +138,32 @@ describe("the conversation a tile resumes", () => {
     expect(lastSaved()[0].resumeId).toBe("cleared-again");
   });
 
+  it("saves once for a tick that clears several sessions at a time", async () => {
+    // Broadcast types one thing into several sessions at once, so two tiles
+    // reporting a new conversation in the same tick is a gesture rather than a
+    // coincidence. `persistLayout` serialises the tiles it can see when it runs:
+    // a call per tile put two saves in flight carrying different pictures, and
+    // the one that landed last won. With the in-memory copy already updated the
+    // guard above would never fire again, so a lost id stayed lost.
+    const { deck } = mount();
+    vi.mocked(crypto.randomUUID).mockReturnValueOnce("s1" as never);
+    await deck.launch(WS as never, null);
+    vi.mocked(crypto.randomUUID).mockReturnValueOnce("s2" as never);
+    await deck.launch(WS as never, null);
+    save.mockClear();
+
+    snapshots.mockResolvedValue({
+      s1: snap("s1-after-the-clear"),
+      s2: snap("s2-after-the-clear"),
+    } as never);
+    await tick(deck);
+
+    expect(save).toHaveBeenCalledTimes(1);
+    const saved = lastSaved();
+    expect(saved.find((e) => e.sessionId === "s1")?.resumeId).toBe("s1-after-the-clear");
+    expect(saved.find((e) => e.sessionId === "s2")?.resumeId).toBe("s2-after-the-clear");
+  });
+
   it("keeps a restored id against a tick that reports none", async () => {
     // The backend answers `null` for the whole of a restored tile's life until
     // its first hook arrives: its record of the fact is in memory and did not

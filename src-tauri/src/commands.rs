@@ -201,6 +201,15 @@ pub fn build_claude_args(
 /// conversation that has been deleted fails visibly — the tile goes to `error`
 /// and offers ⟳ — whereas quietly falling back to the launch id is the silent
 /// wrong answer this whole issue is about.
+///
+/// The layout is read best-effort all the same, and that is a decision rather
+/// than an oversight. `layout()` reads an unparseable `sessions.json` as an
+/// empty one, so a file damaged *while the app runs* would send a cleared tile
+/// back to its launch id without a word — the failure above, by another route.
+/// Refusing instead would mean no session restarts at all while the file is
+/// damaged, uncleared ones included, and those are the great majority and would
+/// all have been right. A tile that loses one `/clear` is the smaller harm than
+/// a deck that will not restart anything, so this reads what it can get.
 fn resume_target(store: &Mutex<Store>, session: &str) -> String {
     if let Some(current) = crate::resume_ids::get(session) {
         return current;
@@ -2552,10 +2561,30 @@ pub fn load_layout(window: tauri::WebviewWindow, state: State<AppState>) -> Vec<
 /// Write this window's tiles into `sessions.json` without disturbing another
 /// window's. See `Store::save_layout` for what the merge holds and why a
 /// failed read refuses rather than truncating.
+///
+/// The conversation each session is in is taken from [`crate::resume_ids`] and
+/// not from the caller, wherever this app run has learned one. The frontend does
+/// send it — it reads it off the poll tick and keeps it on the tile — but the
+/// backend is the one that knows, and two saves in the same tick used to be able
+/// to lose it: `persistLayout` serialises the tiles it can see at the moment it
+/// is called, so a save fired for tile A carried tile B's fork as still absent,
+/// and if that save landed last the id was gone from the file with nothing left
+/// to notice — the in-memory copy already matched, so nothing would write it
+/// again (#199). Taking it from the map instead makes every save carry the
+/// freshest answer, whatever order they arrive in.
+///
+/// What the caller sent still stands where the map has nothing: a restored tile
+/// carries its fork from the layout for the whole of its life until its first
+/// hook arrives, and that copy is the only one there is.
 #[tauri::command]
 pub fn save_layout(
-    window: tauri::WebviewWindow, state: State<AppState>, sessions: Vec<SessionEntry>,
+    window: tauri::WebviewWindow, state: State<AppState>, mut sessions: Vec<SessionEntry>,
 ) -> Result<(), String> {
+    for entry in sessions.iter_mut() {
+        if let Some(current) = crate::resume_ids::get(&entry.session_id) {
+            entry.resume_id = Some(current);
+        }
+    }
     let store = state.store.lock().unwrap();
     store.save_layout(window.label(), &sessions).map_err(|e| e.to_string())
 }

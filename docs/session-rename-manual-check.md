@@ -45,7 +45,8 @@ itself.
 - [ ] **`/clear`, then ⟳.** The tile ends the session (`/exit`, or let it end), press ⟳, and ask the agent what you were just talking about: it comes back into the **post**-`/clear` conversation, not the one you cleared away (#199). Its name and token count carry straight on rather than jumping back.
 - [ ] **`/clear`, then quit the app and reopen it.** Same question, same answer: the restored tile is in the conversation you were working in. This is the path that used to lose it — the pre-`/clear` conversation came back and the real one was left on disk with nothing pointing at it.
 - [ ] Look at `sessions.json` in the app's configuration directory (Settings says where). The cleared session's entry has kept its original `sessionId` and gained a `resumeId`; an uncleared session has no `resumeId` key at all.
-- [ ] `/clear` twice in one session, then restart the app — the tile is in the **third** conversation, not the second.
+- [ ] `/clear` twice in one session, then restart the app — the tile is in the **third** conversation, not the second. Do the second clear and quit **immediately**, inside five seconds, and it still holds: the poll tick is not the only thing that writes the id down.
+- [ ] With Broadcast on, `/clear` two sessions at once, quit and reopen. Both are in their post-clear conversations — not one of them.
 - [ ] A session nobody has cleared, quit and reopened — it resumes exactly as it always did, and its entry in `sessions.json` is unchanged.
 - [ ] Rename a tile, quit the app, reopen it — the typed name is back. Rename another, clear it, quit and reopen — the automatic name is back.
 - [ ] With six sessions open, watch the token badges over a minute. One IPC call a tick, not six (add a temporary log or watch the process), and the window stays responsive throughout.

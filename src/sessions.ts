@@ -460,6 +460,13 @@ export class Deck {
       // *when it changes* — once per clear, not once per tick. See below.
       try {
         const snaps = await sessionSnapshots(tiles.map((t) => t.session));
+        // Whether anything below asked for a layout write. A flag rather than a
+        // call inside the loop: `persistLayout` serialises the tiles it can see
+        // at the moment it runs, so two calls in one tick put two saves in flight
+        // carrying different pictures, and whichever landed last won. Broadcast
+        // can type `/clear` into several sessions at once, which is exactly two
+        // tiles reporting a new conversation in the same tick (#199).
+        let layoutDirty = false;
         for (const t of tiles) {
           if (!this.tiles.has(t.session)) continue;
           const snap = snaps[t.session];
@@ -485,12 +492,18 @@ export class Deck {
           // only while a panel is open.
           setActivityCount(t.activityBtn, snap.calls);
           // The conversation this tile is in, if a `/clear` has moved it. Kept
-          // and persisted here and nowhere else: the tile is what
-          // `persistLayout` serialises, and the layout entry is the only copy
-          // that survives a restart — the backend's own record of it does not
-          // (#199). A write only when the answer changed, so this stays what its
-          // comment above says it is: a tick that does not touch
-          // `sessions.json`. Once per `/clear`, not once per tick.
+          // on the tile because the tile is what `persistLayout` serialises, and
+          // the layout entry is the only copy that survives a restart — the
+          // backend's own record of it does not (#199). A write only when the
+          // answer changed, so this stays what its comment above says it is: a
+          // tick that does not touch `sessions.json`. Once per `/clear`, not
+          // once per tick.
+          //
+          // Not the only thing that writes it, and deliberately not trusted to
+          // be: the backend takes the id from its own map on every `save_layout`
+          // and writes what it knows once more at exit, so neither two saves in
+          // one tick nor a quit before the next tick can lose it. This is the
+          // path that keeps the tile itself honest.
           //
           // A `null` never clears the slot, for the reason the title below does
           // not: the backend answers `null` for a restored tile until its first
@@ -498,7 +511,7 @@ export class Deck {
           // pre-clear conversation back the next time the app was closed.
           if (snap.resumeId && snap.resumeId !== t.resumeId) {
             t.resumeId = snap.resumeId;
-            void this.persistLayout();
+            layoutDirty = true;
           }
           // A missing title never clears the slot. Measured over 96 transcripts a
           // title is minted once and never revised, so a null here is either "not
@@ -509,6 +522,8 @@ export class Deck {
             this.applyName(t);
           }
         }
+        // One save for the whole tick, however many tiles were cleared in it.
+        if (layoutDirty) void this.persistLayout();
       } catch (e) {
         console.debug("sessionSnapshots failed", e);
       }

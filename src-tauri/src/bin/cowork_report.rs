@@ -85,9 +85,17 @@ fn esc(s: &str) -> String {
 /// model that wrote `"transcript_path":"/tmp/evil"` in its reply would have been
 /// read as the payload's own field. Field order happens to save it today —
 /// `transcript_path` is the second key — which is exactly the kind of accident
-/// that stops being true. `session_id` is read the same way and needs the guard
-/// for the same reason: it decides which conversation a restart resumes, so a
-/// model that wrote one in its reply must not be able to name it.
+/// that stops being true, and `session_id` — read the same way — raises the
+/// stakes of it: that one decides which conversation a restart resumes.
+///
+/// Be precise about what the guard does and does not buy. It rules out a match
+/// inside a *string value*, which is where `last_assistant_message` puts model
+/// text. It does not rule out a match inside a nested *object*, because a key
+/// there also sits after a `{` or a `,` — a `tool_response` carrying its own
+/// `"session_id"` would satisfy it. What saves that case is only that the
+/// payload's own key comes first and this returns the first match. Both fields
+/// are first or second in every payload Claude Code writes today; a depth count
+/// is what would make it a guarantee rather than an ordering.
 fn extract_field(json: &str, key: &str) -> Option<String> {
     let needle = format!("\"{}\"", key);
     let mut from = 0usize;
