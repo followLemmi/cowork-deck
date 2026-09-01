@@ -59,6 +59,10 @@ export class SkillsPanel {
      *  already, when a single ⏰ was both a status badge and a real launch and
      *  reaching for information started a session. */
     private onOpenHistory: (skill: Skill) => void = () => {},
+    /** Name of one workspace by id. Only the edit dialog needs it, and only to
+     *  say which workspace a scenario is pinned to when that is not the one on
+     *  screen — which for a scheduled scenario is the ordinary case. */
+    private getWorkspaceName: (id: string) => string | null = () => null,
   ) {}
 
   private runs: Record<string, ScheduleRun> = {};
@@ -130,10 +134,15 @@ export class SkillsPanel {
   private async edit(id: string) {
     const cur = this.items.find((s) => s.id === id);
     if (!cur) return;
+    // The pin goes into the form as the scenario's own, so that saving from
+    // another workspace cannot drag it here (#249). The exception is an orphan:
+    // its workspace is gone, the row's tooltip sends people here to pick one,
+    // and a pin that names nothing is worth less than the one that is open.
+    const pinned = isOrphan(cur, this.getWorkspaceIds()) ? null : (cur.workspaceId ?? null);
     const res = await skillForm(this.getActiveWorkspaceId(), {
-      name: cur.name, icon: cur.icon, prompt: cur.prompt, workspaceId: cur.workspaceId ?? null,
+      name: cur.name, icon: cur.icon, prompt: cur.prompt, workspaceId: pinned,
       schedule: cur.schedule ?? null,
-    }, this.getActiveWorkspaceName());
+    }, this.getActiveWorkspaceName(), pinned ? this.getWorkspaceName(pinned) : null);
     if (!res) return;
     this.items = await saveSkill({ ...cur, ...res });
     this.render();

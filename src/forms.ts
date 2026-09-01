@@ -524,6 +524,11 @@ export function skillForm(
   /** Name of the active workspace, shown in the schedule preview so "where
    *  will this run" is answered before saving rather than after. */
   activeWorkspaceName: string | null = null,
+  /** Name of the workspace `initial.workspaceId` names, when the scenario is
+   *  already pinned to one. Shown instead of the active workspace's name,
+   *  because for a scheduled scenario those two routinely differ — see the pin
+   *  note below. Ignored when there is no pin to describe. */
+  pinnedWorkspaceName: string | null = null,
 ): Promise<{ name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null> {
   return new Promise((resolve) => {
     const { box, close: closeDialog } = openDialog({
@@ -571,6 +576,24 @@ export function skillForm(
     const promptField = document.createElement("textarea");
     promptField.className = "modal-input form-prompt"; promptField.rows = 4;
     promptField.value = initial?.prompt ?? "";
+
+    // Where a save will pin this scenario, and what to call that place.
+    //
+    // A pin that already exists is kept, never recomputed from what is on
+    // screen. `visibleSkills` shows every enabled schedule in *every* workspace
+    // — a nightly job fires regardless of what is open, so its row is reachable
+    // everywhere — which makes "edit a scenario pinned somewhere else" the
+    // ordinary case rather than a corner. Recomputing the pin there would move
+    // an unattended `claude` into another repository on an edit of the hour:
+    // #249 again, reached the long way round and with nothing said about it.
+    // The checkbox decides whether there is a pin; it does not decide which.
+    //
+    // An orphan is the one scenario that arrives here unpinned on purpose (see
+    // `SkillsPanel.edit`): its workspace is gone, and picking one is what the
+    // row's own tooltip sends people to this dialog to do.
+    const pinId = initial?.workspaceId ?? activeWorkspaceId;
+    const pinName = initial?.workspaceId ? pinnedWorkspaceName : activeWorkspaceName;
+    const pinnedElsewhere = initial?.workspaceId != null && initial.workspaceId !== activeWorkspaceId;
 
     const scope = document.createElement("input");
     scope.className = "form-scope"; scope.type = "checkbox";
@@ -673,7 +696,7 @@ export function skillForm(
     const preview = document.createElement("div");
     preview.className = "form-sched-preview";
     const syncPreview = () => {
-      const wsName = scope.checked ? (activeWorkspaceName ?? null) : null;
+      const wsName = scope.checked ? pinName : null;
       preview.textContent = schedulePreview(readPreset(), new Date(), wsName);
     };
     for (const el of [kind, weekday, hour, minute, scope]) {
@@ -690,11 +713,48 @@ export function skillForm(
     schedBody.className = "form-sched-body";
     schedBody.append(timeRow, preview, caveat, defWrap);
     const syncSchedBody = () => { schedBody.style.display = schedEnabled.checked ? "" : "none"; };
-    schedEnabled.addEventListener("change", syncSchedBody);
-    syncSchedBody(); syncTimeRow(); syncPreview();
+
+    // A schedule is pinned to one workspace, and the checkbox says so out loud
+    // rather than being overruled at save time. Ticking "On a schedule" ties the
+    // scenario to the workspace that is open now (#249): a schedule with no pin
+    // used to run in whichever workspace happened to be active when it fired,
+    // which let an unattended session work in a repository chosen by where the
+    // mouse was last.
+    const SCOPE_HINT = "otherwise the scenario is visible and runs in any";
+    const SCOPE_HINT_SCHEDULED = "a schedule runs unattended, so it needs one workspace to run in";
+    // Named, not "the current workspace", when the pin is not the workspace on
+    // screen — otherwise the label would describe the box as doing something
+    // the save deliberately does not do.
+    const scopeRow = labeledCheck(
+      pinnedElsewhere ? `Only for ${pinName ? `“${pinName}”` : "the workspace it is pinned to"}`
+        : "Only for the current workspace",
+      scope, SCOPE_HINT);
+    const scopeHint = scopeRow.querySelector(".form-check-hint") as HTMLElement;
+    // What the person chose for themselves, kept while the schedule overrides it
+    // — unticking "On a schedule" must give their own answer back, not ours.
+    let scopeChoice = scope.checked;
+    scope.addEventListener("change", () => { if (!scope.disabled) scopeChoice = scope.checked; });
+    const syncScope = () => {
+      if (schedEnabled.checked) {
+        scope.checked = true;
+        scope.disabled = true;
+        scopeHint.textContent = SCOPE_HINT_SCHEDULED;
+      } else {
+        if (scope.disabled) scope.checked = scopeChoice;
+        scope.disabled = false;
+        scopeHint.textContent = SCOPE_HINT;
+      }
+    };
 
     const schedError = document.createElement("div");
     schedError.className = "form-sched-error"; schedError.style.display = "none";
+
+    // Ticking the schedule on or off moves the scope checkbox with it, so the
+    // preview has to be recomputed after both.
+    schedEnabled.addEventListener("change", () => {
+      syncSchedBody(); syncScope(); syncPreview();
+    });
+    syncSchedBody(); syncScope(); syncTimeRow(); syncPreview();
 
     const readDefaults = (): Record<string, string> => {
       const defaults: Record<string, string> = {};
@@ -706,8 +766,7 @@ export function skillForm(
     box.append(
       title, labeled("Name", name), labeled("Mark", iconPicker),
       labeled("Task", promptField),
-      labeledCheck("Only for the current workspace", scope,
-        "otherwise the scenario is visible and runs in any"),
+      scopeRow,
       labeledCheck("On a schedule", schedEnabled,
         "run it without a human present"),
       schedBody, schedError, row,
@@ -720,11 +779,16 @@ export function skillForm(
       if (!pr) return showError(schedError, "Describe the task for Claude.");
       const defaults = readDefaults();
       const preset = readPreset();
-      const v = validateSchedule(schedEnabled.checked, preset, pr, defaults);
+      // A scheduled scenario is pinned, whatever state the scope checkbox is in:
+      // the schedule *is* the pin (#249), and `syncScope` only makes that
+      // visible. Validation below is what refuses when there is no workspace
+      // open to pin it to.
+      const workspaceId = scope.checked || schedEnabled.checked ? pinId : null;
+      const v = validateSchedule(schedEnabled.checked, preset, pr, defaults, workspaceId);
       if (!v.ok) return showError(schedError, v.error);
       close({
         name: n, icon: iconName, prompt: pr,
-        workspaceId: scope.checked ? activeWorkspaceId : null,
+        workspaceId,
         // Unticking pauses, it does not erase: keeping the rule and the
         // defaults is what makes "off for a week" a checkbox instead of a
         // full re-entry. Absent only when there never was a schedule.

@@ -148,6 +148,15 @@ fn main() {
             let dir = app.path().app_config_dir().expect("app config dir");
             let store = store::Store::new(dir.clone());
 
+            // A scheduled scenario now runs only in the workspace it is pinned
+            // to (#249). Schedules written before that rule may have no pin, so
+            // they acquire the stored active workspace — the very one the old
+            // fallback would have picked on this machine — before anything reads
+            // `skills.json`: the scheduler's first catch-up tick is one of those
+            // readers, and a schedule owed a run must not miss it over a pin the
+            // migration was going to give it a moment later.
+            scheduler::migrate_pins(&store);
+
             // Before the listener, and long before the frontend can launch
             // anything: a hook or a PTY exit arriving with the journal unwired
             // would be a run nobody recorded. `sweep_and_compact` then closes

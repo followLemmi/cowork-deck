@@ -1196,11 +1196,14 @@ export function startApp(role: WindowRole): Promise<void> {
       // The backend emits one `schedule://fire`. Every window listening would
       // launch the scenario and acknowledge it, so a nightly job would run as
       // many times as there are windows open.
-      ...(isMain ? [() => onScheduledFire((skillId, occurrenceMs, catchUp) => {
+      ...(isMain ? [() => onScheduledFire(({ skillId, workspaceId: where, occurrenceMs, catchUp }) => {
         const missedAt = catchUp
           ? new Date(occurrenceMs).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
           : undefined;
-        void handleScheduledFire(skillId, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
+        // Where it runs comes down with the fire: the backend resolved the pin
+        // against `workspaces.json`, so this window's own selection has no say
+        // in which repository an unattended session works in (#249).
+        void handleScheduledFire(skillId, where, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
           if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
           // Tell the backend what came of it: an occurrence it emitted counts as
           // a run only once a session has actually started. Anything else also
@@ -2036,6 +2039,10 @@ export function startApp(role: WindowRole): Promise<void> {
    *  scheduled run cannot ask) and launch it as a fresh tile. */
   async function handleScheduledFire(
     skillId: string,
+    /** The workspace the run belongs in. Never the active one: for a scheduled
+     *  fire this is what the backend resolved, and for the ⏰ button it is the
+     *  scenario's own pin. */
+    workspaceId: string | null,
     /** Which path the fire came down. Both are journalled — the question a
      *  history answers is "when did this scenario last run", not "who pressed
      *  it" — and both are told apart, so the screen can filter one out. */
@@ -2044,7 +2051,7 @@ export function startApp(role: WindowRole): Promise<void> {
   ): Promise<FireResult> {
     const skill = skills.find(skillId);
     if (!skill?.schedule?.enabled) return { outcome: "not-scheduled", workspaceId: null };
-    const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
+    const res = resolveScheduledWorkspace(workspaceId, workspaces.all);
     if (!res.ok) return { outcome: res.reason, workspaceId: null };
     const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
     const launched = await deck.launchScheduled(res.workspace, skill, filled, trigger, catchUpFor);
@@ -2061,11 +2068,13 @@ export function startApp(role: WindowRole): Promise<void> {
    *  loop, so the regular occurrence still fires. Unlike a backend-driven fire,
    *  a click must say why nothing happened. */
   async function runScheduledNow(skill: Skill) {
-    const { outcome } = await handleScheduledFire(skill.id, "runNow");
+    const { outcome } = await handleScheduledFire(skill.id, skill.workspaceId ?? null, "runNow");
     if (outcome === "skipped-overlap") {
       await alertModal("Run skipped: the previous one is still active.");
     } else if (outcome === "no-workspace") {
-      await alertModal("This scenario has no workspace available: pin it to one or pick a workspace.");
+      await alertModal(
+        "This scenario is not pinned to a workspace that exists, so there is nowhere to run it. "
+        + "Edit it with the workspace it belongs to open.");
     }
   }
 
@@ -2397,7 +2406,8 @@ export function startApp(role: WindowRole): Promise<void> {
     (skill) => { void launchScenario(skill); },
     (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
      () => workspaces.active?.name ?? null,
-     (skill) => openHistoryFor(skill));
+     (skill) => openHistoryFor(skill),
+     (id) => workspaces.all.find((w) => w.id === id)?.name ?? null);
   // Deleting a workspace strands the scenarios pinned to it — the confirmation
   // says how many before it happens.
   workspaces.setSkillsSource(() => skills.all);

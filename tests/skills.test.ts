@@ -70,3 +70,40 @@ it("find() resolves a scenario by id for scheduled fires", async () => {
   expect(panel.find("s1")?.name).toBe("Report");
   expect(panel.find("nope")).toBeUndefined();
 });
+
+// #249, at the edit dialog. A scheduled scenario is listed in every workspace,
+// so the panel routinely hands the form a scenario pinned somewhere else — and
+// what it hands over is the scenario's own pin, not the one on screen.
+it("opens the edit form with the scenario's own pin, not the active workspace", async () => {
+  listSkills.mockResolvedValueOnce([
+    { id: "s1", name: "Nightly", icon: "play", prompt: "go", workspaceId: "w2",
+      schedule: { preset: { kind: "daily", hour: 3, minute: 0 }, defaults: {}, enabled: true } },
+  ]);
+  skillForm.mockResolvedValueOnce(null);
+  const mount = document.createElement("div");
+  const panel = new SkillsPanel(mount, () => "w1", () => {}, () => {},
+    () => ["w1", "w2"], () => "One", () => {}, (id) => (id === "w2" ? "Two" : null));
+  await panel.load();
+  mount.querySelector<HTMLButtonElement>(".sk-edit")!.click();
+  await Promise.resolve();
+  expect(skillForm).toHaveBeenCalledWith(
+    "w1", expect.objectContaining({ workspaceId: "w2" }), "One", "Two");
+});
+
+// The one scenario that arrives unpinned on purpose: its workspace is gone, and
+// the row's tooltip sends people to this dialog to pick a live one. Keeping the
+// dangling pin would make that impossible.
+it("opens an orphan's edit form unpinned so a workspace can be picked", async () => {
+  listSkills.mockResolvedValueOnce([
+    { id: "s1", name: "Nightly", icon: "play", prompt: "go", workspaceId: "gone" },
+  ]);
+  skillForm.mockResolvedValueOnce(null);
+  const mount = document.createElement("div");
+  const panel = new SkillsPanel(mount, () => "w1", () => {}, () => {},
+    () => ["w1"], () => "One", () => {}, () => null);
+  await panel.load();
+  mount.querySelector<HTMLButtonElement>(".sk-edit")!.click();
+  await Promise.resolve();
+  expect(skillForm).toHaveBeenCalledWith(
+    "w1", expect.objectContaining({ workspaceId: null }), "One", null);
+});

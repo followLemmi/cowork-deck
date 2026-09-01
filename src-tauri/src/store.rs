@@ -228,6 +228,18 @@ impl Store {
         Self::write_vec(&self.ws_path(), items)
     }
     pub fn skills(&self) -> Vec<Skill> { Self::read_vec(&self.sk_path()) }
+    /// The scenario list, or the reason it could not be read.
+    ///
+    /// Same argument as `try_workspaces` above, for the other file the
+    /// scheduler tick reads. The tick prunes `schedule_state.json` down to the
+    /// scenarios that still exist, so "this file will not parse" arriving as
+    /// "there are no scenarios" would drop every rule's `lastRun` over a fault
+    /// that deleted nothing — and every schedule would then re-arm from
+    /// scratch. A caller about to act on the *absence* of a record asks this
+    /// one.
+    pub fn try_skills(&self) -> std::io::Result<Vec<Skill>> {
+        Self::try_read_vec(&self.sk_path())
+    }
     pub fn save_skills(&self, items: &[Skill]) -> std::io::Result<()> {
         Self::write_vec(&self.sk_path(), items)
     }
@@ -583,7 +595,15 @@ impl Store {
         Ok(items)
     }
 
-    pub fn upsert_skill(&self, sk: Skill) -> std::io::Result<Vec<Skill>> {
+    /// Write one scenario, because somebody saved it.
+    ///
+    /// That is what clears `pinned_by_migration`: the #249 migration's guess at
+    /// a workspace lasts exactly until a person opens the form and presses OK,
+    /// having been shown the pin it keeps. From then on it is an ordinary pin
+    /// and travels like one. The migration itself writes through `save_skills`,
+    /// the bulk write, and does not come through here.
+    pub fn upsert_skill(&self, mut sk: Skill) -> std::io::Result<Vec<Skill>> {
+        sk.pinned_by_migration = false;
         let mut items: Vec<Skill> = Self::try_read_vec(&self.sk_path())?;
         match items.iter_mut().find(|x| x.id == sk.id) {
             Some(existing) => *existing = sk,
@@ -1091,6 +1111,7 @@ mod tests {
             .upsert_skill(Skill {
                 id: "s1".into(), name: "S".into(), icon: "play".into(),
                 prompt: "p".into(), workspace_id: None, schedule: None,
+                pinned_by_migration: false,
             })
             .is_err());
         assert!(s.delete_skill("s1").is_err());
@@ -1433,6 +1454,7 @@ mod tests {
         s.upsert_skill(Skill {
             id: "s1".into(), name: "Triage".into(), icon: "bolt".into(),
             prompt: "p".into(), workspace_id: Some("w1".into()), schedule: None,
+            pinned_by_migration: false,
         }).unwrap();
         s.append_run_event(&a_run("r1", "s1", 10)).unwrap();
         s.delete_skill("s1").unwrap();
@@ -1502,7 +1524,7 @@ mod tests {
 
         let sk = |id: &str| Skill {
             id: id.into(), name: id.into(), icon: "play".into(), prompt: "p".into(),
-            workspace_id: None, schedule: None,
+            workspace_id: None, schedule: None, pinned_by_migration: false,
         };
         s.save_skills(&[sk("s1")]).unwrap();
         let before = ino(&s.sk_path());
@@ -1638,6 +1660,25 @@ mod tests {
         );
         assert!(
             s.try_workspaces().is_err(),
+            "a list that will not parse must not read as a list with nothing in it"
+        );
+    }
+
+    /// The same difference, for the other file the scheduler tick reads.
+    ///
+    /// The tick prunes `schedule_state.json` down to the scenarios that still
+    /// exist. Reading an unparseable `skills.json` as "there are none" would
+    /// therefore rewrite that file empty — every rule's `lastRun` gone, every
+    /// schedule re-armed from scratch — over a fault that deleted nothing.
+    #[test]
+    fn try_skills_refuses_a_list_it_cannot_parse() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.sk_path(), "{ not an array").unwrap();
+
+        assert!(s.skills().is_empty(), "the best-effort read still answers empty");
+        assert!(
+            s.try_skills().is_err(),
             "a list that will not parse must not read as a list with nothing in it"
         );
     }
