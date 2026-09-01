@@ -775,11 +775,11 @@ body {
   font-size: var(--fs-xs); line-height: var(--lh-body);
 }
 
-#ws-page, #sk-page {
+#ws-page, #sk-page, #mem-page {
   display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3);
   overflow: auto;
 }
-#ws-page.hidden, #sk-page.hidden { display: none; }
+#ws-page.hidden, #sk-page.hidden, #mem-page.hidden { display: none; }
 
 /* --- The workspace's own panel -------------------------------------------
    The board and the pull requests, on the right of the deck.
@@ -1986,6 +1986,254 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .settings-size:hover { background: var(--bg-hover-2); color: var(--fg); border-color: var(--line-strong); }
 .settings-size.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
 .settings-size:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* Searching your notes: a list of hits over a preview of the one selected. The
+   dialog is taller than the others here because a passage needs room to be
+   recognised — a one-line row is a filename with extra steps. */
+.notes-list { display: flex; flex-direction: column; gap: 2px; max-height: 34vh; overflow-y: auto; }
+.notes-row {
+  padding: var(--sp-2); border: 1px solid transparent; border-radius: var(--r-ctl);
+  cursor: pointer; background: var(--bg-inset);
+}
+.notes-row:hover { background: var(--bg-hover-2); }
+.notes-row.selected { border-color: var(--accent); background: var(--sel); }
+.notes-row-head { display: flex; gap: var(--sp-2); align-items: baseline; flex-wrap: wrap; }
+.notes-row-title { color: var(--fg); font-size: var(--fs-base); font-weight: var(--fw-medium); }
+.notes-row-when { color: var(--fg-dim); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.notes-row-scope { color: var(--fg-mid); font-size: var(--fs-sm); }
+.notes-row-text { color: var(--fg-mid); font-size: var(--fs-sm); margin-top: 2px; }
+.notes-preview { max-height: 34vh; overflow-y: auto; }
+.notes-preview:empty { display: none; }
+.notes-preview-head {
+  display: flex; gap: var(--sp-2); align-items: center; justify-content: space-between;
+  padding-bottom: var(--sp-2); border-bottom: 1px solid var(--line);
+}
+.notes-preview-path { color: var(--fg-dim); font-size: var(--fs-sm); word-break: break-all; }
+.notes-preview-body { color: var(--fg); font-size: var(--fs-sm); }
+
+/* --- The memory page ------------------------------------------------------
+   The rail's fourth page: the whole corpus in a column measured at
+   `clamp(17.5rem, 19vw, 24rem)` — 280 to 384px. That measurement is why a row
+   carries a title, a date and at most one more word, and why a note's body is
+   read on the document surface instead of in a preview pane here. */
+.mem { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+/* The search, which was a dialog until there was a page to put it on. It
+   switches the list below between two sources rather than opening anything, so
+   it sits at the top of the page and not in a bar of its own. */
+.mem-search {
+  width: 100%; box-sizing: border-box; padding: var(--sp-2);
+  background: var(--bg-inset); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font: inherit; font-size: var(--fs-sm);
+}
+.mem-search::placeholder { color: var(--fg-dim); }
+.mem-search:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+/* Disabled only where there is no search at all — a build with no sidecar
+   staged. Not ready is a sentence, not a dead control: an index finishes and a
+   download completes under an open page. */
+.mem-search:disabled { color: var(--fg-dim); cursor: not-allowed; }
+.mem-head { margin: 0; color: var(--fg-mid); font-size: var(--fs-sm); }
+/* What searching would additionally need. Dimmer than the head above it: the
+   page works without it, and a warning-coloured line would say otherwise. */
+.mem-readiness {
+  margin: 0; color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body);
+}
+.mem-empty { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-body); }
+.mem-list { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.mem-group { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mem-group-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2);
+  padding: var(--sp-1) 0; background: none; border: 0; cursor: pointer;
+  color: var(--fg-mid); font-size: var(--fs-xs); text-align: left;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.mem-group-head:hover { color: var(--fg); }
+.mem-group-head:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--r-ctl); }
+.mem-group-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The count stays on the header rather than inside the group, so a collapsed
+   group still says how much is behind it. */
+.mem-group-count { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.mem-rows { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* A row is a button, so the keyboard reaches every note the mouse does. It
+   borrows `.notes-row` from the search dialog on purpose: the same list of the
+   same things, and two appearances would be two answers to "what is a note". */
+.mem-row {
+  display: block; width: 100%; text-align: left; font: inherit; min-width: 0;
+}
+.mem-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The column is 280–384px, and a title is the part worth reading: it wraps, and
+   everything beside it does not. */
+.mem-row .notes-row-title { overflow-wrap: anywhere; }
+.mem-row .notes-row-when { margin-left: auto; white-space: nowrap; }
+/* Two lines of the passage and no more. It is the only thing on a result saying
+   why the note came back, and a row that grew with the chunk would push the next
+   result off the page. */
+.mem-row .notes-row-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.mem-row .notes-row-scope {
+  margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Writing by hand, under the list. Under, because what a person opens this page
+   for is what is already written — controls above the notes would put the act in
+   front of the point. */
+.mem-write {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  padding-top: var(--sp-3); border-top: 1px solid var(--line);
+}
+.mem-write-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+/* Why these are forms and the note editor is not, said where somebody looks for
+   the button that is missing. */
+.mem-write-note {
+  margin: 0; color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body);
+}
+
+/* The capture record, folded at the foot of the page. Its header is the group
+   header the note groups use — the same control, because it is the same act. */
+.mem-jobs {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding-top: var(--sp-3); border-top: 1px solid var(--line);
+}
+.mem-jobs-body { display: flex; flex-direction: column; gap: var(--sp-2); }
+.mem-group-head.has-fault .mem-group-count { color: var(--st-error); }
+/* A job in a 280–384px column carries a name, a state, a token count and up to
+   two buttons. The honest answer to that is fewer facts per LINE — stacked —
+   rather than a smaller type size. */
+.mem-job { display: flex; flex-direction: column; gap: 2px; }
+.mem-job .notes-row-title { display: block; overflow-wrap: anywhere; }
+.mem-job-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-1); }
+
+/* --- A note read where the deck was --------------------------------------
+   #346's precedent, applied to a document: "the terminals take the deck's place,
+   from a control that gives it back". A note's body is markdown with headings and
+   sections, and the panel it is listed in is 280–384px wide — so reading happens
+   on the only surface in this window with the width a document wants.
+
+   Out of flow over the deck, exactly as `.term-drawer.is-full` is, and for the
+   same measured reason: a deck squeezed to nothing draws its zoomed filmstrip out
+   of a box with no room for it, and its padding floors it at a band of empty
+   ground. Covering also makes giving the deck back exact — nothing was taken, so
+   there is no layout to restore, no zoom to remember and no PTY resized in either
+   direction.
+
+   `z-index: 6` is the drawer's, and this comes after `#terminals` in the DOM, so
+   whichever of the two was asked for last is the one on top. The topbar and the
+   panel stay: `#ledger` is where a session that starts waiting while the deck is
+   covered says so. */
+.note-reader {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-void);
+}
+.note-reader[hidden] { display: none; }
+.note-reader-head {
+  flex: 0 0 auto; display: flex; align-items: flex-start; gap: var(--sp-3);
+  justify-content: space-between;
+  padding: var(--sp-3); border-bottom: 1px solid var(--line);
+  background: var(--bg-island);
+}
+.note-reader-named { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.note-reader-title {
+  color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+.note-reader-where {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: baseline;
+  color: var(--fg-mid); font-size: var(--fs-sm);
+}
+.note-reader-when { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.note-reader-path { color: var(--fg-dim); font-size: var(--fs-xs); word-break: break-all; }
+.note-reader-acts { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-2); }
+.note-reader-back {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 26px; min-height: 26px; padding: 0;
+  background: none; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  color: var(--fg-dim); cursor: pointer;
+}
+.note-reader-back:hover { color: var(--fg); border-color: var(--line-strong); background: var(--bg-hover-2); }
+.note-reader-back:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The measure is the point of the surface. A note is prose, and prose set to the
+   full width of a wide window is prose nobody reads to the end of. */
+.note-reader-body {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: var(--sp-4) var(--sp-3);
+  color: var(--fg); font-size: var(--fs-base); line-height: var(--lh-body);
+}
+.note-reader-body > * { max-width: 78ch; margin-inline: auto; }
+/* Editing a note: the raw markdown, over the same surface. Raw because a note IS
+   markdown on disk (ADR-0004) and the indexer reads its headings — an editor that
+   produced markdown by inference would produce a `## TL;DR` that was nearly
+   right, which is the one way to make a note quietly unfindable. */
+.note-reader-edit {
+  display: block; width: 100%; max-width: 78ch; margin-inline: auto;
+  min-height: 60vh; box-sizing: border-box; resize: vertical;
+  padding: var(--sp-3);
+  background: var(--bg-inset); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm); line-height: var(--lh-body);
+}
+.note-reader-edit:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+/* Writing one: three fields, because the shape around them is written by
+   `memory_write_note` rather than by the person. */
+.note-reader-compose {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  max-width: 78ch; margin-inline: auto;
+}
+.note-reader-row { display: flex; flex-direction: column; gap: 4px; }
+.note-reader-label { color: var(--fg-mid); font-size: var(--fs-sm); }
+.note-reader-field {
+  width: 100%; box-sizing: border-box; padding: var(--sp-2);
+  background: var(--bg-inset); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font: inherit; font-size: var(--fs-sm); resize: vertical;
+}
+.note-reader-field--tall { min-height: 30vh; font-family: var(--font-mono); }
+.note-reader-field:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+/* A rule a person cannot see being obeyed, written where it applies — the same
+   choice `.panel-hint` records. */
+.note-reader-rule { color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body); }
+/* The surface with no note on it. The deck's own empty state offers to start a
+   session, which under a page about notes answers a question nobody asked. */
+.note-reader-landing {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  max-width: 68ch; margin-inline: auto; padding-top: var(--sp-6);
+}
+.note-reader-lede { margin: 0; color: var(--fg); font-size: var(--fs-lg); line-height: var(--lh-body); }
+.note-reader-landing .note-reader-rule { margin: 0; }
+
+.note-reader-wait, .note-reader-fault { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); }
+.note-reader-fault { color: var(--st-error); }
+
+/* A row of mutually exclusive choices that are not sizes. Same control, and it
+   shares `.settings-size` for the buttons themselves — what differs is only that
+   the group is not a set of numbers, so the name of the group had to. */
+.settings-choice { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+
+/* Diary rooms: a name, the sentence a lesson is routed by, and a way out. The
+   description takes the room because it is the field that does the work — a name
+   is a word and the sentence is the criterion. */
+.rooms-list { display: flex; flex-direction: column; gap: var(--sp-1); }
+.rooms-row { display: grid; grid-template-columns: 9rem 1fr auto; gap: var(--sp-2); align-items: center; }
+.rooms-row--add { margin-top: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.rooms-name, .rooms-desc {
+  background: var(--bg-inset); border: 1px solid var(--line-strong); border-radius: var(--r-ctl);
+  color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 6px var(--sp-2);
+  min-height: 30px; outline: none; min-width: 0;
+}
+.rooms-name::placeholder, .rooms-desc::placeholder { color: var(--fg-dim); }
+.rooms-name:focus, .rooms-desc:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.rooms-remove, .rooms-add {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg-mid); background: var(--bg-inset);
+  border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 6px var(--sp-3);
+  min-height: 30px; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.rooms-remove:hover, .rooms-add:hover { background: var(--bg-hover-2); color: var(--fg); border-color: var(--line-strong); }
+.rooms-remove:focus-visible, .rooms-add:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* A fault reads where it happened, in the row that caused it. */
+.rooms-fault { grid-column: 1 / -1; color: var(--st-error); }
 
 /* Checkbox beside its label rather than under it, and not the 13px system size.
    accent-color themes the native control — no custom rendering needed here. */

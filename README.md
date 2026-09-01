@@ -248,6 +248,105 @@ newest first, filterable by scenario and by trigger, and a row that produced not
 nothing it was. Records are immutable; erasing exists at one granularity — one scenario's history,
 wholesale. Recording can be switched off, and the screen says so rather than looking empty.
 
+## Session notes
+
+A session that closes can leave a **note** behind: what it did, what was decided,
+what broke and why. That corpus is what later sessions — and, once the search lands, the
+agents themselves — read instead of starting blind. It fills itself, so nothing depends on
+anybody remembering to write anything down.
+
+**It is asked, every first time, and it costs you money.** The session's transcript is sent
+to a model to be summarised, and the call runs on **your own Claude account** — it spends
+from your plan or your API budget. The question at the close says so before the button that
+agrees to it, and you can answer once for good. Three positions, under **Session notes…** in
+the command palette: ask each time, always write one, never write one.
+
+What keeps the bill small is not restraint on your part. The transcript is reduced to its
+prose before anything is sent — tool calls, their output, thinking and injected context are
+most of the bytes of a working session and none of its meaning — what survives is capped, and
+a session with nothing in it never reaches a model at all. The summary runs on the cheap
+model, because shortening prose that is already in the request does not need the strong one.
+Each capture prints what it cost.
+
+**Notes are markdown on your disk**, under the same directory as your workspaces:
+
+```
+<config dir>/{workspace}/Sessions/2026-08/31-the-thing-you-fixed.md
+<config dir>/{workspace}/Facts.md          durable claims, appended and never rewritten
+<config dir>/Diaries/{room}/2026-08.md     lessons, global rather than per project
+```
+
+A **diary room** is where a lesson worth carrying to another project is filed — the model
+picks the room from a sentence you write. Rooms are global on purpose: that is what lets a
+mistake made in one repository stop the same mistake in the next. A room you remove keeps
+every lesson already in it; what stops is new ones being filed there. Two rooms come
+configured and both are yours to rewrite.
+
+**A note is written by a model and may be wrong.** It is somebody's notes, indexed — not a
+record of truth. Facts are appended and marked superseded rather than edited, so a wrong one
+can be corrected without losing what it said.
+
+**Writing into it yourself.** The memory page writes a note by hand, records a fact,
+replaces one that has stopped being true, and files a lesson into a room you pick rather
+than one a model picks. A note is written and edited where it is read — its raw markdown,
+because that is what a note is on disk — and it keeps its `## TL;DR`: that is what a search
+reads first, so a note without one does not come back from one. Saving is atomic, and a
+capture never overwrites what you are writing.
+
+**Editing a note makes a sync conflict likelier, and that is accepted rather than solved.**
+Two machines editing one note stops the sync cycle and names the file: notes are prose, and
+an automatic merge produces a plausible paragraph nobody wrote. A fact is
+one line — the date and the `[active]` marker are written for you — and replacing one marks
+the old line and puts the new one under it, so the corpus can still answer when it changed
+and to what. A single short line is on disk and listed immediately, but is not searchable on
+its own: the index skips anything under about 120 letters, so a file becomes findable once
+it holds a few.
+
+**Reading them.** The rail's **Memory** page lists everything ever written down: a heading
+per project with its notes under it, the most recently written project first, and the
+lessons last. It does not change with the project you have open — memory spans them. It is
+a directory listing rather than a search, so it works on a machine that has downloaded
+nothing. Opening the page puts a screen of its own where the deck was; choosing a note
+reads it there, and one control gives the deck back.
+
+**Searching them.** The field at the top of that page — or **Search your notes…** in the
+command palette, which lands on it — takes a sentence rather than a keyword: the notes are
+indexed by meaning, so "why did the cross build pick the wrong architecture" finds the
+session that answered it. Press Enter to search: a search embeds your sentence against the
+model, which is work worth asking for rather than doing on every keystroke. Opening
+the page starts loading the model in the background, so by the time you have read
+the list a search takes milliseconds rather than seconds; it is given back after a
+few minutes of not being used, and the next search loads it again. Emptying the
+field goes back to the whole corpus at once. A result opens the same way a listed note
+does.
+Searching needs a 479 MB embedding model, downloaded once per machine and offered rather
+than fetched behind your back — it runs on your machine and the index never leaves it.
+Everything is on your disk; nothing about a search reaches a network.
+
+**What it has cost.** The foot of the memory page keeps the record: which sessions were
+summarised, which failed and why, and what the model calls came to. It is folded away until
+you go looking for it. A retry runs the summary again on your own Claude account, and the
+queue is this machine's — each machine keeps its own, because a queued job names a
+transcript path here.
+
+**Your sessions can search them too.** A launched session is given a `search_memory` tool
+of its own and told when to reach for it: before changing code in an area it has not seen,
+and before settling a question somebody here has already settled. It reads; it never writes.
+
+**And they are handed what memory has, with the question.** A rule in the system prompt
+about every question in general loses to context about *this* one, so a question long
+enough to be a question arrives with the closest few passages already attached. Short
+instructions, slash commands and pasted code pay for nothing. When the corpus has nothing
+on it, it says so plainly rather than offering passages that did not match — a confident
+empty answer is worse than none.
+A session sees its own project's notes and every project's lessons, and nothing of anybody
+else's project.
+
+One limit worth knowing today: sessions on Claude Code get notes, and Copilot, opencode and
+Codex ones do not yet — the deck says so rather than quietly skipping them. Since the deck
+only launches Claude Code so far, that matters when you point it at a log rather than when
+you start a session.
+
 ## The same setup on your other machine
 
 Workspaces, their GitHub bindings, scenarios and the journal of what has run can live in a private
@@ -257,8 +356,9 @@ connected account, and offers both halves of the job — create a private reposi
 you already have, which is what every machine after the first does.
 
 **What travels:** workspaces and their bindings, scenarios, the run journal (one file per machine, so
-two never collide), and the memory corpus — which is a place kept for project memory rather than a
-thing you have yet; see the roadmap. **What does not:** session layout, window state, terminal drawers —
+two never collide), and the memory corpus — session notes, project
+facts, and the diary rooms with the lessons in them, so a mistake caught on one machine is
+there on the other. **What does not:** session layout, window state, terminal drawers —
 the repository is an allowlist, and a test asserts the tracked set equals it exactly. Absolute paths never travel: a workspace arriving from another machine has no folder here until
 you point it at one, and a schedule arrives switched off so a 03:00 job does not start firing on two
 machines. Conflicts are not resolved for you — notes are prose, and an automatic merge produces a
@@ -371,7 +471,7 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 
 | | |
 |---|---|
-| **Project memory** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | The piece the app is missing rather than a piece it improves. Semantic search over what earlier sessions actually did and decided — for you, and for the agents through an MCP tool of their own. The corpus fills itself: a session writes its own summary when it closes, so nothing depends on anyone keeping notes. Local, like everything else here — the embedding model runs on your machine and the index never leaves it. The sidecar under `crates/cowork-memory` is built and tested; what is left is the app around it. |
+| **Project memory** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | **Working, and being finished.** A closing session writes its own note, you can search them by meaning from the palette, and a session gets a `search_memory` tool of its own — see [Session notes](#session-notes) above. What is left is the panel that shows what a capture cost and which jobs failed, and reading the other CLIs' logs so their sessions get notes too. Local throughout: the embedding model runs on your machine and the index never leaves it. |
 
 ### After that
 

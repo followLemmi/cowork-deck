@@ -52,6 +52,13 @@ puts it. That the layout *within* the root is fixed is the decision here;
 choosing the directory is a separate one, and it belongs wherever the app is
 wired to launch the sidecar.
 
+> **Answered since.** It is the app's config directory — the store's directory
+> and the sync repository root, one and the same. ADR-0006 decided it for sync;
+> ADR-0010 says plainly that it is also the corpus root, so this paragraph is no
+> longer an open question.
+
+
+
 **Facts are appended, never rewritten.** A superseded line is marked, and the
 replacement is added below it.
 

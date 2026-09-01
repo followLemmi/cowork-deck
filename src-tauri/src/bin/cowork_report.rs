@@ -9,6 +9,14 @@ fn main() {
     if args.len() < 4 {
         return;
     }
+    // `memory <port> <session> <workspace>`: the same binary, the same port, and
+    // a reply. Everything about whether a search is worth running lives in the
+    // app — this only carries the prompt there and prints what comes back, so
+    // that no embedding model is ever loaded on the path of a message (#388).
+    if args[1] == "memory" {
+        memory(&args[2], &args[3], args.get(4).map(String::as_str).unwrap_or("-"));
+        return;
+    }
     let kind = &args[1];
     let port = &args[2];
     let session = &args[3];
@@ -92,4 +100,69 @@ fn extract_field(json: &str, key: &str) -> Option<String> {
         return Some(after[..end].to_string());
     }
     None
+}
+
+/// How long the app is given to answer before the prompt goes on without it.
+///
+/// A search spawns the sidecar and loads the model, which is seconds on a cold
+/// one. This is generous enough for that and short enough that a wedged app
+/// costs a pause rather than a session: nothing printed is a turn without
+/// memory, which is exactly where this feature started.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Ask the app for what memory has on this prompt, and print it.
+///
+/// The payload is forwarded **untouched**: a prompt is arbitrary text with
+/// newlines and quotes in it, and `extract_field` above is documented as
+/// assuming flat, quote-free strings. Parsing it here would be the one place in
+/// this binary that had to be right about JSON; the app has serde.
+///
+/// The framing is one header line and then the payload to end-of-stream, which
+/// is what lets the listener keep reading lines for every other kind.
+fn memory(port: &str, session: &str, workspace: &str) {
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = std::io::stdin().read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let payload = rx.recv_timeout(Duration::from_millis(500)).unwrap_or_default();
+    if payload.trim().is_empty() {
+        return;
+    }
+
+    let addr = format!("127.0.0.1:{port}");
+    let Ok(sock) = addr.parse() else { return };
+    let Ok(mut stream) = TcpStream::connect_timeout(&sock, Duration::from_millis(300)) else {
+        return;
+    };
+    let header = format!(
+        "{{\"session\":\"{}\",\"kind\":\"memory\",\"workspace\":\"{}\"}}\n",
+        esc(session),
+        esc(workspace),
+    );
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    if stream.write_all(header.as_bytes()).is_err() {
+        return;
+    }
+    if stream.write_all(payload.as_bytes()).is_err() {
+        return;
+    }
+    let _ = stream.flush();
+    // Half-close, so the app knows the payload is complete without needing a
+    // length in the header — a length this binary would have to count in bytes
+    // of somebody's UTF-8 prompt.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+
+    let _ = stream.set_read_timeout(Some(REPLY_TIMEOUT));
+    let mut reply = String::new();
+    if stream.read_to_string(&mut reply).is_err() {
+        return;
+    }
+    let reply = reply.trim();
+    if reply.is_empty() {
+        return;
+    }
+    // Exit 0 with this on stdout is what folds it into the turn's context.
+    println!("{reply}");
 }

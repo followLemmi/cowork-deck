@@ -226,3 +226,31 @@ fn no_results_is_success_with_an_explanatory_stderr_line() {
 
     fs::remove_dir_all(&root).unwrap();
 }
+
+/// The guard that exists because it was needed: measuring with
+/// `COWORK_MEMORY_FAKE_EMBED` against a real corpus rebuilt its 384-dimension
+/// index at 64, and every search afterwards answered "reindex is required".
+/// Nothing was lost that a reindex did not restore — the index is a disposable
+/// cache (ADR-0004) — but a test affordance must not be able to do that.
+#[test]
+fn the_fake_embedder_refuses_to_rebuild_an_index_the_real_one_built() {
+    let root = fixture_root("clobber");
+    // An index as a real model would leave it: a width this embedder does not have.
+    let cache = root.join(".index");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(
+        cache.join("meta.json"),
+        r#"{"files":{},"chunks":[{"file":"a.md","scope":"ws-1","room":null,"text":"x"}],"dim":384}"#,
+    )
+    .unwrap();
+    std::fs::write(cache.join("emb.bin"), [0u8; 8]).unwrap();
+
+    let (_out, stderr, ok) = run(&root, &["search", "запрос", "--json"]);
+    assert!(!ok, "it must refuse rather than rebuild");
+    assert!(stderr.contains("refusing to reindex"), "{stderr}");
+    assert!(stderr.contains("384"), "and name the width it would have destroyed: {stderr}");
+
+    // And the index is untouched.
+    let meta = std::fs::read_to_string(cache.join("meta.json")).unwrap();
+    assert!(meta.contains("\"dim\":384"));
+}

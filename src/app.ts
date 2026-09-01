@@ -1,4 +1,6 @@
 import { WorkspacesPanel } from "./workspaces";
+import { mountMemory } from "./memory-page";
+import { NoteReader } from "./note-reader";
 import { SkillsPanel } from "./skills";
 import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
 import {
@@ -15,7 +17,8 @@ import {
 } from "./ui-scale";
 import type { PanelPage, WorkspacePage } from "./view";
 import {
-  claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
+  claudeAvailable, closeSession, deleteSkillHistory, listRuns, loadLayout, loadUiState,
+  memoryForgetCaptureAnswer, memoryWarm, onMemoryChanged, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
   revealPath, saveUiState, scheduleAck, schedulerReady, openWorkspaceWindow, onSessionOwner,
   onWorkspacesChanged,
@@ -194,9 +197,57 @@ export function startApp(role: WindowRole): Promise<void> {
   scenariosPage.className = "panel-page hidden";
   scenariosPage.append(skMount);
 
+  /* The fourth page, and the corpus's own. Memory had three doors and no home — a
+     search dialog, a captures dialog and a settings section — which is how two
+     doors to one set of facts come to disagree. It is app-wide rather than one
+     workspace's for the same reason the journal is: the diaries are global and the
+     notes span projects, so it belongs on this rail and not in `#wspanel`.
+
+     Empty here. What fills it is the corpus listed (#381, #382), read on the
+     document surface (#383), searched (#384) and written into (#385, #386) — and
+     the page exists first so none of that is blocked on the plumbing. */
+  const memMount = document.createElement("div");
+  memMount.className = "island";
+  const memHead = document.createElement("h3");
+  memHead.textContent = PANEL_TITLE.memory;
+  /* The document surface, over the deck rather than instead of it — #346's
+     precedent, and the reason giving the deck back is exact: it was covered, not
+     resized. Built in every window, pinned or not: the rail is what a pinned
+     window does not get, and this is reached from the page behind that rail. */
+  const noteReader = new NoteReader({
+    host: document.querySelector<HTMLElement>("#workarea")!,
+    describe: (note) => {
+      if (note.kind === "diary") return note.room ? `${note.room} — lessons` : "Lessons";
+      return workspaces.all.find((w) => w.id === note.scope)?.name ?? note.scope;
+    },
+    // A note written or saved on that surface is a corpus that moved, and the
+    // navigator beside it is a walk over the corpus.
+    onWrote: () => { void memoryView.refresh(); },
+  });
+  /* Asked for the workspace each render rather than handed one: the page outlives
+     every workspace switch, and "this project" has to mean whichever project the
+     panel's head is naming at the time. */
+  const memoryView = mountMemory({
+    workspace: () => {
+      const ws = workspaces.active;
+      return ws ? { id: ws.id, name: ws.name } : null;
+    },
+    names: () => new Map(workspaces.all.map((w) => [w.id, w.name])),
+    onOpen: (note) => { void noteReader.open(note); },
+    onCompose: () => {
+      const ws = workspaces.active;
+      if (ws) noteReader.compose({ workspaceId: ws.id, workspaceName: ws.name });
+    },
+  });
+  memMount.append(memHead, memoryView.mount);
+  const memoryPage = document.createElement("div");
+  memoryPage.id = "mem-page";
+  memoryPage.className = "panel-page hidden";
+  memoryPage.append(memMount);
+
   const boardEl = document.querySelector<HTMLElement>("#board")!;
   panelStack.prepend(sessionsPage);
-  panelStack.append(scenariosPage);
+  panelStack.append(scenariosPage, memoryPage);
 
   /* --- The rail -----------------------------------------------------------
      Five icons, and pressing one changes what the PANEL holds. It does not change
@@ -218,17 +269,23 @@ export function startApp(role: WindowRole): Promise<void> {
      five are already "focus session N", which shipped first and is the more
      frequent act. The palette carries every page instead. */
   const railEl = document.querySelector<HTMLElement>("#rail")!;
-  /* Three, not five. The board and the pull requests left this rail because they
-     are not the app's: each belongs to one repository, and a global switch that
-     silently changed what it was about every time the workspace changed was the
-     old tab bar's defect wearing a new shape. They are children of their workspace
-     in the tree now — see `WorkspacesPanel.render`. What stays here is what is
-     genuinely app-wide: the tree itself, the journal of every run, and the
-     scenarios, which belong to a workspace but are listed across all of them. */
+  /* Four, not five, and never the five it started with. The board and the pull
+     requests left this rail because they are not the app's: each belongs to one
+     repository, and a global switch that silently changed what it was about every
+     time the workspace changed was the old tab bar's defect wearing a new shape.
+     They are children of their workspace in the tree now — see
+     `WorkspacesPanel.render`. What stays here is what is genuinely app-wide: the
+     tree itself, the journal of every run, the scenarios, which belong to a
+     workspace but are listed across all of them, and the corpus, whose diaries are
+     global and whose notes span projects. */
   const RAIL: { page: PanelPage; icon: IconName }[] = [
     { page: "sessions", icon: "terminal" },
     { page: "history", icon: "clock" },
     { page: "scenarios", icon: "bolt" },
+    /* Four. The fourth is the corpus — every note ever written, this project's and
+       every project's — which is app-wide by the same test the other three pass:
+       it does not change subject when the workspace does. */
+    { page: "memory", icon: "book" },
   ];
   /* The mark that travels between the icons. What makes a column of five read as
      one control with a position is that the mark MOVES — five icons one of which is
@@ -239,10 +296,10 @@ export function startApp(role: WindowRole): Promise<void> {
   const railBtns = {} as Record<PanelPage, HTMLButtonElement>;
 
   /* --- and none of it in a window pinned to one workspace ------------------
-     Three of the four things on this rail are about the app rather than about a
+     Four of the five things on this rail are about the app rather than about a
      workspace — the journal of every run, the scenarios listed across all of
-     them, and the settings — and a window pulled out to hold `relay` is about
-     `relay`. Shipping them there put the app's own navigation inside a window
+     them, the corpus of notes, and the settings — and a window pulled out to hold
+     `relay` is about `relay`. Shipping them there put the app's own navigation inside a window
      that is a project, which is how the settings in that window came to look like
      that project's settings.
      Not built, rather than built and hidden: a control that exists is a control
@@ -646,6 +703,11 @@ export function startApp(role: WindowRole): Promise<void> {
    *  counting what it can see. Mirrors `ui_state.usageReported`; the backend holds
    *  the authoritative copy and applies it to the usage registry. */
   let reportedLimits = true;
+  /** Whether closing a session writes a note about it. Mirrors
+   *  `ui_state.captureOnClose`, and `undefined` is "never asked" — which is not
+   *  `false`, because a default either way would answer a question about spending
+   *  somebody's money on their behalf. */
+  let captureAnswer: boolean | undefined = undefined;
 
   const historyView = new HistoryView({
     onFilter: (f) => { runFilters = f; void refreshHistory(); },
@@ -868,7 +930,10 @@ export function startApp(role: WindowRole): Promise<void> {
     // Choosing a page is asking to see it.
     if (sidebar.classList.contains("is-collapsed")) setCollapsed(false);
     applyPanel({
-      pages: { sessions: sessionsPage, history: historyEl, scenarios: scenariosPage },
+      pages: {
+        sessions: sessionsPage, history: historyEl, scenarios: scenariosPage,
+        memory: memoryPage,
+      },
       buttons: railBtns,
     }, page);
     moveRailInk();
@@ -876,6 +941,36 @@ export function startApp(role: WindowRole): Promise<void> {
     // while it is visible and does not poll at all. Opening it is a deliberate
     // act, so the read is unconditional.
     if (page === "history") void refreshHistory();
+    /* Same rule as the journal's, and for the same reason: opening a page is a
+       deliberate act, so the read is unconditional — and the page does not poll.
+       What keeps it current while it is open is `memory://changed`, which a
+       capture and a reindex both fire.
+
+       The stage goes with it. The deck's empty state offers to start a session,
+       which under a page about notes is an answer to a question nobody asked — so
+       memory gets a surface of its own for as long as it is the page the rail is
+       holding, and leaving gives the deck back. Leaving is not allowed to throw
+       away an edit: `close` is skipped while somebody is typing into a note. */
+    if (page === "memory") {
+      /* Load the model while the person reads the list. A search is 6 ms with it
+         in memory and two seconds without, and opening this page is the clearest
+         signal anybody is about to search (#389). Fire and forget: it resolves
+         when the warm-up starts, and a build with no sidecar answers false. */
+      void memoryWarm().catch(() => {});
+      /* Still on this page, or the landing is not ours to paint. `refresh` waits
+         on the note list and on two answers from the sidecar, which is seconds on
+         a cold machine — long enough to leave for the sessions page first. The
+         `close` below would then have already run, and this would put the cover
+         back over the deck on a page that is not memory, with Escape the only way
+         out of it. */
+      void memoryView.refresh().then(() => {
+        if (currentPage !== "memory") return;
+        noteReader.showLanding(memoryView.summary());
+      });
+      noteReader.showLanding(memoryView.summary());
+    } else if (!noteReader.isEditing()) {
+      noteReader.close();
+    }
   }
   /** Which of the two the workspace panel is holding.
    *
@@ -1132,7 +1227,21 @@ export function startApp(role: WindowRole): Promise<void> {
           .map((w) => `${terminals.nameOf(w.session) ?? deck.nameOf(w.session)} (${w.processes} running)`)
           .join(", ");
         void confirmModal(`Still running: ${named}. Quit anyway and stop it?`)
-          .then((go) => (go ? quitConfirmed() : quitCancelled()))
+          .then(async (go) => {
+            if (!go) return quitCancelled();
+            /* Notes for whatever was still open, queued before the exit and run
+               at the next start by #364's recovery. No second question: a quit is
+               not the moment to ask about spending money, so this follows the
+               answer already given and does nothing at all when there is none.
+               `close_session` is what queues them, and it is called here rather
+               than left to the teardown because the teardown does not know about
+               consent. */
+            for (const { session, capture } of deck.captureOnQuit()) {
+              await closeSession(session, capture)
+                .catch((e) => console.debug("queueing a note at quit failed", e));
+            }
+            return quitConfirmed();
+          })
           .catch((e) => {
             // An answer that never arrives leaves the app up with no explanation.
             console.error("quit question failed:", e);
@@ -1160,6 +1269,18 @@ export function startApp(role: WindowRole): Promise<void> {
       () => onRunsChanged(() => {
         void skills.refreshRuns();
         if (currentPage === "history") void refreshHistory();
+      }).then(() => {}),
+      /* A note was written, or the index moved. Only while the page is on
+         screen, and for the same reason the journal re-reads that way: a corpus
+         re-read behind a hidden page is work nobody asked for, and opening the
+         page reads unconditionally anyway. */
+      () => onMemoryChanged(() => {
+        if (currentPage === "memory") void memoryView.refresh();
+        /* Whatever page the panel is on: the note being READ can be rewritten
+           under it — by a capture draining, or by an edit (#386) — and stale
+           markdown left on a surface somebody is reading is the one failure this
+           costs nothing to avoid. */
+        void noteReader.reread();
       }).then(() => {}),
       // The list, and the one question a pinned window has to ask of it before
       // anything is drawn from it. See `closeIfPinnedWorkspaceGone` for why the
@@ -2471,6 +2592,19 @@ export function startApp(role: WindowRole): Promise<void> {
           .catch((e) => console.debug("reported limits save failed", e));
         void readLimits(true);
       },
+      captureOnClose: captureAnswer,
+      /* Three states and two routes, which is why this is not a patch field
+         alone: a patch says "set this" and an omitted field says "leave it
+         alone", so there is no value left to spell "back to asking". Forgetting
+         is its own command. */
+      onCaptureOnClose: (value) => {
+        captureAnswer = value;
+        deck.setCaptureAnswer(value);
+        const done = value === undefined
+          ? memoryForgetCaptureAnswer()
+          : saveUiState({ captureOnClose: value });
+        done.catch((e) => console.debug("session note answer save failed", e));
+      },
     });
   }
 
@@ -2501,7 +2635,11 @@ export function startApp(role: WindowRole): Promise<void> {
    *  a palette entry is a way in, and leaving one for a page with no way out is
    *  worse than the button this window already does not have. */
   const APP_WIDE_COMMANDS = new Set([
-    "panel", "sessions", "history", "scenarios", "settings", "sync",
+    "panel", "sessions", "history", "scenarios", "memory", "notes-search", "notes-jobs",
+    // The three that open the app's own settings window. `notes` is as much one
+    // of those as `settings` and `sync` are — it is the same window on a
+    // different tab.
+    "settings", "sync", "notes",
   ]);
 
   function paletteCommands(): Command[] {
@@ -2536,6 +2674,7 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "wsp-close", title: "Workspace panel: close", run: () => closeWorkspacePanel() },
       { id: "history", title: "Panel: the journal", run: () => setPanel("history") },
       { id: "scenarios", title: "Panel: scenarios", run: () => setPanel("scenarios") },
+      { id: "memory", title: "Panel: memory", run: () => setPanel("memory") },
       { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
       { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
       // The two steps are direct commands because stepping is what a person wants
@@ -2548,6 +2687,15 @@ export function startApp(role: WindowRole): Promise<void> {
       /* The window's own section rather than the standalone dialog: two doors to
          one set of facts is how they drift. The dialog stays for the first-run
          offer, which is a flow of its own with its own copy. */
+      /* Both land on the memory page now. It is the one door to everything about
+         the corpus, and two doors onto one set of facts is how they drift. */
+      { id: "notes-jobs", title: "Memory: what has been captured…", run: () => { setPanel("memory"); memoryView.revealCaptures(); } },
+      /* The page with the field focused, rather than a dialog of its own. Two
+         doors to one set of facts is how they drift, and the page is where the
+         result opens anyway — the dialog's preview pane was approximating the
+         document surface. */
+      { id: "notes-search", title: "Search your notes…", run: () => { setPanel("memory"); memoryView.focusSearch(); } },
+      { id: "notes", title: "Session notes…", run: () => void openSettings("notes") },
       { id: "sync", title: "Memory sync…", run: () => void openSettings("config") },
     ];
     return pinnedTo === null ? all : all.filter((c) => !APP_WIDE_COMMANDS.has(c.id));
@@ -2788,6 +2936,7 @@ export function startApp(role: WindowRole): Promise<void> {
     "prs": () => openWorkspacePage("pr"),
     "history": () => setPanel("history"),
     "scenarios": () => setPanel("scenarios"),
+    "memory": () => setPanel("memory"),
     "new-task": () => { void captureTask(); },
     "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
   };
@@ -2810,6 +2959,17 @@ export function startApp(role: WindowRole): Promise<void> {
     // Without this, Cmd+N spawned a session and Cmd+W closed the tile while the
     // caret sat in the tile's search box or the broadcast bar.
     if (isTextEntry(e.target)) return;
+    /* The reader is the thing on top, so it takes Escape first. A person reading
+       a note over a zoomed tile means "put the note away" by it — leaving the
+       zoom, which is behind the cover and unchanged, exactly as they left it. */
+    if (e.key === "Escape" && noteReader.isOpen()) {
+      e.preventDefault();
+      /* Never out from under an unsaved edit. A keystroke that discards what
+         somebody has written is the one thing this surface must not do by
+         accident — Discard is the way out, and it asks. */
+      if (!noteReader.isEditing()) noteReader.close();
+      return;
+    }
     if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
     const id = matchHotkey(e, isMacPlatform());
     if (!id) return;
@@ -2863,6 +3023,12 @@ export function startApp(role: WindowRole): Promise<void> {
       // draw a switch in the wrong position, and the backend has already applied
       // the stored value to its own registry at startup.
       reportedLimits = ui.usageReported;
+      // The remembered answer to the note question, on the same pass and for a
+      // sharper version of the same reason: read late, the first close of the
+      // session would ask somebody who had already answered, which is exactly the
+      // reflex-click failure the remembered answer exists to avoid.
+      captureAnswer = ui.captureOnClose;
+      deck.setCaptureAnswer(captureAnswer);
       // Read here rather than again inside `boot()`: one read of one file, and
       // the drawer's own restore step below runs after the deck's layout so its
       // height lands on a window that is already laid out. *Whether* it is up is

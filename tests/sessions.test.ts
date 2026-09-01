@@ -25,12 +25,22 @@ vi.mock("../src/terminal", () => ({
   },
 }));
 
+/** Let the close's own promises run out. A close asks whether the session should
+ *  leave a note behind, and that answer arrives from the backend — so the tile is
+ *  removed a turn of the microtask loop after the click rather than inside it. */
+const settled = () => new Promise((r) => setTimeout(r, 0));
+
 vi.mock("../src/ipc", () => ({
   onState: vi.fn().mockResolvedValue(() => {}),
   onExit: vi.fn().mockResolvedValue(() => {}),
   prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
   describeExit: vi.fn().mockReturnValue(null),
   closeSession: vi.fn(),
+  // The close path asks whether a note is even possible before it asks
+  // anybody anything; unavailable is the quiet answer, so these tests see
+  // no dialog and no note.
+  memoryCaptureOffer: vi.fn().mockResolvedValue({ available: false }),
+  saveUiState: vi.fn().mockResolvedValue(undefined),
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
   sessionSnapshots: vi.fn().mockResolvedValue({}),
@@ -201,6 +211,10 @@ describe("Deck zoom edge cases", () => {
     // data-action, not glyph text: an SVG icon has no textContent.
     const closeBtn = zoomedTile.querySelector<HTMLButtonElement>('[data-action="x"]')!;
     closeBtn.click();
+    // A close now asks whether the session should leave a note behind, which is a
+    // round trip on the one path that might open a dialog — so the tile goes one
+    // turn of the loop later than the click.
+    await settled();
 
     expect(deckEl.classList.contains("is-zoomed")).toBe(false);
     expect(deckEl.querySelector(".deck-strip")).toBeNull();
@@ -231,6 +245,10 @@ describe("Deck zoom edge cases", () => {
     // data-action, not glyph text: an SVG icon has no textContent.
     const closeBtn = nonZoomedTile.querySelector<HTMLButtonElement>('[data-action="x"]')!;
     closeBtn.click();
+    // A close now asks whether the session should leave a note behind, which is a
+    // round trip on the one path that might open a dialog — so the tile goes one
+    // turn of the loop later than the click.
+    await settled();
 
     expect(deckEl.classList.contains("is-zoomed")).toBe(false);
     expect(deckEl.querySelector(".deck-strip")).toBeNull();

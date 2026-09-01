@@ -46,6 +46,24 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Serve the corpus over MCP on stdio, for a session to ask questions of.
+    ///
+    /// **Nothing but the protocol may reach stdout in this mode.** A stray line
+    /// is a parse error at the other end and the client drops the connection, so
+    /// the session simply has no memory with nothing on screen to say why.
+    Mcp {
+        /// The workspace this session belongs to. Omitted, the server serves the
+        /// global diaries alone — which is what a session with no workspace has.
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// Answer searches on stdin until it closes, with the model loaded once.
+    ///
+    /// For the app, not for a session: `mcp` is the contract with Claude Code
+    /// and speaks in prose, and this speaks in `Hit` records. One process for
+    /// the whole deck is what makes a search 20 ms instead of two seconds
+    /// (#389).
+    Serve,
     /// Download or inspect the embedding model.
     Model {
         #[arg(long)]
@@ -68,6 +86,44 @@ fn embedder(root: &std::path::Path) -> Result<Box<dyn Embedder>> {
     Ok(Box::new(cowork_memory::onnx::OnnxEmbedder::load(&model_dir(root))?))
 }
 
+/// Refuse to let the test embedder rewrite an index the real one built.
+///
+/// `index::update` rebuilds every file when the embedding width changes, which
+/// is right for a model that actually changed and catastrophic for a width that
+/// is a test affordance. Setting `COWORK_MEMORY_FAKE_EMBED` and running a search
+/// against a real corpus silently replaced 384-dimension vectors with 64, and
+/// every search afterwards answered "reindex is required" — the index is a
+/// disposable cache (ADR-0004) so nothing was lost that a reindex did not
+/// restore, but it cost the model that built it and said nothing while doing it.
+///
+/// An empty or fake-width index is left alone: that is the case the tests are,
+/// and the case a fixture corpus is.
+fn refuse_to_clobber(cache: &std::path::Path, emb: &dyn Embedder) -> Result<()> {
+    if std::env::var("COWORK_MEMORY_FAKE_EMBED").is_err() {
+        return Ok(());
+    }
+    /* The width recorded on disk, read straight out of `meta.json` rather than
+       through `index::load`. The question is what is written down, not whether
+       the cache currently loads: a torn `emb.bin` beside an intact `meta.json`
+       still names vectors a real model produced, and `load` would answer 0 for
+       it and wave the rebuild through. */
+    let recorded = std::fs::read_to_string(cache.join("meta.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("dim").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0) as usize;
+    if recorded != 0 && recorded != emb.dim() {
+        anyhow::bail!(
+            "refusing to reindex: {} holds {}-dimension vectors and COWORK_MEMORY_FAKE_EMBED \
+             would rebuild them at {}. Unset it, or point --cache somewhere else.",
+            cache.display(),
+            recorded,
+            emb.dim(),
+        );
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cache = cli.cache.clone().unwrap_or_else(|| cli.root.join(".index"));
@@ -75,6 +131,7 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Update { verbose } => {
             let e = embedder(&cli.root)?;
+            refuse_to_clobber(&cache, e.as_ref())?;
             let (_ix, rep) = update(&cli.root, &cache, e.as_ref())?;
             if verbose {
                 eprintln!("root:  {}", cli.root.display());
@@ -152,6 +209,7 @@ fn main() -> Result<()> {
         }
         Cmd::Search { query, scope, top, min_score, json } => {
             let e = embedder(&cli.root)?;
+            refuse_to_clobber(&cache, e.as_ref())?;
             let (ix, _) = update(&cli.root, &cache, e.as_ref())?;
             let scope = match scope.as_str() {
                 "all" => SearchScope::All,
@@ -174,6 +232,41 @@ fn main() -> Result<()> {
             if hits.is_empty() {
                 eprintln!("cowork_memory: no results above threshold");
             }
+        }
+        Cmd::Mcp { scope } => {
+            let served = cowork_memory::mcp::Served {
+                root: cli.root.clone(),
+                cache: cache.clone(),
+                workspace: scope,
+                min_score: cowork_memory::mcp::MIN_SCORE,
+            };
+            // The embedder is built on the first tool call that needs one, not
+            // here: loading the model costs seconds and 479 MB of mapped file,
+            // and a session that never asks memory anything should pay neither.
+            let root = cli.root.clone();
+            let build = move || embedder(&root);
+            // Once for the process, not once per tool call: a session asking
+            // three questions paid three graph builds until #389.
+            let lazy = cowork_memory::embed::Lazy::new(&build);
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let stdout = std::io::stdout();
+            let mut output = stdout.lock();
+            cowork_memory::mcp::serve(&served, &lazy, &mut input, &mut output)?;
+        }
+        Cmd::Serve => {
+            let served = cowork_memory::serve::Served {
+                root: cli.root.clone(),
+                cache: cache.clone(),
+            };
+            let root = cli.root.clone();
+            let build = move || embedder(&root);
+            let lazy = cowork_memory::embed::Lazy::new(&build);
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let stdout = std::io::stdout();
+            let mut output = stdout.lock();
+            cowork_memory::serve::serve(&served, &lazy, &mut input, &mut output)?;
         }
         Cmd::Model { download, status } => {
             let dir = model_dir(&cli.root);

@@ -1,5 +1,5 @@
 import { TerminalPanel } from "./terminal";
-import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
+import { onState, onExit, closeSession, memoryCaptureOffer, saveUiState, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig, type CaptureOnClose } from "./ipc";
 import { gitStatus, sessionActivity, sessionSnapshots, type CliKind, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
 import { activityButton, localRoll, openActivityPanel, setActivityCount, type ActivityPanel } from "./activity";
 import { formatContext, tokenTooltip, uniqueCwds } from "./observability";
@@ -9,6 +9,7 @@ import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { notifyIdSeed } from "./cross-window";
 import { workspaceIdOf } from "./window-role";
 import { confirmModal } from "./modal";
+import { askCapture, askWorthPutting, decideCapture } from "./memory-consent";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { TileTools } from "./tile-tools";
@@ -1282,7 +1283,73 @@ export class Deck {
     if (alive && !(await confirmModal(
       `Close session “${resolveTileName(t.names)}”? It is still alive.`,
     ))) return;
-    this.remove(session);
+    this.remove(session, await this.captureFor(session));
+  }
+
+  /** Whether this closing session gets a note, asking when it has to.
+   *
+   *  Only ever reached from a close a person asked for. The programmatic
+   *  removals — a scheduled run replacing its predecessor, a workspace handed to
+   *  another window — pass nothing, because neither is somebody deciding to end a
+   *  session and neither is a moment to put a question in front of them.
+   *
+   *  Returns `null` for "close it and write nothing", which is what every close
+   *  meant before #366. */
+  private async captureFor(session: string): Promise<CaptureOnClose | null> {
+    const t = this.tiles.get(session);
+    if (!t || !t.workspaceId) return null;
+    // A command tile is a one-shot, not a conversation.
+    if (t.kind === "command") return null;
+
+    const decision = decideCapture(this.captureAnswer);
+    if (decision.action === "skip") return null;
+    if (decision.action === "ask") {
+      // Only here, on the one path that is about to open a dialog: asking the
+      // backend whether a note is even possible costs a round trip, and it would
+      // be spent on every close of somebody who has already answered.
+      const offer = await memoryCaptureOffer(session, t.cliKind)
+        .catch(() => ({ available: false, reason: undefined }));
+      const worth = askWorthPutting(offer);
+      if (worth.action === "skip") {
+        if (worth.reason) console.debug("no note for this session:", worth.reason);
+        return null;
+      }
+      const answer = await askCapture(resolveTileName(t.names));
+      if (answer.remember) {
+        this.captureAnswer = answer.capture;
+        void saveUiState({ captureOnClose: answer.capture })
+          .catch((e) => console.debug("remembering the note answer failed", e));
+      }
+      if (!answer.capture) return null;
+    }
+    return {
+      workspaceId: t.workspaceId,
+      cliKind: t.cliKind,
+      sessionName: resolveTileName(t.names),
+    };
+  }
+
+  /** Everything live that could still be summarised, for the quit path.
+   *
+   *  Read while this window is still rendering its tiles, which is the same
+   *  reason `handOffPayload` is read here rather than in Rust. */
+  captureOnQuit(): { session: string; capture: CaptureOnClose }[] {
+    if (this.captureAnswer !== true) return [];
+    return [...this.tiles.values()]
+      .filter((t) => t.workspaceId && t.kind !== "command")
+      .map((t) => ({
+        session: t.session,
+        capture: {
+          workspaceId: t.workspaceId!,
+          cliKind: t.cliKind,
+          sessionName: resolveTileName(t.names),
+        },
+      }));
+  }
+
+  /** The remembered answer to the note question, or `undefined` for never asked. */
+  setCaptureAnswer(answer: boolean | undefined) {
+    this.captureAnswer = answer;
   }
   /** Open the editor on whichever tile has the keyboard, and do nothing when
    *  there is none — the same shape as `closeActive` and `searchActive`. */
@@ -1690,10 +1757,16 @@ export class Deck {
     }
   }
 
-  private remove(session: string) {
+  /** The remembered answer to the note question. `undefined` is never asked,
+   *  which is not the same as `false` — see `ui_state.captureOnClose`. */
+  private captureAnswer: boolean | undefined = undefined;
+
+  private remove(session: string, capture: CaptureOnClose | null = null) {
     const tile = this.tiles.get(session);
     if (!tile) return;
-    void closeSession(session);
+    // The note travels with the close rather than ahead of it — see
+    // `closeSession` for why the ordering lives in one command.
+    void closeSession(session, capture);
     // Before the tile leaves the map, or the panel outlives the session it is
     // describing and keeps reading a log for a tile that is gone.
     tile.activityPanel?.close();

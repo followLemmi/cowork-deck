@@ -138,8 +138,24 @@ pub fn build_claude_args(
     initial_prompt: &Option<String>,
     session_id: &str,
     resume: bool,
+    memory: &[String],
 ) -> Vec<String> {
     let mut args = vec!["--settings".to_string(), settings_json.to_string()];
+    // Before the branch, so memory reaches **both** launch paths. Added inside
+    // one of them, a session that survived a restart would quietly lose its
+    // memory — and a restored tile is exactly the long-running session most
+    // likely to want it.
+    //
+    // Position also matters for a second, sharper reason. `--mcp-config` is
+    // **variadic** — `<configs...>` — so it keeps consuming arguments until one
+    // starts with a dash. Measured: `claude --mcp-config '<json>' mcp list` fails
+    // with "MCP config file not found: mcp" and "…: list", having swallowed both.
+    // On a first launch the initial prompt is a *positional* argument, so memory
+    // placed after `--session-id <id>` would have `--mcp-config` eat the prompt.
+    // Here it is followed by `--session-id` or `--resume`, both flags, so the
+    // variadic stops where it should. `no_positional_follows_the_mcp_config`
+    // pins that.
+    args.extend_from_slice(memory);
     if resume {
         args.push("--resume".to_string());
         args.push(session_id.to_string());
@@ -1742,8 +1758,18 @@ pub fn start_session(
     }
     let resolved = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let program = resolved.program;
-    let settings = build_settings_json(&state.reporter_path, state.listener_port, &session, &state.task_bin_path);
-    let args = build_claude_args(&settings, &initial_prompt, &session, resume);
+    let settings = build_settings_json(
+        &state.reporter_path,
+        state.listener_port,
+        &session,
+        &state.task_bin_path,
+        workspace_id.as_deref(),
+    );
+    // Off the store lock and off any network: `session_args` stats one file and
+    // formats a JSON string. #35's rule that memory stays off the session launch
+    // path is about the *index* and the model, neither of which is touched here.
+    let memory = crate::memory::session_args(workspace_id.as_deref());
+    let args = build_claude_args(&settings, &initial_prompt, &session, resume, &memory);
 
     // Замок стора берётся и отпускается ДО резолва токена: gh::token блокирует
     // до пяти секунд, и удерживать общий мьютекс всё это время означало бы
@@ -2212,7 +2238,19 @@ fn session_io_error(e: std::io::Error) -> String {
     }
 }
 #[tauri::command]
-pub fn close_session(state: State<AppState>, session: String) {
+pub fn close_session(
+    state: State<AppState>,
+    session: String,
+    capture: Option<CaptureOnClose>,
+) {
+    // First of all, and it is a parameter of this command rather than a call the
+    // frontend makes beforehand for exactly that reason. The note needs the
+    // transcript path, `transcripts::forget` below takes it away, and an ordering
+    // that lives inside one function cannot be got wrong by a caller — the same
+    // reasoning as the `run_journal::close` line under it, one step earlier.
+    if let Some(c) = capture {
+        crate::memory::enqueue_on_close(&session, &c.workspace_id, c.cli_kind, c.session_name);
+    }
     // Before the kill, so the result is read off the transcript this session was
     // still reporting. `run_journal::close` takes the record out of its own map,
     // so the PTY's `on_exit` arriving a moment later finds nothing to close and
@@ -2225,6 +2263,25 @@ pub fn close_session(state: State<AppState>, session: String) {
     // tile that is gone should not contribute a half-drawn banner to whatever
     // reuses its id.
     crate::usage::observed::forget(&session);
+}
+
+/// A closing session's note, when the person has agreed to one.
+///
+/// `Option<CaptureOnClose>` on `close_session` rather than a flag, because the
+/// three fields are meaningless apart: a consent with no workspace has nowhere
+/// to file the note, and one with no CLI cannot say which reader understands the
+/// log. Absent means "close it and write nothing", which is what every close
+/// before #366 meant.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CaptureOnClose {
+    #[serde(rename = "workspaceId")]
+    pub workspace_id: String,
+    #[serde(rename = "cliKind", default)]
+    pub cli_kind: Option<String>,
+    /// What the tile was called, so a failed job can name something a person
+    /// recognises rather than an id.
+    #[serde(rename = "sessionName", default)]
+    pub session_name: Option<String>,
 }
 
 /// Quit, having been told to go ahead.
@@ -3929,7 +3986,7 @@ branch refs/heads/feature/y\n";
 
     #[test]
     fn builds_claude_args_first_launch_with_session_id_and_prompt() {
-        let args = build_claude_args("{\"hooks\":{}}", &Some("collect email report".into()), "sess-1", false);
+        let args = build_claude_args("{\"hooks\":{}}", &Some("collect email report".into()), "sess-1", false, &[]);
         assert_eq!(args, vec![
             "--settings".to_string(), "{\"hooks\":{}}".to_string(),
             "--session-id".to_string(), "sess-1".to_string(),
@@ -3939,16 +3996,95 @@ branch refs/heads/feature/y\n";
 
     #[test]
     fn builds_claude_args_first_launch_without_prompt() {
-        let args = build_claude_args("{}", &None, "sess-1", false);
+        let args = build_claude_args("{}", &None, "sess-1", false, &[]);
         assert_eq!(args, vec![
             "--settings".to_string(), "{}".to_string(),
             "--session-id".to_string(), "sess-1".to_string(),
         ]);
     }
 
+    /// The failure this ordering exists to prevent: memory added inside one
+    /// branch means a session that survived a restart quietly loses it, and a
+    /// restored tile is the long-running session most likely to want it.
+    #[test]
+    fn memory_reaches_both_launch_paths() {
+        let memory = vec![
+            "--mcp-config".to_string(),
+            "{\"mcpServers\":{}}".to_string(),
+            "--append-system-prompt".to_string(),
+            "consult it".to_string(),
+        ];
+        for resume in [false, true] {
+            let args = build_claude_args("{}", &Some("p".into()), "sess-1", resume, &memory);
+            assert!(args.iter().any(|a| a == "--mcp-config"), "resume={resume}: {args:?}");
+            assert!(
+                args.iter().any(|a| a == "--append-system-prompt"),
+                "resume={resume}: {args:?}",
+            );
+        }
+    }
+
+    /// The hazard the placement exists to avoid, asserted rather than reasoned
+    /// about. `--mcp-config` takes `<configs...>` and keeps consuming arguments
+    /// until one starts with a dash — measured against the real CLI, which read
+    /// `mcp` and `list` as two more config paths and failed. The initial prompt is
+    /// positional, so a `--mcp-config` immediately in front of it would lose the
+    /// prompt into the flag.
+    #[test]
+    fn no_positional_follows_the_mcp_config() {
+        let memory = vec![
+            "--mcp-config".to_string(),
+            "{\"mcpServers\":{}}".to_string(),
+            "--append-system-prompt".to_string(),
+            "consult it".to_string(),
+        ];
+        for resume in [false, true] {
+            let args =
+                build_claude_args("{}", &Some("a prompt".into()), "sess-1", resume, &memory);
+            let at = args.iter().position(|a| a == "--mcp-config").expect("the flag");
+            // One value, then something that stops the variadic.
+            let after = args.get(at + 2).map(String::as_str);
+            assert!(
+                after.is_none_or(|a| a.starts_with('-')),
+                "resume={resume}: {after:?} would be eaten by --mcp-config in {args:?}",
+            );
+        }
+    }
+
+    /// A build with no sidecar staged adds nothing, so the launch is exactly what
+    /// it was before memory existed — no empty flag, no `--mcp-config {}`.
+    #[test]
+    fn no_memory_to_offer_adds_no_arguments() {
+        let with = build_claude_args("{}", &None, "sess-1", false, &[]);
+        assert_eq!(with, vec!["--settings", "{}", "--session-id", "sess-1"]);
+    }
+
+    /// `--settings` stays first. It carries the hooks, and the reporter's own
+    /// tests read that position.
+    #[test]
+    fn the_settings_stay_where_they_were() {
+        let args = build_claude_args("{\"hooks\":{}}", &None, "s", false, &["--x".to_string()]);
+        assert_eq!(args[0], "--settings");
+        assert_eq!(args[1], "{\"hooks\":{}}");
+    }
+
+    /// The prompt is the last argument on a first launch — it is positional, and
+    /// a flag appended after it would be read as part of it.
+    #[test]
+    fn the_prompt_stays_last_with_memory_in_front_of_it() {
+        let args = build_claude_args(
+            "{}",
+            &Some("collect the report".into()),
+            "s",
+            false,
+            &["--mcp-config".to_string(), "{}".to_string()],
+        );
+        assert_eq!(args.last().unwrap(), "collect the report");
+    }
+
     #[test]
     fn builds_claude_args_resume_uses_resume_flag_and_ignores_prompt() {
-        let args = build_claude_args("{}", &Some("ignored".into()), "sess-1", true);
+        let args = build_claude_args("{}", &Some("ignored".into()), "sess-1", true, &[]);
         assert_eq!(args, vec![
             "--settings".to_string(), "{}".to_string(),
             "--resume".to_string(), "sess-1".to_string(),

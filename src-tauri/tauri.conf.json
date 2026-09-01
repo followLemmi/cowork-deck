@@ -45,7 +45,8 @@
     ],
     "externalBin": [
       "binaries/cowork_report",
-      "binaries/cowork_task"
+      "binaries/cowork_task",
+      "binaries/cowork_memory"
     ]
   }
 }

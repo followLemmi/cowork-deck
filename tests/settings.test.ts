@@ -14,9 +14,23 @@ const summary = vi.fn().mockResolvedValue({
   state: { lastPull: null, lastPush: null, fault: null },
 });
 const questions = vi.fn().mockResolvedValue([]);
+/* The notes section mounts the rooms editor and the model block, and both read
+   through `ipc`. Stubbed here rather than left missing: an absent export throws
+   on access, which used to leave the pane half-built while these tests still
+   passed — a section that cannot fill itself has to fail something. */
 vi.mock("../src/ipc", () => ({
   syncSummary: () => summary(),
   syncQuestions: () => questions(),
+  memoryRooms: () => Promise.resolve([{ name: "reviewer", description: "review lessons" }]),
+  memorySaveRoom: () => Promise.resolve("reviewer"),
+  memoryRetireRoom: () => Promise.resolve(true),
+  memoryRenameRoom: () => Promise.resolve("reviewer"),
+  memoryStatus: () => Promise.resolve({
+    root: "/r", cache: "/r/.index", state: "ready", files: 2, chunks: 5, dim: 384,
+    model: { dir: "/r/.model", state: "present", have: 1, total: 1 },
+  }),
+  memoryDownloadModel: () => Promise.resolve(true),
+  onMemoryModel: () => Promise.resolve(() => {}),
 }));
 let mounted = 0;
 let disposed = 0;
@@ -59,6 +73,7 @@ let edited = 0;
 let scaled: number[] = [];
 let recorded: boolean[] = [];
 let reported: boolean[] = [];
+let noteAnswers: (boolean | undefined)[] = [];
 const open = (over: Partial<Parameters<typeof settingsDialog>[0]> = {}) =>
   settingsDialog({
     paths: PATHS, workspace: WS as never, taskSource: "cards in .cowork/tasks",
@@ -69,6 +84,8 @@ const open = (over: Partial<Parameters<typeof settingsDialog>[0]> = {}) =>
     onRecording: (on) => recorded.push(on),
     reportedLimits: true,
     onReportedLimits: (on) => reported.push(on),
+    captureOnClose: undefined,
+    onCaptureOnClose: (v) => noteAnswers.push(v),
     ...over,
   });
 
@@ -78,6 +95,7 @@ beforeEach(() => {
   scaled = [];
   recorded = [];
   reported = [];
+  noteAnswers = [];
   mounted = 0;
   disposed = 0;
   document.body.innerHTML = "";
@@ -89,6 +107,70 @@ beforeEach(() => {
  *  in the journal's own head — a setting above the records it governs, reading as a
  *  third filter in a 280px column. A setting is set once and left; this is the window
  *  those live in. */
+/** The session-notes section, whose control has three positions because its value
+ *  has three states. Writing a note costs a model call on the person's own
+ *  account, so "ask me each time" is a real answer and not the absence of one. */
+describe("the session notes section", () => {
+  const choice = (value: string) =>
+    document.querySelector<HTMLButtonElement>(`[data-fk="capture-${value}"]`)!;
+
+  it("offers all three states rather than a checkbox", () => {
+    void open();
+    go("notes");
+    for (const v of ["undefined", "true", "false"]) {
+      expect(choice(v), v).not.toBeNull();
+      expect(choice(v).getAttribute("role")).toBe("radio");
+    }
+  });
+
+  it("shows which one is in force, including never-asked", () => {
+    void open({ captureOnClose: undefined });
+    go("notes");
+    expect(choice("undefined").getAttribute("aria-checked")).toBe("true");
+    expect(choice("true").getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("shows a remembered yes", () => {
+    void open({ captureOnClose: true });
+    go("notes");
+    expect(choice("true").getAttribute("aria-checked")).toBe("true");
+    expect(choice("undefined").getAttribute("aria-checked")).toBe("false");
+  });
+
+  /** As it is touched, like every other section here. `undefined` goes back to
+   *  being asked, which is a different route in the backend — a patch cannot
+   *  spell "forget this" — and the same one answer from here. */
+  it("reports each answer as it is picked, undefined included", () => {
+    void open({ captureOnClose: true });
+    go("notes");
+    choice("false").click();
+    choice("undefined").click();
+    choice("true").click();
+    expect(noteAnswers).toEqual([false, undefined, true]);
+  });
+
+  /** The one thing this pane must not leave out: the cost is the person's. */
+  it("says whose account the call runs on", () => {
+    void open();
+    go("notes");
+    const text = document.querySelector(".set-pane")?.textContent?.toLowerCase() ?? "";
+    expect(text).toContain("your own claude account");
+  });
+
+  /** Both blocks this section mounts actually fill. Asserted because they used
+   *  not to: a missing mock threw out of `fill` and the pane was left with only
+   *  the parts built before the throw, while every test here still passed. */
+  it("mounts the rooms editor and the model block", async () => {
+    void open();
+    go("notes");
+    await new Promise((r) => setTimeout(r, 0));
+    const pane = document.querySelector(".set-pane")!;
+    expect(pane.querySelector('[data-fk="room-add"]'), "the rooms editor").not.toBeNull();
+    expect(pane.querySelector('[data-fk="model-status"]'), "the model block").not.toBeNull();
+    expect(pane.textContent).toContain("2 notes indexed");
+  });
+});
+
 describe("the scenarios section", () => {
   const toggle = () => document.querySelector<HTMLInputElement>('[data-fk="record-runs"]')!;
 

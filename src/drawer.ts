@@ -580,6 +580,12 @@ export class TerminalDrawer {
       );
       if (!ok) return;
     }
+    /* No note, and no question about one. #366 named this path alongside the
+       deck's because both end at `closeSession`, which was true and not the whole
+       story: a drawer tab is a *shell* (`startShell`), so Claude Code's hooks
+       never run for it and `transcripts::record` is never called. The offer would
+       therefore come back unavailable every single time, and asking would be an
+       IPC round trip per tab close to reach a foregone conclusion. */
     void closeSession(session).catch((e) => console.debug("closeSession failed", e));
     tab.panel.dispose();
     tab.el.remove();

@@ -1,8 +1,54 @@
 use anyhow::Result;
+use std::cell::OnceCell;
 
 pub trait Embedder {
     fn dim(&self) -> usize;
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+}
+
+/// An embedder built at most once, on the first call that needs one.
+///
+/// Two properties, and the second is the one that was missing.
+///
+/// **Not built until asked.** Loading the model costs seconds and hundreds of
+/// megabytes, and a process that is never asked to search should pay neither —
+/// which is why `mcp::serve` took a closure rather than a value.
+///
+/// **Built once.** The closure was called per tool call, so a session asking
+/// three questions paid three graph builds: measured at 2.0 s and a 1.8 GB peak
+/// each, of which 0.02 s is everything that is not the model. In a process that
+/// outlives one request that is not a cost, it is a defect (#389).
+///
+/// A failure is not cached. The ordinary reason to fail is a model that has not
+/// finished downloading, which stops being true without the process restarting.
+pub struct Lazy<'a> {
+    build: &'a dyn Fn() -> Result<Box<dyn Embedder>>,
+    cell: OnceCell<Box<dyn Embedder>>,
+}
+
+impl<'a> Lazy<'a> {
+    pub fn new(build: &'a dyn Fn() -> Result<Box<dyn Embedder>>) -> Lazy<'a> {
+        Lazy { build, cell: OnceCell::new() }
+    }
+
+    /// The embedder, building it if this is the first ask.
+    pub fn get(&self) -> Result<&dyn Embedder> {
+        if let Some(e) = self.cell.get() {
+            return Ok(e.as_ref());
+        }
+        let built = (self.build)()?;
+        // `set` can only fail if another `get` won the race, which cannot happen
+        // without threads — and this cell is deliberately single-threaded, since
+        // the loop that owns it reads one request at a time.
+        let _ = self.cell.set(built);
+        Ok(self.cell.get().expect("just set").as_ref())
+    }
+
+    /// Whether the model is loaded. For a caller that wants to say so rather
+    /// than to use it.
+    pub fn is_loaded(&self) -> bool {
+        self.cell.get().is_some()
+    }
 }
 
 pub struct FakeEmbedder {

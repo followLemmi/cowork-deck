@@ -92,6 +92,11 @@ export interface UiState {
    *  and deletes nothing already written, and reads keep working. Required for
    *  the same reason as the two above: Rust fills it from a `serde` default. */
   recordScenarioRuns: boolean;
+  /** Whether closing a session writes a note about it, once the person has said.
+   *  `undefined` is "never asked", which is deliberately not "no": a default
+   *  either way would answer a question about spending their money on their
+   *  behalf. Local to this machine — `ui_state.json` does not travel. */
+  captureOnClose?: boolean;
   /** How tall the drawer is, **in rows of the terminal's own type** — not
    *  pixels, and for a sharper version of `prDiffCols`' reason: the thing being
    *  sized is a grid of characters, so "show me twenty rows" has to keep meaning
@@ -134,6 +139,9 @@ export interface UiState {
  *  size. An absent key here means "leave it alone". */
 export interface UiStatePatch {
   activeWorkspaceId?: string;
+  /** Sets the remembered answer. Omitted leaves it alone, like every other field
+   *  here — putting it back to "never asked" is `memoryForgetCaptureAnswer`. */
+  captureOnClose?: boolean;
   uiScale?: number;
   prDiffCols?: number;
   syncOfferDismissed?: boolean;
@@ -577,7 +585,228 @@ export const startCommandSession = (
 export const writeSession = (session: string, data: string) => invoke<void>("write_session", { session, data });
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
-export const closeSession = (session: string) => invoke<void>("close_session", { session });
+/** What a closing session needs for its note, when the person has agreed to one.
+ *
+ *  The three fields are meaningless apart: consent with no workspace has nowhere
+ *  to file the note, and consent with no CLI cannot say which reader understands
+ *  the log. */
+export interface CaptureOnClose {
+  workspaceId: string;
+  cliKind?: CliKind;
+  sessionName?: string;
+}
+/** Close a session, and write a note about it when `capture` says to.
+ *
+ *  The note is an argument of the close rather than a call before it, and that is
+ *  the guarantee: `close_session` calls `transcripts::forget`, so the transcript
+ *  path is gone the instant the close goes through. An ordering inside one
+ *  command cannot be got wrong by a caller. */
+export const closeSession = (session: string, capture?: CaptureOnClose | null) =>
+  invoke<void>("close_session", { session, capture: capture ?? null });
+/** Whether closing this session could produce a note at all — a CLI this build
+ *  can read, and a log it knows the location of. Asked before anybody is asked,
+ *  because consent to spend money on something that cannot work is worse than no
+ *  offer. */
+export const memoryCaptureOffer = (session: string, cliKind?: CliKind) =>
+  invoke<CaptureOffer>("memory_capture_offer", { session, cliKind: cliKind ?? null });
+/** What the model directory holds. Three states, not a boolean: `partial` is a
+ *  resumable download, and calling it absent would invite somebody to start
+ *  479 MB again with the bytes already on disk. */
+export interface MemoryModelState {
+  dir: string;
+  state: "absent" | "partial" | "present";
+  have: number;
+  total: number;
+}
+/** The index and the model, from the sidecar's own `status`. */
+export interface MemoryStatus {
+  root: string;
+  cache: string;
+  /** `absent` — nothing has been indexed; `empty` — indexed, nothing in it;
+   *  `ready`. Three, because counts alone cannot tell the first two apart. */
+  state: "absent" | "empty" | "ready";
+  files: number;
+  chunks: number;
+  dim: number;
+  model: MemoryModelState;
+}
+/** The index and the model. Needs neither, which is what makes it the call that
+ *  decides what the interface may offer — a search returning nothing cannot tell
+ *  "no matches" from "no model" from "never indexed". */
+export const memoryStatus = () => invoke<MemoryStatus>("memory_status");
+/** Search the notes. Scoped to a workspace sees its notes plus the global
+ *  diaries; absent, it searches everything. */
+export const memorySearch = (query: string, workspaceId?: string, top?: number) =>
+  invoke<MemoryHit[]>("memory_search", {
+    query, workspaceId: workspaceId ?? null, top: top ?? null,
+  });
+export interface MemoryHit {
+  score: number;
+  /** Relative to the corpus root — `ws-1/Sessions/2026-08/31-topic.md`. */
+  file: string;
+  /** The workspace id, or `lessons` for a diary. */
+  scope: string;
+  room: string | null;
+  text: string;
+}
+/** What one capture cost, off the CLI's own envelope. */
+export interface MemoryCost {
+  inputTokens: number;
+  outputTokens: number;
+  /** What the CLI said it cost, when it said. Absent on a plan where the question
+   *  has no dollar answer. */
+  usd?: number;
+}
+/** One wrapup job, folded out of the queue's events. */
+export interface MemoryJob {
+  jobId: string;
+  queuedAt: number;
+  sessionId: string;
+  workspaceId: string;
+  transcriptPath: string;
+  cliKind: CliKind;
+  sessionName: string | null;
+  state: "queued" | "running" | "done" | "failed";
+  attempts: number;
+  /** Why it last came out of `running` without finishing, or why it was given up
+   *  on. Can hold model output, which is ours — render it as detail, never as a
+   *  headline. */
+  lastError: string | null;
+  notePath: string | null;
+  cost: MemoryCost | null;
+}
+/** Every wrapup job, oldest first. Machine-local: the queue names transcript
+ *  paths on this machine and does not travel. */
+export const memoryJobs = () => invoke<MemoryJob[]>("memory_jobs");
+/** Put a finished-with job back on the queue. Resolves whether there was one to
+ *  reopen. **It spends money**, like any capture. */
+export const memoryRetryJob = (jobId: string) =>
+  invoke<boolean>("memory_retry_job", { jobId });
+/** One note, read back out of the corpus by its path relative to the root. */
+export interface MemoryNote {
+  path: string;
+  markdown: string;
+}
+/** Read a note. The path is relative and checked against the corpus root on the
+ *  Rust side — a command taking an absolute one would be a command any window
+ *  could ask to read any file. */
+/** One note as the corpus holds it, read off its path and its first heading. */
+export interface MemoryNoteEntry {
+  /** Relative to the corpus root — what `memoryReadNote` takes back. */
+  file: string;
+  /** The workspace id, or `Diaries` for a lesson. */
+  scope: string;
+  room: string | null;
+  kind: "session" | "facts" | "diary" | "other";
+  /** `2026-08-31` for a session note, `2026-08` for a diary, empty otherwise —
+   *  from the path, which is where the day the work happened is recorded. */
+  when: string;
+  /** The first `# ` heading, or the file stem. Verbatim: a session note's own
+   *  heading begins with its date, and a row showing both must not say it
+   *  twice. */
+  title: string;
+  size: number;
+  /** Seconds since the epoch. The only sort key the three shapes share. */
+  mtime: number;
+}
+/** One fact of a workspace that still stands. */
+export interface MemoryFact {
+  /** `YYYY-MM-DD`, the day it was recorded. */
+  date: string;
+  /** The claim, without the date or the `[active]` marker — what a replacement
+   *  matches on. */
+  body: string;
+}
+/** The facts a workspace still claims, for the form that replaces one. */
+export const memoryFacts = (workspaceId: string) =>
+  invoke<MemoryFact[]>("memory_facts", { workspaceId });
+/** Record a fact by hand. One line: `subject — predicate — object`. The date and
+ *  the `[active]` marker are the app's to write. */
+export const memoryAddFact = (workspaceId: string, fact: string) =>
+  invoke<void>("memory_add_fact", { workspaceId, fact });
+/** Replace a fact that has stopped being true. The old line is marked and the new
+ *  one goes under it (ADR-0004). Resolves `false` when nothing matched — the file
+ *  moved under the form, and that is worth showing rather than swallowing. */
+export const memorySupersedeFact = (workspaceId: string, old: string, replacement: string) =>
+  invoke<boolean>("memory_supersede_fact", { workspaceId, old, replacement });
+/** File a lesson into a room the person picked. */
+export const memoryAddLesson = (lesson: {
+  room: string;
+  workspace: string;
+  severity: string;
+  category: string;
+  what: string;
+  avoid: string;
+}) => invoke<void>("memory_add_lesson", lesson);
+/** Write a note by hand. Takes the three parts rather than markdown, so the shape
+ *  a search reads — the frontmatter, the H1, the `## TL;DR` — is written for the
+ *  person. Resolves the path it landed on, relative to the corpus root. */
+export const memoryWriteNote = (workspaceId: string, title: string, tldr: string, body: string) =>
+  invoke<string>("memory_write_note", { workspaceId, title, tldr, body });
+/** Save an edited note over itself, atomically. Refuses a path that is not a note
+ *  and markdown with no `## TL;DR`. */
+export const memorySaveNote = (file: string, markdown: string) =>
+  invoke<void>("memory_save_note", { file, markdown });
+/** Load the embedding model before anything asks for it.
+ *
+ *  Resolves as soon as the warm-up is *started*, not when it finishes — it is
+ *  1.7 s of CPU, and the point is that it overlaps with reading the list rather
+ *  than landing on the first search. `false` means there is nothing to warm: no
+ *  sidecar staged on this build. */
+export const memoryWarm = () => invoke<boolean>("memory_warm");
+/** Everything ever written down, newest first.
+ *
+ *  A directory walk rather than a search, which is why the memory page is useful
+ *  on a machine that has downloaded nothing: `memorySearch` needs the sidecar and
+ *  the model, and this needs neither. */
+export const memoryNotes = () => invoke<MemoryNoteEntry[]>("memory_notes");
+export const memoryReadNote = (file: string) =>
+  invoke<MemoryNote>("memory_read_note", { file });
+/** Start fetching the embedding model. Resolves whether a download was started —
+ *  `false` when one already is. Progress arrives on `memory://model`. */
+export const memoryDownloadModel = () => invoke<boolean>("memory_download_model");
+/** Where a download has got to, or how it ended. One shape for both, so a
+ *  surface rendering "fetching", "done" and "it failed" in one place cannot let
+ *  them disagree. */
+export interface MemoryModelEvent {
+  phase: "fetching" | "verifying" | "ready" | "failed";
+  file?: string;
+  got: number;
+  total: number;
+  error?: string;
+}
+export const onMemoryModel = (fn: (e: MemoryModelEvent) => void): Promise<UnlistenFn> =>
+  listen<MemoryModelEvent>("memory://model", (e) => fn(e.payload));
+/** The corpus or the index moved. */
+export const onMemoryChanged = (fn: () => void): Promise<UnlistenFn> =>
+  listen("memory://changed", () => fn());
+/** A diary room: a name, and the sentence a lesson is routed by. */
+export interface DiaryRoom {
+  name: string;
+  description: string;
+}
+/** Every configured room. Seeds a usable default set on a corpus that has never
+ *  had any, so the surface never opens on an empty page with an Add button. */
+export const memoryRooms = () => invoke<DiaryRoom[]>("memory_rooms");
+/** Declare a room or change its description. Resolves the name it was stored
+ *  under, which is the slug of what was asked for. */
+export const memorySaveRoom = (name: string, description: string) =>
+  invoke<string>("memory_save_room", { name, description });
+/** Stop routing lessons to a room. **Its lessons stay on disk** — a room removed
+ *  by mistake must not take months of them with it. */
+export const memoryRetireRoom = (name: string) =>
+  invoke<boolean>("memory_retire_room", { name });
+/** Rename a room, moving its lessons with it. Rejects a merge into an existing
+ *  one. */
+export const memoryRenameRoom = (from: string, to: string) =>
+  invoke<string>("memory_rename_room", { from, to });
+/** Forget the remembered answer, so the next close asks again. */
+export const memoryForgetCaptureAnswer = () =>
+  invoke<void>("memory_forget_capture_answer");
+export interface CaptureOffer {
+  available: boolean;
+  reason?: string;
+}
 /** One tile as it crosses between windows: everything `sessions.json` records
  *  about it, plus what was on its screen.
  *

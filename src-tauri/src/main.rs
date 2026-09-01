@@ -9,6 +9,7 @@ mod gh;
 mod gh_pr;
 mod hooks;
 mod listener;
+mod memory;
 mod pty;
 mod commands;
 mod run_journal;
@@ -154,6 +155,24 @@ fn main() {
             // something the app already knew. Records whose reset has passed are
             // dropped on the way in.
             usage::observed::restore(dir.clone(), chrono::Utc::now().timestamp_millis());
+
+            // And once more for the same reason, about the queue that carries
+            // the memory of a closed session. `recover_wrapup_queue` puts back
+            // whatever a crash left mid-job — sound only here, before the
+            // frontend can close a tile, because nothing has a job in flight at
+            // this point and so every `running` job on disk is one of those.
+            memory::init(dir.clone(), handle.clone());
+            memory::recover_wrapup_queue();
+            // And then drain it, on a thread of its own. Whatever was queued
+            // before the last quit is summarised while the window opens rather
+            // than before it — #35 is explicit that memory stays off the session
+            // launch path, and a summary is worth none of that delay.
+            memory::spawn_drain();
+            // And bring the index up to date with whatever is already on disk —
+            // notes this machine wrote before the last quit, and notes that
+            // arrived from another machine through sync. Its own thread, guarded
+            // against overlapping the drain's own reindex.
+            memory::spawn_reindex();
 
             // Start the status listener on the tokio runtime Tauri provides.
             let handle_for_cb = handle.clone();
@@ -360,6 +379,26 @@ fn main() {
             commands::list_runs,
             commands::delete_skill_history,
             commands::reveal_path,
+            memory::memory_jobs,
+            memory::memory_retry_job,
+            memory::memory_capture_offer,
+            memory::memory_status,
+            memory::memory_search,
+            memory::memory_read_note,
+            memory::memory_notes,
+            memory::memory_facts,
+            memory::memory_add_fact,
+            memory::memory_supersede_fact,
+            memory::memory_add_lesson,
+            memory::memory_write_note,
+            memory::memory_save_note,
+            memory::memory_warm,
+            memory::memory_download_model,
+            memory::memory_rooms,
+            memory::memory_save_room,
+            memory::memory_retire_room,
+            memory::memory_rename_room,
+            memory::memory_forget_capture_answer,
             sync_cmd::sync_summary,
             sync_cmd::sync_preflight,
             sync_cmd::sync_probe,

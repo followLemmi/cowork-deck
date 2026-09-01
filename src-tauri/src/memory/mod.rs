@@ -1,0 +1,1170 @@
+//! The deck's own memory: what past sessions did and decided, written down
+//! where a later session — or a later machine — can find it.
+//!
+//! Phase 2 of #35 was the write path, and it is the half the feature stands on:
+//! search over an empty corpus is a working search that returns nothing. Under
+//! ADR-0004 the markdown *is* the memory and the index is a cache built over it
+//! afterwards, which is why the write path was finished and tested with no model
+//! on the machine at all — and why every module here except [`sidecar`] still
+//! needs none.
+//!
+//! - [`corpus`] — where a note goes and what it looks like when it gets there.
+//! - [`queue`] — the durable queue that makes capture a promise.
+//! - [`transcript`] — reading a session's log, per CLI, because the deck runs
+//!   sessions on four of them and their logs have nothing in common.
+//! - [`rooms`] — the diary rooms a lesson can be routed to, and what happens to
+//!   one that is retired.
+//! - [`capture`] — one `claude -p` per closed session, billed to the person.
+//! - [`sidecar`] — talking to `cowork_memory`, which is what reads the corpus
+//!   back.
+//!
+//! The root is the app's config directory, which is also the store's directory
+//! and the sync repository root (ADR-0006). Neither module resolves it: both are
+//! handed one, so every test runs against a temporary directory and nothing
+//! there can write into a real corpus by accident. The process-wide wiring below
+//! is where the real directory is named, once.
+
+pub mod capture;
+pub mod corpus;
+pub mod prompt;
+pub mod queue;
+pub mod resident;
+pub mod rooms;
+pub mod sidecar;
+pub mod transcript;
+
+use queue::Queue;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use tauri::{AppHandle, Emitter};
+
+/// The config directory, set once from `main`'s setup.
+///
+/// A process-wide `OnceLock` rather than a field on `AppState`, for the reason
+/// [`crate::run_journal`] gives about its own: the wiring happens in setup,
+/// before `AppState` exists, and the queue has to be reachable from a close
+/// handler that has no `State` to borrow.
+fn dir() -> &'static OnceLock<PathBuf> {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    &DIR
+}
+
+fn app() -> &'static OnceLock<AppHandle> {
+    static APP: OnceLock<AppHandle> = OnceLock::new();
+    &APP
+}
+
+/// The wrapup queue, or `None` before [`init`].
+pub fn wrapup_queue() -> Option<Queue> {
+    dir().get().map(|d| Queue::new(d.clone()))
+}
+
+/// Wire memory to the app's directory and window. Called once, from `main`'s
+/// setup, before the frontend can close anything.
+pub fn init(app_dir: PathBuf, handle: AppHandle) {
+    let _ = dir().set(app_dir);
+    let _ = app().set(handle);
+}
+
+/// Startup: clear every `running` claim a dead process left behind, and prune.
+///
+/// Called straight after [`init`] and before the frontend is up, which is what
+/// makes the reasoning in [`Queue::recover`] sound — nothing has a job in flight
+/// at this point, so every `running` job on disk is one the app died inside.
+///
+/// Warns rather than fails. A queue that could not be recovered is a summary or
+/// two that will not be written, and it is not a reason to refuse to start the
+/// app somebody opened to get their sessions back.
+pub fn recover_wrapup_queue() {
+    let Some(q) = wrapup_queue() else { return };
+    match q.recover() {
+        Ok(out) => {
+            if out.requeued > 0 || out.failed > 0 {
+                eprintln!(
+                    "wrapup queue: {} job(s) queued again after an unclean stop, {} given up on",
+                    out.requeued, out.failed,
+                );
+                announce();
+            }
+            if out.pruned > 0 {
+                eprintln!("wrapup queue: pruned {} finished job(s)", out.pruned);
+            }
+        }
+        Err(e) => eprintln!("warning: could not recover the wrapup queue ({e})"),
+    }
+}
+
+/// The diary rooms a capture may route a lesson to.
+///
+/// Through `for_prompt`, which is where a description is made one line and
+/// bounded before it reaches a model request. Empty stays a working state: the
+/// prompt then asks for no lessons at all, and `capture::run` drops any that
+/// arrive anyway.
+fn prompt_rooms() -> Vec<rooms::Room> {
+    match dir().get() {
+        Some(d) => rooms::Rooms::new(d.clone()).for_prompt(),
+        None => Vec::new(),
+    }
+}
+
+/// Whether a drain is already running.
+///
+/// The queue's own `take` stops one job being taken twice, but two *drains*
+/// would each take a different job and spawn `claude` side by side. This is what
+/// keeps "one at a time" true across the two things that start a drain: the
+/// startup pass, and a close (#366).
+fn draining() -> &'static std::sync::atomic::AtomicBool {
+    static DRAINING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &DRAINING
+}
+
+/// One of the "already running" flags, held for as long as this lives.
+///
+/// A drop guard rather than a `store(false)` at the end of the worker's body,
+/// because that store is skipped when the body panics — and each of these flags
+/// is a static that outlives the thread. A single panic inside a drain, a
+/// reindex or a download would leave its flag stuck at `true` for the rest of the
+/// process: `spawn_drain` and the rest would answer `false` from then on, no
+/// note would ever be captured again, and nothing on screen would say why.
+///
+/// Moved into the worker rather than kept here, so it is the work that holds the
+/// flag and not the call that started it.
+struct Busy(&'static std::sync::atomic::AtomicBool);
+
+impl Busy {
+    /// Claim the flag, or `None` when somebody else is holding it.
+    fn claim(flag: &'static std::sync::atomic::AtomicBool) -> Option<Busy> {
+        use std::sync::atomic::Ordering;
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Busy(flag))
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Run whatever is on the queue, on a thread of its own.
+///
+/// Detached and never awaited, following `sync_cmd::spawn`: #35 is explicit that
+/// memory stays off the session launch path, and a summary is worth exactly none
+/// of the delay it would cost a window to open. Returns whether a drain was
+/// started — `false` when one already is.
+pub fn spawn_drain() -> bool {
+    let Some(busy) = Busy::claim(draining()) else { return false };
+    std::thread::spawn(move || {
+        let _busy = busy;
+        drain_now();
+    });
+    true
+}
+
+/// One drain pass, on the calling thread.
+fn drain_now() {
+    let Some(q) = wrapup_queue() else { return };
+    let Some(dir) = dir().get() else { return };
+    let corpus = corpus::Corpus::new(dir.clone());
+    let rooms = prompt_rooms();
+
+    let report = q.drain(|job| {
+        capture::run(job, &corpus, &rooms).map(|c| {
+            if let Some(cost) = c.cost {
+                // The one line in the app that says what memory cost. Worth
+                // saying out loud while there is no panel to show it (#35's
+                // phase 3), because the person is paying for it.
+                eprintln!(
+                    "memory: captured {} — {} in, {} out{}",
+                    job.session_name.as_deref().unwrap_or(&job.session_id),
+                    cost.input_tokens,
+                    cost.output_tokens,
+                    cost.usd.map(|u| format!(", ${u:.4}")).unwrap_or_default(),
+                );
+            }
+            (c.note, c.cost)
+        })
+    });
+    match report {
+        Ok(r) => {
+            if r.wrote > 0 || r.failed > 0 || r.requeued > 0 {
+                announce();
+            }
+            if r.failed > 0 {
+                eprintln!("memory: gave up on {} capture job(s)", r.failed);
+            }
+            // A note on disk that the index has not seen is a note no search
+            // finds. Here rather than at the end of every capture, so a drain of
+            // six jobs embeds once.
+            if r.wrote > 0 {
+                spawn_reindex();
+            }
+        }
+        Err(e) => eprintln!("warning: the wrapup queue could not be drained ({e})"),
+    }
+}
+
+/// Tell the frontend the queue moved, following the `runs://changed`
+/// precedent — deliberately not a polling timer.
+pub fn announce() {
+    if let Some(handle) = app().get() {
+        let _ = handle.emit("memory://changed", ());
+    }
+}
+
+/// Whether closing this session could produce a note, and why not when it could
+/// not.
+///
+/// Asked *before* the question is put to anybody, because consent to spend money
+/// on something that cannot work is worse than no offer at all. Two things have
+/// to be true and neither is knowable from the frontend: this build must have a
+/// reader for the CLI that wrote the log (#371, #372), and the app must know
+/// where that log is.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CaptureOffer {
+    pub available: bool,
+    /// Why not, in a sentence a person could be shown. `None` when it is
+    /// available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The offer for one session.
+///
+/// The "nothing to summarise" half of #366 is deliberately **not** decided here.
+/// Reading a transcript to find out whether it holds a conversation would put a
+/// file read of up to a few megabytes on the path of closing a tile, and it would
+/// buy nothing: `capture::run` checks it again before the model call, so a
+/// session that turns out to be empty costs a queue entry and no tokens. What
+/// this rules out is what would otherwise cost a *question* — a CLI whose log
+/// cannot be read at all, and a session the app never saw a log for.
+#[tauri::command]
+pub fn memory_capture_offer(session: String, cli_kind: Option<String>) -> CaptureOffer {
+    let cli = crate::activity::model::CliKind::parse(cli_kind.as_deref().unwrap_or_default());
+    if transcript::digester_for(cli).is_none() {
+        return CaptureOffer {
+            available: false,
+            reason: Some(format!(
+                "Notes are not available for {} sessions in this build.",
+                cli.as_str(),
+            )),
+        };
+    }
+    if crate::transcripts::get(&session).is_none() {
+        return CaptureOffer {
+            available: false,
+            // The ordinary case by far: a tile that never got as far as running
+            // anything reported no transcript, so there is nothing to read.
+            reason: Some("This session has not written a transcript yet.".to_string()),
+        };
+    }
+    CaptureOffer { available: true, reason: None }
+}
+
+/// Put a closing session's note on the queue.
+///
+/// Called from `close_session` rather than from the frontend, and that is the
+/// guarantee rather than a convenience: the enqueue has to happen before
+/// `transcripts::forget`, and an ordering that lives inside one function cannot
+/// be got wrong by a caller.
+///
+/// Returns whether anything was queued. `false` is ordinary — a session with no
+/// transcript on record — and never a reason to fail a close.
+pub fn enqueue_on_close(
+    session: &str,
+    workspace_id: &str,
+    cli_kind: Option<String>,
+    session_name: Option<String>,
+) -> bool {
+    let Some(q) = wrapup_queue() else { return false };
+    // The second of the two guards `decideCapture` documents. A remembered "yes"
+    // arrives here without having consulted `memory_capture_offer`, so a session
+    // whose CLI this build cannot read would otherwise be queued and then fail —
+    // on every close of such a tile, forever, for somebody who agreed to notes
+    // once and about something else.
+    let cli = crate::activity::model::CliKind::parse(cli_kind.as_deref().unwrap_or_default());
+    if transcript::digester_for(cli).is_none() {
+        return false;
+    }
+    let Some(path) = crate::transcripts::get(session) else { return false };
+
+    let req = queue::EnqueueRequest {
+        session_id: session.to_string(),
+        workspace_id: workspace_id.to_string(),
+        cli_kind,
+        transcript_path: path,
+        session_name,
+    };
+    match q.enqueue(&req) {
+        Ok(_) => {
+            announce();
+            // What turns a queued job into a note. On its own thread, so a close
+            // never waits on a model.
+            spawn_drain();
+            true
+        }
+        Err(e) => {
+            // Warned, never propagated. The person asked for a tile to go away; a
+            // queue that could not be written is a summary that will not exist,
+            // and that is not a reason to keep the tile on screen.
+            eprintln!("warning: could not queue a note for a closing session ({e})");
+            false
+        }
+    }
+}
+
+fn rooms_store() -> Result<rooms::Rooms, String> {
+    dir()
+        .get()
+        .map(|d| rooms::Rooms::new(d.clone()))
+        .ok_or_else(|| "memory is not wired up".to_string())
+}
+
+/// Every configured diary room.
+///
+/// Through `list`, which is what seeds the defaults on a corpus that has never
+/// had any — so opening the surface for the first time shows a usable set rather
+/// than an empty page with an Add button.
+#[tauri::command]
+pub fn memory_rooms() -> Vec<rooms::Room> {
+    rooms_store().map(|r| r.list()).unwrap_or_default()
+}
+
+/// Declare a room, or change its description. Returns the name it was stored
+/// under, which is the slug of what was asked for.
+#[tauri::command]
+pub fn memory_save_room(name: String, description: String) -> Result<String, String> {
+    rooms_store()?.save(&name, &description).map_err(|e| e.to_string())
+}
+
+/// Stop routing lessons to a room. **Its lessons stay on disk** — see
+/// [`rooms::Rooms::retire`] for why that is not negotiable.
+#[tauri::command]
+pub fn memory_retire_room(name: String) -> Result<bool, String> {
+    rooms_store()?.retire(&name).map_err(|e| e.to_string())
+}
+
+/// Rename a room, moving its lessons with it. Refuses to merge into an existing
+/// one.
+#[tauri::command]
+pub fn memory_rename_room(from: String, to: String) -> Result<String, String> {
+    rooms_store()?.rename(&from, &to).map_err(|e| e.to_string())
+}
+
+/// Forget the remembered answer, so the next close asks again.
+#[tauri::command]
+pub fn memory_forget_capture_answer() -> Result<(), String> {
+    let Some(dir) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    crate::store::Store::new(dir.clone())
+        .clear_capture_on_close()
+        .map_err(|e| e.to_string())
+}
+
+/// The sidecar over this corpus, or `None` before [`init`].
+pub fn indexer() -> Option<sidecar::Sidecar> {
+    dir().get().map(|d| sidecar::Sidecar::new(d.clone()))
+}
+
+/// The index and the model.
+///
+/// The call that decides what the interface may offer, because it needs neither
+/// — see [`sidecar`]. A search returning nothing cannot tell "no matches" from
+/// "never indexed" from "no model", and this is what tells them apart.
+#[tauri::command]
+pub fn memory_status() -> Result<sidecar::Status, String> {
+    indexer().ok_or_else(|| "memory is not wired up".to_string())?.status()
+}
+
+/// Search the corpus.
+///
+/// `workspace_id` scopes it: a workspace sees its own notes plus the global
+/// diaries, which is what makes a lesson from another project reachable from
+/// this one. Absent, it searches everything.
+#[tauri::command]
+pub fn memory_search(
+    query: String,
+    workspace_id: Option<String>,
+    top: Option<usize>,
+) -> Result<Vec<sidecar::Hit>, String> {
+    let scope = match workspace_id.filter(|w| !w.trim().is_empty()) {
+        Some(id) => sidecar::Scope::Workspace(id),
+        None => sidecar::Scope::Everything,
+    };
+    search_scoped(&query, &scope, top.unwrap_or(10))
+}
+
+/// Search, through the process that already has the model if there is one.
+///
+/// The one route every search takes — the palette, the page, the prompt hook —
+/// so the resident process is shared rather than one per caller. `None` from
+/// [`resident::search`] means there is no resident path to take, and the answer
+/// is then the one search per process that came before it: slower, never worse.
+pub fn search_scoped(
+    query: &str,
+    scope: &sidecar::Scope,
+    top: usize,
+) -> Result<Vec<sidecar::Hit>, String> {
+    let indexer = indexer().ok_or_else(|| "memory is not wired up".to_string())?;
+    if let Some(hits) = resident::search(&indexer, query, scope, top) {
+        return Ok(hits);
+    }
+    indexer.search(query, scope, top)
+}
+
+/// Load the model before anything asks for it.
+///
+/// Called when the memory page is opened. On a thread, because it is 1.7 s of
+/// somebody else's CPU — and returning immediately is the point: the warm-up
+/// overlaps with reading the list, and the first search is already instant.
+///
+/// Deliberately not called at launch. Warming costs 1.7 s and holds 1.6 GB, and
+/// paying that on every start charges every person who never searches — the same
+/// objection ADR-0003 and #35 made about the launch path.
+#[tauri::command]
+pub fn memory_warm() -> bool {
+    let Some(indexer) = indexer() else { return false };
+    if !indexer.is_staged() {
+        return false;
+    }
+    std::thread::spawn(move || {
+        if resident::warm(&indexer) {
+            eprintln!("memory: the model is loaded and searches are warm");
+        }
+    });
+    true
+}
+
+/// Bring the index up to date, on a thread of its own.
+///
+/// Never awaited by a caller and never on a launch path: a cold index embeds
+/// every note there is, which on a corpus somebody has been filling for months
+/// is minutes of CPU. #35 is explicit that memory stays off the session launch
+/// path, and this is the call that would break that promise if it were
+/// synchronous.
+pub fn spawn_reindex() -> bool {
+    let Some(s) = indexer() else { return false };
+    if !s.is_staged() {
+        // Ordinary on a build that did not stage it, and not worth a warning on
+        // every start — `memory_status` says so where somebody is looking.
+        return false;
+    }
+    // Its own guard, and for a sharper reason than the drain's: two reindexes
+    // would each embed the same notes, on the CPU, at the same time. The two
+    // things that start one — a startup pass and a drain that wrote a note — can
+    // easily coincide on a machine that was shut with work queued.
+    let Some(busy) = Busy::claim(reindexing()) else { return false };
+    std::thread::spawn(move || {
+        let out = s.update();
+        // Here rather than at the end of the body, so the flag is free again the
+        // moment the indexing is — what follows only reports what happened.
+        drop(busy);
+        match out {
+        Ok(ix) if ix.changed > 0 => {
+            eprintln!(
+                "memory: reindexed {} file(s); {} files, {} chunks",
+                ix.changed, ix.files, ix.chunks,
+            );
+            announce();
+        }
+        Ok(_) => {}
+        // Warned rather than surfaced: the ordinary cause is a model that has
+        // not been downloaded, which is a sentence the interface owes somebody
+        // where they asked (#374) rather than a notification at startup.
+        Err(e) => eprintln!("memory: could not reindex ({e})"),
+        }
+    });
+    true
+}
+
+fn reindexing() -> &'static std::sync::atomic::AtomicBool {
+    static REINDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &REINDEXING
+}
+
+/// What a launched session is told about memory: the MCP server to run, and the
+/// sentence saying when to reach for it.
+///
+/// Empty when there is nothing to offer — no sidecar staged — and an empty list
+/// adds no arguments, so the launch path needs no branch of its own.
+///
+/// # Only Claude, and by construction rather than by choice
+///
+/// `--mcp-config` and `--append-system-prompt` are Claude Code's flags. That is
+/// not a limitation this function has to guard, because `commands::start_session`
+/// resolves `which_claude()` unconditionally: **the deck launches Claude Code and
+/// nothing else today.** `CliKind` exists because the *activity* readers and the
+/// stored layout anticipate other CLIs, and the README's roadmap says so plainly
+/// — "read first … then run".
+///
+/// When the running half of #330 lands, this is where the per-CLI question
+/// arrives, and it will not be "which flags" but "is there any way to tell this
+/// CLI at all" — with an answer that has to be legible rather than a session
+/// quietly having no memory.
+///
+/// # What one of these costs
+///
+/// A process per session, measured at **5.6 MB RSS** idle — it loads no model
+/// until a tool call needs one. Six tiles is some 33 MB, which sounds like a lot
+/// against the app's own ~100 MB until you notice that each of those six tiles
+/// also has a Node runtime behind it, an order of magnitude larger. So it is
+/// registered unconditionally rather than gated on the corpus having anything in
+/// it: gating would need the index's state on the launch path, and #35 is
+/// explicit that memory stays off it.
+pub fn session_args(workspace_id: Option<&str>) -> Vec<String> {
+    let Some(s) = indexer() else { return Vec::new() };
+    if !s.is_staged() {
+        return Vec::new();
+    }
+    let Some(root) = dir().get() else { return Vec::new() };
+    mcp_flags(s.program(), root, workspace_id)
+}
+
+/// The flags themselves, given what they name.
+///
+/// Split from [`session_args`] so the shape can be asserted without a wired-up
+/// process: everything above it is a `OnceLock` and a `stat`, and everything
+/// interesting is here.
+fn mcp_flags(
+    program: &std::path::Path,
+    root: &std::path::Path,
+    workspace_id: Option<&str>,
+) -> Vec<String> {
+    let mut args =
+        vec!["--root".to_string(), root.to_string_lossy().into_owned(), "mcp".to_string()];
+    // Omitted for a session with no workspace, which the server reads as "the
+    // global diaries and no project notes" — the honest scope for a tile that
+    // belongs to no project.
+    if let Some(id) = workspace_id.filter(|w| !w.trim().is_empty()) {
+        args.push("--scope".to_string());
+        args.push(id.to_string());
+    }
+    let config = serde_json::json!({
+        "mcpServers": {
+            "cowork-memory": {
+                "command": program.to_string_lossy(),
+                "args": args,
+            }
+        }
+    });
+
+    vec![
+        // Additive. Deliberately **not** with `--strict-mcp-config`, which would
+        // switch off every MCP server the person configured for themselves —
+        // this adds one, it does not take over.
+        "--mcp-config".to_string(),
+        config.to_string(),
+        "--append-system-prompt".to_string(),
+        MEMORY_INSTRUCTION.to_string(),
+    ]
+}
+
+/// What a session is told, and the shortest useful version of it.
+///
+/// #35 settled that this is needed at all — "MCP plus a system-prompt instruction
+/// to consult the lessons before writing code" — because a tool an agent has and
+/// is never told to reach for is a tool it does not reach for.
+///
+/// Two sentences, and they say **when** rather than what. This text competes for
+/// attention with the person's own `CLAUDE.md` and their project's rules, and a
+/// paragraph about a feature is a paragraph taken from the work. #35 also ruled
+/// out the alternative of injecting search results at `SessionStart`: "an agent
+/// that asks right before making a change phrases its query better than anything
+/// guessable at startup."
+pub const MEMORY_INSTRUCTION: &str = "This deck keeps a searchable memory of what earlier sessions in this project did and decided, plus lessons carried across every project, reachable through the `search_memory` tool. Consult it before changing code in an area you have not seen yet, and before settling a question that looks like one somebody here has already settled.";
+
+/// Every note the corpus holds, newest first.
+///
+/// **Not a search, and that is the point.** [`memory_search`] needs the sidecar
+/// spawned and the 479 MB model downloaded; a page that could only list what
+/// search returns would be blank on every machine that has downloaded nothing,
+/// which is every machine at first run. This walks a layout [`corpus`] owns and
+/// reads no further into a file than its first heading.
+#[tauri::command]
+pub fn memory_notes() -> Result<Vec<corpus::Listed>, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    Ok(corpus::Corpus::new(root.clone()).notes())
+}
+
+/// Every fact of one workspace that still stands.
+///
+/// What the "replace a fact" form picks from. Only the `[active]` ones: a
+/// superseded line's history is the point of keeping it (ADR-0004), and offering
+/// it again would mark a line that is already marked.
+#[tauri::command]
+pub fn memory_facts(workspace_id: String) -> Result<Vec<corpus::Fact>, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    corpus::Corpus::new(root.clone()).active_facts(&workspace_id).map_err(|e| e.to_string())
+}
+
+/// Record a fact by hand.
+///
+/// **The date and the `[active]` marker are the app's to write**, which is why
+/// this takes one line of prose and not a shaped record: a form that let somebody
+/// type the marker would let somebody type it wrong, and `grep` is what reads
+/// this file.
+#[tauri::command]
+pub fn memory_add_fact(workspace_id: String, fact: String) -> Result<(), String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    if fact.trim().is_empty() {
+        return Err("a fact needs something in it".to_string());
+    }
+    corpus::Corpus::new(root.clone())
+        .append_facts(&workspace_id, corpus::today(), &[fact])
+        .map_err(|e| e.to_string())?;
+    wrote();
+    Ok(())
+}
+
+/// Replace a fact that has stopped being true.
+///
+/// The old line is **marked, never rewritten** — ADR-0004's rule, and not a
+/// choice: "the history of a fact is the useful part, and a corpus that quietly
+/// loses the old value cannot answer 'when did this change, and to what'." The
+/// replacement goes directly under it.
+///
+/// `false` means nothing matched, which a caller should show rather than swallow:
+/// the file has moved under the form, and writing the replacement anyway would
+/// leave two active claims about the same thing.
+#[tauri::command]
+pub fn memory_supersede_fact(
+    workspace_id: String,
+    old: String,
+    replacement: String,
+) -> Result<bool, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    if replacement.trim().is_empty() {
+        return Err("a replacement needs something in it".to_string());
+    }
+    let done = corpus::Corpus::new(root.clone())
+        .supersede_fact(&workspace_id, corpus::today(), &old, &replacement)
+        .map_err(|e| e.to_string())?;
+    if done {
+        wrote();
+    }
+    Ok(done)
+}
+
+/// File a lesson into a room **the person picked**.
+///
+/// The room is a parameter rather than a routing decision, and that is the whole
+/// difference from a capture: `capture` asks the model which room a lesson
+/// belongs in because nobody is there to ask. Here somebody is.
+#[tauri::command]
+pub fn memory_add_lesson(
+    room: String,
+    workspace: String,
+    severity: String,
+    category: String,
+    what: String,
+    avoid: String,
+) -> Result<(), String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    if what.trim().is_empty() {
+        return Err("a lesson needs to say what happened".to_string());
+    }
+    corpus::Corpus::new(root.clone())
+        .append_diary(
+            &room,
+            corpus::today(),
+            &corpus::DiaryEntry { workspace, severity, category, what, avoid },
+        )
+        .map_err(|e| e.to_string())?;
+    wrote();
+    Ok(())
+}
+
+/// Write a note by hand.
+///
+/// Takes the three parts rather than markdown, so the shape the indexer reads —
+/// the frontmatter, the H1, the exact `## TL;DR` heading — is written for the
+/// person rather than by them. A note assembled here cannot be missing the one
+/// section that decides whether it is findable.
+///
+/// Returns the path it landed on, relative to the corpus root, so the caller can
+/// open the note it just wrote.
+#[tauri::command]
+pub fn memory_write_note(
+    workspace_id: String,
+    title: String,
+    tldr: String,
+    body: String,
+) -> Result<String, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    if title.trim().is_empty() {
+        return Err("a note needs a title".to_string());
+    }
+    if tldr.trim().is_empty() {
+        return Err("a note needs a TL;DR — it is what a search reads first".to_string());
+    }
+    let note = corpus::Note {
+        title: title.clone(),
+        tldr,
+        sections: if body.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![corpus::Section { heading: "Notes".into(), body }]
+        },
+    };
+    let path = corpus::Corpus::new(root.clone())
+        .write_note_by_hand(&workspace_id, corpus::today(), &title, &note)
+        .map_err(|e| e.to_string())?;
+    wrote();
+    Ok(path
+        .strip_prefix(root)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .replace('\\', "/"))
+}
+
+/// Save an edited note over itself.
+///
+/// Atomically, and refusing a path that is not a note or markdown with no
+/// `## TL;DR` — both checked here rather than only in the interface that hides
+/// the button, because a command that trusted its caller would be one any window
+/// could ask to flatten a year of facts.
+#[tauri::command]
+pub fn memory_save_note(file: String, markdown: String) -> Result<(), String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    // The same containment check reading takes: canonicalised, then required to
+    // still be inside the root (#375).
+    note_under(root, &file)?;
+    corpus::Corpus::new(root.clone()).save_note(&file, &markdown).map_err(|e| e.to_string())?;
+    wrote();
+    Ok(())
+}
+
+/// The block a session is handed with its prompt, or nothing.
+///
+/// Called from the listener, on the connection the `UserPromptSubmit` hook
+/// opened. Everything about *whether* to search is decided here rather than in
+/// the hook, because the corpus's state is known here and nowhere else — see
+/// [`prompt`] for why the gate is a requirement rather than a refinement.
+///
+/// Blocking: a search spawns the sidecar. The caller runs it off the runtime.
+pub fn prompt_context(workspace: Option<&str>, payload: &str) -> Option<String> {
+    let query = prompt::prompt_of(payload)?;
+    if !prompt::worth_searching(&query) {
+        return None;
+    }
+    let indexer = indexer()?;
+    if !indexer.is_staged() {
+        return None;
+    }
+    /* Silent when memory cannot search at all. A session cannot act on "download
+       the model", and a line about it above every message is the noise this
+       feature is one bad decision away from becoming — the memory page and the
+       settings block say it where somebody can do something about it. */
+    match indexer.status() {
+        Ok(s) if s.chunks > 0 && s.model.state == "present" => {}
+        _ => return None,
+    }
+    let scope = match workspace {
+        Some(id) if !id.trim().is_empty() => sidecar::Scope::Workspace(id.to_string()),
+        _ => sidecar::Scope::Everything,
+    };
+    // Through the resident process too: a prompt worth searching should not pay
+    // a model load, which is the cost #388 assumed was already avoided.
+    let hits = search_scoped(&query, &scope, prompt::TOP).ok()?;
+    Some(prompt::context_block(&scope, &hits))
+}
+
+/// What every hand-written line owes afterwards: say the corpus moved, and bring
+/// the index up to date.
+///
+/// A note on disk the index has not seen is a note no search finds, and a line
+/// written by hand is exactly as stale to the index as one written by a capture.
+/// `spawn_reindex` is guarded against overlapping and does nothing on a build
+/// with no sidecar staged, so this is safe to call on every write.
+fn wrote() {
+    announce();
+    spawn_reindex();
+}
+
+/// One note, read back out of the corpus.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Note {
+    /// Where it is, so it can be revealed in a file manager.
+    pub path: String,
+    pub markdown: String,
+}
+
+/// Read one note by its path relative to the corpus root.
+///
+/// **Relative, and checked.** A search hit's `file` comes back from the sidecar,
+/// which read it off the filesystem, so in practice it is already ours — but this
+/// is a command, and a command that took an absolute path would be a command any
+/// window could ask to read any file. The path is joined to the root and the
+/// result has to still be inside it, which is the same reasoning `corpus::segment`
+/// applies on the way in.
+///
+/// `main.rs` refuses `open-path` in the opener plugin for a related reason — "a
+/// URL out of a pull request description" naming a file to run — so a note is
+/// read and rendered in the app rather than handed to whatever the system would
+/// launch.
+#[tauri::command]
+pub fn memory_read_note(file: String) -> Result<Note, String> {
+    let Some(root) = dir().get() else { return Err("memory is not wired up".to_string()) };
+    let real = note_under(root, &file)?;
+    let bytes =
+        std::fs::read(&real).map_err(|e| format!("could not read that note ({})", e.kind()))?;
+    Ok(Note {
+        path: real.to_string_lossy().into_owned(),
+        // Lossily, for the reason `transcript::read` gives about transcripts: a
+        // note that is not quite text is better read imperfectly than refused.
+        markdown: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+/// Resolve a note's relative path inside the corpus, or refuse.
+///
+/// Split out from the command because it is the only defensive logic in this
+/// module and the only part of it worth a test: the command around it is a file
+/// read.
+fn note_under(root: &std::path::Path, file: &str) -> Result<PathBuf, String> {
+    if !file.ends_with(".md") {
+        return Err("that is not a note".to_string());
+    }
+    // `canonicalize` resolves `..` and every symlink on the way, so containment
+    // is checked against where the path actually lands rather than how it is
+    // spelled. A prefix check on the joined string would pass
+    // `ws-1/../../.ssh/id_rsa.md` and follow a symlink out without noticing.
+    let real = root.join(file).canonicalize().map_err(|_| "that note is not there".to_string())?;
+    let real_root = root.canonicalize().map_err(|e| e.to_string())?;
+    if !real.starts_with(&real_root) {
+        return Err("that note is not in the corpus".to_string());
+    }
+    if !real.is_file() {
+        return Err("that note is not there".to_string());
+    }
+    Ok(real)
+}
+
+/// What a download is doing, or how it ended.
+///
+/// One event shape for both, because a surface has to render "fetching", "done"
+/// and "it failed" in the same place and a second event would let those disagree.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModelDownload {
+    /// `fetching`, `verifying`, `ready` or `failed`.
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    pub got: u64,
+    pub total: u64,
+    /// Why it failed, in a sentence somebody could act on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn downloading() -> &'static std::sync::atomic::AtomicBool {
+    static DOWNLOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    &DOWNLOADING
+}
+
+fn emit_model(ev: ModelDownload) {
+    if let Some(handle) = app().get() {
+        let _ = handle.emit("memory://model", ev);
+    }
+}
+
+/// Fetch the embedding model, reporting progress on `memory://model`.
+///
+/// Returns whether a download was started; `false` when one already is. The work
+/// is on a thread of its own — 479 MB is not something to hold a command open
+/// for — and an interrupted one resumes rather than restarting (ADR-0005), so
+/// quitting mid-download costs nothing but time.
+///
+/// **It ends by running `update`, and that is not tidiness.** The probe that
+/// decides whether the downloaded bytes are a working model lives inside
+/// `OnnxEmbedder::load`, so nothing before the first real use can say. ADR-0005
+/// is explicit about why it matters: a truncated or damaged ONNX file may still
+/// load and still produce vectors, every search then returns plausible-looking
+/// nonsense, and nothing reports a fault. Verifying here is what turns that into
+/// a sentence at the moment somebody is looking.
+#[tauri::command]
+pub fn memory_download_model() -> bool {
+    let Some(s) = indexer() else { return false };
+    if !s.is_staged() {
+        emit_model(ModelDownload {
+            phase: "failed".into(),
+            file: None,
+            got: 0,
+            total: 0,
+            error: Some(format!("the memory sidecar is not installed at {}", s.program().display())),
+        });
+        return false;
+    }
+    let Some(busy) = Busy::claim(downloading()) else { return false };
+
+    std::thread::spawn(move || {
+        let mut last = ModelDownload {
+            phase: "fetching".into(),
+            file: None,
+            got: 0,
+            total: 0,
+            error: None,
+        };
+        let fetched = s.download_model(&mut |p| {
+            last = ModelDownload {
+                phase: "fetching".into(),
+                file: Some(p.file.clone()),
+                got: p.got,
+                total: p.total,
+                error: None,
+            };
+            emit_model(last.clone());
+        });
+
+        let out = match fetched {
+            Err(e) => Err(e),
+            Ok(()) => {
+                // The probe, by way of the only thing that runs it.
+                emit_model(ModelDownload {
+                    phase: "verifying".into(),
+                    file: None,
+                    got: last.got,
+                    total: last.total,
+                    error: None,
+                });
+                s.update().map(|_| ())
+            }
+        };
+        // As in `spawn_reindex`: free once the work is done, before the
+        // reporting that follows it.
+        drop(busy);
+
+        match out {
+            Ok(()) => {
+                emit_model(ModelDownload {
+                    phase: "ready".into(),
+                    file: None,
+                    got: last.total,
+                    total: last.total,
+                    error: None,
+                });
+                announce();
+            }
+            Err(e) => {
+                eprintln!("memory: the model is not usable ({e})");
+                emit_model(ModelDownload {
+                    phase: "failed".into(),
+                    file: last.file.clone(),
+                    got: last.got,
+                    total: last.total,
+                    error: Some(e),
+                });
+            }
+        }
+    });
+    true
+}
+
+/// Put a finished-with job back on the queue, and start a drain.
+///
+/// Returns whether there was such a job to reopen. **It spends money**, the same
+/// as any capture, which is why the surface asking for it has to say so before
+/// the button rather than after — see `memory-jobs.ts`.
+#[tauri::command]
+pub fn memory_retry_job(job_id: String) -> Result<bool, String> {
+    let q = wrapup_queue().ok_or_else(|| "memory is not wired up".to_string())?;
+    let reopened = q.retry(&job_id).map_err(|e| e.to_string())?;
+    if reopened {
+        announce();
+        spawn_drain();
+    }
+    Ok(reopened)
+}
+
+/// Every wrapup job, oldest first.
+///
+/// Read-only, and the frontend has nothing that writes the queue: a job is put
+/// on it by the close path in Rust (#366) and taken off it by the runner (#365).
+/// A window that could enqueue would be a window that could enqueue a job for a
+/// session another window owns.
+#[tauri::command]
+pub fn memory_jobs() -> Vec<queue::WrapupJob> {
+    wrapup_queue().map(|q| q.jobs()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reason [`Busy`] is a guard and not a `store(false)` at the end of a
+    /// thread body: a panic anywhere in the work skipped that store, and the
+    /// flag is a static — so one failed drain disabled capture for the rest of
+    /// the process, silently, with `spawn_drain` answering `false` forever after.
+    #[test]
+    fn a_panic_in_the_work_still_gives_the_flag_back() {
+        static FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let busy = Busy::claim(&FLAG).expect("nothing holds it yet");
+        assert!(Busy::claim(&FLAG).is_none(), "and a second claim is refused");
+
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let died = std::thread::spawn(move || {
+            let _busy = busy;
+            panic!("the work died");
+        })
+        .join();
+        std::panic::set_hook(previous);
+
+        assert!(died.is_err(), "the worker panicked");
+        assert!(Busy::claim(&FLAG).is_some(), "the unwind gave the flag back");
+    }
+
+    fn corpus(name: &str) -> PathBuf {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "cd-note-{name}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ws-1/Sessions/2026-08")).unwrap();
+        std::fs::write(root.join("ws-1/Sessions/2026-08/31-a-note.md"), "# a note\n").unwrap();
+        root
+    }
+
+    // ----- what a session is told -----
+
+    fn flags(workspace: Option<&str>) -> Vec<String> {
+        mcp_flags(
+            std::path::Path::new("/apps/cowork/cowork_memory"),
+            std::path::Path::new("/home/dev/.config/cowork-deck"),
+            workspace,
+        )
+    }
+
+    fn config_of(flags: &[String]) -> serde_json::Value {
+        let at = flags.iter().position(|f| f == "--mcp-config").expect("the flag");
+        serde_json::from_str(&flags[at + 1]).expect("a JSON config")
+    }
+
+    #[test]
+    fn a_session_is_told_where_the_server_is_and_which_project_it_is_for() {
+        let f = flags(Some("ws-1"));
+        let server = &config_of(&f)["mcpServers"]["cowork-memory"];
+        assert_eq!(server["command"], "/apps/cowork/cowork_memory");
+        let args: Vec<&str> =
+            server["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            vec!["--root", "/home/dev/.config/cowork-deck", "mcp", "--scope", "ws-1"],
+        );
+    }
+
+    /// A tile that belongs to no project still reaches the shared lessons, and
+    /// the server reads a missing `--scope` as exactly that.
+    #[test]
+    fn a_session_with_no_workspace_is_given_no_scope() {
+        for none in [None, Some(""), Some("   ")] {
+            let f = flags(none);
+            let args = config_of(&f)["mcpServers"]["cowork-memory"]["args"].clone();
+            let args: Vec<&str> =
+                args.as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+            assert_eq!(args, vec!["--root", "/home/dev/.config/cowork-deck", "mcp"], "{none:?}");
+        }
+    }
+
+    /// This adds a server; it does not take over. `--strict-mcp-config` would
+    /// switch off every MCP server the person configured for themselves.
+    #[test]
+    fn it_never_switches_off_the_persons_own_mcp_servers() {
+        assert!(!flags(Some("ws-1")).iter().any(|f| f == "--strict-mcp-config"));
+    }
+
+    /// The tool is only half of it: #35's decision is "MCP **plus** a
+    /// system-prompt instruction", because a tool an agent is never told to reach
+    /// for is a tool it does not reach for.
+    #[test]
+    fn a_session_is_also_told_when_to_use_it() {
+        let f = flags(Some("ws-1"));
+        let at = f.iter().position(|x| x == "--append-system-prompt").expect("the flag");
+        let text = &f[at + 1];
+        assert!(text.contains("search_memory"), "it names the tool: {text}");
+        assert!(text.contains("before changing code"), "and says when: {text}");
+    }
+
+    /// It competes for attention with the person's own `CLAUDE.md` and their
+    /// project's rules, and a paragraph about a feature is a paragraph taken from
+    /// the work.
+    #[test]
+    fn the_instruction_stays_short() {
+        assert!(
+            MEMORY_INSTRUCTION.len() < 400,
+            "{} characters is a paragraph, not a sentence",
+            MEMORY_INSTRUCTION.len(),
+        );
+        assert!(!MEMORY_INSTRUCTION.contains('\n'), "one paragraph, no headings");
+    }
+
+    #[test]
+    fn a_note_inside_the_corpus_resolves() {
+        let root = corpus("ok");
+        let p = note_under(&root, "ws-1/Sessions/2026-08/31-a-note.md").unwrap();
+        assert!(p.ends_with("31-a-note.md"));
+    }
+
+    /// The check this function exists for. A prefix test on the joined string
+    /// would pass every one of these.
+    #[test]
+    fn a_path_that_climbs_out_of_the_corpus_is_refused() {
+        let root = corpus("escape");
+        // Something real to reach for, one directory above the corpus.
+        let outside = root.parent().unwrap().join("cd-note-outside.md");
+        std::fs::write(&outside, "not yours\n").unwrap();
+
+        let e = note_under(&root, "../cd-note-outside.md")
+            .expect_err("a note above the corpus is not a note in it");
+        assert!(e.contains("not in the corpus"), "{e}");
+
+        let e = note_under(&root, "ws-1/../../cd-note-outside.md")
+            .expect_err("nor is one reached the long way round");
+        assert!(e.contains("not in the corpus"), "{e}");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// `canonicalize` is what makes this refusal work: the path is inside the
+    /// corpus and the file it names is not.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_pointing_out_of_the_corpus_is_refused() {
+        let root = corpus("symlink");
+        let outside = root.parent().unwrap().join("cd-note-secret.md");
+        std::fs::write(&outside, "not yours\n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("ws-1/link.md")).unwrap();
+
+        let e = note_under(&root, "ws-1/link.md")
+            .expect_err("a link out of the corpus leads out of the corpus");
+        assert!(e.contains("not in the corpus"), "{e}");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn only_markdown_is_a_note() {
+        let root = corpus("ext");
+        std::fs::write(root.join("ws-1/workspace.json"), "{}").unwrap();
+        let e = note_under(&root, "ws-1/workspace.json").expect_err("a record is not a note");
+        assert!(e.contains("not a note"), "{e}");
+        // The store's own files sit in this directory, which is why the
+        // extension is checked rather than assumed from the layout.
+        std::fs::write(root.join("accounts.json"), "{}").unwrap();
+        assert!(note_under(&root, "accounts.json").is_err());
+    }
+
+    #[test]
+    fn a_note_that_is_not_there_says_so_rather_than_which() {
+        let root = corpus("missing");
+        let e = note_under(&root, "ws-1/Sessions/2026-08/nothing.md").unwrap_err();
+        assert!(e.contains("not there"), "{e}");
+    }
+
+    #[test]
+    fn a_directory_is_not_a_note() {
+        let root = corpus("dir");
+        std::fs::create_dir_all(root.join("ws-1/odd.md")).unwrap();
+        assert!(note_under(&root, "ws-1/odd.md").is_err());
+    }
+}

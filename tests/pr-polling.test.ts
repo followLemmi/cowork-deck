@@ -125,7 +125,11 @@ describe("pull request polling", () => {
       // switch into it and asserts it exists, so a harness missing it throws
       // before any of the polling under test here can run.
       '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
-      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div><main id="deck"></main><div id="terminals"></div>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div>'
+      // `#workarea` stacks the deck and the terminal drawer; the note reader
+      // covers it, as `.term-drawer.is-full` does. On all four real bodies —
+      // `page-bodies.test.ts` — and it was missing from this fixture.
+      + '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>'
       + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';
@@ -135,13 +139,13 @@ describe("pull request polling", () => {
     await flush();
 
     // A rail of icons names itself for a reader rather than for the eye, so the
-    // accessible name is what there is to assert. Three PAGES, and the two that are
+    // accessible name is what there is to assert. Four PAGES, and the two that are
     // absent are absent on purpose: a board and a list of pull requests belong to
     // one repository, so each is a child of its workspace in the tree rather than
     // an app-wide switch whose subject changes under it.
     const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn[data-page]")];
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
-      "Workspaces and sessions", "Journal", "Scenarios",
+      "Workspaces and sessions", "Journal", "Scenarios", "Memory",
     ]);
     // And one control at the foot that is not a page: it opens a window about the
     // app rather than changing what the panel holds, which is what the gap above it

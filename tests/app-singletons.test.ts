@@ -162,7 +162,11 @@ const flush = async () => {
 async function boot(role: WindowRole, items: (typeof WS)[] = [WS]) {
   document.body.innerHTML =
     '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
-    + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div><main id="deck"></main><div id="terminals"></div>'
+    // `#workarea` stacks the deck and the terminal drawer, and is what the note
+    // reader covers — the same box `.term-drawer.is-full` covers. It is on all
+    // four real bodies (`page-bodies.test.ts`), and was missing here.
+    + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div>'
+    + '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>'
     + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';
@@ -249,8 +253,8 @@ describe("the singletons a second window must not run", () => {
  *  "what may this window do once" but "what is this window ABOUT".
  *
  *  A window pulled out to hold one workspace is that workspace's, so the app's own
- *  navigation is not built in it — the rail carries the journal, the scenarios and
- *  the settings, and all three are about the app. The confusion this ends is a
+ *  navigation is not built in it — the rail carries the journal, the scenarios, the
+ *  corpus of notes and the settings, and all four are about the app. The confusion this ends is a
  *  concrete one: the settings opened from inside a project window read as that
  *  project's settings, and they are not.
  */
@@ -261,7 +265,7 @@ describe("the shape of a window pinned to one workspace", () => {
     await boot({ kind: "main" });
     expect(rail().hidden).toBe(false);
     expect([...rail().querySelectorAll(".rail-btn")].map((b) => b.getAttribute("title")))
-      .toEqual(["Workspaces and sessions", "Journal", "Scenarios", "Settings"]);
+      .toEqual(["Workspaces and sessions", "Journal", "Scenarios", "Memory", "Settings"]);
   });
 
   /* Not built rather than hidden: a control that exists is one the palette can

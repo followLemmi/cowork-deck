@@ -27,6 +27,8 @@
 import { openDialog } from "./dialog-shell";
 import { syncQuestions, syncSummary } from "./ipc";
 import { labeledCheck } from "./forms";
+import { mountRooms } from "./diary-rooms";
+import { mountModel } from "./memory-model";
 import { mountSync } from "./sync-dialog";
 import { applyScale, currentScale, scaleLabel, SCALE_STEPS } from "./ui-scale";
 import type { ConfigPaths, Workspace } from "./ipc";
@@ -34,7 +36,7 @@ import type { ConfigPaths, Workspace } from "./ipc";
 /** Which pane is showing. A union rather than a string so a caller cannot open a
  *  section that does not exist — the palette opens this window straight at the
  *  config repository, and a typo there would land on a blank pane. */
-export type SettingsSection = "appearance" | "scenarios" | "config" | "files";
+export type SettingsSection = "appearance" | "scenarios" | "notes" | "config" | "files";
 
 /** Everything the window shows that it does not own.
  *
@@ -65,6 +67,14 @@ export interface SettingsInput {
   reportedLimits: boolean;
   /** Same contract as `onScale`: applied and persisted on the spot. */
   onReportedLimits: (on: boolean) => void;
+  /** Whether closing a session writes a note about it. `undefined` is "never
+   *  asked", and it is a third state rather than a missing boolean: the control
+   *  below offers all three, because "ask me each time" is a real answer and not
+   *  the absence of one. */
+  captureOnClose: boolean | undefined;
+  /** `undefined` puts it back to being asked each time. Same contract as
+   *  `onScale`: applied and persisted on the spot. */
+  onCaptureOnClose: (value: boolean | undefined) => void;
   /** Which section to land on. Defaults to the first. */
   section?: SettingsSection;
 }
@@ -332,6 +342,95 @@ const SECTIONS: Section[] = [
         + "less than the account has spent. Switching it off also stops the app "
         + "starting a short-lived process every few minutes to ask.";
       body.append(repHint);
+    },
+  },
+  {
+    id: "notes",
+    label: "Session notes",
+    title: "Session notes",
+    blurb:
+      "A closed session can leave a note behind, which is what later sessions and "
+      + "agents search. Writing one costs a model call on your own account.",
+    fill: (body, input) => {
+      body.append(sectionHead("When a session closes"));
+      const group = document.createElement("div");
+      group.className = "settings-choice";
+      group.setAttribute("role", "radiogroup");
+      group.setAttribute("aria-label", "Write a note when a session closes");
+
+      /* Three, because the state genuinely has three values. A checkbox would
+         have to draw "never asked" as one of the other two, and whichever it
+         picked would be a claim nobody made — the app deciding, in the interface,
+         a question about spending somebody's money. */
+      const choices: { label: string; value: boolean | undefined }[] = [
+        { label: "Ask each time", value: undefined },
+        { label: "Always write one", value: true },
+        { label: "Never write one", value: false },
+      ];
+      const buttons: HTMLButtonElement[] = [];
+      const paint = (value: boolean | undefined) => {
+        for (const b of buttons) {
+          const mine = b.dataset.value === String(value);
+          b.classList.toggle("selected", mine);
+          b.setAttribute("aria-checked", String(mine));
+        }
+      };
+      for (const choice of choices) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "settings-size";
+        b.dataset.value = String(choice.value);
+        b.dataset.fk = `capture-${choice.value}`;
+        b.setAttribute("role", "radio");
+        b.textContent = choice.label;
+        b.onclick = () => {
+          input.onCaptureOnClose(choice.value);
+          paint(choice.value);
+        };
+        buttons.push(b);
+        group.append(b);
+      }
+      paint(input.captureOnClose);
+      body.append(group);
+
+      const hint = document.createElement("p");
+      hint.className = "form-hint";
+      hint.textContent =
+        "The session's transcript is sent to a model to be summarised, on your own "
+        + "Claude account — so it spends from your plan or your API budget. The note "
+        + "is saved on this machine. Sessions with nothing in them are skipped, and "
+        + "cost nothing.";
+      body.append(hint);
+
+      /* The rooms, in this section rather than one of their own: a diary room is
+         what a session note's lessons are filed into, so it is the same subject
+         and a second rail row would split it. Mounted, like the sync section, so
+         the window stays a rail and a pane. */
+      body.append(sectionHead("Diary rooms"));
+      const rooms = document.createElement("div");
+      body.append(rooms);
+      const live = mountRooms(rooms);
+      const roomsHint = document.createElement("p");
+      roomsHint.className = "form-hint";
+      roomsHint.textContent =
+        "Lessons worth carrying to other projects are filed into a room, chosen by the "
+        + "model from the sentence you write here. Rooms are global — that is what lets "
+        + "a mistake made in one repository stop the same mistake in the next. A lesson "
+        + "that fits no room is not filed.";
+      body.append(roomsHint);
+
+      /* Searching the notes, in the same section: from where somebody sits it is
+         one feature — notes you can search — and the model is what the searching
+         half needs. Mounted, like the rooms above it. */
+      body.append(sectionHead("Searching your notes"));
+      const model = document.createElement("div");
+      body.append(model);
+      const liveModel = mountModel(model);
+
+      return () => {
+        live.dispose();
+        liveModel.dispose();
+      };
     },
   },
   {
