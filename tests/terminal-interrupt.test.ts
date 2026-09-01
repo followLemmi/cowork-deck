@@ -28,16 +28,29 @@ vi.mock("@xterm/xterm", () => ({
     attachCustomKeyEventHandler(fn: (e: any) => boolean) { captured = fn; }
     cols = 80; rows = 24;
     options: Record<string, unknown> = {};
-    // Faithful on the two things the panel asks of a buffer: rows are addressed
-    // from `baseY` — the screen, not wherever the person has scrolled — and a
-    // row that does not exist answers undefined rather than throwing.
+    // Faithful on the three things the panel asks of a buffer: rows are
+    // addressed from `baseY` — the screen, not wherever the person has scrolled
+    // — a row that does not exist answers undefined rather than throwing, and
+    // `translateToString` HONOURS its `trimRight` argument.
+    //
+    // That third one is the whole reason this mock is not a one-liner. xterm
+    // pads a row to `cols` and trims it only when asked; the panel asks for
+    // untrimmed rows because a wrap can fall on the space between two words of
+    // the hint. A mock that ignored the argument would pass whichever way the
+    // panel called it, so `translateToString(true)` would look like a tidy-up
+    // and silently stop the wrapped hint from matching in a narrow tile.
     buffer = {
       active: {
         baseY: 0,
-        getLine: (y: number) =>
-          screen[y] === undefined
-            ? undefined
-            : { translateToString: () => screen[y], isWrapped: wrapped.has(y) },
+        getLine: (y: number) => {
+          const row = screen[y];
+          if (row === undefined) return undefined;
+          return {
+            translateToString: (trimRight = false) =>
+              trimRight ? row.replace(/\s+$/, "") : row.padEnd(80, " ").slice(0, 80),
+            isWrapped: wrapped.has(y),
+          };
+        },
       },
     };
   },
@@ -167,12 +180,24 @@ describe("a turn ended by Escape", () => {
 
   /** A tile in a four-column deck is narrow, and a status line longer than it
    *  is arrives as two rows with the second marked wrapped. Reading them as two
-   *  lines would find the hint in neither. */
+   *  lines would find the hint in neither.
+   *
+   *  The first row is exactly `cols` wide, because that is the only way the
+   *  second one is marked wrapped: xterm sets the flag when text actually
+   *  overflowed, which means the row above it filled. Written out rather than
+   *  short-and-declared-wrapped so the join is tested against the geometry it
+   *  will meet — 80 columns of row, padding included, with the wrap falling on
+   *  the space between the two words of the hint. Trim that padding away and
+   *  the two halves join into `escto interrupt)`, which matches nothing. */
   it("finds a hint the terminal wrapped across two rows", () => {
     const seen: string[] = [];
     const p = panel();
     p.onInterrupt = (s) => seen.push(s);
-    screen = ["✻ Cogitating… (1m 4s · ↓ 3.1k tokens · esc ", "to interrupt)"];
+    // 80 is the mocked terminal's `cols`.
+    screen = [
+      "✻ Cogitating… (1m 4s · ↓ 3.1k tokens · and still going".padEnd(76, " ") + "esc ",
+      "to interrupt)",
+    ];
     wrapped = new Set([1]);
 
     captured!(ESC);
@@ -180,6 +205,27 @@ describe("a turn ended by Escape", () => {
 
     screen = FREE;
     wrapped = new Set();
+    vi.advanceTimersByTime(200);
+    expect(seen).toEqual(["s-1"]);
+  });
+
+  /** An `Escape` between two tool calls is answered on the next frame, but one
+   *  that lands inside a `Bash` running for a minute waits for that call to
+   *  unwind first. The budget covers the slow case on purpose: a wait that gives
+   *  up too early misses a real interrupt in silence, which looks exactly like
+   *  this feature not existing. */
+  it("still reports an interrupt that takes seconds to land", () => {
+    const seen: string[] = [];
+    const p = panel();
+    p.onInterrupt = (s) => seen.push(s);
+    screen = WORKING;
+
+    captured!(ESC);
+    vi.advanceTimersByTime(2500);      // the tool call is still unwinding
+    expect(seen).toEqual([]);
+    expect(vi.getTimerCount()).toBe(1);   // and the wait is still watching
+
+    screen = FREE;
     vi.advanceTimersByTime(200);
     expect(seen).toEqual(["s-1"]);
   });

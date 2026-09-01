@@ -44,7 +44,14 @@ one is. Requiring **both halves** — up when the key was pressed, gone shortly
 after — is what makes this a confirmed end of turn rather than a guess about a
 keystroke. An `Escape` Claude Code spends on something else, dismissing a
 completion menu over a running turn, leaves the hint up; the wait gives up after
-a second and a bit and nothing is reported.
+a few seconds and nothing is reported.
+
+The wait's budget is generous on purpose, because the two ways of being wrong are
+not symmetrical. Too short and a real interrupt inside a long tool call is missed
+in silence, which is indistinguishable from this never having been built. Too
+long and the wait may still be open when the turn ends for some other reason — at
+which point it reports `done`, which is what `Stop` reports for that same ending.
+A late reading agrees with the hooks; a missed one leaves #333 standing.
 
 It is read from the **screen buffer**, not from the output stream. Claude Code
 is Ink: it repaints when something changes and is otherwise silent, so a long
@@ -75,6 +82,14 @@ false `done` on a session still working is corrected by that session's next hook
 event, and the worst it costs in between is a scheduled scenario firing over a
 busy tile — which is what the overlap guard already tolerates for a session
 between two tool calls.
+
+**The state is identical to `Stop`'s; the notification is not.** Everything that
+reads the field — the overlap guard, the card's chip, the pill, the waiting count
+— gets exactly what `Stop` would have given it, and that is the point of going
+through the same `setState`. The OS notification is the one thing held back: it
+exists because a person may not be looking when a turn ends, and this ending
+follows a key they just pressed themselves at the tile they pressed it in. A
+notification is a side effect of the door, not part of the state going through it.
 
 **It is Claude Code by construction**, like every hook in `hooks.rs` and unlike
 the activity readers of ADR-0008. Another CLI's turn ends differently and prints

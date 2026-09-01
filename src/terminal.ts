@@ -34,19 +34,30 @@ const PTY_RESIZE_QUIET_MS = 100;
 /** How often the screen is re-read while waiting for an interrupt to land, and
  *  how many times before the wait is given up.
  *
- *  An interrupt is a keystroke reaching a process that is already listening for
- *  it, so the hint goes on the next frame — 100 ms is a poll a person cannot
- *  perceive and twelve of them is a second and a bit, which is far longer than
- *  it takes and short enough that a wait which is never going to end is over
- *  before it could catch the next turn. Giving up is the ordinary outcome for an
- *  `Escape` Claude Code spent on something else, not a failure: nothing is
- *  reported and the hooks stay in charge, which is where the session started.
+ *  100 ms is a poll a person cannot perceive. Thirty of them is three seconds,
+ *  and the budget is deliberately generous rather than tight, because the two
+ *  ways of being wrong cost wildly different things:
+ *
+ *  - **Too short and a real interrupt is missed silently.** An `Escape` between
+ *    two tool calls takes a frame, but one that lands inside a `Bash` running
+ *    for a minute has to unwind that call first, and how long that takes is not
+ *    something this file can know. A miss leaves the session exactly as stuck as
+ *    #333 describes, and looks identical to the bug being unfixed.
+ *  - **Too long costs almost nothing.** The only consequence of an open wait is
+ *    that it may still be watching when the turn ends for some other reason —
+ *    and then it reports `done`, which is what `Stop` reports for that same
+ *    ending. `interruptedTurn` can only ever move a tile from busy to free, so a
+ *    late reading agrees with the hooks instead of fighting them.
+ *
+ *  Giving up is the ordinary outcome for an `Escape` Claude Code spent on
+ *  something else, not a failure: nothing is reported and the hooks stay in
+ *  charge, which is where the session started.
  *
  *  Reading the screen is a walk of `rows` lines of the buffer xterm is already
- *  holding — no allocation the renderer does not do on every frame — and only
- *  ever while a wait is open, which is at most once per `Escape`. */
+ *  holding, and only ever while a wait is open — at most one wait per `Escape`,
+ *  and none at all on a terminal nobody is listening to. */
 const INTERRUPT_POLL_MS = 100;
-const INTERRUPT_POLL_TRIES = 12;
+const INTERRUPT_POLL_TRIES = 30;
 
 /** How many terminals may hold a WebGL context at the same time.
  *

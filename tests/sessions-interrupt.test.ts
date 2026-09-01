@@ -42,6 +42,7 @@ vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn().mockResolvedValue(undefi
 import { Deck } from "../src/sessions";
 import { onState } from "../src/ipc";
 import { emit } from "@tauri-apps/api/event";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#61afef" };
 
@@ -136,5 +137,44 @@ describe("Deck — a turn ended by an interrupt", () => {
 
     expect(tile.state).toBe("idle");
     expect(announced(session)).toBe("idle");
+  });
+
+  /** The state is `Stop`'s; the notification is not. A `done` from a hook may be
+   *  the first a person hears that a turn is over — this one follows a key they
+   *  just pressed themselves, at the tile they pressed it in. */
+  it("says nothing to the desktop about a key the person just pressed", async () => {
+    const { report, session, tile, interrupt } = await deckWithASession();
+    report(session, "working");
+    vi.mocked(sendNotification).mockClear();
+
+    interrupt();
+
+    expect(tile.state).toBe("done");
+    expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  /** The other half of the same rule, so a `notify: false` that leaked onto the
+   *  reported path would fail here rather than going quietly unnoticed. */
+  it("still notifies for a turn that ended on its own", async () => {
+    const { report, session } = await deckWithASession();
+    vi.mocked(sendNotification).mockClear();
+
+    report(session, "done");
+
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+  });
+
+  /** A command tile runs one command rather than an agent: no turns, no hint of
+   *  its own, and its real ending is its exit. The string can still reach its
+   *  screen as ordinary output — `git log` on this branch prints it — so the
+   *  panel is never given anything to report with. */
+  it("does not watch a command tile for interrupts at all", async () => {
+    const { deck } = await deckWithASession();
+    await deck.openCommandTile("gh auth login", "gh auth login", "/p");
+    const tiles = (deck as unknown as { tiles: Map<string, Tile & { kind?: string }> }).tiles;
+    const command = [...tiles.values()].find((t) => t.kind === "command");
+
+    expect(command).toBeDefined();
+    expect(command!.panel.onInterrupt).toBeNull();
   });
 });
