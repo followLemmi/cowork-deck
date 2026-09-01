@@ -1049,23 +1049,3 @@ export const openCounts: Record<string, number> = {
   [WS_RELAY]: fileTasks.filter((t) => t.status !== "shipped").length,
   [WS_HARBOR]: openCount,
 };
-
-/** Which windows the harness is pretending are on screen.
- *
- *  The window plugin's calls used to be swallowed by the `plugin:` fallback,
- *  which answers `null` and logs nothing — so `is_visible` said "hidden" for
- *  ever, and a show/hide state machine written against it only ever took one
- *  branch. It is a real answer now, and this is where it lives.
- *
- *  Only the main window, because that is the only one the harness serves a page
- *  for. An unlisted label reads as hidden, which is the right answer for a
- *  workspace window nobody has pulled out. */
-const windowsVisible = new Map<string, boolean>([["main", true]]);
-
-export function windowVisible(label: string): boolean {
-  return windowsVisible.get(label) ?? false;
-}
-
-export function setWindowVisible(label: string, visible: boolean): void {
-  windowsVisible.set(label, visible);
-}
