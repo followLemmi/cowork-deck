@@ -67,9 +67,10 @@ html, body {
 
 .tray-sec + .tray-sec { margin-top: var(--sp-3); }
 
-/* The heading is the section's, and it is the reason `LimitsBlock` is asked not
-   to draw its own: two "Limits" in a 340px window is a mistake nobody has to
-   make twice. */
+/* The heading is the section's, and it is why `LimitsBlock` is drawn here with
+   `strip: false`: the strip it would fold the rows behind carries the word
+   "Limits" itself, and two of those in a 340px window is a mistake nobody has
+   to make twice. */
 .tray-sec > h2 {
   margin: 0 0 var(--sp-1) var(--sp-1);
   font-size: var(--fs-xs);

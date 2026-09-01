@@ -53,11 +53,12 @@ it. `node scripts/tray-icon.mjs` regenerates the art.
 - [ ] Its own shadow is under its rounded corners. There is no second rounded rectangle floating around it — that is the window's shadow, and it is turned off.
 - [ ] Click the icon again. It closes. It does **not** flicker closed and open again — that is what `REOPEN_GUARD` prevents, and it is the easiest thing here to break.
 - [ ] Click anywhere outside it. It closes.
-- [ ] Press Escape while it is open. It closes.
+- [ ] Press Escape while it is open. It closes. The webview calls `hide()` for this, which needs `core:window:allow-hide` in `capabilities/default.json` — a permission that is **not** in `core:window:default`, so the rejection goes into a `void` and the key does nothing at all. `a_window_the_app_can_show_it_can_also_hide` guards it now; this is the symptom to recognise.
 - [ ] Click inside it, on something that is not a control. It stays open.
 - [ ] With the deck on a second display and the menu bar on another, open the panel from each. It appears on the display whose menu bar you clicked.
 - [ ] Move the icon (⌘-drag it along the menu bar) and open it again. It follows.
-- [ ] Open it with one AI and no sessions, then with a dozen sessions. The panel grows to fit and does not leave a tall empty rectangle.
+- [ ] Open it with one AI and no sessions, then with a dozen sessions. The panel grows to fit and does not leave a tall empty rectangle. **Do it in that order, in one run of the app**: growing is the direction that was broken, because `#tray` is capped at the window's own height and measuring the shell could therefore never ask for more room than it already had. Once it shrank it could never grow back.
+- [ ] Then close a workspace so the list gets short again, and open it once more. It shrinks too — a panel that only ever grows is the same bug with the sign flipped.
 - [ ] With more sessions than fit: the panel stops growing, the list scrolls inside it, and the footer stays put.
 - [ ] Change the text size in Settings. The panel follows on its next update.
 

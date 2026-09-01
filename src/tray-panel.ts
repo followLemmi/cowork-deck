@@ -270,6 +270,12 @@ const PANEL: PanelSection[] = [
         // rows and tiles use. One vocabulary for "this one is waiting", across
         // every surface that has to say it (`styles.css`).
         row.dataset.state = s.state;
+        // What survives a repaint, in `tray-window.ts`'s hands rather than this
+        // file's: every row here is replaced whenever the deck reports, and a
+        // person tabbed onto the ninth one has to come back to the ninth one.
+        // The same attribute and the same convention `LimitsBlock` uses for its
+        // own rows, so one walk finds either.
+        row.dataset.focusKey = `sess:${s.session}`;
         const word = stateWord(s.state);
         // One sentence for a reader, rather than two spans to assemble — the
         // same rule the limits row's accessible name follows.

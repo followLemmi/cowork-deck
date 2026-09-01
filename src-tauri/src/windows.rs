@@ -185,6 +185,31 @@ mod tests {
         }
     }
 
+    /// A window this app can show and cannot hide.
+    ///
+    /// `core:window:default` is read-only getters — `allow-hide` is not in it,
+    /// and neither is `allow-show`. The capability file grants `show` because
+    /// something needed it; `hide` was not granted because nothing had needed it
+    /// yet, and then the tray panel did. The symptom is the worst kind: `hide()`
+    /// is denied, the promise rejects into a `void`, and Escape simply does
+    /// nothing on a window with no chrome and no other way out.
+    ///
+    /// Stated as a pair rather than as "hide must be listed", because the pair is
+    /// the actual rule: a surface the app puts up is a surface it has to be able
+    /// to take down.
+    #[test]
+    fn a_window_the_app_can_show_it_can_also_hide() {
+        let capabilities = include_str!("../capabilities/default.json");
+        if capabilities.contains("\"core:window:allow-show\"") {
+            assert!(
+                capabilities.contains("\"core:window:allow-hide\""),
+                "capabilities/default.json grants allow-show without allow-hide, so a window \
+                 this app opens cannot be dismissed — `hide()` is denied and the rejection \
+                 goes nowhere",
+            );
+        }
+    }
+
     #[test]
     fn a_size_larger_than_the_display_is_cut_down_to_it() {
         assert_eq!(clamp_to_work_area((3840, 2160), (1512, 916)), (1512, 916));

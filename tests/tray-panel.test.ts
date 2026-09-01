@@ -401,6 +401,30 @@ describe("the panel, drawn", () => {
     expect(rows[1].querySelector(".tray-sess-state")!.textContent).toBe("working");
   });
 
+  /** Every row in this panel is replaced whenever the deck reports, which it
+   *  does on every render of its own. `tray-window.ts` puts the keyboard back
+   *  afterwards by matching `data-focus-key`, and that only works if a row
+   *  carries one — a person tabbed onto the ninth row has to come back to the
+   *  ninth row rather than to the top of the panel. The same attribute and the
+   *  same convention `LimitsBlock` already uses, so one walk finds either. */
+  it("gives every session row a key a repaint can find it by", () => {
+    const f = facts({ sessions: [
+      session({ session: "a", name: "relay", state: "waitingInput" }),
+      session({ session: "b", name: "deck", state: "working" }),
+    ] });
+    const keys = [...draw(f).root.querySelectorAll<HTMLElement>(".tray-sess")]
+      .map((r) => r.dataset.focusKey);
+    expect(keys).toEqual(["sess:a", "sess:b"]);
+  });
+
+  /** And a limits row keeps the key the block gives it, because the walk that
+   *  restores focus does not know which section it is crossing. */
+  it("keeps the block's own focus keys on the limits rows", () => {
+    const f = facts({ usage: [snap({ windows: [win({ usedFraction: 0.4, state: "ok" })] })] });
+    const row = draw(f).root.querySelector<HTMLElement>(".lim-open");
+    expect(row!.dataset.focusKey).toBe("row:claude");
+  });
+
   it("sends a session row's click to the deck", () => {
     const f = facts({ sessions: [session({ session: "a", state: "waitingInput" })] });
     const { root, acts } = draw(f);
