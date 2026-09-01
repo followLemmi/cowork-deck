@@ -358,6 +358,51 @@ describe("Deck zoom edge cases", () => {
     expect(zoomedTile).not.toBeNull();
     expect(zoomedTile).not.toBe(firstZoomed);
   });
+
+  /** The deck's twin of the session list's focus test below, and the fix for #269.
+   *
+   *  `applyLayout` moves tiles with `appendChild`, which on a node already in the
+   *  document removes it first — and a removal blurs whatever it contained. So
+   *  zooming used to drop the caret out of the terminal onto `<body>`, from where
+   *  the window's `Escape` handler unzoomed the deck instead of the byte reaching
+   *  `vim`, `less`, `htop` or claude's "esc to interrupt".
+   *
+   *  The terminal is mocked here, so the caret is a textarea in the tile body —
+   *  which is exactly what xterm's own hidden input is. */
+  it("keeps the keyboard in the terminal across a zoom and back", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("a" as any)
+      .mockReturnValueOnce("b" as any);
+
+    await deck.launch(WS as any, null);
+    await deck.launch(WS as any, null);
+
+    // The first tile in the deck is "a", the first session launched: grid mode
+    // appends tiles in Map order.
+    const caret = document.createElement("textarea");
+    caret.className = "xterm-helper-textarea";
+    deckEl.querySelectorAll<HTMLElement>(".tile .tile-body")[0].append(caret);
+    caret.focus();
+    expect(document.activeElement).toBe(caret);
+
+    deck.zoomTo("a");
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+    expect(document.activeElement).toBe(caret);
+
+    // And back, which re-parents every tile again.
+    expect(deck.exitZoom()).toBe(true);
+    expect(document.activeElement).toBe(caret);
+
+    // Not only zoom: launching a session lays the deck out too, and took the
+    // keyboard with it just the same.
+    await deck.launch(WS as any, null);
+    expect(document.activeElement).toBe(caret);
+  });
 });
 
 // The list is rebuilt via innerHTML on every poll — five seconds apart. Rows

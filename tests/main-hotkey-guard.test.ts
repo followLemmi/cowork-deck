@@ -100,6 +100,20 @@ const newSessionKey = (target: EventTarget) =>
     code: "KeyN", key: "n", metaKey: true, bubbles: true, cancelable: true,
   }));
 
+/** `Cmd+Enter`, which is `zoom`. It reaches the window handler from inside a
+ *  terminal too: the panel's `attachCustomKeyEventHandler` asks `matchHotkey`
+ *  first and returns false for anything it claims, which is what makes this the
+ *  keyboard way out of a zoom now that Escape is the program's. */
+const zoomKey = (target: EventTarget) =>
+  target.dispatchEvent(new KeyboardEvent("keydown", {
+    code: "Enter", key: "Enter", metaKey: true, bubbles: true, cancelable: true,
+  }));
+
+const escapeKey = (target: EventTarget) =>
+  target.dispatchEvent(new KeyboardEvent("keydown", {
+    code: "Escape", key: "Escape", bubbles: true, cancelable: true,
+  }));
+
 // The cases share one booted app and run in sequence. That used to be forced —
 // `main.ts` was a side-effect module and imports once per file — and is now a
 // choice: `startApp(role)` is a function, and `tests/app-singletons.test.ts`
@@ -143,5 +157,44 @@ describe("the window hotkey handler and text entry", () => {
     newSessionKey(helper);
     await flush();
     expect(tiles()).toBe(before + 1);
+  });
+
+  /** `Escape` belongs to whatever has the keyboard (#269).
+   *
+   *  In the real app xterm never lets this listener see an Escape typed into a
+   *  focused terminal — it writes the byte to the pty and stops the event dead.
+   *  The guard is what keeps that true of anything else focusable inside `.xterm`,
+   *  and of the next person to move this handler somewhere it fires first; a
+   *  synthetic keydown is the only way to reach it, which is what this dispatches. */
+  it("does not unzoom the deck on an Escape that came from a terminal", async () => {
+    const deckEl = document.querySelector<HTMLElement>("#deck")!;
+    // Two visible tiles: zooming the only tile there is has nothing to minimize
+    // and is a no-op by design. One is left over from the case above.
+    newSessionKey(document.body);
+    await flush();
+    expect(deckEl.querySelectorAll(".tile").length).toBeGreaterThan(1);
+
+    const helper = document.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!;
+    zoomKey(helper);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+
+    // The program's key, not the deck's.
+    escapeKey(helper);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+
+    // Anywhere else it still means "leave zoom" — and the zoom key is the way out
+    // from inside a terminal.
+    escapeKey(document.body);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+
+    zoomKey(helper);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+    zoomKey(helper);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
   });
 });

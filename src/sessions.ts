@@ -1505,7 +1505,36 @@ export class Deck {
     return { kind: "Started by hand", detail: null, prompt: tile.prompt };
   }
 
+  /** Lay the deck out, and give the keyboard back to whatever was holding it.
+   *
+   *  `appendChild` on a node already in the document is a *move* — remove, then
+   *  insert — and removing a node unfocuses anything inside it. Every re-parent
+   *  below is therefore a blur: the terminal somebody was typing into loses focus
+   *  and `<body>` gets it, with nothing on screen saying so.
+   *
+   *  Zoom is where that was felt. The tile filled the deck, the caret still looked
+   *  like it was in it, and the next keystroke went to the window handler instead
+   *  of to the pty — which is how `Escape` came to unzoom the deck rather than
+   *  reach `vim`, `less`, `htop` or claude's own "esc to interrupt" (#269). Not
+   *  only zoom: a session launched while another one is being typed into re-parents
+   *  every tile too, and took the keyboard with it just the same.
+   *
+   *  Restored only when this is what dropped it — focus back on `<body>`, and the
+   *  element still in the document. A layout that hid the tile (a workspace switch)
+   *  or removed it (a close) leaves focus alone, and the callers that move focus
+   *  themselves run after this and still win. */
   private applyLayout() {
+    const had = document.activeElement as HTMLElement | null;
+    const keep = had && had !== document.body && this.deckEl.contains(had) ? had : null;
+    this.layOutTiles();
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (keep && keep.isConnected && lost) keep.focus();
+  }
+
+  /** The layout itself: which tile is zoomed, which are in the strip, and what
+   *  each one hangs from. Called only by `applyLayout`, which says why the two are
+   *  separate. */
+  private layOutTiles() {
     const parts = zoomParticipants(
       [...this.tiles.values()].map((t) => ({
         session: t.session, hidden: t.el.classList.contains("ws-hidden"),
