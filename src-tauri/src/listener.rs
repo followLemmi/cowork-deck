@@ -181,10 +181,18 @@ mod tests {
 
     /// What a second launch sends instead of starting an app (#361). Nothing
     /// is focused in a test binary — no instance claimed anything — so what
-    /// this asserts is that the line is accepted, reports no state, and is not
-    /// mistaken for a session's event.
+    /// this asserts is that the line is *recognised*, reports no state, and is
+    /// not mistaken for a session's event.
+    ///
+    /// Recognition is asserted through the close, and it has to be: "no state
+    /// was reported" is equally true of a line that failed to parse and of a
+    /// `focus` branch somebody deleted, so on its own it would keep passing
+    /// while the guard stopped working. Serving a focus request is the only
+    /// path that shuts this connection down and returns — every other line
+    /// leaves it open for the next one — so end-of-stream is the one signal
+    /// that separates "handled" from "ignored".
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_focus_request_changes_no_session_state() {
+    async fn a_focus_request_is_recognised_served_and_changes_no_session_state() {
         let (tx, rx) = mpsc::channel::<(String, SessionState)>();
         let port = start_listener(move |sess, state| { let _ = tx.send((sess, state)); })
             .await
@@ -197,6 +205,25 @@ mod tests {
             .unwrap();
         stream.flush().await.unwrap();
 
+        // Handled: the server closed its end rather than waiting for a second
+        // line. The timeout is the failure mode being guarded against — an
+        // unrecognised line hangs here rather than ending the stream.
+        let mut body = Vec::new();
+        let closed = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut body),
+        )
+        .await;
+        assert!(
+            matches!(closed, Ok(Ok(_))),
+            "a focus request is served and the connection closed; a line the listener did not \
+             recognise would leave it open",
+        );
+        // Served, not answered: focus is an errand, and the second launch is
+        // reading for end-of-stream rather than for a reply.
+        assert!(body.is_empty(), "nothing is written back to a focus request");
+
+        // And it is not a session's event: no state was reported for `-`.
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
