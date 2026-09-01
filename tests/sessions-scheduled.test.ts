@@ -116,8 +116,9 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     });
   });
 
-  // The pill answers "how many sessions are blocked on me", so a finished run
-  // must not inflate it. The notification above is what reports completion.
+  // "How many sessions are blocked on me" is what the ledger's reading and
+  // `focusNextWaiting` both answer, so a finished run must not inflate it. The
+  // notification above is what reports completion.
   it("does not count a finished run as waiting for input", async () => {
     const { deck, emitState } = await makeDeck();
     await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
@@ -125,8 +126,8 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     emitState(panelSessions[0], "done");
 
     // The deck reports its own sessions and their states; the main window is
-    // what turns that into the pill's number (#243). A finished run is not
-    // waiting for input, and this is where that is checked.
+    // what adds them up, because it is the only one that hears everybody (#243).
+    // A finished run is not waiting for input, and this is where that is checked.
     expect(vi.mocked(emit)).toHaveBeenCalledWith("session://waiting", expect.objectContaining({
       sessions: expect.not.arrayContaining([expect.objectContaining({ state: "waitingInput" })]),
     }));
@@ -147,7 +148,8 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
   });
 
   // Unattended work must not yank the user out of what they are typing. The
-  // notification and the pill are how a scheduled run announces itself.
+  // notification and the deck's own rows are how a scheduled run announces
+  // itself.
   it("does not take keyboard focus when a schedule fires", async () => {
     const { deck, deckEl } = await makeDeck();
     await deck.launch(WS as never, null);

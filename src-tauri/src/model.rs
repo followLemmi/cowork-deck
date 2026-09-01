@@ -318,6 +318,21 @@ pub struct Skill {
     /// serialized so unscheduled scenarios keep their old on-disk shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<Schedule>,
+    /// True when `workspace_id` above was *inferred* by the #249 migration
+    /// rather than chosen by anybody — see `scheduler::pin_scheduled`.
+    ///
+    /// The distinction exists because the two answer different questions. A pin
+    /// somebody ticked says "this scenario belongs to that project", which is
+    /// true on every machine and travels. A migrated pin says "this is where it
+    /// used to run *here*", read off this machine's `ui_state.activeWorkspaceId`
+    /// — a machine-local fact, and publishing it would hand every other machine
+    /// a workspace it never chose. `enabled` is left behind for the same reason
+    /// and by the same mechanism (`sync::projection`).
+    ///
+    /// Cleared the moment somebody saves the scenario from the form: the pin
+    /// they saw and kept is theirs from then on.
+    #[serde(default, rename = "pinnedByMigration", skip_serializing_if = "std::ops::Not::not")]
+    pub pinned_by_migration: bool,
 }
 
 /// How often a scheduled scenario fires. Presets only — no cron expressions
@@ -976,8 +991,8 @@ mod tests {
 
     /// `Stop` means the agent finished its turn and the prompt is free again;
     /// a permission request means it is blocked until a human decides. The
-    /// overlap guard, the pill and notifications treat these differently, so
-    /// they must not share one state.
+    /// overlap guard, the ledger's waiting count and notifications treat these
+    /// differently, so they must not share one state.
     #[test]
     fn finished_turn_is_distinct_from_waiting_for_a_decision() {
         assert_eq!(event_kind_to_state("done", None), Some(SessionState::Done));

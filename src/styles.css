@@ -241,11 +241,12 @@
   --fs-lg: 1.1875rem;     /* 19px — row and card titles */
   --fs-xl: 1.375rem;      /* 22px — one screen title per view */
   /* No 30px step. One was declared during the redesign for "a count, a stat" and
-     then nothing in the app needed it: the only candidate is the floating pill's
-     number, and the pill is a second window with its own stylesheet and no access to
-     these tokens. A declared token nothing uses is a claim nobody checks, so it is
-     better absent than aspirational — add it back in the commit that first renders at
-     30px, with the `contrast.mjs` case for the large-text threshold it crosses.
+     then nothing in the app needed it: the only candidate was the floating pill's
+     number, in a second window with its own stylesheet and no access to these
+     tokens, and #394 removed that window. A declared token nothing uses is a claim
+     nobody checks, so it is better absent than aspirational — add it back in the
+     commit that first renders at 30px, with the `contrast.mjs` case for the
+     large-text threshold it crosses.
      `--r-md` and `--shadow-tile` went the same way: superseded by `--r-island` and by
      the two shadows above, and left declared for a while after nothing used them. */
 
@@ -316,6 +317,25 @@
      system has. */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --dur-1: 120ms; --dur-2: 220ms; --dur-3: 340ms;
+
+  /* The two ambient periods, and they are a different kind of number from the
+     three above. A `--dur-*` is something a person waits out once; these repeat
+     for as long as the state does, which for `waitingInput` is until a human
+     acts. What is watched for minutes on end is chosen by how little it costs
+     the eye, not by how far the dot travels.
+
+     Both used to be roughly twice as fast — 1.4s and 1.8s — and at 0.55-0.7 Hz a
+     dot does not read as breathing. It reads as an indicator lamp, which is a
+     thing that has GONE WRONG rather than a thing that is happening, and a deck
+     of tiles waiting for a decision was a wall of them. These are near a resting
+     breath instead: 0.28 Hz and 0.42 Hz.
+
+     Two numbers rather than one because the rate is half of what tells the two
+     states apart (see `@keyframes pulse-dot` for the other half). Waiting is the
+     faster, and that is the entire argument for which way round they go: it is
+     the one with a person at the end of it. */
+  --breath-working: 3.6s;
+  --breath-waiting: 2.4s;
 }
 
 /* One switch, honoured everywhere. The durations collapse and so do the DELAYS —
@@ -495,7 +515,12 @@ body {
 /* The one ambient loop in the bar, and it is on the reading that means somebody is
    being kept waiting. `--st-error` deliberately does not pulse: a stopped session
    is not going to become un-stopped while the eye is elsewhere. */
-.led--wait::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
+.led--wait::before {
+  animation: pulse-dot var(--breath-waiting) ease-in-out infinite;
+  /* Rebuilt from scratch every time the ledger is redrawn, so without this it
+     restarts its swell on every poll. See `src/dot-phase.ts`. */
+  animation-delay: var(--dot-phase, 0ms);
+}
 
 /* --- Settings, and the sections of it ------------------------------------
    A modal rather than a screen or a second window: the panel's pages are things
@@ -697,11 +722,15 @@ body {
      the widest thing a page could not shrink (a workspace row's controls) and the
      panel, at `overflow: hidden`, clipped the difference. At 1180px that was 31px
      of every row's right-hand end, including the button that deletes it. */
-  /* Three rows now: the head, the stack of pages, and the limits block under
+  /* Three rows now: the head, the stack of pages, and the limits strip under
      them. The third is declared rather than left implicit, so it is visible here
-     that the block is `auto` and the STACK is the one that takes the slack — an
+     that the strip is `auto` and the STACK is the one that takes the slack — an
      implicit row would have worked and would have said nothing. `.panel-grip` is
-     absolutely positioned and stays out of this. */
+     absolutely positioned and stays out of this.
+
+     `auto` is doing more work since #392: the strip is one line, so what this row
+     takes no longer grows with the number of connected AIs, and the rows it opens
+     are capped and scroll rather than pushing the stack. */
   display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr);
   transition: width var(--dur-3) var(--ease-out);
   /* In `rem` rather than px, because this column exists to hold text and the text
@@ -1598,17 +1627,43 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    this quiet. */
 .state-error        { color: var(--st-error);   background: rgba(251, 129, 122, 0.06); border-color: rgba(251, 129, 122, 0.42); }
 
-.state-waitingInput::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
+.state-waitingInput::before {
+  animation: pulse-dot var(--breath-waiting) ease-in-out infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
 /* transform + opacity only — GPU-composited, no per-frame repaint. Animating
    box-shadow here forced WebKit to repaint every frame for the whole
    animation's lifetime (a waitingInput session never leaves that state until
-   the user acts), pegging WindowServer and lagging the entire system. */
+   the user acts), pegging WindowServer and lagging the entire system.
+
+   `animation-delay` is a SEEK, not a stagger, and is written by `syncDotPhase`
+   — the note in `src/dot-phase.ts` is the long version. It is set once when the
+   element is made and never touched again, so it costs the compositor nothing
+   and the paragraph above still holds.
+
+   The curve is `ease-in-out` and not `--ease-out`, which is what this was, and
+   the swap matters more than the period does. `--ease-out` is "fast out, long
+   settle": right for a thing that travels once and stops, wrong for a two-stop
+   loop, where it means the dot jumps most of the way in the first fraction of
+   every half-cycle and then crawls. That is a snap and a hold — a blink at any
+   period you care to choose. A loop wants a symmetric curve.
+
+   1.7 was most of a doubling in size, on a dot 7px across, twice a second. At
+   1.35 the swell is still the channel that separates this state from `working`
+   below — which changes size not at all — without being the thing in the corner
+   of the eye that stops anything else being read. */
 @keyframes pulse-dot {
-  0%, 100% { transform: scale(1);   opacity: 1; }
-  50%      { transform: scale(1.7); opacity: 0.45; }
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(1.35); opacity: 0.55; }
 }
-.state-working::before { animation: breathe 1.8s ease-in-out infinite; }
-@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+/* Opacity alone, and slower than waiting: work in progress is not addressed to
+   anybody. The trough was 0.4, which on a small saturated dot is close enough to
+   gone that the eye reads the return as an arrival rather than as a swell. */
+.state-working::before {
+  animation: breathe var(--breath-working) ease-in-out infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 /* Layout, hover and the rail come from the shared row rule far above; what is left
    here is what only a session row needs. `padding`, `border-radius` and `display`
    used to be re-declared at this point and silently outranked the shared rule by
@@ -3909,7 +3964,10 @@ h6.md-head { font-size: var(--fs-sm); }
 }
 /* Something is actually happening, so the dot breathes — the same shape channel
    `.state-working` uses, and the reason a finished run's chip does not. */
-.run-running::before { animation: breathe 1.8s ease-in-out infinite; }
+.run-running::before {
+  animation: breathe var(--breath-working) ease-in-out infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
 
 .hist-result-box { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .hist-result {
@@ -3986,7 +4044,10 @@ h6.md-head { font-size: var(--fs-sm); }
   background: none; border: 2px solid currentColor; box-sizing: border-box;
 }
 /* Something is actually happening — the breathing the chip has, for its reason. */
-.sk-dot.run-running::before { animation: breathe 1.8s ease-in-out infinite; }
+.sk-dot.run-running::before {
+  animation: breathe var(--breath-working) ease-in-out infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
 .sk-dot:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .sk-dot:hover { transform: scale(1.25); }
 
@@ -4013,7 +4074,19 @@ h6.md-head { font-size: var(--fs-sm); }
    `flex: 1` rather than being negotiated away. */
 .term-drawer {
   flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
+  /* AN ISLAND, the same four-part shape as `.tile`, `#wspanel` and
+     `.deck-empty`: the fill, the hairline, the 14px corners and the shadow. It
+     was the fill alone, and that made the drawer the one content surface in the
+     app with square corners and no edge — a strip butted into three window
+     edges, twelve pixels under a deck of rounded cards.
+     The gutter is on three sides and not four: `#deck` has
+     `padding: var(--sp-3)`, so the gap above is already drawn, and a second one
+     there would read as a mistake — the argument `#wspanel`'s `margin` records
+     for its own missing left edge. */
+  margin: 0 var(--sp-3) var(--sp-3);
   background: var(--bg-island);
+  border: 1px solid var(--line); border-radius: var(--r-island);
+  box-shadow: var(--sh-island);
 }
 .term-drawer[hidden] { display: none; }
 
@@ -4037,7 +4110,13 @@ h6.md-head { font-size: var(--fs-sm); }
    above rather than breaking it: what the drawer must never be is the thing the
    deck is drawn ON TOP OF, and here the drawer is on top, for as long as a
    person asked for and no longer. */
-.term-drawer.is-full { position: absolute; inset: 0; z-index: 6; }
+/* The margin is not ignored here, which is why it is restated rather than
+   dropped: with `left` and `right` both `0` an absolutely positioned box honours
+   its own margins, so the cover would keep the three gutters above and grow a
+   fourth edge flush to the top of `#workarea`. `var(--sp-3)` on all four sides
+   instead, which is `#deck`'s own padding — so the cover lands exactly on the
+   box the tiles occupy rather than a few pixels above it. */
+.term-drawer.is-full { position: absolute; inset: 0; z-index: 6; margin: var(--sp-3); }
 /* The grip stays reachable while full — dragging it takes the drawer back into
    flow under the pointer (see `setRows`) — but its negative margin would hang it
    outside the cover, where it would be four pixels of drag surface over the
@@ -4051,8 +4130,48 @@ h6.md-head { font-size: var(--fs-sm); }
 .term-grip {
   flex: 0 0 auto; height: 4px; cursor: ns-resize; background: transparent;
   margin-top: -4px; padding-top: 4px; box-sizing: content-box;
+  /* Positioned for the four pixels above the drawer, and it is those four pixels
+     that need it. `#deck` is `position: relative`, so it paints — and therefore
+     hit-tests — in a later step than a sibling that is not positioned, whatever
+     the tree order says; the overhang lay under `#deck`'s own opaque `--bg-void`.
+     Three of the eight pixels the comment above promises took no `pointerdown` at
+     all, and the focus ring below was cut off along its top. `position: relative`
+     puts the grip in the same step, where tree order decides and the grip comes
+     later. No `z-index`: there is nothing in that step to rank it against. */
+  position: relative;
+  /* The hit area is the element and the drawing is the bar inside it, which is
+     `.pr-drawer-grip`'s shape turned on its side. It became necessary with the
+     corners: the fill used to be on the element itself, and a full-width band
+     across a rounded top edge hangs its square ends out past both curves —
+     unclippable from here, because the 4px above the drawer is hit area the
+     island's `overflow` must not cut off. */
+  display: flex; align-items: flex-end; justify-content: center;
 }
-.term-grip:hover, .term-grip:focus-visible { background: var(--accent); outline: none; }
+/* Short, centred, and only there once the control is being used: at rest the
+   drawer's own top edge is the seam, and a bar drawn permanently across it would
+   be a second hairline a pixel below the first. */
+.term-grip::before {
+  content: ""; width: 2.4rem; height: 4px; border-radius: var(--r-pill);
+  background: transparent;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.term-grip:hover::before { background: var(--accent); }
+.term-grip:focus-visible { outline: none; }
+/* The ring goes on the bar for the shape, which is not the reason
+   `.pr-drawer-grip` gives for its own: nothing paints over this one — `.term-bar`
+   below sets no fill at all — but around the element the ring is a full-width
+   lozenge, and a full-width anything across this edge hangs its square ends past
+   both corners. The same argument as the fill above, and the same answer. */
+.term-grip:focus-visible::before { background: var(--accent); box-shadow: var(--focus-ring); }
+
+/* The bar's whole drawing is a fill, and forced colours replace a fill with the
+   ground. Named system colours instead, the pair `.pr-drawer-grip` uses — and
+   drawn at rest here rather than on hover only, because a control whose only
+   state is a colour the mode has taken away is a control that is not there. */
+@media (forced-colors: active) {
+  .term-grip::before { background: CanvasText; }
+  .term-grip:hover::before, .term-grip:focus-visible::before { background: Highlight; }
+}
 
 .term-bar {
   flex: 0 0 auto; display: flex; align-items: stretch; gap: 2px;
@@ -4131,7 +4250,17 @@ h6.md-head { font-size: var(--fs-sm); }
    is the drawer's own. What the active tab has left to say "this one" with is its
    `--line-strong` edge and its brighter name — the shared fill said it too while the
    fills differed, and one channel of three is what the change costs here. */
-.term-bodies { flex: 1; min-height: 0; position: relative; background: var(--bg-terminal); }
+/* The clip that rounds the terminal is HERE and not on the island, for the
+   reason `#wsp-body` gives about its own: `.term-grip` hangs four pixels above
+   the drawer's top edge on a negative margin, and an `overflow: hidden` up there
+   would cut that hit area in half. This is the only child whose content can
+   reach a corner. Minus the 1px border, or the terminal's fill shows outside the
+   hairline at the curve. */
+.term-bodies {
+  flex: 1; min-height: 0; position: relative; background: var(--bg-terminal);
+  overflow: hidden;
+  border-radius: 0 0 calc(var(--r-island) - 1px) calc(var(--r-island) - 1px);
+}
 .term-body { position: absolute; inset: 0; padding: 4px var(--sp-2); }
 .term-body.hidden { display: none; }
 
@@ -4266,13 +4395,100 @@ h6.md-head { font-size: var(--fs-sm); }
    meanings: something has stopped, and something is about to want you. A person
    who has learned those two colours anywhere in this app has learned them here.
    `npm run contrast` measures every pair below. */
-#limits { flex: none; }
+/* A strip at the foot of the panel, not an island in it (#392, ADR-0011).
+   One row per AI at three lines each made this a slab that grew with the number
+   of accounts and never yielded — `flex: none` above a `1fr` stack means the
+   space came out of the page being worked in. So the always-there part is ONE
+   line, and the rows are behind it.
+
+   Chrome rather than a card, and the hairline is the whole treatment: the islands
+   above are lists you work in, and this is the panel's own footer. A one-line
+   island would have been a card with less in it than its own border.
+
+   `column-reverse`, and the reverse is the whole trick: the strip comes FIRST in
+   the DOM, so a screen reader moving forward off the control it just pressed
+   arrives inside the rows that press revealed — a disclosure whose content sits
+   before its own button reads as content the button leads away from. On screen
+   they swap back, and the rows grow upward out of the panel's foot so the thing
+   under the pointer stays under it. */
+#limits {
+  flex: none; display: flex; flex-direction: column-reverse;
+  border-top: 1px solid var(--line); background: var(--bg-void);
+}
 #limits[hidden] { display: none; }
-.lim-block { display: flex; flex-direction: column; gap: var(--sp-1); }
+/* Bounded, and that is the point of the number rather than the number itself: the
+   rows open on demand, and a deck with eight accounts connected must not be able
+   to push the page above out of the window by unfolding. Past the cap it scrolls,
+   which is the one thing the fixed slab could not do. */
+.lim-list {
+  max-height: min(38vh, 15rem); overflow-y: auto;
+  padding: var(--sp-1) var(--sp-2);
+  display: flex; flex-direction: column; gap: var(--sp-1);
+}
+.lim-list[hidden] { display: none; }
 /* A row is a button and, when there is nothing to read, a second one beside it.
    Not one button containing another — that is invalid, and a screen reader
    handed a nested control announces neither properly. */
 .lim-row { display: flex; align-items: stretch; gap: var(--sp-1); }
+/* The strip is the same shape as a row, and for the same reason: the summary is a
+   control and the way out of an unreadable reading is a second one beside it. */
+.lim-strip { display: flex; align-items: stretch; gap: var(--sp-1); padding: var(--sp-1) var(--sp-2); }
+.lim-summary {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+  padding: var(--sp-1) var(--sp-2); border: 0; border-radius: var(--r-ctl);
+  background: transparent; color: var(--fg); text-align: left; cursor: pointer;
+  font: inherit;
+}
+.lim-summary:hover { background: var(--bg-hover); }
+.lim-summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* Gaps at `--sp-1` rather than `--sp-2`, which is not a preference: name, tier,
+   reading, meter and count are five things in a 280px column, and at 8px apart
+   there was not room for all five. */
+.lim-strip .lim-line { gap: var(--sp-1); }
+/* And the reading is the item that must NOT give way. `.lim-reading` is `flex: 1`
+   in a row, where the row has a line to itself and nothing to compete with; on
+   the strip that made it the first thing to shrink, and "23% us…" is the one word
+   this line exists to say. So the NAME flexes and truncates here instead — a
+   clipped label still identifies an AI, a clipped number identifies nothing.
+
+   Which is also why there is no meter on this line and why the count is a bare
+   `+3` with the words about the others on the line below: four things fit here,
+   five did not, and the reading and the tier are two of the four by ADR-0009. */
+/* `0 1 auto`, not `1`: basis `auto` means the name keeps its own width and gives
+   ground only when the line genuinely will not fit, which at 246px it now does. */
+.lim-strip .lim-name {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lim-strip .lim-reading { flex: none; text-align: left; }
+/* Open, the rows above carry all of it, so the strip stops being a copy of the
+   row at the top of them and becomes the block's name and the way to put it away.
+   The same caps treatment an island's head takes, on the one surface in this
+   column that has no island to put a head on. */
+.lim-word {
+  display: none; flex: 1; font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--fg-dim);
+}
+.lim-strip[data-open="true"] .lim-word { display: block; }
+.lim-strip[data-open="true"] .lim-name,
+.lim-strip[data-open="true"] .lim-src,
+.lim-strip[data-open="true"] .lim-reading,
+.lim-strip[data-open="true"] .lim-rest,
+.lim-strip[data-open="true"] .lim-foot,
+.lim-strip[data-open="true"] .lim-probe { display: none; }
+/* How many AIs are not the one being named, and what is wrong with them when
+   something is. Never a bare count in that case — see `restOf`. */
+/* The padding is the whole reason this is not butted against the reading: "62%
+   used +3" reads as one figure, and they are two facts about two different
+   things. */
+.lim-rest { flex: none; padding-left: var(--sp-1); font-size: var(--fs-xs); color: var(--fg-dim); }
+/* Pushed to the end whether or not there is a reading before it, so the line
+   ends the same way when a provider has nothing to say. */
+.lim-caret { display: inline-flex; align-items: center; flex: none; margin-left: auto; color: var(--fg-dim); }
+.lim-caret .icon { transition: transform var(--dur-2) var(--ease-out); transform: rotate(-90deg); }
+/* Up while folded, down while open: the rows are ABOVE this line, so the chevron
+   points at where they are rather than at the angle a downward list would use. */
+.lim-summary[aria-expanded="true"] .lim-caret .icon { transform: rotate(90deg); }
+.lim-summary:hover .lim-caret { color: var(--fg-mid); }
 .lim-open {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;
   padding: var(--sp-2); border: 0; border-radius: var(--r-ctl);
@@ -4280,6 +4496,16 @@ h6.md-head { font-size: var(--fs-sm); }
   font: inherit;
 }
 .lim-open:hover { background: var(--bg-hover); }
+/* Drawn inside the button, which the rest of the app has no need to do. The
+   global ring is an `outline` at a 2px offset — 4px painted OUTSIDE the element —
+   and these rows live in a scroll container, which clips what leaves it and does
+   not count an outline as something to scroll to. The last row in an unfolded
+   list had the bottom of its ring shaved off against the container's edge. An
+   inset ring cannot be clipped by the box it is inside. */
+.lim-list .lim-open:focus-visible,
+.lim-list .lim-probe:focus-visible {
+  outline: none; box-shadow: inset 0 0 0 2px var(--accent);
+}
 .lim-line { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
 .lim-name { flex: none; font-size: var(--fs-sm); font-weight: var(--fw-medium); }
 /* The tier, at the same size as the number it qualifies. A tooltip would be a
@@ -4306,8 +4532,24 @@ h6.md-head { font-size: var(--fs-sm); }
 .lim-fill { display: block; height: 100%; background: var(--fg-dim); }
 .lim-meter.lim-near .lim-fill { background: var(--st-waiting); }
 .lim-meter.lim-out .lim-fill { background: var(--st-error); }
-.lim-foot { display: flex; font-size: var(--fs-xs); color: var(--fg-dim); }
+/* Wraps as a LINE rather than inside its words: with the state's sentence and the
+   count about the other AIs both on it, the two together can outrun 246px, and a
+   flex item that shrinks breaks "nothing moves until\A07:00 PM" across two lines
+   with the count beside the first of them. Nothing here shrinks, so the count
+   drops to a line of its own instead — which only happens when a second AI is
+   also spent, and a person in that state is being told the truth in three lines
+   rather than a mangled version of it in two. The error text is the exception: it
+   is prose from a provider and wrapping is what prose does. */
+.lim-foot { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--fs-xs); color: var(--fg-dim); }
+.lim-out-text, .lim-near-text { white-space: nowrap; }
 .lim-out-text { color: var(--st-error); }
+/* Amber in words, and both halves matter: the hue is how this is read without
+   being read, and "nearly spent" is how it is read by somebody the hue does not
+   reach. The strip has no meter to put the hue on, so this line carries it. */
+.lim-near-text { color: var(--st-waiting); }
+/* What is wrong with the AIs this line is not about. The quiet ink, because it is
+   the count and not the reading — and never the only thing on the line. */
+.lim-others { flex: none; white-space: nowrap; color: var(--fg-dim); }
 /* The action a row nobody can read offers instead of a blank meter. */
 .lim-probe {
   flex: none; align-self: center; padding: var(--sp-1) var(--sp-2);

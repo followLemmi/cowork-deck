@@ -12,9 +12,6 @@ use tokio::sync::Notify;
 /// The window the app opens with, and the only one that outlives every other.
 pub const MAIN: &str = "main";
 
-/// The floating "N waiting" status pill.
-pub const PILL: &str = "pill";
-
 /// What a workspace window's label begins with.
 ///
 /// A hyphen rather than a colon, and not for taste. `tauri-utils` documents a
@@ -36,7 +33,7 @@ pub fn workspace_label(workspace_id: &str) -> String {
 }
 
 /// The workspace a label names, or `None` if it names something else — the main
-/// window, the pill, or anything added later.
+/// window, or anything added later.
 pub fn workspace_id_of(label: &str) -> Option<&str> {
     label.strip_prefix(WORKSPACE_PREFIX).filter(|id| !id.is_empty())
 }
@@ -62,8 +59,10 @@ pub fn clamp_to_work_area(size: (u32, u32), work_area: (u32, u32)) -> (u32, u32)
 /// event, so a target that does not exist yet — or has just gone — is a silent
 /// no-op at both ends. **Creating a window is not the same as its JavaScript
 /// having called `listen`**, and anything emitted in that gap is lost with no
-/// error anywhere. The comment above `pill://count` in `src/sessions.ts` records
-/// learning this the hard way, and it generalises to every window.
+/// error anywhere. The comment above the `session://waiting` emit in
+/// `src/sessions.ts` records learning this the hard way — a window's first
+/// report was dropped, and the only way back was to re-send on every render —
+/// and it generalises to every window.
 ///
 /// So a new window says when it is listening and the backend does not speak
 /// before that. The shape is the one `AppState::scheduler_ready` already uses
@@ -137,13 +136,12 @@ mod tests {
         assert_eq!(workspace_id_of(&label), Some(id));
     }
 
-    /// The two windows that existed before this epic must not be mistaken for
-    /// workspace windows — `is_workspace` is what decides whether a window is
-    /// pinned to one workspace or is the whole app.
+    /// The main window must not be mistaken for a workspace window — parsing a
+    /// label is what decides whether a window is pinned to one workspace or is
+    /// the whole app.
     #[test]
     fn the_windows_that_are_not_workspaces_say_so() {
         assert_eq!(workspace_id_of(MAIN), None);
-        assert_eq!(workspace_id_of(PILL), None);
         // The bare prefix names no workspace, so it is not one either. Otherwise
         // an empty workspace id would mint a label that parses back to "".
         assert_eq!(workspace_id_of(WORKSPACE_PREFIX), None);

@@ -134,11 +134,13 @@ for a session the deck did not start. A CLI with no reader says so rather than s
 
 ## Limits: what each AI has left, and where that number came from
 
-A dozen sessions draw on **one** budget, and when it runs out they stall together. A block at the foot
-of the panel says what each connected AI has left — one row apiece, a thin meter, and when it lifts.
+A dozen sessions draw on **one** budget, and when it runs out they stall together. One line at the foot
+of the panel says whether you can keep working: the AI that is worst off, its reading, and a count of
+the others behind it. Press it and the rest unfold above it — a row apiece, a thin meter, and when it
+lifts — worst off first, so the list opens on the AI the line just named.
 
-**The source of a number is part of the number**, and it is on the row beside it rather than in a
-tooltip:
+**The source of a number is part of the number**, and it is beside the reading rather than in a
+tooltip — on the line and on every row:
 
 - **Reported** — the account's own accounting, the figure `/usage` draws. Obtained by asking `claude`
   itself, the way this app asks `gh` about GitHub: it costs nothing from your budget and no password
@@ -151,9 +153,9 @@ tooltip:
 - **Unknown** — it says so, and offers the one command that would answer it, in a tile.
 
 The reading that matters most needs no percentage at all. When a session is refused, the app reads the
-limit banner on its way to the screen and the pill stops saying *3 waiting for input* — which is true
-and useless — and says **nothing moves until 19:00**. That survives a restart, and you are told again
-when it lifts.
+limit banner on its way to the screen and says **nothing moves until 19:00** — in the limits block on
+screen, and in a notification while you are looking at something else. That survives a restart, and
+you are told again when it lifts.
 
 ## A GitHub account per workspace
 
@@ -241,7 +243,9 @@ form at launch; a prompt with no placeholders asks nothing. Placeholder names ar
 rather than by ASCII, so a prompt written in any script names its fields in that script.
 
 Attach a **schedule** (hourly, daily at `HH:MM`, weekly) and it fires unattended into a fresh session
-using stored defaults. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra
+using stored defaults. A schedule belongs to **one workspace** — the one open when it was saved — and the
+scheduler resolves that before the fire, so an unattended run cannot land in whatever project happened to
+be on screen at 03:00. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra
 cost, full local context and permissions. A scenario whose previous run is still working or waiting
 skips rather than stacking a second one.
 

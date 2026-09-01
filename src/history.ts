@@ -1,5 +1,6 @@
 import type { RunRecord, RunTrigger, Skill } from "./ipc";
 import { icon, SCENARIO_ICONS, type IconName } from "./icons";
+import { syncDotPhase } from "./dot-phase";
 // The panel names live in one place, and this page is one of them: the rail says
 // "Journal", the palette says "Journal", and now so does its own head.
 import { PANEL_TITLE } from "./view";
@@ -268,6 +269,9 @@ export class HistoryView {
     name.title = rec.name;
 
     const status = el("span", runStatusClass(rec.status), RUN_STATUS_LABEL[rec.status]);
+    // A running record breathes, and has to do it in step with the same run's
+    // dot in the scenario list beside it. See `src/dot-phase.ts`.
+    syncDotPhase(status);
     const when = el("span", "hist-when", agoLabel(rec.startedAt, now));
     // The exact instant is a tooltip rather than the row's text: "2 hours ago"
     // is the answer, and the timestamp is the follow-up question.

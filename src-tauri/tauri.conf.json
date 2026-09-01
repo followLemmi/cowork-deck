@@ -10,7 +10,6 @@
     "beforeBuildCommand": "npm run build && npm run stage:reporter && npm run stage:task"
   },
   "app": {
-    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "cowork-deck",

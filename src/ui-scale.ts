@@ -144,8 +144,9 @@ export const UI_SCALE_EVENT = "ui-scale";
  *  test suite rather than taste: five test files hand-roll a `TerminalPanel` mock
  *  with a fixed list of methods, and every one of them would throw on a new method
  *  appearing in `Deck`'s call path. A listener costs one line in the panel and
- *  leaves all five untouched. It is also the shape the app already uses for
- *  `pill://count`.
+ *  leaves all five untouched. It is also the shape the app already uses one
+ *  level up, for `session://waiting` and `ui://scale`: a broadcast nobody has to
+ *  be wired to.
  *
  *  The payload is pixels, not the scale: it is what xterm's option takes, so the
  *  panel needs to know nothing about scales. */

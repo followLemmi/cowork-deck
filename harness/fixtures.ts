@@ -1057,22 +1057,3 @@ export const openCounts: Record<string, number> = {
   [WS_RELAY]: fileTasks.filter((t) => t.status !== "shipped").length,
   [WS_HARBOR]: openCount,
 };
-
-/** Which windows the harness is pretending are on screen.
- *
- *  The window plugin's calls used to be swallowed by the `plugin:` fallback,
- *  which answers `null` and logs nothing — so `is_visible` said "hidden" for
- *  ever and the pill's show/hide state machine only ever took one branch. It is
- *  a real answer now, and this is where it lives.
- *
- *  The pill starts hidden, which is what the app builds it as: whether it is up
- *  is the deck's answer to give, through `pill://count`. */
-const windowsVisible = new Map<string, boolean>([["main", true], ["pill", false]]);
-
-export function windowVisible(label: string): boolean {
-  return windowsVisible.get(label) ?? false;
-}
-
-export function setWindowVisible(label: string, visible: boolean): void {
-  windowsVisible.set(label, visible);
-}

@@ -201,13 +201,6 @@ const termColor = (name) => {
   return m[1];
 };
 
-/** The pill is a second window with its own entry point, so it never loads
- *  `styles.css` and its colours are literals in `src/pill.css`. Read from there
- *  rather than restated, for the same reason every value in this file is read
- *  from the rule it belongs to: a number nobody can re-derive is a number nobody
- *  can change. `decl` throws if the rule or the property has gone. */
-const pillCss = readFileSync(join(root, "src/pill.css"), "utf8");
-
 const TEXT = 4.5;   // 1.4.3
 const UI = 3.0;     // 1.4.11
 const EXEMPT = 0;   // measured and reported, but disabled controls are exempt
@@ -706,39 +699,45 @@ const CASES = [
     fg: "--line-strong", backdrop: ["--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
-  /* The limits block (#301). Three states and one absence: there is deliberately
-     no green case here, because there is deliberately no green. A healthy window is
+  /* The limits (#301). Three states and one absence: there is deliberately no
+     green case here, because there is deliberately no green. A healthy window is
      `--fg-dim` on the meter's own ground — hue belongs to state, and "your quota is
-     fine" is not a state worth a hue that already means "working". */
+     fine" is not a state worth a hue that already means "working".
+
+     The ground is `--bg-void` rather than `--bg-island` since #392: the limits are a
+     strip at the panel's foot and no longer a card in it, so every pair here is
+     measured against the panel's own darkest ground. Each one got better, which is
+     the uninteresting direction and is why the numbers below moved without any of
+     these cases changing its verdict. */
   {
     what: "a healthy limit meter",
-    where: "the neutral fill on the meter's track, inside a panel island — a graphic, not text",
-    fg: "--fg-dim", backdrop: ["--bg-island", "--bg-inset"],
+    where: "the neutral fill on the meter's track, in the strip and in a row — a graphic, not text",
+    fg: "--fg-dim", backdrop: ["--bg-void", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },
   {
     what: "a nearly-spent limit meter",
     where: "amber on the same track: the one that means something is about to want you",
-    fg: "--st-waiting", backdrop: ["--bg-island", "--bg-inset"],
+    fg: "--st-waiting", backdrop: ["--bg-void", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },
   {
     what: "a spent limit meter",
     where: "red on the same track, which is the reading a whole deck stalls on",
-    fg: "--st-error", backdrop: ["--bg-island", "--bg-inset"],
+    fg: "--st-error", backdrop: ["--bg-void", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },
   {
     what: "the meter's own track", rejected: true,
     where: "rejected — the FILL carries the level and is measured above; a 3:1 track would "
       + "read as a full meter, and the reading is printed in words beside it either way",
-    fg: "--bg-inset", backdrop: ["--bg-island"],
+    fg: "--bg-inset", backdrop: ["--bg-void"],
     threshold: UI, sc: "1.4.11",
   },
   {
     what: "\"nothing moves until 19:00\"",
-    where: "the sentence under a spent row, which is text and not a graphic",
-    fg: "--st-error", backdrop: ["--bg-island"],
+    where: "the sentence under a spent reading, on the strip and in its row — text, not a graphic",
+    fg: "--st-error", backdrop: ["--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -747,10 +746,26 @@ const CASES = [
     fg: "--st-error", backdrop: ["--bg-hover"],
     threshold: TEXT, sc: "1.4.3",
   },
+  /* Amber in words, new with #392. The strip has no meter to put the state's hue
+     on — name, tier and reading take the line — so "nearly spent" carries both the
+     word and the hue, and a hue on TEXT is measured at 4.5 rather than at 3. */
+  {
+    what: "\u201cnearly spent \u2014 resets 19:00\u201d",
+    where: "amber in words under a nearly-spent reading, on the strip and in its row",
+    fg: "--st-waiting", backdrop: ["--bg-void"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the same words on a hovered row",
+    where: "the hover raises the ground under them, so this pair is measured too",
+    fg: "--st-waiting", backdrop: ["--bg-hover"],
+    threshold: TEXT, sc: "1.4.3",
+  },
   {
     what: "the tier label",
-    where: "REPORTED / OBSERVED beside the number — the label ADR-0007 refuses to make a tooltip",
-    fg: "--fg-dim", backdrop: ["--bg-island"],
+    where: "REPORTED / OBSERVED beside the number — the label ADR-0009 refuses to make a tooltip. "
+      + "The same pair carries the `+3` count, the words about the other AIs and the chevron",
+    fg: "--fg-dim", backdrop: ["--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -762,13 +777,14 @@ const CASES = [
   {
     what: "a reported tier label",
     where: "the one tier drawn a step brighter, because it is the one that can be relied on",
-    fg: "--fg-mid", backdrop: ["--bg-island"],
+    fg: "--fg-mid", backdrop: ["--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "the Ask button on an unknown row",
-    where: "the action a row nobody can read offers instead of a blank meter",
-    fg: "--fg-mid", backdrop: ["--bg-island", "--bg-inset"],
+    where: "the action a reading nobody can read offers instead of a blank meter — beside its row, "
+      + "and beside the strip when the AI the strip names is the unreadable one",
+    fg: "--fg-mid", backdrop: ["--bg-void", "--bg-inset"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
@@ -786,25 +802,8 @@ const CASES = [
   {
     what: "the meter's track inside the dialog", rejected: true,
     where: "rejected — the same reasoning one ground up: measured so the step is on record, "
-      + "and it is a step (1.27 against 1.22) rather than an accident",
+      + "and it is a step (1.27 here, 1.39 out on the strip) rather than an accident",
     fg: "--bg-hover-2", backdrop: ["--bg-island", "--bg-inset"],
-    threshold: UI, sc: "1.4.11",
-  },
-  /* The pill in its second state. Its own window, its own ground, its own
-     hand-copied literals — so this pair is measured against `src/pill.css` and
-     not against the app's palette. */
-  {
-    what: "the pill saying a limit",
-    where: "red ink on the pill's own chrome, in a window that loads no `:root`",
-    fg: decl(pillCss, "#pill.pill--limit", "color"),
-    backdrop: [decl(pillCss, "#pill", "background")],
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "the limit pill's edge",
-    where: "the border that tells the pill's two states apart at a glance across the screen",
-    fg: decl(pillCss, "#pill.pill--limit", "border-color"),
-    backdrop: [decl(pillCss, "#pill", "background")],
     threshold: UI, sc: "1.4.11",
   },
   {
