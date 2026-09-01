@@ -134,31 +134,57 @@ This does overlap the pill's count, and knowingly. The badge and the pill are
 visible in different places — the dock is what a person looks at when deciding
 whether to switch to the deck; the pill is what they see while they are not.
 
-### 5. The macOS icon is a template image of the deck's four tiles
+### 5. The status-area icon is the app's icon, in colour, and not a template
 
-`icons/tray-mac.png`, black on transparent, installed with
-`icon_as_template(true)`. macOS reads its alpha channel alone and tints the
-result for a light menu bar, a dark one, and the inverted state while the panel
-is open — which is what makes decision 3's "the image never changes" survive both
-appearances.
+`icons/tray-mac.png`, 36×36, drawn by `scripts/tray-icon.mjs` from the geometry
+and the colours of the shipped `icons/icon.png`: the dark rounded frame, the four
+black tiles, the white chevron, the blue cursor block. One image on all three
+platforms.
 
-It is the 2×2 tile grid of `icons/icon-source.svg`, top-left tile solid and the
-other three outlined, exactly as the app icon lights one of the four. The first
-draft was that icon's chevron and cursor block instead, on the theory that four
-squares would be noise at menu-bar size. In a real menu bar that was wrong twice
-over: 36 pixels is room for four 14-pixel tiles with a 3-pixel gutter, and the
-chevron alone said "a terminal" — which every other icon up there could also say.
-The tiles are what this app is, and they are what somebody scanning a menu bar
-recognises.
+**It was a template image and that was wrong twice over.** Apple's guidance for a
+status item is a template — monochrome art, tinted by the system for a light menu
+bar, a dark one, and the inverted state while the panel is open — and this record
+originally followed it, with the tiles alone as the mark. Two reports from a real
+menu bar, in order:
+
+1. *"You can't see the tiles"* — the first draft was the icon's chevron and
+   cursor block, on the theory that four squares would be noise at 18 points. It
+   was not: 36 pixels is room for four tiles with a gutter. But the tiles alone
+   were not the answer either, because —
+2. *"The icon doesn't match the app's logo, and it's black."* Both true. A
+   monochrome mark **cannot** be this icon: take the colour away and what is left
+   is four squares, a different mark from the one on the dock. And the black was
+   a plain regression — decision 1's rework dropped `icon_as_template(true)`
+   along with the macOS branch that carried it, leaving the platform to draw
+   black-on-transparent art literally.
+
+The person scanning a menu bar for this app is looking for the thing on their
+dock. So it is that thing, in colour, and the flag is gone rather than restored.
+
+What that gives up is the automatic light/dark adaptation, and it is paid for
+explicitly: the frame carries a lit hairline along its inside edge — one pixel at
+22%, where the app icon has three units of 1024 at 9% — because a #27292C square
+against a dark menu bar otherwise has no edge at all, leaving a chevron and a
+blue dash floating in the bar. Checked against a light bar, a dark bar and a mid
+grey before shipping.
 
 36×36 because `tray-icon` scales a status item's image to 18 points tall, so 36
-pixels is exactly 2× and nothing is resampled. Off macOS the tray uses the app's
-own colour icon, which is what those platforms expect.
+pixels is exactly 2× and nothing is resampled. Drawn rather than downscaled:
+there is no SVG rasteriser in this project's toolchain and none on a stock macOS,
+and a 14× reduction of the 512px icon turns a 2.5-pixel chevron into a grey
+smear. Every shape has an exact distance function, so the edges are right at this
+size.
 
-`scripts/tray-icon.mjs` draws it, and the PNG is committed. There is no SVG
-rasteriser in this project's toolchain and no stock one on macOS; the shapes have
-exact distance functions, so drawing them directly was smaller than adopting a
-rasteriser to draw them for us.
+`icons/tray-source.svg` carries the same numbers so the shapes can be looked at;
+the script is the thing that runs, and the PNG is committed.
+
+**A note for whoever touches `icons/icon-source.svg`:** its geometry is exact to
+the pixel and its colours are stale. It is an earlier candidate — its own comment
+says "four tiles, one live" — with a #1d1f21 ground, tiles *lighter* than the
+ground and the top-left one tinted with the accent. The shipped icon has a
+#27292C ground, black tiles and none lit. That file did not produce the icon this
+app ships, and it should not be trusted for colour by the next person to draw
+from it.
 
 ### 6. The panel loads the app's whole stylesheet
 
@@ -226,9 +252,12 @@ webview created hidden at startup that never navigates again.
 - **A tray icon that shows the waiting count as its title.** Free on macOS and
   Linux, unsupported on Windows, and a duplicate of the pill on the two where it
   works. Decision 3.
-- **A template icon that changes shape when the budget is spent.** Attractive,
-  and forbidden by ADR-0009's own rule: a glyph is a reading with no tier beside
-  it.
+- **A template (monochrome) icon, per Apple's guidance for status items.** What
+  shipped first, and rejected on two reports from a real menu bar. Decision 5.
+- **An icon that changes to signal a spent budget.** Attractive, and forbidden by
+  ADR-0009's own rule: a mark is a reading with no tier beside it. Decision 3.
+- **Downscaling `icons/icon.png` to 36 with `sips`.** One command, and soft: a
+  14× reduction smears a 2.5-pixel chevron. Decision 5.
 - **Copying the limit styles into `tray.css` rather than importing the
   stylesheet.** What the pill does, and what the pill's own comment advises
   against. Decision 6.

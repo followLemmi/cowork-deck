@@ -1,32 +1,43 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
-  <!-- cowork-deck status-area icon — four tiles, one lit.
-       The mark of `icons/icon-source.svg`, and the half of it that is the app
-       rather than the terminal inside it.
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 512 512">
+  <!-- cowork-deck status-area icon — the app's icon, at status-area size.
+       In COLOUR, and not a template image. A template is monochrome by
+       construction, so it cannot be this icon: the mark is a dark frame, four
+       black tiles, a white chevron and a BLUE cursor block, and without the
+       colour it is four squares, which is a different mark. See docs/adr/0011
+       decision 5, and `scripts/tray-icon.mjs` for what that costs.
 
-       Monochrome by construction: macOS draws a template image from its alpha
-       channel alone and tints it for a light menu bar, a dark one, and the
-       inverted state while the panel is open. A hue here would be discarded on
-       macOS and would disagree with the app icon everywhere else, so there is
-       none — see docs/adr/0011.
+       The viewBox is 512, the grid the shipped `icon.png` is measured on. Every
+       number here was read off that file rather than copied from
+       `icon-source.svg`, whose GEOMETRY is exact and whose COLOURS are stale —
+       it is an earlier candidate with a lighter ground, tiles lighter than it,
+       and the top-left one tinted. The shipped icon has none of that.
 
-       A template image has exactly one contrast to spend, and it goes where the
-       app icon spends its accent: the top-left tile is solid and the other three
-       are outlines. That is not a state signal — the icon never changes — it is
-       what makes four squares read as a deck with something in it rather than as
-       a window-tiling utility.
+       Two things differ from the app icon, both because this is drawn at 36
+       pixels rather than 512:
 
-       The first draft was this icon's chevron and cursor block instead, on the
-       theory that four squares would be noise at menu-bar size. In a real menu
-       bar it was wrong twice over: 36 pixels is room for four 14-pixel tiles
-       with a 3-pixel gutter, and the chevron alone said "a terminal", which
-       every other icon up there could also say.
+       - The lit hairline along the frame is 1 unit of 36 at 22%, where the app
+         icon has 3 units of 1024 at 9%. At this size the original is a tenth of
+         a pixel, and without an edge the frame vanishes into a dark menu bar.
+       - The frame's own faint outer stroke is dropped: it would land on the same
+         pixels as the hairline.
 
        Rasterised by scripts/tray-icon.mjs, which carries the same numbers and is
        the thing that runs. Editing this file does not change the PNG. -->
-  <rect x="2.5" y="2.5" width="14" height="14" rx="3.5" fill="#000"/>
-  <g fill="none" stroke="#000" stroke-width="2">
-    <rect x="19.5" y="2.5" width="14" height="14" rx="3.5"/>
-    <rect x="2.5" y="19.5" width="14" height="14" rx="3.5"/>
-    <rect x="19.5" y="19.5" width="14" height="14" rx="3.5"/>
+  <rect x="36" y="36" width="440" height="440" rx="100" fill="#27292c"/>
+  <g fill="#000">
+    <rect x="88" y="88" width="154" height="154" rx="18"/>
+    <rect x="270" y="88" width="154" height="154" rx="18"/>
+    <rect x="88" y="270" width="154" height="154" rx="18"/>
+    <rect x="270" y="270" width="154" height="154" rx="18"/>
   </g>
+  <!-- The hairline, inside the frame: a 14-unit stroke on the frame's own path,
+       clipped to it, is the inner 7 units. -->
+  <clipPath id="frame">
+    <rect x="36" y="36" width="440" height="440" rx="100"/>
+  </clipPath>
+  <rect x="36" y="36" width="440" height="440" rx="100" clip-path="url(#frame)"
+    fill="none" stroke="#fff" stroke-opacity="0.22" stroke-width="14"/>
+  <polyline points="199,196 278,256 199,316" fill="none" stroke="#ebebeb"
+    stroke-width="35" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="295" y="235" width="75" height="42" rx="10" fill="#72bef2"/>
 </svg>

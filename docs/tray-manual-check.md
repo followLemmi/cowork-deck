@@ -15,7 +15,8 @@ different with the same call, and Linux gets a different surface entirely.
 ## Everywhere
 
 - [ ] The icon appears in the status area within a second or two of launch, before any session is started.
-- [ ] It is the deck's four tiles, top-left one solid. At a glance, in a row of a dozen other icons, you can find it.
+- [ ] It is the app's icon — the dark frame, the four tiles, the white chevron, the blue block. Put the dock beside the menu bar: it is recognisably the same mark.
+- [ ] It is not a black smudge. If it is, `icon_as_template` has come back or the art has gone monochrome again; see ADR-0011 decision 5.
 - [ ] Quit the app and launch it again. The icon comes back.
 - [ ] Every limit row carries a tier word — Reported, Observed, Estimated or Unknown — beside its number. A row with a bare percentage is a bug, not a nicety (ADR-0009).
 - [ ] The reading and the meter in the panel match the same provider's row in the deck's own Limits block, word for word and fill for fill. They are the same component; if they differ, something has been reimplemented.
@@ -32,13 +33,14 @@ different with the same call, and Linux gets a different surface entirely.
 
 ## macOS
 
-The template image is the thing to look at, and both appearances have to be
-checked: a non-template icon looks correct on exactly one of them.
+The icon is **colour, not a template**, which means it does not adapt on its own
+and both appearances have to be looked at rather than assumed. `node
+scripts/tray-icon.mjs` regenerates it if you change the art.
 
-- [ ] Light menu bar (System Settings → Appearance → Light): the tiles are **dark** and legible.
-- [ ] Dark menu bar (Appearance → Dark): the same tiles are **light** and legible.
-- [ ] "Auto" with the wallpaper changing under the menu bar: it follows.
-- [ ] The mark is not blurry. It is drawn at 18 points from a 36-pixel image; a soft edge means something resampled it.
+- [ ] Light menu bar (System Settings → Appearance → Light): the frame reads as a dark rounded square, and the chevron and the blue block read inside it.
+- [ ] Dark menu bar (Appearance → Dark): the frame still has an **edge**. That is the lit hairline doing its job; without it the mark is a chevron and a blue dash floating in the bar.
+- [ ] A light wallpaper behind a translucent menu bar, and a dark one. Both.
+- [ ] The mark is not blurry. It is drawn at 18 points from a 36-pixel image, so at 2× it is 1:1; a soft edge means something resampled it.
 - [ ] Left click and right click both open the panel. That is the platform's convention for a status item.
 
 ### The panel as a window
@@ -66,7 +68,7 @@ checked: a non-template icon looks correct on exactly one of them.
 
 ## Windows
 
-- [ ] The icon is in the notification area. If Windows has hidden it in the overflow, dragging it out is the person's business, not a bug.
+- [ ] The icon is in the notification area, and it is the app's icon rather than the 512px one squashed by the system. If Windows has hidden it in the overflow, dragging it out is the person's business, not a bug.
 - [ ] **Right** click opens the panel.
 - [ ] **Left** click raises the deck rather than opening the panel.
 - [ ] The panel opens **above** the icon, not below it — the notification area is at the foot of the screen, and there is no room under it.
@@ -95,5 +97,5 @@ is the honest result, not a failure.
 ## The pill, which must not have become a duplicate
 
 - [ ] With a session waiting and the deck not in front: the pill says "N waiting for input" and the tray icon says nothing at all — no count, no title, no changed image.
-- [ ] With the budget spent: the pill says so, and the icon is still unchanged. The panel is where the tray says it, with the tier beside it.
+- [ ] With the budget spent: the pill says so, and the icon is still unchanged. The panel is where the tray says it, with the tier beside it. The icon never signals state — a mark is a reading with no tier beside it (ADR-0009).
 - [ ] With the deck idle and nothing waiting: the pill is down and the icon is still there. That is the tray's own reason to exist.
