@@ -4278,9 +4278,16 @@ h6.md-head { font-size: var(--fs-sm); }
 
    Chrome rather than a card, and the hairline is the whole treatment: the islands
    above are lists you work in, and this is the panel's own footer. A one-line
-   island would have been a card with less in it than its own border. */
+   island would have been a card with less in it than its own border.
+
+   `column-reverse`, and the reverse is the whole trick: the strip comes FIRST in
+   the DOM, so a screen reader moving forward off the control it just pressed
+   arrives inside the rows that press revealed — a disclosure whose content sits
+   before its own button reads as content the button leads away from. On screen
+   they swap back, and the rows grow upward out of the panel's foot so the thing
+   under the pointer stays under it. */
 #limits {
-  flex: none; display: flex; flex-direction: column;
+  flex: none; display: flex; flex-direction: column-reverse;
   border-top: 1px solid var(--line); background: var(--bg-void);
 }
 #limits[hidden] { display: none; }
@@ -4290,7 +4297,7 @@ h6.md-head { font-size: var(--fs-sm); }
    which is the one thing the fixed slab could not do. */
 .lim-list {
   max-height: min(38vh, 15rem); overflow-y: auto;
-  padding: var(--sp-1) var(--sp-2) 0;
+  padding: var(--sp-1) var(--sp-2);
   display: flex; flex-direction: column; gap: var(--sp-1);
 }
 .lim-list[hidden] { display: none; }
@@ -4364,6 +4371,16 @@ h6.md-head { font-size: var(--fs-sm); }
   font: inherit;
 }
 .lim-open:hover { background: var(--bg-hover); }
+/* Drawn inside the button, which the rest of the app has no need to do. The
+   global ring is an `outline` at a 2px offset — 4px painted OUTSIDE the element —
+   and these rows live in a scroll container, which clips what leaves it and does
+   not count an outline as something to scroll to. The last row in an unfolded
+   list had the bottom of its ring shaved off against the container's edge. An
+   inset ring cannot be clipped by the box it is inside. */
+.lim-list .lim-open:focus-visible,
+.lim-list .lim-probe:focus-visible {
+  outline: none; box-shadow: inset 0 0 0 2px var(--accent);
+}
 .lim-line { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
 .lim-name { flex: none; font-size: var(--fs-sm); font-weight: var(--fw-medium); }
 /* The tier, at the same size as the number it qualifies. A tooltip would be a

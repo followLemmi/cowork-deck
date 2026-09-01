@@ -11,6 +11,7 @@ import {
   sourceExplanation,
   sourceLabel,
   stateClass,
+  rankedAis,
   usageGlance,
 } from "../src/usage";
 
@@ -66,6 +67,43 @@ describe("which window a one-line row draws", () => {
 
   it("has nothing to draw for a provider with no windows", () => {
     expect(primaryWindow(snap())).toBe(null);
+  });
+});
+
+/** The one ordering both surfaces take. The strip names the first of these and
+ *  the rows are drawn in this order, which is what makes "the strip cannot name an
+ *  AI that is not at the top of the list it opens" a fact rather than a hope. */
+describe("the order every connected AI is ranked in", () => {
+  it("has nothing to rank when nothing is connected", () => {
+    expect(rankedAis([])).toEqual([]);
+  });
+
+  it("puts a refusal first, then nearly spent, then a reading, then no reading", () => {
+    const order = rankedAis([
+      snap({ provider: "unreadable", windows: [win({ state: "unknown" })] }),
+      snap({ provider: "healthy", windows: [win({ usedFraction: 0.3, state: "ok" })] }),
+      snap({ provider: "spent", windows: [win({ state: "exhausted" })] }),
+      snap({ provider: "nowindows", windows: [] }),
+      snap({ provider: "near", windows: [win({ usedFraction: 0.9, state: "near" })] }),
+    ]).map((r) => r.snap.provider);
+    expect(order).toEqual(["spent", "near", "healthy", "unreadable", "nowindows"]);
+  });
+
+  it("pairs each AI with the window its own row draws", () => {
+    const [first] = rankedAis([
+      snap({ windows: [win({ id: "week", usedFraction: 0.1, state: "ok" }), win({ id: "day", state: "exhausted" })] }),
+    ]);
+    expect(first.window!.id).toBe("day");
+  });
+
+  /** The strip is the head of this list, and nothing may come between them. */
+  it("agrees with the AI the strip names, whatever order they arrived in", () => {
+    const snaps = [
+      snap({ provider: "a", windows: [win({ usedFraction: 0.2, state: "ok" })] }),
+      snap({ provider: "b", windows: [win({ usedFraction: 0.5, state: "ok" })] }),
+      snap({ provider: "c", windows: [win({ state: "exhausted" })] }),
+    ];
+    expect(rankedAis(snaps)[0].snap.provider).toBe(usageGlance(snaps)!.snap.provider);
   });
 });
 

@@ -28,7 +28,7 @@ import { icon } from "./icons";
 import { openUsageDialog, type UsageDialogHost } from "./usage-dialog";
 import {
   meterFraction,
-  primaryWindow,
+  rankedAis,
   readingOf,
   sourceLabel,
   stateClass,
@@ -103,12 +103,13 @@ function noteFor(
     };
   }
   if (win?.state === "near") {
-    return {
-      text: win.resetsAt === null
-        ? "nearly spent"
-        : `nearly spent — resets ${formatReset(win.resetsAt, now)}`,
-      tone: "near",
-    };
+    // The reset time when there is one, and the ERROR when there is not. An error
+    // arrives beside the windows rather than instead of them, so a near reading
+    // and "token expired" can be true at once — and the row printed the error
+    // here before this branch existed. A reading nobody can refresh is worth less
+    // than the reason why.
+    const why = win.resetsAt !== null ? `resets ${formatReset(win.resetsAt, now)}` : snap.error;
+    return { text: why ? `nearly spent — ${why}` : "nearly spent", tone: "near" };
   }
   if (win?.resetsAt != null) {
     return glance ? null : { text: `resets ${formatReset(win.resetsAt, now)}`, tone: "quiet" };
@@ -186,26 +187,71 @@ export class LimitsBlock {
    *  without freezing time. */
   render(snaps: AiUsage[], now: number): void {
     this.last = snaps;
+    // What has to survive the repaint, read off the old DOM before it goes. This
+    // runs on a sixty-second timer, and every element in here is replaced each
+    // time: without this, a person reading row nine is returned to row one by a
+    // clock, mid-sentence, and the keyboard is thrown back to the top of the
+    // document. Keyed by what a control IS rather than by node, because not one
+    // of these nodes lives to be focused again.
+    const active = document.activeElement;
+    const focusKey = active instanceof HTMLElement && this.el.contains(active)
+      ? active.dataset.focusKey ?? null
+      : null;
+    const scrollTop = this.list()?.scrollTop ?? 0;
+
     this.el.replaceChildren();
     // Nothing detected is not an empty block — it is no block. An app on a
     // machine with no AI on it should not carry a strip over a blank.
     if (!snaps.length) {
       this.el.hidden = true;
+      // And a block that has gone away keeps no fold. Folded is the default
+      // because folded is the answer, and coming back expanded because of a press
+      // made before the last AI disappeared would take panel height nobody asked
+      // for, for a reading nobody was waiting on.
+      this.open = false;
       return;
     }
     this.el.hidden = false;
+    const ranked = rankedAis(snaps);
     const glance = usageGlance(snaps)!;
 
     const list = document.createElement("div");
     list.className = "lim-list";
     list.id = LIST_ID;
     list.hidden = !this.open;
-    for (const snap of snaps) list.append(this.row(snap, now));
+    // Worst off first, out of the same ranking the strip picks its AI from, so
+    // the list this opens is topped by the AI the strip just named. In detection
+    // order the two agreed only by luck: an exhausted AI found last sat below the
+    // fold of a list capped at 15rem while the strip pointed straight at it.
+    for (const { snap, window: win } of ranked) list.append(this.row(snap, win, now));
 
-    // The list first and the strip after it, so the rows grow UPWARD out of the
-    // panel's foot: the thing a person just pressed stays under their pointer,
-    // and the reading they were looking at does not jump.
-    this.el.append(list, this.strip(glance, now, list));
+    // The strip FIRST in the DOM and the rows after it, so a screen reader moving
+    // forward from the control it just pressed arrives inside what that press
+    // revealed. On screen the order is the other way up — `column-reverse` on
+    // `#limits` — so the rows still grow upward out of the panel's foot and the
+    // thing under the pointer stays under it.
+    this.el.append(this.strip(glance, now, list), list);
+
+    list.scrollTop = scrollTop;
+    if (focusKey) this.refocus(focusKey);
+  }
+
+  /** The row list as it stands, or `null` before the first paint. */
+  private list(): HTMLElement | null {
+    return this.el.querySelector<HTMLElement>(`#${LIST_ID}`);
+  }
+
+  /** Put the keyboard back on the control it was on. Matched by walking rather
+   *  than by an attribute selector, because a provider key is not escaped and a
+   *  selector built out of one would be the only place in this module that cared.
+   *  `preventScroll`, because restoring focus is not a request to move the view. */
+  private refocus(key: string): void {
+    for (const el of this.el.querySelectorAll<HTMLElement>("[data-focus-key]")) {
+      if (el.dataset.focusKey === key) {
+        el.focus({ preventScroll: true });
+        return;
+      }
+    }
   }
 
   /** Re-draw from the snapshot already in hand. For the dialog's "clear", which
@@ -251,6 +297,7 @@ export class LimitsBlock {
     const open = document.createElement("button");
     open.className = "lim-summary";
     open.type = "button";
+    open.dataset.focusKey = "strip";
     open.setAttribute("aria-expanded", String(this.open));
     open.setAttribute("aria-controls", LIST_ID);
     // For the sighted reader, who gets no heading over one line. The block's own
@@ -310,13 +357,15 @@ export class LimitsBlock {
     // A strip nobody can read is the case the glance has to keep answerable: the
     // way out cannot be behind the fold, or it is behind a fold on the one row
     // that has nothing to show for itself.
-    const ask = this.askButton(snap, win);
+    const ask = this.askButton(snap, win, "strip");
     if (ask) strip.append(ask);
     return strip;
   }
 
-  private row(snap: AiUsage, now: number): HTMLElement {
-    const win = primaryWindow(snap);
+  private row(snap: AiUsage, win: LimitWindow | null, now: number): HTMLElement {
+    // The window is handed in rather than found again: `rankedAis` already picked
+    // it to place this row, and a row that re-derived its own would be a second
+    // chance for the two to disagree.
     const row = document.createElement("div");
     row.className = "lim-row";
     row.dataset.state = win?.state ?? "unknown";
@@ -325,6 +374,7 @@ export class LimitsBlock {
     const open = document.createElement("button");
     open.className = "lim-open";
     open.type = "button";
+    open.dataset.focusKey = `row:${snap.provider}`;
     // The accessible name says everything the row says, in one sentence: a
     // reader should not have to assemble five spans into a meaning.
     open.setAttribute(
@@ -368,20 +418,23 @@ export class LimitsBlock {
     // that would answer it, in a tile, and read it with their own eyes. Better
     // than a blank meter, because it hands over the thing they would otherwise
     // go and do by hand.
-    const ask = this.askButton(snap, win);
+    const ask = this.askButton(snap, win, "row");
     if (ask) row.append(ask);
     return row;
   }
 
   /** The action for a reading nobody can read, or `null` when there is nothing to
    *  offer. Shared by the row and the strip: the same absence, the same way out. */
-  private askButton(snap: AiUsage, win: LimitWindow | null): HTMLButtonElement | null {
+  private askButton(snap: AiUsage, win: LimitWindow | null, where: string): HTMLButtonElement | null {
     const unreadable = !win || win.state === "unknown";
     const probe = snap.probeCommand;
     if (!unreadable || !probe) return null;
     const ask = document.createElement("button");
     ask.className = "lim-probe";
     ask.type = "button";
+    // The strip's Ask and the row's Ask are the same offer in two places, and a
+    // repaint has to tell them apart to hand focus back to the right one.
+    ask.dataset.focusKey = `${where}-probe:${snap.provider}`;
     ask.textContent = "Ask";
     ask.title = `Run ${probe} in a tile`;
     ask.setAttribute("aria-label", `Ask ${snap.label} what is left — runs ${probe} in a tile`);

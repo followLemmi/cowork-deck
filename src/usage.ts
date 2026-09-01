@@ -70,12 +70,31 @@ export interface UsageGlance {
   othersSpent: number;
 }
 
-export function usageGlance(snaps: AiUsage[]): UsageGlance | null {
-  if (!snaps.length) return null;
-  const ranked = snaps
+/** One AI and the window its row draws, as `rankedAis` pairs them. */
+export interface RankedAi {
+  snap: AiUsage;
+  /** `null` when the provider declared no window at all, which is a state and
+   *  not an error. */
+  window: LimitWindow | null;
+}
+
+/** Every connected AI, worst off first.
+ *
+ *  The one ordering both surfaces take, and that is the point of it being a
+ *  function rather than a sort written twice: the strip names the first of these
+ *  and the list is drawn in this order, so pressing the strip opens a list topped
+ *  by the AI the strip just named. Ranked in the order they were DETECTED, the
+ *  two agreed only by luck — an exhausted AI found last sat at the bottom of a
+ *  list capped at 15rem, below the fold, while the strip pointed at it. */
+export function rankedAis(snaps: AiUsage[]): RankedAi[] {
+  return snaps
     .map((snap) => ({ snap, window: primaryWindow(snap) }))
     .sort((a, b) => byUrgency(a.window, b.window));
-  const [worst, ...rest] = ranked;
+}
+
+export function usageGlance(snaps: AiUsage[]): UsageGlance | null {
+  const [worst, ...rest] = rankedAis(snaps);
+  if (!worst) return null;
   return {
     snap: worst.snap,
     window: worst.window,

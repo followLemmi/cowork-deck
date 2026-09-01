@@ -50,9 +50,19 @@ a list behind it.
 
 Which AI is worst comes from the ranking already in `usage.ts` — a refusal, then a
 nearly-spent window, then the fullest reading, then an AI that cannot be read at
-all. `primaryWindow` ranks the windows of one AI and `usageGlance` ranks the AIs
+all. `primaryWindow` ranks the windows of one AI and `rankedAis` ranks the AIs
 against each other **through the same comparator**, so the strip cannot name an AI
 that is not at the top of the list it opens.
+
+That last clause is a property of the LIST as much as of the strip, and it has to
+be built rather than hoped for: the rows are drawn in `rankedAis` order too, not
+in the order the AIs were detected. Sharing a comparator only guarantees that the
+strip and the named AI's own row choose the same window; it says nothing about
+where that row sits. Drawn in detection order the two agreed by luck, and the
+unlucky case is the one that matters — an exhausted AI found last is named by the
+strip and drawn at the bottom of a list capped at `min(38vh, 15rem)`, below the
+fold, so the one press that was supposed to explain the line opens on somebody
+else and asks for a scroll.
 
 ### 2. The tier survives the shrink
 
@@ -93,6 +103,12 @@ matter enough to be decisions:
   adding one lengthens a list that is bounded either way.
 - **It grows upward, out of the strip.** The control a person just pressed stays
   where their pointer is, and the reading they were looking at does not jump.
+  Upward on SCREEN only: in the DOM the strip comes first and the rows follow it,
+  and `#limits` is `flex-direction: column-reverse`. A disclosure whose content
+  precedes its own control reads, to anybody moving forward through the document,
+  as content that button leads away from — so a screen-reader user who pressed the
+  strip would leave the block instead of entering what the press revealed. The
+  reversal buys the visual behaviour without paying for it in reading order.
 - **Open, the strip stops repeating the row above it** and shows the block's name
   instead. Folded, the reading is worth more than the word "Limits"; open, every
   row says what the strip was saying, and the word is what is left to say — which
@@ -100,7 +116,16 @@ matter enough to be decisions:
 
 The state of the fold is held in the module and **not** persisted. Folded is the
 default because folded is the answer; an app that came up expanded because of
-something done last Tuesday would have given the panel height back away.
+something done last Tuesday would have given the panel height back away. It is
+also dropped whenever the block itself goes — no AI detected is no block, and a
+block that comes back should come back folded rather than with a press made
+before the last account disappeared still in force.
+
+The fold is the only thing a repaint keeps. The read runs on a sixty-second timer
+and replaces every element in the block, so the keyboard's place and the list's
+scroll are read off the old DOM and put back on the new one, keyed by what a
+control is rather than by node. Without that, a person reading the ninth row is
+returned to the first by a clock, mid-sentence.
 
 ### 5. The way out of an unreadable reading is not behind the fold
 

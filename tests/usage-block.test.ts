@@ -296,15 +296,34 @@ describe("the rows behind the strip", () => {
     expect(el.querySelector(".lim-summary")!.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("draw one row per detected AI, in the order they were detected", () => {
+  it("draw one row per detected AI, worst off first", () => {
     const { el, block } = mount();
     block.render([
       snap({ windows: [win({ usedFraction: 0.2, state: "ok", source: "reported" })] }),
       snap({ provider: "gemini", label: "Gemini", windows: [win({ id: "rpd", label: "Requests today" })] }),
+      snap({ provider: "codex", label: "Codex", windows: [win({ usedFraction: 0.9, state: "near" })] }),
     ], NOW);
-    expect(el.querySelectorAll(".lim-row").length).toBe(2);
+    expect(el.querySelectorAll(".lim-row").length).toBe(3);
+    // Codex is nearly spent, Claude has a reading, Gemini has none: the order the
+    // strip ranks them in, not the order they were detected in.
     expect([...el.querySelectorAll(".lim-row .lim-name")].map((n) => n.textContent))
-      .toEqual(["Claude", "Gemini"]);
+      .toEqual(["Codex", "Claude", "Gemini"]);
+  });
+
+  /** The claim ADR-0011 rests on. Ranked by detection order the two surfaces
+   *  agreed only by luck, and the unlucky case is this one: the AI that is worst
+   *  off is the one found LAST, so the strip named it and the list opened on
+   *  somebody else — with the list capped and scrolling, possibly off-screen. */
+  it("open a list topped by the AI the strip names", () => {
+    const { el, block } = mount();
+    block.render([
+      snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] }),
+      snap({ provider: "gemini", label: "Gemini", windows: [win({ usedFraction: 0.4, state: "ok" })] }),
+      snap({ provider: "copilot", label: "Copilot", windows: [win({ state: "exhausted", resetsAt: RESET })] }),
+    ], NOW);
+    expect(stripText(el, ".lim-name")).toBe("Copilot");
+    unfold(el);
+    expect(list(el).querySelector(".lim-row .lim-name")!.textContent).toBe("Copilot");
   });
 
   /** The three states, and the absence of a fourth. */
@@ -321,10 +340,14 @@ describe("the rows behind the strip", () => {
     expect(new Set(classes).size).toBe(3);
     // The healthy fill takes the neutral ink, and the two that mean something
     // take the two hues the rest of the app already uses for those meanings.
-    const fill = (i: number) => getComputedStyle(meters[i].querySelector(".lim-fill")!).background;
-    expect(fill(0)).toContain("--fg-dim");
-    expect(fill(1)).toContain("--st-waiting");
-    expect(fill(2)).toContain("--st-error");
+    // Keyed by the state and not by position: the rows are ranked, so which row
+    // is which is the ranking's business and not this test's.
+    const fill = (state: string) => getComputedStyle(
+      list(el).querySelector(`.lim-row[data-state="${state}"] .lim-fill`)!,
+    ).background;
+    expect(fill("ok")).toContain("--fg-dim");
+    expect(fill("near")).toContain("--st-waiting");
+    expect(fill("exhausted")).toContain("--st-error");
     // And no rule anywhere in this block reaches for the working green.
     const rules = css.slice(css.indexOf("--- Limits:"));
     expect(rules).not.toContain("--st-working");
@@ -443,5 +466,110 @@ describe("the rows behind the strip", () => {
     expect(getComputedStyle(list(el)).flexDirection).toBe("column");
     // The one inline style there is: how full the meter is, which is data.
     expect(el.querySelector<HTMLElement>(".lim-fill")!.style.width).toBe("25%");
+  });
+
+  /** A disclosure whose content comes before its own control reads, to anybody
+   *  moving forward through the document, as content that button leads AWAY from.
+   *  So the DOM is strip-then-rows and the screen is the other way up. */
+  it("put the strip before the rows in the DOM and above them on screen", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.25, state: "ok" })] })], NOW);
+    expect([...el.children].map((c) => c.className.split(" ")[0]))
+      .toEqual(["lim-strip", "lim-list"]);
+    expect(getComputedStyle(el).flexDirection).toBe("column-reverse");
+  });
+
+  /** The rows scroll, and a scroll container clips what leaves it. The global
+   *  focus ring is an outline painted outside the button, so the last row in the
+   *  list lost the bottom of its own ring. */
+  it("draw the rows' focus ring inside them, where the scroll cannot clip it", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.25, state: "ok" })] })], NOW);
+    const rules = css.slice(css.indexOf(".lim-list .lim-open:focus-visible"));
+    expect(rules.slice(0, 160)).toContain("inset");
+    expect(getComputedStyle(list(el)).overflowY).toBe("auto");
+  });
+});
+
+describe("what a repaint must not take with it", () => {
+  const four = () => ["claude", "gemini", "codex", "copilot"].map((provider) =>
+    snap({ provider, label: provider, windows: [win({ usedFraction: 0.3, state: "ok" })] }));
+
+  /** This runs on a sixty-second timer. A person reading row nine must not be
+   *  returned to row one by a clock, and the keyboard must not be thrown back to
+   *  the top of the document while they are using it. */
+  it("keeps the focused row and the list's scroll across a re-read", () => {
+    const { el, block } = mount();
+    block.render(four(), NOW);
+    unfold(el);
+    const codex = () => list(el).querySelector<HTMLButtonElement>(
+      '.lim-row[data-provider="codex"] .lim-open',
+    )!;
+    codex().focus();
+    list(el).scrollTop = 24;
+    block.render(four(), NOW);
+    expect(document.activeElement).toBe(codex());
+    expect(list(el).scrollTop).toBe(24);
+  });
+
+  it("keeps the strip itself focused when that is what was focused", () => {
+    const { el, block } = mount();
+    block.render(four(), NOW);
+    const summary = () => el.querySelector<HTMLButtonElement>(".lim-summary")!;
+    summary().focus();
+    block.render(four(), NOW);
+    expect(document.activeElement).toBe(summary());
+  });
+
+  /** And it must not GRAB focus either: a repaint while somebody is typing
+   *  somewhere else in the app is not a request for the panel's foot. */
+  it("leaves focus alone when it was somewhere else entirely", () => {
+    const { el, block } = mount();
+    const elsewhere = document.createElement("input");
+    document.body.append(elsewhere);
+    block.render(four(), NOW);
+    elsewhere.focus();
+    block.render(four(), NOW);
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  /** Folded is the default because folded is the answer. A block that has gone
+   *  away keeps no fold to come back with. */
+  it("comes back folded after every AI has gone away", () => {
+    const { el, block } = mount();
+    block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] })], NOW);
+    unfold(el);
+    expect(list(el).hidden).toBe(false);
+    block.render([], NOW);
+    block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] })], NOW);
+    expect(list(el).hidden).toBe(true);
+  });
+});
+
+/** An error arrives beside the windows rather than instead of them, so a reading
+ *  and the reason it cannot be refreshed can both be true. */
+describe("a reading that came with an error", () => {
+  it("says what is wrong under a nearly-spent row with no reset time", () => {
+    const { el, block } = mount();
+    block.render([snap({
+      error: "token expired — run `claude auth login`",
+      windows: [win({ usedFraction: 0.92, state: "near" })],
+    })], NOW);
+    unfold(el);
+    const foot = list(el).querySelector(".lim-row .lim-foot")!.textContent!;
+    expect(foot).toContain("nearly spent");
+    expect(foot).toContain("token expired");
+  });
+
+  it("still prefers the reset time when there is one", () => {
+    const { el, block } = mount();
+    block.render([snap({
+      error: "token expired",
+      windows: [win({ usedFraction: 0.92, state: "near", resetsAt: RESET })],
+    })], NOW);
+    unfold(el);
+    const foot = list(el).querySelector(".lim-row .lim-foot")!.textContent!;
+    expect(foot).toContain("nearly spent — resets");
+    expect(foot).not.toContain("token expired");
   });
 });
