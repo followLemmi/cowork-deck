@@ -964,6 +964,8 @@ export class Deck {
     // A panel taking over a live session is born without resize authority: it
     // must not tell the PTY its geometry before it owns the session.
     const panel = new TerminalPanel(session, mount, isCommand, opts.attach !== undefined);
+    // The one state change no hook reports. See `interruptedTurn`.
+    panel.onInterrupt = (s) => this.interruptedTurn(s);
     const names: TileNames = {
       // The placeholder slot always holds the launch string. On a context-named
       // tile it is the same string as `context`, which the resolver never reaches
@@ -1463,6 +1465,30 @@ export class Deck {
     tile.el.scrollIntoView?.({ block: "nearest" });
     tile.panel.focus();
     this.renderList();
+  }
+
+  /** A turn this session's terminal ended under an interrupt, which is a turn
+   *  Claude Code's `Stop` hook does not report (#333).
+   *
+   *  Treated exactly as `Stop` would have been — `done`, the state that says the
+   *  agent finished and the prompt is free — and by the same door, so the
+   *  scheduler's overlap guard, the card's status and the pill all read one
+   *  answer. `setState` is enough to carry it to the other windows too: the
+   *  owning window is the source of truth for its own tiles, and `renderList`
+   *  emits `session://waiting` from here.
+   *
+   *  Only from busy. A `done`, `idle` or `ended` tile has nothing to correct,
+   *  and `ended` in particular must never be walked back — the panel's own
+   *  evidence is a screen that has stopped being repainted, which cannot outrank
+   *  a process that is gone. `waitingInput` is included because it is a state a
+   *  running turn can be sitting in: `PermissionRequest` reports it, and nothing
+   *  reports the approval that put the agent back to work.
+   */
+  private interruptedTurn(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    if (tile.state !== "working" && tile.state !== "waitingInput") return;
+    this.setState(session, "done");
   }
 
   private setState(session: string, state: SessionState) {
