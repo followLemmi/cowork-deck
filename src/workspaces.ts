@@ -28,7 +28,12 @@ function andList(items: string[]): string {
  *  the caller: which tiles belong to a workspace is the deck's question (an
  *  explicit id, else a matching path), and it includes the ones running in
  *  another window. Named while there are few of them, because "“fix-250” is
- *  still running in it" is an answer and "1 session is" is a riddle. */
+ *  still running in it" is an answer and "1 session is" is a riddle.
+ *
+ *  Names have to be distinct to be worth printing, and they are not always: a
+ *  session gets "session · <workspace>" until a transcript title replaces it,
+ *  so two fresh ones in the same workspace carry the same string. Naming the
+ *  same session twice is the riddle again, and the count is the honest answer. */
 export function describeDeleteImpact(workspaceId: string, skills: Skill[], sessions: string[]): string {
   const parts: string[] = [];
   const pinned = skills.filter((s) => s.workspaceId === workspaceId);
@@ -40,7 +45,8 @@ export function describeDeleteImpact(workspaceId: string, skills: Skill[], sessi
   }
   if (sessions.length > 0) {
     const one = sessions.length === 1;
-    const subject = sessions.length <= NAMED_SESSIONS
+    const distinct = new Set(sessions).size === sessions.length;
+    const subject = sessions.length <= NAMED_SESSIONS && distinct
       ? `${andList(sessions.map((n) => `\u201c${n}\u201d`))} ${one ? "is" : "are"}`
       : `${sessions.length} sessions are`;
     parts.push(`${subject} still running in it — ${one ? "it" : "they"} will keep`
