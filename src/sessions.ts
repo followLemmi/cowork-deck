@@ -131,6 +131,9 @@ const LABEL: Record<SessionState, string> = {
 // pill answers "how many sessions are blocked on me".
 const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
 
+/** How often a focused deck re-reads what its sessions are doing. */
+const POLL_MS = 5000;
+
 /** What an empty deck should say, and which one action it should offer.
  *
  *  `<main id="deck">` is an empty element until a session exists, so the app's most
@@ -232,7 +235,14 @@ export class Deck {
   /** The last layout `saveLayout` actually accepted, serialised. See
    *  `persistLayout`: a write that would change nothing is skipped. */
   private savedLayout: string | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** The one tick ahead, and no more than one. Null both when there is nothing
+   *  to poll and while the window is unfocused — `polling` is what tells those
+   *  two apart. */
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Whether the deck wants to be polling at all, which is to say whether it
+   *  holds any tiles. Kept apart from the handle because a blurred window has no
+   *  handle and still has to know, when it comes back, that it had tiles. */
+  private polling = false;
   private usage = new Map<string, SessionTokens>();
   private activeWorkspaceId: string | null = null;
   private collapsed = new Set<string>();
@@ -396,16 +406,67 @@ export class Deck {
     this.deckEl.appendChild(box);
   }
 
+  /** Start polling, when the deck stops being empty.
+   *
+   *  The tick here is not the poll and is deliberately not focus-gated: it is
+   *  what fills a new tile's branch, its context count and its transcript title,
+   *  and a background window's tiles are on screen in every *other* window's
+   *  session list, by name. Leaving them blank until this window is focused
+   *  would be a blank row in a window that is. What the gate below stops is the
+   *  every-five-seconds part, which is the part that costs. */
   private startPolling() {
-    if (this.pollTimer !== null) return;
+    if (this.polling) return;
+    this.polling = true;
     void this.pollOnce();
-    this.pollTimer = setInterval(() => void this.pollOnce(), 5000);
   }
+
+  /** Stop for good — nothing is left to poll. The counterpart of `pausePolling`,
+   *  and the difference is `polling`: this one cannot be resumed by a focus. */
   private stopPolling() {
-    if (this.pollTimer !== null) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    this.polling = false;
+    this.clearPollTimer();
+  }
+
+  private clearPollTimer() {
+    if (this.pollTimer !== null) { clearTimeout(this.pollTimer); this.pollTimer = null; }
+  }
+
+  /** Arm the next tick, if there is anything to poll and anybody watching it.
+   *
+   *  Every path that schedules a tick goes through here, so the two conditions
+   *  are checked in one place and one place owns the handle — the shape the board
+   *  and the pull request polls in `app.ts` already use, and for the same two
+   *  reasons. A `setInterval` fires whether or not the previous tick came back,
+   *  which for a deck of twelve sessions on a slow disk means queued reads of
+   *  every transcript; and an unwatched window has no reason to read them at all.
+   *  Each tick is a `git_status` per unique directory and a `session_snapshots`
+   *  that reads and parses every open transcript, twelve times a minute, per
+   *  window. See #251. */
+  private schedulePoll() {
+    this.clearPollTimer();
+    if (!this.polling || !document.hasFocus()) return;
+    this.pollTimer = setTimeout(() => void this.pollOnce(), POLL_MS);
+  }
+
+  /** The window lost focus: hold the chain. Called from the one `blur` handler in
+   *  `app.ts` that stops the other two polls, so all three stop in one place.
+   *  `polling` survives this — the tiles are still there. */
+  pausePolling() { this.clearPollTimer(); }
+
+  /** The window came back: read once now, and let that tick re-arm the chain the
+   *  blur cleared. Ticking rather than merely re-arming is the whole point of
+   *  pausing — a returning window shows the branch and the context each session
+   *  has now, not what it had when it was last looked at. */
+  resumePolling() {
+    if (!this.polling) return;
+    void this.pollOnce();
   }
 
   private async pollOnce() {
+    // The armed handle is dropped before the reads rather than after them: a
+    // tick that a returning focus asked for must not leave the one blur missed
+    // behind it, running a second chain.
+    this.clearPollTimer();
     try {
       const tiles = [...this.tiles.values()];
       if (tiles.length === 0) { this.stopPolling(); return; }
@@ -495,6 +556,10 @@ export class Deck {
     } catch (e) {
       console.debug("pollOnce failed", e);
     }
+    // The next tick is armed only once this one has returned, and outside the
+    // catch: a tick that threw is still followed by another, or one failed read
+    // would end polling for the life of the window.
+    this.schedulePoll();
   }
 
   wireNotificationFocus() {

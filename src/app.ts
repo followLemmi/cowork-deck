@@ -1909,15 +1909,24 @@ export function startApp(role: WindowRole): Promise<void> {
 
   // Focus is the other half of "only while watched": a minimised or background
   // window polls nothing, and coming back refreshes at once rather than at the
-  // next tick.
+  // next tick. All three of this window's polls are here, so there is one place
+  // that answers "what stops when nobody is looking".
   window.addEventListener("focus", () => {
     if (prVisible()) void refreshPrs();
     // Coming back refreshes at once rather than at the next tick, which is the
     // whole point of pausing on blur — and `boardTick` re-arms the chain the blur
     // cleared.
     if (boardVisible) void boardTick();
+    // The deck has no view to be on: its tiles are on screen whenever any exist,
+    // so focus is its only gate. It decides for itself whether it has anything to
+    // resume, and its own tick re-arms its chain.
+    deck.resumePolling();
   });
-  window.addEventListener("blur", () => { stopPrPolling(); stopBoardPolling(); });
+  window.addEventListener("blur", () => {
+    stopPrPolling();
+    stopBoardPolling();
+    deck.pausePolling();
+  });
 
   /** ▶ on a row: a worktree for the branch, then an ordinary session inside it. */
   async function launchFromPr(pr: PullRequest) {
