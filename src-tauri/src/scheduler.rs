@@ -114,12 +114,29 @@ pub fn resolve_workspace(pin: Option<&str>, workspaces: &[Workspace]) -> Option<
 /// left alone when there is no stored active workspace to stamp: it then refuses
 /// visibly (`no-workspace`, in the row and in the journal), which is the whole
 /// improvement, rather than being pinned to a guess.
+///
+/// Two things it deliberately does not do.
+///
+/// It does not touch a schedule that is switched **off**. A pin is not only
+/// where a scenario runs, it is also where it is *visible*: `visibleSkills`
+/// exempts an enabled schedule from workspace scoping and nothing else, so
+/// stamping a paused one would delete it from every other workspace's sidebar
+/// and put it out of reach by hand. Nothing fires while it is off, so there is
+/// no behaviour to preserve and no reason to pay that price.
+///
+/// And it marks what it stamped (`pinned_by_migration`), because the answer it
+/// writes is only true on this machine — see the field's own comment.
 pub fn pin_scheduled(skills: &[Skill], active: Option<&str>) -> Option<Vec<Skill>> {
     let active = active?;
-    let needs_pin = |sk: &Skill| sk.schedule.is_some() && sk.workspace_id.is_none();
+    let needs_pin = |sk: &Skill| {
+        sk.workspace_id.is_none() && sk.schedule.as_ref().is_some_and(|s| s.enabled)
+    };
     if !skills.iter().any(needs_pin) { return None }
     Some(skills.iter().cloned().map(|mut sk| {
-        if needs_pin(&sk) { sk.workspace_id = Some(active.to_string()); }
+        if needs_pin(&sk) {
+            sk.workspace_id = Some(active.to_string());
+            sk.pinned_by_migration = true;
+        }
         sk
     }).collect())
 }
@@ -242,12 +259,23 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
     loop {
         let now = chrono::Local::now().naive_local();
         let store = Store::new(dir.clone());
-        let skills = store.skills();
-        // `try_workspaces`, not `workspaces()`: a fire is refused when its pin
-        // resolves to nothing, so an unreadable file read as "there are no
-        // workspaces" would refuse every scheduled run — and an occurrence is
-        // attempted at most once, so that refusal is not retried. Skipping the
-        // tick instead stamps nothing, and the next tick 30 s later resolves it.
+        // `try_*`, not the best-effort readers: both files are read here to act
+        // on what is *absent* from them, which is the one thing `read_vec`
+        // cannot report honestly. An unreadable `workspaces.json` read as "there
+        // are no workspaces" would refuse every scheduled run — and an
+        // occurrence is attempted at most once, so that refusal is not retried.
+        // An unreadable `skills.json` read as "there are no scenarios" would
+        // prune `schedule_state.json` down to nothing further below, losing
+        // every rule's `lastRun` and re-arming all of them. Skipping the tick
+        // stamps nothing, and the next tick 30 s later resolves it.
+        let skills = match store.try_skills() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: failed to read skills.json ({e}); schedules wait for the next tick");
+                tokio::time::sleep(TICK_CAP).await;
+                continue;
+            }
+        };
         let workspaces = match store.try_workspaces() {
             Ok(w) => w,
             Err(e) => {
@@ -377,6 +405,7 @@ mod tests {
                 defaults: Default::default(),
                 enabled: true,
             }),
+            pinned_by_migration: false,
         }
     }
 
@@ -422,6 +451,20 @@ mod tests {
         assert_eq!(out[0].workspace_id.as_deref(), Some("a"));
         assert_eq!(out[1].workspace_id.as_deref(), Some("b"), "an existing pin is not overwritten");
         assert_eq!(out[2].workspace_id, None, "a scenario with no schedule needs no pin");
+        assert!(out[0].pinned_by_migration, "the stamp is marked as inferred");
+        assert!(!out[1].pinned_by_migration, "somebody's own pin is not");
+    }
+
+    /// A paused schedule is not stamped. A pin decides visibility as well as
+    /// where a run lands — `visibleSkills` exempts an *enabled* schedule from
+    /// workspace scoping and nothing else — so stamping one that fires nowhere
+    /// would delete it from every other workspace's sidebar to preserve a
+    /// behaviour it does not have.
+    #[test]
+    fn a_paused_schedule_keeps_its_run_of_every_workspace() {
+        let mut paused = skill("s1", None, true);
+        paused.schedule.as_mut().unwrap().enabled = false;
+        assert!(pin_scheduled(&[paused], Some("a")).is_none());
     }
 
     /// Nothing to stamp with: the scenario stays unpinned and refuses visibly,
@@ -451,6 +494,23 @@ mod tests {
         s.save_skills(&repinned).unwrap();
         migrate_pins(&s);
         assert_eq!(s.skills()[0].workspace_id.as_deref(), Some("b"));
+    }
+
+    /// The mark is the person's to clear, and saving the scenario is how. Until
+    /// then the pin is this machine's guess and stays off the wire
+    /// (`sync::projection`).
+    #[test]
+    fn saving_a_migrated_scenario_makes_its_pin_the_persons_own() {
+        let s = Store::new(tmp());
+        s.save_workspaces(&[ws("a")]).unwrap();
+        s.save_ui_state(&UiStatePatch { active_workspace_id: Some("a".into()), ..Default::default() }).unwrap();
+        s.save_skills(&[skill("s1", None, true)]).unwrap();
+        migrate_pins(&s);
+        assert!(s.skills()[0].pinned_by_migration);
+
+        s.upsert_skill(s.skills().remove(0)).unwrap();
+        assert!(!s.skills()[0].pinned_by_migration);
+        assert_eq!(s.skills()[0].workspace_id.as_deref(), Some("a"), "the pin itself is kept");
     }
 
     /// A stored active workspace that no longer exists is not a pin: stamping it

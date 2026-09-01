@@ -2394,7 +2394,8 @@ export function startApp(role: WindowRole): Promise<void> {
     (skill) => { void launchScenario(skill); },
     (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
      () => workspaces.active?.name ?? null,
-     (skill) => openHistoryFor(skill));
+     (skill) => openHistoryFor(skill),
+     (id) => workspaces.all.find((w) => w.id === id)?.name ?? null);
   // Deleting a workspace strands the scenarios pinned to it — the confirmation
   // says how many before it happens.
   workspaces.setSkillsSource(() => skills.all);

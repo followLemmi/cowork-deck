@@ -524,6 +524,11 @@ export function skillForm(
   /** Name of the active workspace, shown in the schedule preview so "where
    *  will this run" is answered before saving rather than after. */
   activeWorkspaceName: string | null = null,
+  /** Name of the workspace `initial.workspaceId` names, when the scenario is
+   *  already pinned to one. Shown instead of the active workspace's name,
+   *  because for a scheduled scenario those two routinely differ — see the pin
+   *  note below. Ignored when there is no pin to describe. */
+  pinnedWorkspaceName: string | null = null,
 ): Promise<{ name: string; icon: string; prompt: string; workspaceId: string | null; schedule: Schedule | null } | null> {
   return new Promise((resolve) => {
     const { box, close: closeDialog } = openDialog({
@@ -571,6 +576,24 @@ export function skillForm(
     const promptField = document.createElement("textarea");
     promptField.className = "modal-input form-prompt"; promptField.rows = 4;
     promptField.value = initial?.prompt ?? "";
+
+    // Where a save will pin this scenario, and what to call that place.
+    //
+    // A pin that already exists is kept, never recomputed from what is on
+    // screen. `visibleSkills` shows every enabled schedule in *every* workspace
+    // — a nightly job fires regardless of what is open, so its row is reachable
+    // everywhere — which makes "edit a scenario pinned somewhere else" the
+    // ordinary case rather than a corner. Recomputing the pin there would move
+    // an unattended `claude` into another repository on an edit of the hour:
+    // #249 again, reached the long way round and with nothing said about it.
+    // The checkbox decides whether there is a pin; it does not decide which.
+    //
+    // An orphan is the one scenario that arrives here unpinned on purpose (see
+    // `SkillsPanel.edit`): its workspace is gone, and picking one is what the
+    // row's own tooltip sends people to this dialog to do.
+    const pinId = initial?.workspaceId ?? activeWorkspaceId;
+    const pinName = initial?.workspaceId ? pinnedWorkspaceName : activeWorkspaceName;
+    const pinnedElsewhere = initial?.workspaceId != null && initial.workspaceId !== activeWorkspaceId;
 
     const scope = document.createElement("input");
     scope.className = "form-scope"; scope.type = "checkbox";
@@ -673,7 +696,7 @@ export function skillForm(
     const preview = document.createElement("div");
     preview.className = "form-sched-preview";
     const syncPreview = () => {
-      const wsName = scope.checked ? (activeWorkspaceName ?? null) : null;
+      const wsName = scope.checked ? pinName : null;
       preview.textContent = schedulePreview(readPreset(), new Date(), wsName);
     };
     for (const el of [kind, weekday, hour, minute, scope]) {
@@ -699,7 +722,13 @@ export function skillForm(
     // mouse was last.
     const SCOPE_HINT = "otherwise the scenario is visible and runs in any";
     const SCOPE_HINT_SCHEDULED = "a schedule runs unattended, so it needs one workspace to run in";
-    const scopeRow = labeledCheck("Only for the current workspace", scope, SCOPE_HINT);
+    // Named, not "the current workspace", when the pin is not the workspace on
+    // screen — otherwise the label would describe the box as doing something
+    // the save deliberately does not do.
+    const scopeRow = labeledCheck(
+      pinnedElsewhere ? `Only for ${pinName ? `“${pinName}”` : "the workspace it is pinned to"}`
+        : "Only for the current workspace",
+      scope, SCOPE_HINT);
     const scopeHint = scopeRow.querySelector(".form-check-hint") as HTMLElement;
     // What the person chose for themselves, kept while the schedule overrides it
     // — unticking "On a schedule" must give their own answer back, not ours.
@@ -754,7 +783,7 @@ export function skillForm(
       // the schedule *is* the pin (#249), and `syncScope` only makes that
       // visible. Validation below is what refuses when there is no workspace
       // open to pin it to.
-      const workspaceId = scope.checked || schedEnabled.checked ? activeWorkspaceId : null;
+      const workspaceId = scope.checked || schedEnabled.checked ? pinId : null;
       const v = validateSchedule(schedEnabled.checked, preset, pr, defaults, workspaceId);
       if (!v.ok) return showError(schedError, v.error);
       close({
