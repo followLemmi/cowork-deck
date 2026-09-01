@@ -1568,11 +1568,12 @@ export class Deck {
         this.deckEl.appendChild(t.el);
       }
       if (this.strip) { this.strip.remove(); this.strip = null; }
-      this.onZoom?.(false);
-      // Last, so the panel is appended after the tiles it replaces have been moved —
-      // and here rather than in each caller, because this is the one function every
-      // path that changes what the deck holds already goes through.
+      // Before the listener, so the panel is appended after the tiles it replaces
+      // have been moved — and here rather than in each caller, because this is the
+      // one function every path that changes what the deck holds already goes
+      // through.
       this.renderEmpty();
+      this.notifyZoom(false);
       return;
     }
     // A zoomed session is a session, so the deck is not empty.
@@ -1583,7 +1584,6 @@ export class Deck {
       this.strip = document.createElement("div");
       this.strip.className = "deck-strip";
     }
-    this.onZoom?.(true);
     // Tiles outside this zoom — every other workspace's — go back to the deck
     // with neither role. They are hidden, so nothing of this shows; but a zoom
     // now survives a workspace switch, so the grid branch above is no longer
@@ -1614,6 +1614,7 @@ export class Deck {
       t.tools.setZoomed(false);
       this.strip.appendChild(t.el);
     }
+    this.notifyZoom(true);
   }
 
   // FLIP: measure visible tiles (First), run the layout mutation (Last),
@@ -1719,6 +1720,31 @@ export class Deck {
    *  behaviour wired at five call sites is a behaviour with four bugs in it. */
   setZoomListener(fn: (zoomed: boolean) => void) { this.onZoom = fn; }
   private onZoom: ((zoomed: boolean) => void) | null = null;
+  /** What the listener was last told, and the reason it is told anything at all
+   *  from one place.
+   *
+   *  Two rules, both learned from the listener re-entering `applyLayout`:
+   *
+   *  - **Told last.** The listener closes the workspace panel, which can hand the
+   *    borrowed zoom back — an `exitZoom` that re-enters `applyLayout` and, in
+   *    its grid branch, drops the strip. Told from the middle of the zoom branch,
+   *    that left the outer call appending a strip that was now `null`. Told after
+   *    the layout is whole, a re-entrant call is just the next layout.
+   *  - **Told on the edge.** `applyLayout` runs on every launch, close and
+   *    workspace switch, and it used to announce a zoom on each of them — closing
+   *    a panel and collapsing a sidebar the person may have opened since. What
+   *    the listener is for is the deck entering and leaving zoom, not repeating
+   *    that it is still in one.
+   *
+   *  Starts at `false` and is not replayed on registration, which is honest
+   *  because the listener is wired once at boot — before there is a tile to
+   *  zoom, let alone a zoom. */
+  private zoomTold = false;
+  private notifyZoom(zoomed: boolean) {
+    if (zoomed === this.zoomTold) return;
+    this.zoomTold = zoomed;
+    this.onZoom?.(zoomed);
+  }
 
   /** Zoom the active tile and say whether that is what happened.
    *
@@ -1764,6 +1790,24 @@ export class Deck {
     if (this.zoomedSession === null) return false;
     this.zoomTo(null);
     return true;
+  }
+
+  /** Leave the zoom of ONE named workspace, whether or not it is on screen.
+   *
+   *  For the borrower that has to give back exactly what it took: `zoomActive`
+   *  zooms the workspace showing at the time, and a zoom now belongs to that
+   *  workspace rather than to the deck. Somebody can switch workspace between
+   *  the taking and the giving back — the workspace panel's wide mode survives
+   *  a switch, the diff inside it does not — and `exitZoom` would then un-zoom
+   *  whatever is on screen instead: a zoom the person made themselves goes, and
+   *  the borrowed one stays on for as long as the deck lives.
+   *
+   *  Off screen there is no layout to redo, so the entry is simply dropped;
+   *  coming back to that workspace then finds a grid, which is what it was
+   *  before the borrowing. */
+  exitZoomIn(workspaceId: string | null): boolean {
+    if (workspaceId === this.activeWorkspaceId) return this.exitZoom();
+    return this.zoomedByWorkspace.delete(workspaceId);
   }
 
   /** Give a tile up because another window has taken its session over.

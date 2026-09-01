@@ -477,6 +477,64 @@ describe("Zoom is remembered per workspace", () => {
     deck.setActiveWorkspace(WS.id);
     expect((deck as any).deckEl.classList.contains("is-zoomed")).toBe(false);
   });
+
+  // The workspace panel borrows a zoom to take the deck's width for a diff, and
+  // gives it back when the diff closes. The panel stays wide across a workspace
+  // switch and the diff does not, so the giving back can land in a workspace
+  // that never lent anything.
+  it("gives a borrowed zoom back to the workspace that lent it", async () => {
+    const { deck, deckEl } = await twoWorkspaces();
+
+    deck.zoomTo("b");                 // what the panel took, in WS
+    deck.setActiveWorkspace(WS2.id);
+    deck.zoomTo("d");                 // and a zoom the person made themselves
+    expect(deck.exitZoomIn(WS.id)).toBe(true);
+
+    // WS2's zoom is untouched: it is not the one that was borrowed.
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(tileEl(deck, "d"));
+    // And WS is a grid again rather than holding a zoom nothing will give back.
+    deck.setActiveWorkspace(WS.id);
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+    expect(deck.exitZoomIn(WS.id)).toBe(false); // nothing left to give back
+  });
+
+  // `applyLayout` tells the zoom listener, and the listener closes the workspace
+  // panel — which can hand a borrowed zoom back, re-entering `applyLayout`. Told
+  // from the middle of the zoom branch, that dropped the strip under the outer
+  // call, which then appended `null` and threw.
+  it("survives a listener that leaves the zoom on being told about it", async () => {
+    const { deck, deckEl } = await twoWorkspaces();
+
+    deck.zoomTo("b");
+    deck.setActiveWorkspace(WS2.id);
+    let armed = true;
+    deck.setZoomListener((zoomed) => { if (zoomed && armed) { armed = false; deck.exitZoom(); } });
+
+    deck.setActiveWorkspace(WS.id);   // restores b's zoom, and the listener drops it
+
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+    expect(deckEl.querySelector(".deck-strip")).toBe(null);
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(null);
+  });
+
+  // Entering and leaving zoom is what the listener is for. It collapses a panel
+  // and closes a page, and `applyLayout` runs on every launch, close and switch —
+  // so being told again on each of those closed a panel the person had reopened.
+  it("tells the zoom listener on the edge, not on every layout", async () => {
+    const { deck } = await twoWorkspaces();
+
+    deck.zoomTo("b");
+    deck.setActiveWorkspace(WS2.id);
+    deck.zoomTo("d");
+
+    const told: boolean[] = [];
+    deck.setZoomListener((zoomed) => { told.push(zoomed); });
+    deck.setActiveWorkspace(WS.id);   // zoomed before, zoomed after
+    expect(told).toEqual([]);
+
+    deck.exitZoom();
+    expect(told).toEqual([false]);
+  });
 });
 
 // The list is rebuilt via innerHTML on every poll — five seconds apart. Rows
