@@ -506,6 +506,17 @@ body {
    which is what makes it read as part of the window rather than as a list inside
    it. The height is fixed so switching sections does not resize the window under
    the pointer — the pane scrolls instead. */
+/* Both constants are sized off the CONTENT and not off a round number, because the
+   window was smaller than the settings it held. 560px of height left a section about
+   390px of pane once the head and the foot had taken theirs, and Scenarios wanted
+   most of that for two switches and their explanations — a section reached the
+   scrollbar before it had said much, and the rail is built to grow. 860px of width
+   was the same story from the other side: `.set-kv-value` ellipsises rather than
+   wraps, so the paths the width existed for were the thing being cut off mid-string.
+   The pane still scrolls — a section that genuinely does not fit must — but that is
+   now the exception rather than the state the window opens in.
+   `90vw` and not `94vw`: `.modal-box` carries `max-width: 90vw` and one class beats
+   none, so 94 has never been the number that rendered. Written as what happens. */
 /* Two classes, and the second one is load-bearing: `.modal-box` is declared a
    thousand lines below this and carries `padding: var(--sp-5)` and `gap: var(--sp-4)`.
    One class each, later wins — so `padding: 0` here lost, and the window this file
@@ -516,8 +527,8 @@ body {
    Raised specificity rather than moving the rule, because this block belongs beside
    the `.set-*` rules it governs and not beside a base it only overrides. */
 .modal-box.modal-box--settings {
-  width: min(860px, 94vw); padding: 0; gap: 0;
-  height: min(560px, 88vh); overflow: hidden;
+  width: min(1120px, 90vw); padding: 0; gap: 0;
+  height: min(820px, 88vh); overflow: hidden;
 }
 /* Rail of sections and one pane. A SECTION IS ONE ROW HERE AND ONE PANE THERE —
    that is the whole extensibility claim, and it is why this is a rail instead of
@@ -564,6 +575,14 @@ body {
   display: flex; flex-direction: column; gap: var(--sp-3);
 }
 .set-body[hidden] { display: none; }
+/* The window is wide for the paths, and prose does not want the width the paths
+   asked for: a hint set across the whole pane runs past 110 characters a line,
+   which is a hint nobody finishes. So the extra width goes to the paths and the
+   prose keeps a measure — the same bargain `.set-pane-sub` above already struck.
+   Released again below 700px, where the rail folds and there is no extra width to
+   give back. */
+.set-body .form-hint,
+.set-body .form-check-hint { max-width: 70ch; }
 /* One quiet way out, and no OK. Every section here applies as it is touched —
    connecting a repository cannot be un-done by a Cancel, and a button that
    promised it would be lying. */
@@ -577,6 +596,8 @@ body {
   .set-nav { flex-direction: row; flex-wrap: wrap; }
   .set-nav-item { width: auto; }
   .set-dot { margin-left: 0; }
+  .set-body .form-hint,
+  .set-body .form-check-hint { max-width: none; }
 }
 /* A section heading with a rule that reaches the box's edges, which is what makes
    two groups read as two rather than as one list with a bold row in it. */
