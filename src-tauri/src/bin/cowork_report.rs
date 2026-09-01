@@ -34,10 +34,16 @@ fn main() {
     let buf = rx.recv_timeout(Duration::from_millis(300)).unwrap_or_default();
     let notification_type = extract_field(&buf, "notification_type");
     // Where this conversation's transcript is *now*. Claude Code puts it in
-    // every hook payload, and it is the only thing that survives `/clear`:
-    // clearing mints a new session id and a new file, so the id the deck
+    // every hook payload, and it does not go stale the way the id in argv above
+    // does: `/clear` mints a new session id and a new file, so the id the deck
     // launched with stops naming the conversation the person is in.
     let transcript_path = extract_field(&buf, "transcript_path");
+    // And which conversation that is — the other half of the same fact, carried
+    // for the same reason. The app resumes this rather than the launch id, or a
+    // restart brings back the conversation the person cleared away (#199).
+    // Reported on every event and never filtered here: what to do with it is
+    // the app's decision, and a reporter that judged would have to know why.
+    let reported_session = extract_field(&buf, "session_id");
 
     let mut payload = format!("{{\"session\":\"{}\",\"kind\":\"{}\"", esc(session), esc(kind));
     if let Some(nt) = notification_type {
@@ -45,6 +51,9 @@ fn main() {
     }
     if let Some(tp) = transcript_path {
         payload.push_str(&format!(",\"transcriptPath\":\"{}\"", esc(&tp)));
+    }
+    if let Some(rs) = reported_session {
+        payload.push_str(&format!(",\"reportedSession\":\"{}\"", esc(&rs)));
     }
     payload.push_str("}\n");
 
@@ -67,7 +76,8 @@ fn esc(s: &str) -> String {
 /// Minimal string-field extractor for a flat JSON object. Avoids a serde dep
 /// in the reporter to keep it tiny; hook payload fields we need are strings.
 /// Assumes flat, quote-free string values (Claude Code's internal
-/// notification_type strings and a transcript path), not arbitrary JSON.
+/// notification_type strings, a transcript path, a session uuid), not arbitrary
+/// JSON.
 ///
 /// The key is only accepted where a key can appear — directly after `{` or `,`,
 /// ignoring whitespace. Without that guard the scanner took the first textual
@@ -75,7 +85,9 @@ fn esc(s: &str) -> String {
 /// model that wrote `"transcript_path":"/tmp/evil"` in its reply would have been
 /// read as the payload's own field. Field order happens to save it today —
 /// `transcript_path` is the second key — which is exactly the kind of accident
-/// that stops being true.
+/// that stops being true. `session_id` is read the same way and needs the guard
+/// for the same reason: it decides which conversation a restart resumes, so a
+/// model that wrote one in its reply must not be able to name it.
 fn extract_field(json: &str, key: &str) -> Option<String> {
     let needle = format!("\"{}\"", key);
     let mut from = 0usize;

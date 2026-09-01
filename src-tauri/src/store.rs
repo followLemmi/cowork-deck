@@ -720,7 +720,7 @@ mod tests {
                 workspace_id: Some("w1".into()), task_id: Some("01AAA".into()),
                 scheduled_skill_id: None, user_name: None,
                 name_kind: Some(NameKind::Context), skill_id: None, run_id: None,
-                owner: None, cli_kind: None,
+                owner: None, cli_kind: None, resume_id: None,
             },
             SessionEntry {
                 session_id: "s2".into(), cwd: "/tmp/b".into(), name: "terminal · P".into(),
@@ -728,7 +728,9 @@ mod tests {
                 // The whole point of the field: this one survives the round trip.
                 user_name: Some("the one I must not close".into()),
                 name_kind: Some(NameKind::Placeholder), skill_id: None, run_id: None,
-                owner: None, cli_kind: None,
+                // The other field a stale copy of which would lose work: this
+                // one says which conversation the next launch resumes.
+                owner: None, cli_kind: None, resume_id: Some("after-the-clear".into()),
             },
         ];
         s.save_layout(MAIN_WINDOW, &entries).unwrap();
@@ -749,7 +751,7 @@ mod tests {
             session_id: session_id.into(), cwd: "/tmp".into(), name: session_id.into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: None, name_kind: None, skill_id: None, run_id: None,
-            owner: owner.map(Into::into), cli_kind: None,
+            owner: owner.map(Into::into), cli_kind: None, resume_id: None,
         }
     }
 

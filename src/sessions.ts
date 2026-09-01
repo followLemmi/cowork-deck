@@ -72,6 +72,15 @@ interface Tile {
    *  alternative was discovering at the second reader that the shape had
    *  nowhere to live. */
   cliKind?: CliKind;
+  /** The conversation this tile resumes, once it is no longer the one it was
+   *  launched with. Absent until a `/clear` happens.
+   *
+   *  Carried here for one reason: to be persisted. The backend resolves what to
+   *  resume on its own — from what hooks reported during this app run, and from
+   *  the layout entry this field writes — so nothing on the launch paths reads
+   *  it. What it buys is the restart *after* the app has been closed, where the
+   *  layout is the only copy left (#199). */
+  resumeId?: string | null;
 }
 
 /** The four things that can name a tile, in one place so no reader can hold a
@@ -444,9 +453,11 @@ export class Deck {
       // so clearing that name falls back to a title already in hand instead of
       // going blank for a tick.
       //
-      // Nothing here writes `sessions.json`: the automatic title is not
+      // Almost nothing here writes `sessions.json`: the automatic title is not
       // persisted, so "do not save the layout every five seconds" is not a
-      // problem that needs a dirty check — it does not arise.
+      // problem that needs a dirty check — it does not arise. The one exception
+      // is the conversation a `/clear` moved a session into, which is persisted
+      // *when it changes* — once per clear, not once per tick. See below.
       try {
         const snaps = await sessionSnapshots(tiles.map((t) => t.session));
         for (const t of tiles) {
@@ -473,6 +484,22 @@ export class Deck {
           // The BREAKDOWN does not ride it — that is `session_activity`, called
           // only while a panel is open.
           setActivityCount(t.activityBtn, snap.calls);
+          // The conversation this tile is in, if a `/clear` has moved it. Kept
+          // and persisted here and nowhere else: the tile is what
+          // `persistLayout` serialises, and the layout entry is the only copy
+          // that survives a restart — the backend's own record of it does not
+          // (#199). A write only when the answer changed, so this stays what its
+          // comment above says it is: a tick that does not touch
+          // `sessions.json`. Once per `/clear`, not once per tick.
+          //
+          // A `null` never clears the slot, for the reason the title below does
+          // not: the backend answers `null` for a restored tile until its first
+          // hook arrives, and taking the stored id away on that would put the
+          // pre-clear conversation back the next time the app was closed.
+          if (snap.resumeId && snap.resumeId !== t.resumeId) {
+            t.resumeId = snap.resumeId;
+            void this.persistLayout();
+          }
           // A missing title never clears the slot. Measured over 96 transcripts a
           // title is minted once and never revised, so a null here is either "not
           // yet" or "this read did not see it" — and blanking a name on the
@@ -807,6 +834,9 @@ export class Deck {
     /** Which agent CLI this tile runs. Absent is `claude` — every launch path,
      *  and every entry restored from a layout written before the field. */
     cliKind?: CliKind;
+    /** The conversation a restored or handed-over tile resumes, read out of its
+     *  layout entry. Absent for a fresh launch, which has not been cleared. */
+    resumeId?: string | null;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const grabAttention = opts.grabAttention ?? true;
@@ -984,6 +1014,7 @@ export class Deck {
       // at all — which is a different thing from naming the default one, and
       // the panel says so in its own sentence.
       cliKind: isCommand ? undefined : opts.cliKind ?? "claude",
+      resumeId: opts.resumeId ?? null,
     };
     this.applyName(tile);
     this.tiles.set(session, tile);
@@ -1199,6 +1230,11 @@ export class Deck {
           // which is why the field is a string on the way to disk and never an
           // enum that could fail the parse and drop the tile.
           cliKind: e.cliKind ?? "claude",
+          // Which conversation to resume, when a `/clear` moved this session off
+          // the id it was launched with. The backend reads the entry itself —
+          // this is what keeps the field alive across the *next* restart, since
+          // `persistLayout` writes what the tiles hold (#199).
+          resumeId: e.resumeId ?? null,
           // Only a tile that was itself launched from a scenario gets a record.
           // A restored card session or bare "+ session" stays out of the
           // journal, which answers "what did my scenarios do" and nothing wider.
@@ -1732,7 +1768,7 @@ export class Deck {
           kind: t.kind, scheduledSkillId: t.scheduledSkillId, taskId: t.taskId,
           userName: t.names.user,
           nameKind: t.names.context === null ? "placeholder" : "context",
-          skillId: t.skillId, runId: t.runId,
+          skillId: t.skillId, runId: t.runId, resumeId: t.resumeId,
         }])[0],
         scrollback: t.panel.serialize(),
       }));
@@ -1751,6 +1787,10 @@ export class Deck {
         // know, restores as `claude` — the tile behaves exactly as before, and
         // an unrecognised CLI is a session the deck can still show.
         cliKind: e.cliKind ?? "claude",
+        // Travels with the tile, or the window taking it over persists an entry
+        // that has forgotten the `/clear` — and the next restart resumes what
+        // the person cleared away (#199).
+        resumeId: e.resumeId ?? null,
         attach: { scrollback: e.scrollback },
         grabAttention: false,
       });
@@ -1797,6 +1837,7 @@ export class Deck {
       skillId: t.skillId,
       runId: t.runId,
       cliKind: t.cliKind,
+      resumeId: t.resumeId,
     })));
     // Skip a write that would change nothing. Not something the naming needs —
     // it is here because it lives in the function this change touches, and it
@@ -2147,7 +2188,11 @@ export function nextWaitingAcross(
  *  not persisted at all: `startPolling()` fires a tick immediately, so a restored
  *  tile refills it within one round trip and a stored copy could only go stale.
  *  A hand-typed name goes in its own field, and `nameKind` records which of the
- *  two kinds `name` is, so the next launch knows whether a title may replace it. */
+ *  two kinds `name` is, so the next launch knows whether a title may replace it.
+ *
+ *  `resumeId` is the one field here that a *stale* copy of would lose work: it
+ *  says which conversation the next launch resumes, and its absence means the
+ *  launch id. See `SessionEntry.resumeId` (#199). */
 export function serializeTiles(
   tiles: {
     session: string; workspacePath: string; name: string; workspaceId?: string;
@@ -2158,6 +2203,7 @@ export function serializeTiles(
     skillId?: string;
     runId?: string;
     cliKind?: CliKind;
+    resumeId?: string | null;
   }[],
 ): SessionEntry[] {
   return tiles
@@ -2177,6 +2223,10 @@ export function serializeTiles(
       // a key that says what its absence already says. Every entry on disk today
       // is a Claude session, and this keeps them byte-identical.
       ...(t.cliKind && t.cliKind !== "claude" ? { cliKind: t.cliKind } : {}),
+      // Written only once a `/clear` has moved this session off the id it was
+      // launched with: absent is a session still in its launch conversation,
+      // which is what every entry on disk today says by having no key at all.
+      ...(t.resumeId ? { resumeId: t.resumeId } : {}),
       nameKind: t.nameKind ?? "context",
     }));
 }

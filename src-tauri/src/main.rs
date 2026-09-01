@@ -16,6 +16,7 @@ mod run_journal;
 mod runs;
 mod scheduler;
 mod tasks_cmd;
+mod resume_ids;
 mod transcripts;
 mod usage;
 mod which;

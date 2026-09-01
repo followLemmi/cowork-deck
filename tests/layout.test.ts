@@ -79,6 +79,26 @@ describe("serializeTiles", () => {
     expect(result[0].cliKind).toBe("copilot");
   });
 
+  // #199. `sessionId` stays the launch id — the pty key, and the key every hook
+  // event is attributed by — and the conversation to resume goes in its own
+  // field, absent until a `/clear` has moved the session off that id.
+  it("omits the conversation to resume for a session that has not been cleared", () => {
+    const result = serializeTiles([
+      { session: "s1", workspacePath: "/a", name: "N" },
+      { session: "s2", workspacePath: "/a", name: "N", resumeId: null },
+    ]);
+    expect(Object.keys(result[0])).not.toContain("resumeId");
+    expect(Object.keys(result[1])).not.toContain("resumeId");
+  });
+
+  it("persists the conversation a cleared session must resume", () => {
+    const result = serializeTiles([
+      { session: "s1", workspacePath: "/a", name: "N", resumeId: "after-the-clear" },
+    ]);
+    expect(result[0].sessionId).toBe("s1");
+    expect(result[0].resumeId).toBe("after-the-clear");
+  });
+
   it("omits a hand-typed name that was cleared", () => {
     const result = serializeTiles([
       { session: "s1", workspacePath: "/a", name: "session · relay", userName: null },

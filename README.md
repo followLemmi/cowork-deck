@@ -91,6 +91,8 @@ four things worth knowing about a session you are not watching.*
   and waits. What is killed is the whole process *session*, so a `npm run build` inside a shell dies
   with it rather than outliving the app.
 - **Restart resumes the conversation** (`claude --resume`), and yesterday's tiles come back on launch.
+  The conversation as it is *now*: `/clear` starts a new one, and a restart — or tomorrow's launch —
+  follows it there rather than bringing back what you cleared away.
 - **Broadcast** types one thing into several sessions at once.
 - **What a session actually did.** The token badge says what it cost; the chart button beside it, or a
   click on the badge, says what it ran — see below.

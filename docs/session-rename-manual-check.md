@@ -42,7 +42,11 @@ itself.
 - [ ] Launch from a tracker card (`☑ …`) and from a scheduled scenario. Both keep their names through several ticks, whatever the transcript says.
 - [ ] **`/clear` inside a session.** Prompt on a new topic and wait a tick: the tile takes the *new* topic's name, and its token count starts climbing again from the new conversation. This is the one the deck used to get wrong — it read the transcript the session was launched on, which `/clear` abandons.
 - [ ] `/clear` on a tile that carries a hand-typed name — the typed name still wins, and clearing the field afterwards reveals the *post*-`/clear` title, not the one before it.
-- [ ] `/clear`, then ⟳ or a restart of the app — **known bug, #199**: the pre-`/clear` conversation comes back. Confirm it still behaves that way rather than something worse, and leave it to that issue.
+- [ ] **`/clear`, then ⟳.** The tile ends the session (`/exit`, or let it end), press ⟳, and ask the agent what you were just talking about: it comes back into the **post**-`/clear` conversation, not the one you cleared away (#199). Its name and token count carry straight on rather than jumping back.
+- [ ] **`/clear`, then quit the app and reopen it.** Same question, same answer: the restored tile is in the conversation you were working in. This is the path that used to lose it — the pre-`/clear` conversation came back and the real one was left on disk with nothing pointing at it.
+- [ ] Look at `sessions.json` in the app's configuration directory (Settings says where). The cleared session's entry has kept its original `sessionId` and gained a `resumeId`; an uncleared session has no `resumeId` key at all.
+- [ ] `/clear` twice in one session, then restart the app — the tile is in the **third** conversation, not the second.
+- [ ] A session nobody has cleared, quit and reopened — it resumes exactly as it always did, and its entry in `sessions.json` is unchanged.
 - [ ] Rename a tile, quit the app, reopen it — the typed name is back. Rename another, clear it, quit and reopen — the automatic name is back.
 - [ ] With six sessions open, watch the token badges over a minute. One IPC call a tick, not six (add a temporary log or watch the process), and the window stays responsive throughout.
 

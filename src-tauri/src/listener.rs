@@ -96,6 +96,15 @@ where
                             // no open record is a no-op there.
                             crate::run_journal::note_transcript(&ev.session, path);
                         }
+                        // The other half of the same line, recorded here for the
+                        // same reason: it arrives on every event, and a `--resume`
+                        // aimed at the launch id does not fail — it brings back
+                        // the conversation the person cleared away, with nothing
+                        // to notice. See `resume_ids`, which ignores an id equal
+                        // to the launch one.
+                        if let Some(reported) = ev.reported_session.as_deref() {
+                            crate::resume_ids::record(&ev.session, reported);
+                        }
                         if let Some(state) =
                             event_kind_to_state(&ev.kind, ev.notification_type.as_deref())
                         {
@@ -213,6 +222,61 @@ mod tests {
         assert_eq!(sess, "sess-old");
         assert_eq!(state, SessionState::Done);
         assert_eq!(crate::transcripts::get("sess-old"), None);
+        assert_eq!(crate::resume_ids::get("sess-old"), None);
+    }
+
+    /// The other half of the `/clear` line: the conversation the session is in
+    /// now. Recorded against the launch id, which is what the deck knows it by
+    /// and what every event is attributed by — so a restart resumes the
+    /// conversation the person is in rather than the one they cleared away
+    /// (#199).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reported_session_id_is_recorded_against_the_launch_id() {
+        let port = start_listener(|_, _| {}).await.unwrap();
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(
+                b"{\"session\":\"sess-launch\",\"kind\":\"start\",\
+                  \"reportedSession\":\"sess-after-clear\"}\n",
+            )
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+
+        for _ in 0..50 {
+            if crate::resume_ids::get("sess-launch").is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            crate::resume_ids::get("sess-launch").as_deref(),
+            Some("sess-after-clear"),
+        );
+        // The deck's own key is untouched: the tile is still this session.
+        assert_eq!(crate::resume_ids::get("sess-after-clear"), None);
+    }
+
+    /// Every event of an uncleared session reports the id it was launched with,
+    /// which is the ordinary case and says nothing new. Recording it would leave
+    /// every session looking forked — see `resume_ids::record`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_reporting_its_own_launch_id_records_nothing() {
+        let (tx, rx) = mpsc::channel::<(String, SessionState)>();
+        let port = start_listener(move |s, st| { tx.send((s, st)).unwrap(); }).await.unwrap();
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(
+                b"{\"session\":\"sess-plain\",\"kind\":\"working\",\
+                  \"reportedSession\":\"sess-plain\"}\n",
+            )
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+
+        // Waited for through the state, which arrives on the same line.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().1, SessionState::Working);
+        assert_eq!(crate::resume_ids::get("sess-plain"), None);
     }
 
     #[test]
