@@ -964,6 +964,15 @@ export class Deck {
     // A panel taking over a live session is born without resize authority: it
     // must not tell the PTY its geometry before it owns the session.
     const panel = new TerminalPanel(session, mount, isCommand, opts.attach !== undefined);
+    // The one state change no hook reports. See `interruptedTurn`.
+    //
+    // Not on a command tile. It runs one command rather than an agent, so it has
+    // no turn to end and prints no hint of its own — the string can only reach
+    // its screen as ordinary output, and `git log` on this branch prints it
+    // literally. Its real ending is its exit, which `onExit` already reports.
+    // A drawer's shell terminal is left out the same way: by never being given
+    // an `onInterrupt`.
+    if (!isCommand) panel.onInterrupt = (s) => this.interruptedTurn(s);
     const names: TileNames = {
       // The placeholder slot always holds the launch string. On a context-named
       // tile it is the same string as `context`, which the resolver never reaches
@@ -1465,7 +1474,41 @@ export class Deck {
     this.renderList();
   }
 
-  private setState(session: string, state: SessionState) {
+  /** A turn this session's terminal ended under an interrupt, which is a turn
+   *  Claude Code's `Stop` hook does not report (#333).
+   *
+   *  Treated exactly as `Stop` would have been — `done`, the state that says the
+   *  agent finished and the prompt is free — and by the same door, so the
+   *  scheduler's overlap guard, the card's status and the pill all read one
+   *  answer. `setState` is enough to carry it to the other windows too: the
+   *  owning window is the source of truth for its own tiles, and `renderList`
+   *  emits `session://waiting` from here.
+   *
+   *  Only from busy. A `done`, `idle` or `ended` tile has nothing to correct,
+   *  and `ended` in particular must never be walked back — the panel's own
+   *  evidence is a screen that has stopped being repainted, which cannot outrank
+   *  a process that is gone. `waitingInput` is included because it is a state a
+   *  running turn can be sitting in: `PermissionRequest` reports it, and nothing
+   *  reports the approval that put the agent back to work.
+   *
+   *  Reported without a notification, which is the one thing here that is NOT
+   *  what `Stop` gets. Every other `done` notification exists because the person
+   *  may not be looking; this one follows a key they just pressed themselves, at
+   *  the tile they were pressing it in, so it is noise every single time. The
+   *  notification is a side effect of the door rather than part of the state
+   *  going through it, and the state is what has to be identical.
+   */
+  private interruptedTurn(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    if (tile.state !== "working" && tile.state !== "waitingInput") return;
+    this.setState(session, "done", { notify: false });
+  }
+
+  /** @param opts.notify Whether a state worth a notification raises one. True
+   *   everywhere but the interrupt path — a reported event may be the first the
+   *   person hears of it, a keystroke of their own never is. */
+  private setState(session: string, state: SessionState, opts: { notify?: boolean } = {}) {
     const tile = this.tiles.get(session);
     if (!tile) return;
     const prev = tile.state;
@@ -1479,7 +1522,7 @@ export class Deck {
     const restartable = tile.kind !== "command" && (state === "ended" || state === "error");
     tile.restartBtn.style.display = restartable ? "inline" : "none";
     this.renderList();
-    if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
+    if (opts.notify !== false && state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       const id = this.notify.register(session);
       sendNotification({
         id, title: `cowork-deck · ${LABEL[state]}`, body: resolveTileName(tile.names),
