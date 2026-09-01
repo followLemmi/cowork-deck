@@ -1,4 +1,4 @@
-use crate::model::{ScheduleRun, SchedulePreset, SCHEDULE_STATE_VERSION};
+use crate::model::{ScheduleRun, SchedulePreset, Skill, Workspace, SCHEDULE_STATE_VERSION};
 use crate::store::Store;
 use chrono::{Datelike, Duration, NaiveDateTime, Timelike};
 use std::path::PathBuf;
@@ -61,6 +61,12 @@ pub fn prev_occurrence(preset: &SchedulePreset, now: NaiveDateTime) -> NaiveDate
 struct FirePayload {
     #[serde(rename = "skillId")]
     skill_id: String,
+    /// Which workspace the run belongs in, resolved here (`resolve_workspace`)
+    /// rather than left to the frontend. `None` when the scenario's pin names
+    /// no workspace that exists: the fire still goes out, so the refusal is
+    /// journalled as `no-workspace` instead of the schedule going quiet.
+    #[serde(rename = "workspaceId")]
+    workspace_id: Option<String>,
     /// The occurrence being fired for. The frontend echoes it back through
     /// `schedule_ack` so a late or duplicated ack cannot stamp the wrong run.
     #[serde(rename = "occurrenceMs")]
@@ -80,6 +86,60 @@ pub enum TickAction {
     Fire(NaiveDateTime),
     /// Nothing owed.
     Idle,
+}
+
+/// Which workspace a scheduled fire runs in: the one the scenario is pinned to,
+/// and nothing else.
+///
+/// The absence of a fallback is the point (#249). An unpinned scenario used to
+/// run in whichever workspace happened to be selected when the schedule fired,
+/// which is a coin flip deciding which repository an unattended `claude` running
+/// `git` and `gh` works in — and it guessed silently. A pin that no longer names
+/// a workspace resolves to nothing for the same reason: refusing is cheap, and
+/// running the prompt in the wrong folder is not.
+pub fn resolve_workspace(pin: Option<&str>, workspaces: &[Workspace]) -> Option<String> {
+    let id = pin?;
+    workspaces.iter().find(|w| w.id == id).map(|w| w.id.clone())
+}
+
+/// The one-time migration that goes with the pin requirement above.
+///
+/// A schedule saved before #249 may carry no pin at all. Under the old rule it
+/// ran in whatever workspace was active, so `ui_state.activeWorkspaceId` is
+/// precisely the workspace this machine would have chosen — stamping it is what
+/// keeps every existing schedule behaving exactly as it did on upgrade.
+///
+/// Returns the rewritten list, or `None` when there is nothing to do. Stamping
+/// happens once because a stamped scenario is no longer unpinned. A scenario is
+/// left alone when there is no stored active workspace to stamp: it then refuses
+/// visibly (`no-workspace`, in the row and in the journal), which is the whole
+/// improvement, rather than being pinned to a guess.
+pub fn pin_scheduled(skills: &[Skill], active: Option<&str>) -> Option<Vec<Skill>> {
+    let active = active?;
+    let needs_pin = |sk: &Skill| sk.schedule.is_some() && sk.workspace_id.is_none();
+    if !skills.iter().any(needs_pin) { return None }
+    Some(skills.iter().cloned().map(|mut sk| {
+        if needs_pin(&sk) { sk.workspace_id = Some(active.to_string()); }
+        sk
+    }).collect())
+}
+
+/// Run `pin_scheduled` against what is on disk, once, at startup.
+///
+/// The stored active workspace is only used if it still exists: a pin to a
+/// deleted workspace would make the scenario an orphan, which is a different
+/// wrong answer, not a migration.
+pub fn migrate_pins(store: &Store) {
+    let skills = store.skills();
+    let workspaces = store.workspaces();
+    let active = store.ui_state().active_workspace_id
+        .filter(|id| workspaces.iter().any(|w| &w.id == id));
+    let Some(pinned) = pin_scheduled(&skills, active.as_deref()) else { return };
+    if let Err(e) = store.save_skills(&pinned) {
+        // Nothing else to do about it: the schedules that would have been
+        // stamped stay unpinned, and refuse rather than run in the wrong place.
+        eprintln!("error: failed to pin scheduled scenarios to a workspace ({e})");
+    }
 }
 
 /// Identity of a firing rule. Compared, never parsed — two schedules are "the
@@ -183,6 +243,19 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
         let now = chrono::Local::now().naive_local();
         let store = Store::new(dir.clone());
         let skills = store.skills();
+        // `try_workspaces`, not `workspaces()`: a fire is refused when its pin
+        // resolves to nothing, so an unreadable file read as "there are no
+        // workspaces" would refuse every scheduled run — and an occurrence is
+        // attempted at most once, so that refusal is not retried. Skipping the
+        // tick instead stamps nothing, and the next tick 30 s later resolves it.
+        let workspaces = match store.try_workspaces() {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("error: failed to read workspaces.json ({e}); schedules wait for the next tick");
+                tokio::time::sleep(TICK_CAP).await;
+                continue;
+            }
+        };
         let mut state = store.schedule_state();
         let mut soonest: Option<NaiveDateTime> = None;
         let mut changed = false;
@@ -223,6 +296,7 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
                     let occurrence_ms = to_epoch_ms(occ);
                     let _ = app.emit("schedule://fire", FirePayload {
                         skill_id: sk.id.clone(),
+                        workspace_id: resolve_workspace(sk.workspace_id.as_deref(), &workspaces),
                         occurrence_ms,
                         catch_up: is_catch_up(occ, now),
                     });
@@ -279,10 +353,117 @@ pub async fn run(app: AppHandle, dir: PathBuf, ready: Arc<Notify>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Schedule, UiStatePatch};
     use chrono::NaiveDate;
 
     fn dt(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(y, mo, d).unwrap().and_hms_opt(h, mi, 0).unwrap()
+    }
+
+    fn ws(id: &str) -> Workspace {
+        Workspace {
+            id: id.into(), name: id.into(), path: format!("/tmp/{id}"), color: "#61afef".into(),
+            github: None, tracker: None, repo: None,
+        }
+    }
+
+    /// A scenario, scheduled or not, pinned or not.
+    fn skill(id: &str, pin: Option<&str>, scheduled: bool) -> Skill {
+        Skill {
+            id: id.into(), name: id.into(), icon: "play".into(), prompt: "go".into(),
+            workspace_id: pin.map(str::to_string),
+            schedule: scheduled.then(|| Schedule {
+                preset: SchedulePreset::Daily { hour: 9, minute: 0 },
+                defaults: Default::default(),
+                enabled: true,
+            }),
+        }
+    }
+
+    /// A fresh store directory, unique per call.
+    fn tmp() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let mut d = std::env::temp_dir();
+        d.push(format!("coworkdeck-sched-test-{}", std::process::id()));
+        d.push(format!("{:?}-{}", std::time::SystemTime::now(), SEQ.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// The pin, and only the pin. Under the old rule this returned the active
+    /// workspace when there was no pin, which is what #249 is about.
+    #[test]
+    fn a_fire_resolves_to_the_workspace_the_scenario_is_pinned_to() {
+        let all = [ws("a"), ws("b")];
+        assert_eq!(resolve_workspace(Some("b"), &all).as_deref(), Some("b"));
+    }
+
+    /// No fallback, so an unpinned scenario resolves to nothing and the fire is
+    /// refused rather than landing in whichever workspace was on screen.
+    #[test]
+    fn an_unpinned_scenario_resolves_to_nothing() {
+        assert_eq!(resolve_workspace(None, &[ws("a")]), None);
+    }
+
+    /// A pin to a workspace that has since been deleted is not a licence to pick
+    /// another one.
+    #[test]
+    fn a_pin_to_a_deleted_workspace_resolves_to_nothing() {
+        assert_eq!(resolve_workspace(Some("gone"), &[ws("a"), ws("b")]), None);
+    }
+
+    /// The migration proper: what the old fallback would have chosen on this
+    /// machine becomes the pin, so no existing schedule changes behaviour.
+    #[test]
+    fn an_unpinned_scheduled_scenario_acquires_the_stored_active_workspace() {
+        let skills = [skill("s1", None, true), skill("s2", Some("b"), true), skill("s3", None, false)];
+        let out = pin_scheduled(&skills, Some("a")).expect("something to migrate");
+        assert_eq!(out[0].workspace_id.as_deref(), Some("a"));
+        assert_eq!(out[1].workspace_id.as_deref(), Some("b"), "an existing pin is not overwritten");
+        assert_eq!(out[2].workspace_id, None, "a scenario with no schedule needs no pin");
+    }
+
+    /// Nothing to stamp with: the scenario stays unpinned and refuses visibly,
+    /// which beats pinning it to a guess.
+    #[test]
+    fn nothing_is_stamped_when_no_workspace_was_ever_active() {
+        assert!(pin_scheduled(&[skill("s1", None, true)], None).is_none());
+    }
+
+    /// Exactly once, and through the store: after the first pass every scheduled
+    /// scenario is pinned, so the second pass has nothing to do and rewrites
+    /// nothing — the person's own repin cannot be undone by the next launch.
+    #[test]
+    fn the_migration_stamps_a_scenario_once_and_then_finds_nothing_to_do() {
+        let s = Store::new(tmp());
+        s.save_workspaces(&[ws("a"), ws("b")]).unwrap();
+        s.save_ui_state(&UiStatePatch { active_workspace_id: Some("a".into()), ..Default::default() }).unwrap();
+        s.save_skills(&[skill("s1", None, true)]).unwrap();
+
+        migrate_pins(&s);
+        assert_eq!(s.skills()[0].workspace_id.as_deref(), Some("a"));
+
+        // Repinned by hand, then another launch: the migration is done with this
+        // scenario and must not drag it back to the active workspace.
+        let mut repinned = s.skills();
+        repinned[0].workspace_id = Some("b".into());
+        s.save_skills(&repinned).unwrap();
+        migrate_pins(&s);
+        assert_eq!(s.skills()[0].workspace_id.as_deref(), Some("b"));
+    }
+
+    /// A stored active workspace that no longer exists is not a pin: stamping it
+    /// would turn every migrated schedule into an orphan.
+    #[test]
+    fn the_migration_ignores_a_stored_active_workspace_that_is_gone() {
+        let s = Store::new(tmp());
+        s.save_workspaces(&[ws("a")]).unwrap();
+        s.save_ui_state(&UiStatePatch { active_workspace_id: Some("deleted".into()), ..Default::default() }).unwrap();
+        s.save_skills(&[skill("s1", None, true)]).unwrap();
+
+        migrate_pins(&s);
+        assert_eq!(s.skills()[0].workspace_id, None);
     }
 
     #[test]

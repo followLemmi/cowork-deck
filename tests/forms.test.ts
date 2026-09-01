@@ -391,6 +391,63 @@ describe("skillForm", () => {
     expect((await p)!.schedule!.defaults).toEqual({ branch: "main" });
   });
 
+  // #249: a schedule decides which repository an unattended `claude` works in,
+  // so the form ties it to the workspace that is open rather than letting it
+  // follow whichever one happens to be active when it fires.
+  it("pins a scheduled scenario to the current workspace, checkbox or not", async () => {
+    const p = skillForm("ws-1");
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
+    (document.querySelector(".form-prompt") as HTMLTextAreaElement).value = "go";
+    const sched = document.querySelector(".form-sched-enabled") as HTMLInputElement;
+    const scope = document.querySelector(".form-scope") as HTMLInputElement;
+    expect(scope.checked).toBe(false);
+    sched.checked = true;
+    sched.dispatchEvent(new Event("change"));
+    // Ticked *and* frozen: the scope is no longer the person's to answer, and a
+    // checkbox that silently disagreed with what was saved would be worse.
+    expect(scope.checked).toBe(true);
+    expect(scope.disabled).toBe(true);
+
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)!.workspaceId).toBe("ws-1");
+  });
+
+  // And it gives the person's own answer back, rather than leaving the scenario
+  // pinned because a schedule was ticked and untuned again.
+  it("restores the scope choice when the schedule is switched back off", async () => {
+    const p = skillForm("ws-1");
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
+    (document.querySelector(".form-prompt") as HTMLTextAreaElement).value = "go";
+    const sched = document.querySelector(".form-sched-enabled") as HTMLInputElement;
+    const scope = document.querySelector(".form-scope") as HTMLInputElement;
+    sched.checked = true; sched.dispatchEvent(new Event("change"));
+    sched.checked = false; sched.dispatchEvent(new Event("change"));
+    expect(scope.checked).toBe(false);
+    expect(scope.disabled).toBe(false);
+
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)!.workspaceId).toBeNull();
+  });
+
+  // Nothing to pin it to: refused before saving, which is the only moment this
+  // can be prevented rather than discovered at 03:00.
+  it("blocks a schedule when no workspace is open", async () => {
+    const p = skillForm(null);
+    (document.querySelector(".form-name") as HTMLInputElement).value = "Report";
+    (document.querySelector(".form-prompt") as HTMLTextAreaElement).value = "go";
+    const sched = document.querySelector(".form-sched-enabled") as HTMLInputElement;
+    sched.checked = true; sched.dispatchEvent(new Event("change"));
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    const err = document.querySelector(".form-sched-error") as HTMLElement;
+    expect(err.style.display).toBe("");
+    expect(err.textContent).toContain("one workspace");
+
+    // Still open — switch the schedule off and resolve it so nothing dangles.
+    sched.checked = false; sched.dispatchEvent(new Event("change"));
+    document.querySelector<HTMLButtonElement>(".modal-ok")!.click();
+    expect((await p)!.schedule).toBeNull();
+  });
+
   it("prefills the schedule section when editing", async () => {
     const p = skillForm("ws-1", {
       name: "Report", icon: "▶", prompt: "go", workspaceId: "ws-1",

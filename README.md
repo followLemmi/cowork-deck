@@ -239,7 +239,9 @@ form at launch; a prompt with no placeholders asks nothing. Placeholder names ar
 rather than by ASCII, so a prompt written in any script names its fields in that script.
 
 Attach a **schedule** (hourly, daily at `HH:MM`, weekly) and it fires unattended into a fresh session
-using stored defaults. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra
+using stored defaults. A schedule belongs to **one workspace** — the one open when it was saved — and the
+scheduler resolves that before the fire, so an unattended run cannot land in whatever project happened to
+be on screen at 03:00. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra
 cost, full local context and permissions. A scenario whose previous run is still working or waiting
 skips rather than stacking a second one.
 
