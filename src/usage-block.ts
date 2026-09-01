@@ -23,6 +23,7 @@ import {
   sourceLabel,
   stateClass,
   formatReset,
+  limitFoot,
 } from "./usage";
 
 /** The least this block needs from the deck: somewhere to run the command that
@@ -136,27 +137,17 @@ export class LimitsBlock {
         meter.append(bar);
         open.append(meter);
       }
-      const foot = document.createElement("span");
-      foot.className = "lim-foot";
-      if (win.state === "exhausted") {
-        foot.append(
-          span(
-            "lim-out-text",
-            win.resetsAt === null
-              ? "nothing moves — no reset time known"
-              : `nothing moves until ${formatReset(win.resetsAt, now)}`,
-          ),
-        );
-      } else if (win.resetsAt !== null) {
-        foot.append(span("lim-reset", `resets ${formatReset(win.resetsAt, now)}`));
-      } else if (snap.error) {
-        // An error, and only an error. An unknown row used to add "not known"
-        // here, which said the same thing the reading beside it already said —
-        // and two ways of saying nothing read as two facts. What that row needs
-        // is the action, and the action is the button next to it.
-        foot.append(span("lim-reset", snap.error));
+      // The sentence is `limitFoot`'s, shared with the tray menu so the two
+      // cannot disagree about what an exhausted window with no known reset
+      // reads as. Only the class is decided here — an exhausted row is painted,
+      // and a reset time or an error is not.
+      const text = limitFoot(win, snap.error, now);
+      if (text !== null) {
+        const foot = document.createElement("span");
+        foot.className = "lim-foot";
+        foot.append(span(win.state === "exhausted" ? "lim-out-text" : "lim-reset", text));
+        open.append(foot);
       }
-      if (foot.childNodes.length) open.append(foot);
     }
 
     row.append(open);

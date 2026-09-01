@@ -78,6 +78,27 @@ that repository's own row, into a panel on the other side of the deck.
 terminal on purpose — at that size a terminal is texture, not information, so the space goes to the
 four things worth knowing about a session you are not watching.*
 
+## When the window is not in front
+
+Three surfaces, and they answer different questions on purpose.
+
+- **The pill** floats over whatever you are working in and says one sentence — *3 waiting for input*,
+  or *limit · resets 19:00* when the budget is spent, because a queue of questions is not the useful
+  fact when nothing can move. It is up only while there is something to say, and clicking it takes you
+  to the session that is waiting.
+- **The status area** — the menu bar on macOS, the top panel on Linux, the notification area on
+  Windows — is always there, and it answers on demand rather than at a glance. Its menu carries every
+  connected AI's limit *with the tier beside it*, the sessions that are waiting, and a way into each:
+  a limit row opens that provider's detail, a session row raises the window it lives in. It never
+  carries a count, because that is the pill's sentence and two surfaces saying it would be one too
+  many.
+- **The dock**, or the taskbar, carries the number of sessions waiting. It clears the moment you look
+  at the deck — a badge you have learned to ignore is worse than none.
+
+The menu is a native one, so it behaves like the desktop's own on all three platforms, and adding a
+section to it is a list entry rather than a layout change. Why it is a menu and not a small window is
+[ADR-0011](docs/adr/0011-the-tray-panel-is-a-native-menu-whose-rows-are-written-in-the-webview.md).
+
 ## Sessions
 
 - **State you can read across a dozen tiles.** "Finished a turn" and "waiting for a decision" are

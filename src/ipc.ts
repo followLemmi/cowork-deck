@@ -1414,3 +1414,36 @@ export const usageClearObserved = (provider: string) =>
  *  when something changed, so the handler may re-read with `force`. */
 export const onUsageChanged = (cb: () => void): Promise<UnlistenFn> =>
   listen("usage://changed", () => cb());
+
+/* --- The status-area menu -------------------------------------------------
+   The model is composed in `tray-panel.ts` and rendered by `src-tauri/src/tray.rs`,
+   which knows nothing about what is in it. See ADR-0011. */
+
+/** One row of the menu.
+ *
+ *  `action` is what separates a control from a reading: a row with none is drawn
+ *  disabled, because a fact that can be clicked invites a click that does
+ *  nothing. The string is opaque to Rust — it comes back through `tray://action`
+ *  verbatim, and `tray-panel.ts` owns both ends of the vocabulary. */
+export interface TrayRow { text: string; action: string | null }
+
+export interface TraySection { heading: string; rows: TrayRow[] }
+
+export interface TrayPanel {
+  sections: TraySection[];
+  /** One line on hover. Never a count — the pill owns the glance (ADR-0011). */
+  tooltip: string;
+  /** Sessions waiting for input, for the dock badge. */
+  waiting: number;
+}
+
+/** Tell the status-area menu what to say, and the dock what to badge.
+ *
+ *  Safe to call on every tick: an identical report is dropped in Rust rather
+ *  than rebuilding a native menu under an open cursor. */
+export const trayUpdate = (panel: TrayPanel) => invoke<void>("tray_update", { panel });
+
+/** A row of the status-area menu was chosen. The payload is the row's own
+ *  `action` string, straight back — Rust neither reads it nor rewrites it. */
+export const onTrayAction = (cb: (action: string) => void): Promise<UnlistenFn> =>
+  listen<{ action: string }>("tray://action", (e) => cb(e.payload.action));

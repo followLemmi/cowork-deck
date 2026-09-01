@@ -169,6 +169,29 @@ export function meterFraction(w: LimitWindow): number | null {
   return null;
 }
 
+/** The line under a reading: what the state means, in a sentence.
+ *
+ *  Extracted from the limits block when the tray menu needed the same sentence.
+ *  It is the same rule as `readingOf` and for the same reason — the block, the
+ *  tray and anything after them must not each have their own opinion about what
+ *  "exhausted with no known reset" reads as. A row saying one thing in the panel
+ *  and another in the menu bar is the bug the pure helpers in this file exist to
+ *  prevent.
+ *
+ *  `null` is a row with nothing to add: the reading beside it already said
+ *  everything. An unknown row deliberately does NOT get "not known" here — that
+ *  repeats the reading, and two ways of saying nothing read as two facts.
+ */
+export function limitFoot(w: LimitWindow, error: string | null, now: number): string | null {
+  if (w.state === "exhausted") {
+    return w.resetsAt === null
+      ? "nothing moves — no reset time known"
+      : `nothing moves until ${formatReset(w.resetsAt, now)}`;
+  }
+  if (w.resetsAt !== null) return `resets ${formatReset(w.resetsAt, now)}`;
+  return error;
+}
+
 /* --- Telling somebody who is not looking at the window -------------------- */
 
 /** One notification per transition, for the whole deck.

@@ -26,12 +26,15 @@ import {
   hostPlatform,
   configPaths,
   usageSnapshot, onUsageChanged,
+  trayUpdate, onTrayAction,
   type AiUsage,
   type HandOffTile,
   type SessionState,
 } from "./ipc";
 import { LimitsBlock } from "./usage-block";
 import { deckLimit, LimitNotifier } from "./usage";
+import { parseAction, trayPanel } from "./tray-panel";
+import { openUsageDialog } from "./usage-dialog";
 import { offerUpdateIfAvailable } from "./updater";
 import { TerminalDrawer, DEFAULT_TERMINAL_ROWS } from "./drawer";
 import type { Skill, Workspace } from "./ipc";
@@ -2082,6 +2085,41 @@ export function startApp(role: WindowRole): Promise<void> {
     deck.focusNextWaiting();
   });
 
+  /** A row of the status-area menu was chosen.
+   *
+   *  The main window only, for the reason above: it is the only participant that
+   *  can tell which window holds a session. Rust sends the row's `action` back
+   *  exactly as `tray-panel.ts` minted it and reads nothing in it — the
+   *  vocabulary lives at both ends of `parseAction`, and an action this build
+   *  does not know is dropped rather than guessed at.
+   *
+   *  Nothing was raised before this arrived, deliberately: a session may live in
+   *  a workspace window, and raising the deck first would flash the wrong window
+   *  forward. Each branch below raises what it is about to show.
+   */
+  if (isMain) void onTrayAction(async (action) => {
+    const chosen = parseAction(action);
+    if (!chosen) return;
+    if (chosen.verb === "session") {
+      const where = windowOf(sessionsByWindow, chosen.id);
+      if (where && where !== myLabel) {
+        await emitTo(where, "session://focus", { session: chosen.id });
+        return;
+      }
+      await raiseThisWindow();
+      deck.focusSession(chosen.id);
+      return;
+    }
+    // A limit row opens the same dialog its row in the panel opens — one screen,
+    // two ways in. The snapshot is the one on hand rather than a fresh read: the
+    // menu was drawn from it, and re-reading here would let the dialog say
+    // something the row the person clicked did not.
+    const snap = lastUsage.find((u) => u.provider === chosen.id);
+    if (!snap) return;
+    await raiseThisWindow();
+    openUsageDialog(snap, limitsHost, () => limits.redraw(Date.now()));
+  });
+
   /** Focus a session because another window asked — the far end of the routing
    *  above, and of a click on a detached workspace's session row (#244).
    *
@@ -2125,10 +2163,14 @@ export function startApp(role: WindowRole): Promise<void> {
      provider that spawns a process anywhere near the tick is the mistake
      `sessions.ts` already documents, so it gets its own slow loop. */
   const limitsEl = document.querySelector<HTMLElement>("#limits")!;
-  const limits = new LimitsBlock(limitsEl, {
-    openCommandTile: (t, c, cwd) => deck.openCommandTile(t, c, cwd),
+  /** Named rather than inlined, because the status-area menu opens the same
+   *  dialog from the same host: a row in the menu bar and a row in the panel are
+   *  two ways to reach one screen, not two screens. */
+  const limitsHost = {
+    openCommandTile: (t: string, c: string, cwd: string) => deck.openCommandTile(t, c, cwd),
     cwd: () => workspaces.active?.path ?? ".",
-  });
+  };
+  const limits = new LimitsBlock(limitsEl, limitsHost);
   /** The last snapshot, so the pill's payload and the block agree on one reading
    *  rather than each asking for its own. */
   let lastUsage: AiUsage[] = [];
@@ -2155,10 +2197,35 @@ export function startApp(role: WindowRole): Promise<void> {
    *  to prevent. */
   function announceLimit(): void {
     if (!isMain) return;
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
+    announceOutside();
     const notice = limitNotifier.next(deckLimit(lastUsage));
     // Through the deck, which owns the one permission request — see `canNotify`.
     if (notice && deck.canNotify()) sendNotification({ title: notice.title, body: notice.body });
+  }
+
+  /** Tell everything that speaks for the deck while its window is not in front.
+   *
+   *  Three surfaces now — the pill, the status-area menu and the dock badge —
+   *  and one call, because they are answers to the same two questions and must
+   *  never be a tick apart. Only the main window sends: it is the only
+   *  participant that hears every window's sessions, which is the same reason
+   *  `sumWaiting` is added up here (#243).
+   *
+   *  Safe on every tick. An identical tray report is dropped in Rust rather than
+   *  rebuilding a native menu under an open cursor — see ADR-0011.
+   */
+  function announceOutside(): void {
+    if (!isMain) return;
+    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
+    const panel = trayPanel({
+      usage: lastUsage,
+      sessions: allSessions(sessionsByWindow),
+      now: Date.now(),
+    });
+    // A menu that stopped updating looks exactly like a deck with nothing to
+    // report, so the failure is said rather than swallowed — but it is not worth
+    // a modal: the next tick is the recovery, as it is for the pill.
+    void trayUpdate(panel).catch((e) => console.debug("tray: could not update the menu", e));
   }
 
   /** Every window's sessions, as each of them last reported. Only the main
@@ -2172,7 +2239,7 @@ export function startApp(role: WindowRole): Promise<void> {
     // The count is added up here, where the whole picture is, and the ceiling
     // travels with it: `pillLabel` decides which of the two stories to tell, and
     // it cannot decide without both. See `pill-util.ts`.
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
+    announceOutside();
     showElsewhere();
   });
 
@@ -2187,7 +2254,7 @@ export function startApp(role: WindowRole): Promise<void> {
   const windowGoneListener = listen<{ label: string }>("window://gone", (e) => {
     if (!isMain) return;
     if (!sessionsByWindow.delete(e.payload.label)) return;
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
+    announceOutside();
     showElsewhere();
   });
 

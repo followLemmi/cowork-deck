@@ -25,7 +25,9 @@ path = "src/lib.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+# `tray-icon` puts the status-area icon up; `image-png` is what decodes the
+# template image behind it (`Image::from_bytes`). Both are off by default.
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-notification = "2"
 portable-pty = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
+  <!-- cowork-deck status-area icon — the app icon's mark, and nothing else.
+       Monochrome by construction: macOS draws a template image from its alpha
+       channel alone and tints it for a light menu bar, a dark one, and the
+       inverted state while the menu is open. A hue here would be discarded on
+       macOS and would disagree with the app icon everywhere else, so there is
+       none — see docs/adr/0011.
+
+       The 2x2 tiles of icons/icon-source.svg are dropped: four 308-unit squares
+       become four 2px squares at this size, which is noise rather than a mark.
+       What survives is the prompt chevron and the cursor block, which is the
+       half of the app icon that still reads at 18 points.
+
+       Rasterised by scripts/tray-icon.mjs, which draws these two shapes
+       directly. Editing this file does not change the PNG on its own; the
+       script carries the same numbers and is the thing that runs. -->
+  <g fill="none" stroke="#000" stroke-width="6.323" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="4.13,7.16 18.4,18 4.13,28.84"/>
+  </g>
+  <rect x="21.47" y="14.21" width="13.55" height="7.59" rx="1.81" fill="#000"/>
+</svg>
