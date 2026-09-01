@@ -262,12 +262,20 @@ export class TerminalDrawer {
     });
   }
 
-  /** The chrome above the terminal: the tab bar plus the grip. Measured rather
-   *  than assumed, so a stylesheet change cannot silently cost the drawer rows. */
+  /** Everything the drawer's height buys that is not terminal: the tab bar, the
+   *  grip, and the island's own top and bottom border. Measured rather than
+   *  assumed, so a stylesheet change cannot silently cost the drawer rows — which
+   *  is exactly what the border did when the drawer became an island, because
+   *  `box-sizing: border-box` spends it out of the height written here.
+   *
+   *  `offsetHeight - clientHeight` is that border, and it is read from the
+   *  element rather than from the stylesheet for the same reason as the two
+   *  above. Zero while the drawer is hidden, along with the rest of this sum. */
   private barPx(): number {
     const bar = this.el.querySelector<HTMLElement>(".term-bar");
     const grip = this.el.querySelector<HTMLElement>(".term-grip");
-    return (bar?.offsetHeight ?? 0) + (grip?.offsetHeight ?? 0);
+    const border = Math.max(0, this.el.offsetHeight - this.el.clientHeight);
+    return (bar?.offsetHeight ?? 0) + (grip?.offsetHeight ?? 0) + border;
   }
 
   private setRows(rows: number) {
