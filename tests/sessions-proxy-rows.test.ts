@@ -40,7 +40,8 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn().mockResolvedValue(undefined) }));
 
 import { Deck } from "../src/sessions";
-import { closeSession } from "../src/ipc";
+import { closeSession, onState } from "../src/ipc";
+import type { SessionState } from "../src/ipc";
 import { emit } from "@tauri-apps/api/event";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#61afef" };
@@ -89,6 +90,45 @@ describe("sessions held by another window", () => {
     deck.setRemoteSessions(remote("working"));
     listEl.querySelector<HTMLElement>(".sess-row.remote")!.click();
     expect(onRemoteFocus).toHaveBeenCalledWith("workspace-w", "far");
+  });
+
+  /** "Who is blocked on me" reaching the other monitor, which is what the proxy
+   *  list is for. Until #394 this was the floating pill's one interaction, routed
+   *  in `app.ts`; the pill is gone and the hotkey is what asks now, so the
+   *  routing has to be here — where the proxies are — or the command silently
+   *  answers for one window while claiming to answer for the app. */
+  it("are reached by the next-waiting command when nothing here is waiting", () => {
+    const { deck } = makeDeck();
+    const onRemoteFocus = vi.fn();
+    deck.setRemoteFocus(onRemoteFocus);
+    deck.setRemoteSessions(remote("waitingInput"));
+
+    deck.focusNextWaiting();
+
+    expect(onRemoteFocus).toHaveBeenCalledWith("workspace-w", "far");
+  });
+
+  /** And they come after this window's own, which is the ordering rather than an
+   *  optimisation: one ring over tiles and proxies together would put the other
+   *  monitor between two sessions on this screen, so the command would throw the
+   *  person across a monitor — or a macOS Space — and back. */
+  it("come after a session waiting in this window", async () => {
+    const { deck } = makeDeck();
+    const onRemoteFocus = vi.fn();
+    deck.setRemoteFocus(onRemoteFocus);
+    await deck.wireEvents();
+    const emitState = vi.mocked(onState).mock.calls[0][0] as (s: string, st: SessionState) => void;
+    await deck.launch(WS as never, null);
+    await deck.launch(WS as never, null);
+    const [first] = [...(deck as unknown as { tiles: Map<string, unknown> }).tiles.keys()];
+    // The second launch is the active tile, so `first` is a waiting session that
+    // is genuinely "next" here — and the proxy is waiting too.
+    emitState(first, "waitingInput");
+    deck.setRemoteSessions(remote("waitingInput"));
+
+    deck.focusNextWaiting();
+
+    expect(onRemoteFocus).not.toHaveBeenCalled();
   });
 
   /** A dimmed row tells a sighted reader it is elsewhere and tells a screen

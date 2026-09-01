@@ -2,7 +2,7 @@ import { WorkspacesPanel } from "./workspaces";
 import { mountMemory } from "./memory-page";
 import { NoteReader } from "./note-reader";
 import { SkillsPanel } from "./skills";
-import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
+import { Deck, type SessionCounts } from "./sessions";
 import {
   applyPanel, applyWorkspacePanel, firstFocusable,
   PANEL_TITLE, WORKSPACE_PAGES, WORKSPACE_TITLE,
@@ -72,10 +72,7 @@ import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { listen, emit, emitTo } from "@tauri-apps/api/event";
-import {
-  allSessions, sumWaiting, windowOf,
-  type RemoteSession, type SessionsByWindow, type WindowSessions,
-} from "./cross-window";
+import type { RemoteSession, SessionsByWindow, WindowSessions } from "./cross-window";
 import { addressedTo, MAIN_WINDOW_LABEL, workspaceIdOf, workspaceLabel } from "./window-role";
 import { hasLeftWindow, pressStartsOnControl, startsTearOut } from "./tear-out";
 import { getCurrentWindow, cursorPosition } from "@tauri-apps/api/window";
@@ -257,9 +254,9 @@ export function startApp(role: WindowRole): Promise<void> {
      The tab bar was answering "which of four states is this window in", which is
      not a question anybody has. The question people do have is "does anything need
      me", and the app already shipped an answer to it: a floating always-on-top pill
-     counting blocked sessions, which exists because the window could not show the
-     deck and anything else at the same time. Now it can, and the ledger in the top
-     bar says the number where the eye already is.
+     counting blocked sessions, which existed because the window could not show the
+     deck and anything else at the same time. Now it can, the ledger in the top bar
+     says the number where the eye already is, and the pill is gone (#394).
 
      Vertical, and 44px wide, because the panel beside it is a column: a horizontal
      switch over a column has to be as wide as the column, which is how the old one
@@ -484,8 +481,9 @@ export function startApp(role: WindowRole): Promise<void> {
   /* --- The ledger ---------------------------------------------------------
      What replaced four tab labels: not where to go, but what wants me. Written
      from the deck's own counts rather than typed beside them — the two numbers
-     that used to be stated in the app (a sidebar heading and the pill) came from
-     two different places and could disagree. */
+     that used to be stated in the app (a sidebar heading and the floating pill)
+     came from two different places and could disagree. Both are gone; this is the
+     one reading. */
   const ledgerEl = document.querySelector<HTMLElement>("#ledger")!;
 
   // The rest of the top bar: the wordmark on the left, the global actions on the
@@ -724,8 +722,8 @@ export function startApp(role: WindowRole): Promise<void> {
       }
       setPanel("sessions");
       // The tile may live in another workspace — an unpinned scenario runs
-      // wherever it was launched — so this goes through the same path the pill
-      // and a notification click take, which switches workspace first.
+      // wherever it was launched — so this goes through the same path a
+      // notification click takes, which switches workspace first.
       deck.focusSession(rec.sessionId);
     },
     onRerun: (rec, skill) => { void rerunScenario(rec, skill); },
@@ -2059,31 +2057,9 @@ export function startApp(role: WindowRole): Promise<void> {
     }
   }
 
-  // Clicking the floating status pill raises the main window (same raise
-  // sequence as notify.ts's OS-notification click handler) and focuses the
-  // next session that's waiting for input.
-  //
-  // One addressee, and it is this window. Every window used to answer, so a
-  // single click raised all of them and each focused its own next waiting tile.
-  // The main window is the one that can answer properly: it is the only
-  // participant that sees every session — its own, the orphans, and the proxy
-  // rows for detached workspaces (#243, #244).
-  if (isMain) void listen("pill://focus-next", async () => {
-    // Across every window, not just this one. "Who is blocked on me" is the one
-    // command whose entire purpose is that question, and answering it for one
-    // monitor is answering the wrong question.
-    const target = nextWaitingAcross(allSessions(sessionsByWindow), null);
-    const where = target ? windowOf(sessionsByWindow, target.session) : null;
-    if (target && where && where !== myLabel) {
-      await emitTo(where, "session://focus", { session: target.session });
-      return;
-    }
-    await raiseThisWindow();
-    deck.focusNextWaiting();
-  });
-
-  /** Focus a session because another window asked — the far end of the routing
-   *  above, and of a click on a detached workspace's session row (#244).
+  /** Focus a session because another window asked — the far end of `onRemoteFocus`
+   *  below, which is both the next-waiting command reaching another window and a
+   *  click on a detached workspace's session row (#244).
    *
    *  Raising happens here rather than at the sender, and only on an explicit
    *  gesture. `set_focus` on a window living on another macOS Space yanks the
@@ -2129,8 +2105,8 @@ export function startApp(role: WindowRole): Promise<void> {
     openCommandTile: (t, c, cwd) => deck.openCommandTile(t, c, cwd),
     cwd: () => workspaces.active?.path ?? ".",
   });
-  /** The last snapshot, so the pill's payload and the block agree on one reading
-   *  rather than each asking for its own. */
+  /** The last snapshot, so the block on screen and the notification agree on one
+   *  reading rather than each asking for its own. */
   let lastUsage: AiUsage[] = [];
   const limitNotifier = new LimitNotifier();
 
@@ -2147,15 +2123,17 @@ export function startApp(role: WindowRole): Promise<void> {
     announceLimit();
   }
 
-  /** Tell the pill, and tell somebody who is not looking at the window.
+  /** Tell somebody who is not looking at the window.
    *
-   *  Both go through `deckLimit`, so the pill's story and the notification's are
-   *  the same story — and the notifier holds its own state, once for the whole
-   *  deck, because twelve notifications about one ceiling is the bug #305 exists
-   *  to prevent. */
+   *  The one thing left that speaks when the deck is not in front. The pill used
+   *  to be the other, from the same `deckLimit` so the two told one story; #394
+   *  removed it, and until #393 puts a badge and a tray panel there this is the
+   *  whole of it. On screen the same reading is the limits block above.
+   *
+   *  Once for the whole deck, because the notifier holds its own state and twelve
+   *  notifications about one ceiling is the bug #305 exists to prevent. */
   function announceLimit(): void {
     if (!isMain) return;
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
     const notice = limitNotifier.next(deckLimit(lastUsage));
     // Through the deck, which owns the one permission request — see `canNotify`.
     if (notice && deck.canNotify()) sendNotification({ title: notice.title, body: notice.body });
@@ -2169,10 +2147,9 @@ export function startApp(role: WindowRole): Promise<void> {
   const waitingListener = listen<WindowSessions>("session://waiting", (e) => {
     if (!isMain) return;
     sessionsByWindow.set(e.payload.label, e.payload.sessions);
-    // The count is added up here, where the whole picture is, and the ceiling
-    // travels with it: `pillLabel` decides which of the two stories to tell, and
-    // it cannot decide without both. See `pill-util.ts`.
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
+    // Kept here, where the whole picture is: this window is the only participant
+    // that hears every other one. What it is for is `showElsewhere` below and
+    // `focusNextWaiting` reaching the other monitor through the proxies it sets.
     showElsewhere();
   });
 
@@ -2187,7 +2164,6 @@ export function startApp(role: WindowRole): Promise<void> {
   const windowGoneListener = listen<{ label: string }>("window://gone", (e) => {
     if (!isMain) return;
     if (!sessionsByWindow.delete(e.payload.label)) return;
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
     showElsewhere();
   });
 
@@ -2206,12 +2182,20 @@ export function startApp(role: WindowRole): Promise<void> {
   function showElsewhere() {
     const detached = new Set<string>();
     const proxies: (RemoteSession & { label: string })[] = [];
-    for (const [label, sessions] of sessionsByWindow) {
+    // Sorted by label, and it is not cosmetic. `Map` iterates in insertion
+    // order, which is the order the windows happened to report in after a
+    // restart — so "the next session waiting elsewhere" would mean a different
+    // session on two runs with the same windows open, and `setRemoteSessions`
+    // would see its serialised comparison change for a list that had not.
+    // `allSessions` used to carry this rule; it was the only thing left using it
+    // when #394 took the pill's event handler, so the rule moved here, where the
+    // list is actually built.
+    for (const label of [...sessionsByWindow.keys()].sort()) {
       if (label === myLabel) continue;
       const id = workspaceIdOf(label);
-      if (id === null) continue; // the pill, and anything added later
+      if (id === null) continue; // the main window, and anything added later
       detached.add(id);
-      for (const s of sessions) proxies.push({ ...s, label });
+      for (const s of sessionsByWindow.get(label) ?? []) proxies.push({ ...s, label });
     }
     workspaces.setDetached(detached);
     deck.setRemoteSessions(proxies);

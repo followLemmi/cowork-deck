@@ -91,7 +91,8 @@ describe("applyPanel", () => {
   /** The regression the whole shell exists to make impossible. What this replaces
    *  hid the deck to show the board — which is why the app shipped an always-on-top
    *  pill counting blocked sessions: the window could not show the deck and
-   *  anything else at once. Asserted against the real stylesheet, on every page,
+   *  anything else at once. This assertion is what let #394 delete the pill rather
+   *  than replace it. Asserted against the real stylesheet, on every page,
    *  because `#deck { display: grid }` is an id selector and a class cannot take it
    *  down by accident. */
   it("never hides the deck, whichever page is showing", () => {

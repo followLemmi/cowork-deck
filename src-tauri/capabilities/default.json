@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for cowork-deck",
-  "windows": ["main", "pill", "workspace-*"],
+  "windows": ["main", "workspace-*"],
   "permissions": [
     "core:default",
     "updater:default",

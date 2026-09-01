@@ -28,8 +28,8 @@ export function workspaceLabel(workspaceId: string): string {
   return WORKSPACE_PREFIX + workspaceId;
 }
 
-/** The workspace a label names, or null for the main window, the pill, or
- *  anything added later. */
+/** The workspace a label names, or null for the main window or anything added
+ *  later. */
 export function workspaceIdOf(label: string): string | null {
   if (!label.startsWith(WORKSPACE_PREFIX)) return null;
   const id = label.slice(WORKSPACE_PREFIX.length);
@@ -73,8 +73,10 @@ export function roleOf(label: string): WindowRole {
  *  What that cost (#349): deleting a workspace emits `workspace://gone` to that
  *  workspace's window, and the main window — which holds the same listener, and
  *  whose handler closes the window it is in — closed itself. No window, no
- *  error, and a process still running, because the status pill kept the event
- *  loop alive.
+ *  error, and a process still running, because the floating status pill kept the
+ *  event loop alive. The pill is gone (#394); a workspace window left up keeps it
+ *  alive the same way, which is why `main.rs` exits the app explicitly when the
+ *  main window is destroyed.
  *
  *  `kind: "Window"` rather than `"Webview"` or `"WebviewWindow"`: the emitting
  *  side passes a bare label, which becomes `AnyLabel`, and `AnyLabel` matches

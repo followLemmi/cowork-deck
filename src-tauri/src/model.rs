@@ -945,8 +945,8 @@ mod tests {
 
     /// `Stop` means the agent finished its turn and the prompt is free again;
     /// a permission request means it is blocked until a human decides. The
-    /// overlap guard, the pill and notifications treat these differently, so
-    /// they must not share one state.
+    /// overlap guard, the ledger's waiting count and notifications treat these
+    /// differently, so they must not share one state.
     #[test]
     fn finished_turn_is_distinct_from_waiting_for_a_decision() {
         assert_eq!(event_kind_to_state("done", None), Some(SessionState::Done));

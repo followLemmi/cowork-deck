@@ -1054,12 +1054,13 @@ export const openCounts: Record<string, number> = {
  *
  *  The window plugin's calls used to be swallowed by the `plugin:` fallback,
  *  which answers `null` and logs nothing — so `is_visible` said "hidden" for
- *  ever and the pill's show/hide state machine only ever took one branch. It is
- *  a real answer now, and this is where it lives.
+ *  ever, and a show/hide state machine written against it only ever took one
+ *  branch. It is a real answer now, and this is where it lives.
  *
- *  The pill starts hidden, which is what the app builds it as: whether it is up
- *  is the deck's answer to give, through `pill://count`. */
-const windowsVisible = new Map<string, boolean>([["main", true], ["pill", false]]);
+ *  Only the main window, because that is the only one the harness serves a page
+ *  for. An unlisted label reads as hidden, which is the right answer for a
+ *  workspace window nobody has pulled out. */
+const windowsVisible = new Map<string, boolean>([["main", true]]);
 
 export function windowVisible(label: string): boolean {
   return windowsVisible.get(label) ?? false;

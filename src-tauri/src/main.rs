@@ -113,13 +113,19 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        // Geometry survives a restart; visibility does not. The plugin's restore
-        // runs `show()` *and* `set_focus()` on every window it manages, and it
-        // does so for a window with no saved entry too — so the pill, hidden by
-        // default and up only while a session waits, arrived blank and holding
-        // the keyboard at every launch. Whether the pill is up is the deck's
-        // answer to give (`pill://count`, see src/pill.ts); the plugin is here to
-        // remember where the person dragged it to.
+        // Geometry survives a restart; visibility does not, and the flag saying
+        // so is load-bearing rather than tidy. The plugin's restore runs
+        // `show()` *and* `set_focus()` on every window it manages, including one
+        // with no saved entry — so a window the app means to bring up hidden, or
+        // to bring up behind whatever the person is working in, would arrive in
+        // front of them holding the keyboard. Whether a window is up is the
+        // app's answer to give; the plugin is here to remember where it was and
+        // how big it was.
+        //
+        // The floating pill was what first made this necessary (#394 removed it),
+        // but the rule is not about the pill: a workspace window restored by
+        // `open_workspace_window` is shown deliberately, once, by the code that
+        // opens it.
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
@@ -228,49 +234,6 @@ fn main() {
             // #35 set for memory generally — it stays off the launch path.
             sync_cmd::spawn(handle.clone());
 
-            // Floating "N waiting" status pill: a second, hidden-by-default
-            // window shown/hidden via the `pill://count` event (see src/pill.ts).
-            // Transparent + always-on-top confirmed working on macOS with
-            // macOSPrivateApi + the `macos-private-api` Cargo feature (spike).
-            let pill = tauri::WebviewWindowBuilder::new(
-                app,
-                windows::PILL,
-                tauri::WebviewUrl::App("pill.html".into()),
-            )
-            .inner_size(200.0, 48.0)
-            .position(40.0, 40.0)
-            .decorations(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .transparent(true)
-            .visible(false)
-            // A status indicator must never take the keyboard. `show()` reaches
-            // `makeKeyAndOrderFront:`, and a focusable window duly becomes the
-            // *key* window — so every re-show stole the keyboard from the
-            // session the person was typing into, mid-question. `focusable(false)`
-            // makes `canBecomeKeyWindow` answer false: the pill still orders
-            // front, which is all it ever wanted.
-            //
-            // The pair matters: a window that cannot become key would otherwise
-            // swallow the first click into it, and the pill's only interaction
-            // *is* that first click (focus the next waiting session, plus the
-            // drag region). `accept_first_mouse` delivers it to the webview.
-            //
-            // Both calls are cross-platform in Tauri, but only the first has an
-            // effect off macOS: on Linux `focusable(false)` becomes
-            // `gtk_window_set_accept_focus(false)` and `accept_first_mouse` is a
-            // no-op, so whether the click still reaches the webview there is
-            // down to the compositor and has not been tried on a Linux machine.
-            .focusable(false)
-            .accept_first_mouse(true)
-            .build();
-            // Without the pill there is no waiting indicator at all, and every
-            // `pill://count` afterwards goes nowhere — worth a line to diagnose
-            // it by rather than a silently discarded `Result`.
-            if let Err(e) = pill {
-                eprintln!("error: failed to create the status pill window ({e})");
-            }
-
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -301,12 +264,21 @@ fn main() {
                     commands::WindowGonePayload { label: window.label().to_string() },
                 );
                 // And when the window that has gone is the main one, the app goes
-                // with it. Nothing did this before: the runtime exits when the
-                // *last* window is destroyed, and the status pill is never
-                // destroyed — so the main window closing left a process with no
-                // interface, holding its sync loop, its schedulers and its
-                // watchers, and a relaunch stacked a second instance beside it
-                // rather than replacing it (#349).
+                // with it. The runtime exits of its own accord only when the
+                // *last* window is destroyed, and a workspace window pulled out
+                // of the deck outlives the main one — so without this, closing
+                // the deck left a process holding its sync loop, its schedulers
+                // and its watchers behind a window pinned to one project, whose
+                // sessions `CloseRequested` below has just killed. A relaunch
+                // then stacked a second instance beside it rather than replacing
+                // it (#349).
+                //
+                // #349's own reason was the floating pill, which was never
+                // destroyed and so kept the count of live windows off zero for
+                // ever. #394 removed the pill; this stays because workspace
+                // windows do the same thing for as long as one is open, and
+                // because "the deck closed" meaning "the app quit" is a decision
+                // rather than a consequence of how many windows happen to be up.
                 //
                 // Whatever ended the window, and not only a close the person
                 // asked for: a webview that died under the main window leaves
@@ -323,10 +295,12 @@ fn main() {
                 // The label check is load-bearing and its absence is invisible
                 // from the frontend. `AppState` is app-level, so this handler
                 // resolves the same PTY manager whichever window sent the event
-                // — and the app has a second window, the floating status pill.
-                // One `close()` on the pill, a Linux compositor's delete-event,
-                // or any future decoration on it would otherwise kill every
-                // session in every workspace.
+                // — and the app has other windows: one per workspace pulled out
+                // of the deck. Closing one of those returns its workspace and
+                // must never cost a session, least of all a session in a
+                // workspace it has nothing to do with (#245). Without the check,
+                // its close button — or a Linux compositor's delete-event — would
+                // kill every session in every workspace.
                 if window.label() != windows::MAIN {
                     return;
                 }

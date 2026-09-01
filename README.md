@@ -149,9 +149,10 @@ tooltip:
 - **Unknown** — it says so, and offers the one command that would answer it, in a tile.
 
 The reading that matters most needs no percentage at all. When a session is refused, the app reads the
-limit banner on its way to the screen and the pill stops saying *3 waiting for input* — which is true
-and useless — and says **nothing moves until 19:00**. That survives a restart, and you are told again
-when it lifts.
+limit banner on its way to the screen and stops answering "how many are waiting" — which is true and
+useless when nothing can move — to say **nothing moves until 19:00** instead. That survives a restart,
+it is what the notification says while you are looking at something else, and you are told again when
+it lifts.
 
 ## A GitHub account per workspace
 

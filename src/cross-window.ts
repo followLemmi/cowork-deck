@@ -1,21 +1,30 @@
-/** What one window tells the others about its sessions, and what the main window
- *  works out from all of it.
+/** What one window tells the others about its sessions.
  *
- *  Pure functions of plain data, deliberately. Two windows cannot coexist in one
- *  jsdom document and the harness's event bus has no notion of a target, so
- *  cross-window behaviour cannot be tested through the DOM at all — it has to be
- *  tested at seams like these. The same shape the codebase already uses for
- *  `nextWaitingAcross`, `zoomParticipants` and `serializeTiles`.
+ *  The shape of the message, and the one rule that has to hold across windows
+ *  without them having spoken. Pure data and a pure function, deliberately: two
+ *  windows cannot coexist in one jsdom document and the harness's event bus has
+ *  no notion of a target, so cross-window behaviour cannot be tested through the
+ *  DOM at all — it has to be tested at a seam like this. The same shape the
+ *  codebase already uses for `nextWaitingAcross`, `zoomParticipants` and
+ *  `serializeTiles`.
+ *
+ *  It was three functions before #394. Adding the reports up, finding the window
+ *  that holds a session, and flattening them into one stable order all existed
+ *  for the floating pill's click and its count; the deck reads the same reports
+ *  through the proxy rows it renders from them, which carry their own window's
+ *  label, so none of the three had a caller left.
  */
 import type { SessionState } from "./ipc";
 
 /** One session, as another window describes it.
  *
  *  A **list**, not a count, and that decision is what makes the rest of this
- *  file small. A count answers "how many are waiting" and nothing else; the same
- *  message carrying the sessions answers that *and* which window to raise when
+ *  file small — and what let the floating pill go (#394) without taking anything
+ *  with it. A count would have answered "how many are waiting" and nothing else;
+ *  the same message carrying the sessions answers which window to raise when
  *  somebody asks for the next one, *and* what to draw in the main window's
- *  sidebar for a workspace that has been pulled out. Three problems, one message.
+ *  sidebar for a workspace that has been pulled out. Two problems that outlived
+ *  the count, one message.
  */
 export interface RemoteSession {
   session: string;
@@ -32,43 +41,6 @@ export interface WindowSessions {
 
 /** Every window's report, keyed by the window that sent it. */
 export type SessionsByWindow = Map<string, RemoteSession[]>;
-
-/** How many sessions are waiting for input, across every window.
- *
- *  The pill used to flap between two partial counts every five seconds, because
- *  each window computed the number from its own tiles and then broadcast it as
- *  though it were the app's. Whichever arrived last won.
- */
-export function sumWaiting(byWindow: SessionsByWindow): number {
-  let n = 0;
-  for (const sessions of byWindow.values()) {
-    for (const s of sessions) if (s.state === "waitingInput") n++;
-  }
-  return n;
-}
-
-/** The window that holds `session`, or null if nobody reports it.
- *
- *  Used to answer "who is blocked on me" across monitors: the main window works
- *  out which session is next and this says where to send the request.
- */
-export function windowOf(byWindow: SessionsByWindow, session: string): string | null {
-  for (const [label, sessions] of byWindow) {
-    if (sessions.some((s) => s.session === session)) return label;
-  }
-  return null;
-}
-
-/** Every session any window reports, in a stable order.
- *
- *  Ordered by window label and then by the order that window listed them, so
- *  "the next one waiting" means the same thing twice running. Without that the
- *  answer would depend on `Map` insertion order, which depends on which window
- *  happened to report first after a restart.
- */
-export function allSessions(byWindow: SessionsByWindow): RemoteSession[] {
-  return [...byWindow.keys()].sort().flatMap((label) => byWindow.get(label) ?? []);
-}
 
 /** A starting point for notification ids that no two windows share.
  *
