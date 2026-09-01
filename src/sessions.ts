@@ -1548,7 +1548,42 @@ export class Deck {
     return { kind: "Started by hand", detail: null, prompt: tile.prompt };
   }
 
+  /** Lay the deck out, and give the keyboard back to whatever was holding it.
+   *
+   *  `appendChild` on a node already in the document is a *move* — remove, then
+   *  insert — and removing a node unfocuses anything inside it. Every re-parent
+   *  below is therefore a blur: the terminal somebody was typing into loses focus
+   *  and `<body>` gets it, with nothing on screen saying so.
+   *
+   *  Zoom is where that was felt. The tile filled the deck, the caret still looked
+   *  like it was in it, and the next keystroke went to the window handler instead
+   *  of to the pty — which is how `Escape` came to unzoom the deck rather than
+   *  reach `vim`, `less`, `htop` or claude's own "esc to interrupt" (#269). Not
+   *  only zoom: a *background* launch — a scheduled run, or tiles handed over from
+   *  another window — re-parents every tile too, and there this is the only thing
+   *  that puts the keyboard back, because that path reaches here through
+   *  `applyWorkspaceVisibility` and never calls `focusTile`. An interactive launch
+   *  is the other way round by design: it ends in `focusTile`, which claims the
+   *  keyboard for the new tile, and this restore is overwritten a moment later.
+   *
+   *  Restored only when this is what dropped it — focus back on `<body>`, and the
+   *  element still in the document, so a layout that removed the tile (a close)
+   *  leaves focus alone. A layout that merely hid it (a workspace switch) is left
+   *  to the platform rather than checked for here: `.ws-hidden` is `display: none`,
+   *  and `focus()` on an element inside one does nothing. Callers that move focus
+   *  themselves run after this and still win. */
   private applyLayout() {
+    const had = document.activeElement as HTMLElement | null;
+    const keep = had && had !== document.body && this.deckEl.contains(had) ? had : null;
+    this.layOutTiles();
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (keep && keep.isConnected && lost) keep.focus();
+  }
+
+  /** The layout itself: which tile is zoomed, which are in the strip, and what
+   *  each one hangs from. Called only by `applyLayout`, which says why the two are
+   *  separate. */
+  private layOutTiles() {
     const parts = zoomParticipants(
       [...this.tiles.values()].map((t) => ({
         session: t.session, hidden: t.el.classList.contains("ws-hidden"),
