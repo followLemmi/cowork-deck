@@ -2405,6 +2405,9 @@ export function startApp(role: WindowRole): Promise<void> {
   // Deleting a workspace strands the scenarios pinned to it — the confirmation
   // says how many before it happens.
   workspaces.setSkillsSource(() => skills.all);
+  // And it cuts loose the sessions running in it, which the confirmation used to
+  // say nothing about at all — so it names them too.
+  workspaces.setSessionsSource((id) => deck.liveSessionNamesIn(id));
   /** Create a session in a NAMED workspace. The row that was pressed says which
    *  one, and it is not necessarily the active one — which is the whole of
    *  "creation is positional".

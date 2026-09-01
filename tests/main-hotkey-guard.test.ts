@@ -47,6 +47,7 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    setSessionsSource = vi.fn();
     // The tree's half of the panel: the workspace row is this panel's and the
     // sessions under it are the deck's, so `startApp` hands each the other.
     /* Captured, because the board and the pull requests are opened through this

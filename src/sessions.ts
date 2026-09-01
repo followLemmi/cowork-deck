@@ -835,6 +835,31 @@ export class Deck {
     return [...this.tiles.values()].some((t) => t.workspacePath === path);
   }
 
+  /** The names of the sessions still running in a workspace — what deleting that
+   *  workspace would cut loose.
+   *
+   *  Resolved the same way the sidebar groups them (`resolveWorkspaceId`: an
+   *  explicit id, else a matching directory), so the question a person is asked
+   *  counts exactly the rows they can see under that workspace. Proxies count
+   *  too: a workspace pulled into a window of its own still has its sessions
+   *  listed here, and deleting it closes that window and hands them back as
+   *  orphans — see `WorkspacesPanel.del`.
+   *
+   *  `ended` and `error` tiles are left out. They hold scrollback and no process,
+   *  so there is nothing left in them to cut loose — the same line `requestClose`
+   *  draws before it decides whether to ask at all. */
+  liveSessionNamesIn(workspaceId: string): string[] {
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    const alive = (state: SessionState) => state !== "ended" && state !== "error";
+    const here = [...this.tiles.values()]
+      .filter((t) => alive(t.state) && resolveWorkspaceId(t.workspaceId, t.workspacePath, ws) === workspaceId)
+      .map((t) => resolveTileName(t.names));
+    const elsewhere = this.remote
+      .filter((r) => alive(r.state) && resolveWorkspaceId(r.workspaceId, "", ws) === workspaceId)
+      .map((r) => r.name);
+    return [...here, ...elsewhere];
+  }
+
   /** What a session is called on its tile, for anything outside the deck that
    *  has to name one to a person — the quit question, in particular. Falls back
    *  to the id, which is at least something to go on for a session the deck no
