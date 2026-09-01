@@ -10,6 +10,7 @@
     "beforeBuildCommand": "npm run build && npm run stage:reporter && npm run stage:task"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "cowork-deck",
@@ -46,6 +47,14 @@
       "binaries/cowork_report",
       "binaries/cowork_task",
       "binaries/cowork_memory"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libayatana-appindicator3-1"]
+      },
+      "rpm": {
+        "depends": ["libayatana-appindicator3"]
+      }
+    }
   }
 }

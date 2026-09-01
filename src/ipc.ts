@@ -1450,3 +1450,81 @@ export const usageClearObserved = (provider: string) =>
  *  when something changed, so the handler may re-read with `force`. */
 export const onUsageChanged = (cb: () => void): Promise<UnlistenFn> =>
   listen("usage://changed", () => cb());
+
+/* --- The status-area menu -------------------------------------------------
+   The model is composed in `tray-panel.ts` and rendered by `src-tauri/src/tray.rs`,
+   which knows nothing about what is in it. See ADR-0013. */
+
+/** One row of the menu.
+ *
+ *  `action` is what separates a control from a reading: a row with none is drawn
+ *  disabled, because a fact that can be clicked invites a click that does
+ *  nothing. The string is opaque to Rust — it comes back through `tray://action`
+ *  verbatim, and `tray-panel.ts` owns both ends of the vocabulary. */
+export interface TrayRow { text: string; action: string | null }
+
+export interface TraySection { heading: string; rows: TrayRow[] }
+
+export interface TrayPanel {
+  sections: TraySection[];
+  /** One line on hover. Never a count — the dock badge owns the glance
+   *  (ADR-0013). */
+  tooltip: string;
+  /** Sessions waiting for input, for the dock badge. */
+  waiting: number;
+}
+
+/** Tell the status area what to say, and the dock what to badge.
+ *
+ *  Safe to call on every tick: an identical report is dropped in Rust rather
+ *  than rebuilding a native menu under an open cursor. */
+export const trayUpdate = (panel: TrayPanel) => invoke<void>("tray_update", { panel });
+
+/** What the panel window draws from.
+ *
+ *  The facts rather than the rendered rows, because a meter is not a string: the
+ *  panel runs the same `usage.ts` helpers and the same `LimitsBlock` the deck's
+ *  own block does. `now` is deliberately absent — the panel reads its own clock,
+ *  so a reset time is relative to when it is looked at rather than to when the
+ *  deck last reported.
+ *
+ *  `scale` travels with it because the panel is a separate window and nothing
+ *  else would tell it: the text-size setting is applied to a document root, and
+ *  this document has its own. */
+export interface TrayFactsPayload {
+  usage: AiUsage[];
+  sessions: TraySessionRow[];
+  scale: number;
+}
+
+/** One session, as the panel needs it. Structurally `RemoteSession` from
+ *  `cross-window.ts`, restated here because this is the wire and that file is
+ *  about the deck's own bookkeeping. */
+export interface TraySessionRow {
+  session: string;
+  name: string;
+  state: SessionState;
+}
+
+/** The event the panel window listens on. Named here so the two ends cannot
+ *  drift: the deck emits it and `tray-window.ts` listens for it. */
+export const TRAY_FACTS = "tray://facts";
+
+/** The panel has just been shown and wants a fresh report. Emitted by Rust when
+ *  the icon is clicked, so the panel is right at the instant somebody reads it
+ *  rather than up to a tick stale. */
+export const onTrayAsk = (cb: () => void): Promise<UnlistenFn> => listen("tray://ask", () => cb());
+
+/** A row of the status-area surface was chosen. The payload is the row's own
+ *  `action` string, straight back — neither Rust nor the panel window reads it
+ *  or rewrites it, and `parseAction` in `tray-panel.ts` owns both ends. */
+export const onTrayAction = (cb: (action: string) => void): Promise<UnlistenFn> =>
+  listen<{ action: string }>("tray://action", (e) => cb(e.payload.action));
+
+/** The panel has measured itself: resize the window to fit and keep it under the
+ *  icon. */
+export const trayResize = (height: number) => invoke<void>("tray_resize", { height });
+
+/** The panel's own two controls, which are not rows: showing the deck, and
+ *  quitting. Quitting goes through the same guard every other way out does. */
+export const trayActivate = (what: "open" | "quit") => invoke<void>("tray_activate", { what });

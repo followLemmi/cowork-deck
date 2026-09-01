@@ -27,12 +27,13 @@ import type { AiUsage, LimitWindow } from "./ipc";
 import { icon } from "./icons";
 import { openUsageDialog, type UsageDialogHost } from "./usage-dialog";
 import {
+  formatReset,
+  limitFoot,
   meterFraction,
   rankedAis,
   readingOf,
-  sourceLabel,
   stateClass,
-  formatReset,
+  tierNote,
   usageGlance,
   type UsageGlance,
 } from "./usage";
@@ -48,6 +49,28 @@ export interface LimitsHost extends CommandRunner, UsageDialogHost {
    *  about an account, not about a repository — so this is the active workspace
    *  simply because that is the folder a person is already thinking about. */
   cwd(): string;
+
+  /* --- What the tray panel needs, and the deck does not ------------------
+     Three optional hooks, each defaulting to what this block has always done,
+     because the block is now drawn in two windows: the deck's panel and the
+     small window behind the status-area icon (ADR-0013). The alternative was a
+     second implementation of a row — the meter, the tier chip, the foot
+     sentence, the accessible name — and a second implementation is how the two
+     surfaces would come to disagree about a number, which is the thing
+     `usage.ts` exists to prevent. */
+
+  /** Draw the strip: the one folded line the rows open from. Omitted where the
+   *  surface is already the glance. The status-area panel is opened
+   *  deliberately, draws its own "Limits" heading, and is small enough that
+   *  every row fits — so a fold inside it would put the rows two presses deep
+   *  for a window that exists to show them in one. */
+  strip?: boolean;
+  /** What a row's click opens. The dialog in this window by default. The tray
+   *  panel has no room for a dialog, so it sends the person to the deck's. */
+  openDetail?(snap: AiUsage): void;
+  /** What the "Ask" button on an unreadable row does. Runs the command in a
+   *  tile here; the tray panel has no tiles, so it asks the deck for one. */
+  openProbe?(snap: AiUsage): void;
 }
 
 /** What the strip's `aria-controls` points at. One `#limits` per window, so one
@@ -76,6 +99,12 @@ function meterOf(win: LimitWindow, fill: number): HTMLElement {
 
 /** The words under a reading, or `null` when there are none worth printing.
  *
+ *  **The sentence is not decided here.** It is `limitFoot`'s, in `usage.ts`, so
+ *  that the row in this panel and the row in the status-area menu cannot come to
+ *  disagree about what an exhausted window with no known reset reads as. What
+ *  this function adds is the two things only a drawn surface has an opinion
+ *  about: the tone, and whether the sentence is worth the line at all.
+ *
  *  Two of the three tones say the state in words as well as in a hue, which is
  *  the point of them: amber and red are the whole difference between "keep
  *  working" and "nothing will move", and a difference carried by hue alone is one
@@ -84,7 +113,9 @@ function meterOf(win: LimitWindow, fill: number): HTMLElement {
  *
  *  `glance` is the one place the strip and a row disagree, and only about a
  *  healthy window's reset time: a row has the room, and on the strip "resets
- *  19:00" beside a reading of 12% answers a question nobody asked.
+ *  19:00" beside a reading of 12% answers a question nobody asked. A window that
+ *  is near or spent keeps its sentence on the strip, because that is the case the
+ *  strip exists for.
  */
 type Tone = "out" | "near" | "quiet";
 
@@ -94,32 +125,17 @@ function noteFor(
   now: number,
   glance: boolean,
 ): { text: string; tone: Tone } | null {
-  if (win?.state === "exhausted") {
-    return {
-      text: win.resetsAt === null
-        ? "nothing moves — no reset time known"
-        : `nothing moves until ${formatReset(win.resetsAt, now)}`,
-      tone: "out",
-    };
-  }
-  if (win?.state === "near") {
-    // The reset time when there is one, and the ERROR when there is not. An error
-    // arrives beside the windows rather than instead of them, so a near reading
-    // and "token expired" can be true at once — and the row printed the error
-    // here before this branch existed. A reading nobody can refresh is worth less
-    // than the reason why.
-    const why = win.resetsAt !== null ? `resets ${formatReset(win.resetsAt, now)}` : snap.error;
-    return { text: why ? `nearly spent — ${why}` : "nearly spent", tone: "near" };
-  }
-  if (win?.resetsAt != null) {
-    return glance ? null : { text: `resets ${formatReset(win.resetsAt, now)}`, tone: "quiet" };
-  }
   // An error, and only an error. An unknown row used to add "not known" here,
   // which said the same thing the reading beside it already said — and two ways
   // of saying nothing read as two facts. What that row needs is the action, and
   // the action is the button next to it.
-  if (snap.error) return { text: snap.error, tone: "quiet" };
-  return null;
+  if (!win) return snap.error ? { text: snap.error, tone: "quiet" } : null;
+  const healthy = win.state !== "exhausted" && win.state !== "near";
+  if (glance && healthy && win.resetsAt !== null) return null;
+  const text = limitFoot(win, snap.error, now);
+  if (text === null) return null;
+  const tone: Tone = win.state === "exhausted" ? "out" : win.state === "near" ? "near" : "quiet";
+  return { text, tone };
 }
 
 const TONE_CLASS: Record<Tone, string> = {
@@ -225,12 +241,19 @@ export class LimitsBlock {
     // fold of a list capped at 15rem while the strip pointed straight at it.
     for (const { snap, window: win } of ranked) list.append(this.row(snap, win, now));
 
-    // The strip FIRST in the DOM and the rows after it, so a screen reader moving
-    // forward from the control it just pressed arrives inside what that press
-    // revealed. On screen the order is the other way up — `column-reverse` on
-    // `#limits` — so the rows still grow upward out of the panel's foot and the
-    // thing under the pointer stays under it.
-    this.el.append(this.strip(glance, now, list), list);
+    if (this.host.strip === false) {
+      // No strip, so nothing to fold and nothing that could keep the list shut.
+      // A surface that asked for the rows alone gets the rows alone.
+      list.hidden = false;
+      this.el.append(list);
+    } else {
+      // The strip FIRST in the DOM and the rows after it, so a screen reader
+      // moving forward from the control it just pressed arrives inside what that
+      // press revealed. On screen the order is the other way up —
+      // `column-reverse` on `#limits` — so the rows still grow upward out of the
+      // panel's foot and the thing under the pointer stays under it.
+      this.el.append(this.strip(glance, now, list), list);
+    }
 
     list.scrollTop = scrollTop;
     if (focusKey) this.refocus(focusKey);
@@ -310,7 +333,7 @@ export class LimitsBlock {
         "Limits",
         snap.label,
         win ? `${win.label}: ${readingOf(win)}` : "no windows",
-        win ? sourceLabel(win.source) : "",
+        win ? tierNote(win) ?? "" : "",
         note?.text ?? "",
         rest ? `${g.others} more` : "",
         alarm ?? "",
@@ -337,8 +360,13 @@ export class LimitsBlock {
     line.append(span("lim-word", "Limits"));
     line.append(span("lim-name", snap.label));
     if (win) {
-      line.append(span(`lim-src lim-src--${win.source}`, sourceLabel(win.source)));
       line.append(span("lim-reading", readingOf(win)));
+      // What qualifies the number, AFTER it, and only when there is something to
+      // qualify — see `tierNote`. It used to be the tier's own name, always, and
+      // before the reading; ADR-0009's amendment is why it is neither now, here
+      // and on every row below.
+      const note2 = tierNote(win);
+      if (note2) line.append(span(`lim-src lim-src--${win.source}`, note2));
     }
     if (rest) line.append(span("lim-rest", rest));
     const caret = document.createElement("span");
@@ -382,24 +410,29 @@ export class LimitsBlock {
       [
         snap.label,
         win ? `${win.label}: ${readingOf(win)}` : "no windows",
-        win ? sourceLabel(win.source) : "",
+        win ? tierNote(win) ?? "" : "",
         win?.resetsAt ? `resets ${formatReset(win.resetsAt, now)}` : "",
         "— open the detail",
       ]
         .filter(Boolean)
         .join(", "),
     );
-    open.onclick = () => openUsageDialog(snap, this.host, () => this.redraw(Date.now()));
+    open.onclick = () =>
+      this.host.openDetail
+        ? this.host.openDetail(snap)
+        : openUsageDialog(snap, this.host, () => this.redraw(Date.now()));
 
     const line = document.createElement("span");
     line.className = "lim-line";
     line.append(span("lim-name", snap.label));
     if (win) {
-      // The tier, beside the number and in the same size as it. Not a tooltip
-      // and not a footnote: two numbers that look alike and mean different
-      // things are worse than one number and a blank (ADR-0009).
-      line.append(span(`lim-src lim-src--${win.source}`, sourceLabel(win.source)));
       line.append(span("lim-reading", readingOf(win)));
+      // The qualifier, beside the number and in the same size as it. Not a
+      // tooltip and not a footnote: two numbers that look alike and mean
+      // different things are worse than one number and a blank — which is
+      // ADR-0009, as amended. See `tierNote` for what is printed and what is not.
+      const tier = tierNote(win);
+      if (tier) line.append(span(`lim-src lim-src--${win.source}`, tier));
     }
     open.append(line);
 
@@ -439,6 +472,7 @@ export class LimitsBlock {
     ask.title = `Run ${probe} in a tile`;
     ask.setAttribute("aria-label", `Ask ${snap.label} what is left — runs ${probe} in a tile`);
     ask.onclick = () => {
+      if (this.host.openProbe) return this.host.openProbe(snap);
       void this.host.openCommandTile(`${snap.label}: limits`, probe, this.host.cwd());
     };
     return ask;

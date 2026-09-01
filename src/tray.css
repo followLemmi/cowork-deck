@@ -1,0 +1,189 @@
+/* The panel behind the status-area icon.
+ *
+ * IT LOADS THE APP'S OWN STYLESHEET, and that is the decision this file exists
+ * to make. The obvious alternative — copying the handful of colours a small
+ * window needs out of the palette — is what the floating pill did, and the
+ * pill was left behind by two palettes in a row and came to look like a
+ * different program's before #394 removed it.
+ *
+ * This window cannot afford that, and does not have to. What it draws is the
+ * deck's limits block — `.lim-row`, `.lim-meter`, `.lim-src`, the state classes
+ * — rendered by `LimitsBlock` itself (see `tray-panel.ts`). Copying those rules
+ * here would be copying the thing the whole surface exists to reuse, and a meter
+ * that is a different colour in the menu bar than in the panel is worse than no
+ * meter. So `styles.css` comes in whole, tokens and all, and the panel adds only
+ * its own shell.
+ *
+ * The cost, measured rather than waved at: Vite inlines an `@import` into the
+ * importing entry, so this is a DUPLICATE of `styles.css` in the bundle — 99 kB
+ * beside the app's own 100 kB, not a shared file. The four `@font-face` blocks
+ * come with it, and only the UI face is actually fetched: a browser downloads a
+ * font when a rule matches text in it, and nothing in this panel is set in the
+ * terminal's 2.8 MB mono. So the real bill is 99 kB of CSS on disk and one local
+ * 537 kB face, paid once into a webview that is created hidden at launch and
+ * never navigates again. Against a meter that is a different colour from the
+ * deck's, that is not a close call.
+ */
+@import "./styles.css";
+
+/* The window is transparent; `#tray` is what is actually drawn in it. The margin
+   is not decoration — a shadow drawn at the window's edge is a shadow clipped by
+   it, so the panel is inset and `tray-window.ts` adds the same margin back when
+   it reports its height. */
+html, body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+#tray {
+  display: flex;
+  flex-direction: column;
+  margin: var(--tray-margin);
+  max-height: calc(100vh - var(--tray-margin) * 2);
+  background: var(--bg-island);
+  /* `--line-strong` and not `--line`: this floats over a desktop rather than
+     over the app's own stage, and the edge is the only thing separating it from
+     whatever is behind. */
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-island);
+  box-shadow: var(--sh-island), 0 8px 24px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+:root { --tray-margin: 8px; }
+
+/* The sections scroll; the footer does not. Past `PANEL_MAX_HEIGHT` in
+   `tray.rs` the window stops growing and this is what takes up the slack — a
+   status panel as tall as the screen is a window, and a window is the thing
+   this exists to avoid opening. */
+#tray-sections {
+  overflow-y: auto;
+  padding: var(--sp-2) var(--sp-2) 0;
+}
+
+.tray-sec + .tray-sec { margin-top: var(--sp-3); }
+
+/* The heading is the section's, and it is why `LimitsBlock` is drawn here with
+   `strip: false`: the strip it would fold the rows behind carries the word
+   "Limits" itself, and two of those in a 340px window is a mistake nobody has
+   to make twice. */
+.tray-sec > h2 {
+  margin: 0 0 var(--sp-1) var(--sp-1);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* A line that says something and does nothing. */
+.tray-note {
+  margin: 0;
+  padding: var(--sp-1) var(--sp-1);
+  font-size: var(--fs-sm);
+  color: var(--fg-dim);
+}
+
+/* A waiting session.
+   `[data-state]` rather than a class per state, because that is the carrier the
+   deck's own session rows and tiles use for exactly this (`styles.css`:
+   `.sess-row[data-state]`, `.tile[data-state]`). The rule is separate — this row
+   is not a sidebar row and should not inherit its padding — but the vocabulary
+   is the same one, and `--rail` means here what it means there. */
+.tray-sess {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-left: 2px solid var(--rail, transparent);
+  border-radius: var(--r-sm);
+  background: none;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+/* The same five the deck's own rows carry, and deliberately the same five: a
+   surface that painted "working" differently from the sidebar would be a second
+   vocabulary for one fact. */
+.tray-sess[data-state="working"] { --rail: var(--st-working); }
+.tray-sess[data-state="done"] { --rail: var(--st-working); }
+.tray-sess[data-state="waitingInput"] { --rail: var(--st-waiting); }
+.tray-sess[data-state="error"] { --rail: var(--st-error); }
+.tray-sess[data-state="ended"] { --rail: var(--st-ended); }
+.tray-sess:hover { background: var(--bg-hover); }
+.tray-sess:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.tray-sess-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+/* The word takes the row's own colour rather than a fixed one — it said
+   "stopped on an error" in amber before this, because the amber was hardcoded
+   from when the list only ever held waiting sessions. `--rail` is already set
+   per state one rule up, so the word and the rail cannot disagree; the fallback
+   is for the states that deliberately have no hue. */
+.tray-sess-state {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--rail, var(--fg-dim));
+}
+
+/* The two things the panel does that are not a row: showing the window, and
+   quitting. Separated by a rule, because they act on the app rather than on
+   anything above them. */
+.tray-foot {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  border-top: 1px solid var(--line);
+}
+.tray-foot button {
+  flex: 1;
+  padding: var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctl);
+  background: var(--bg-inset);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.tray-foot button:hover { background: var(--bg-hover-2); }
+.tray-foot button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* Quit is the destructive one and it is not the one being offered, so it takes
+   half the width and none of the emphasis. */
+.tray-foot .tray-quiet { flex: 0 0 auto; color: var(--fg-mid); background: none; }
+.tray-foot .tray-quiet:hover { background: var(--bg-hover); color: var(--fg); }
+
+/* The block is the deck's, and it needs three things it does not need there.
+   No strip: this window IS the glance, and it is drawn with `strip: false`, so
+   the list arrives on its own — the deck's `#limits` rules never applied here
+   anyway, since the block is mounted in a section body rather than at the foot
+   of a panel. No cap on the list: `.lim-list` is bounded in the deck so
+   unfolding cannot push the page out of the window, and here there is no page
+   above it to protect — the panel sizes to its content and Rust is told how
+   tall that came out (`tray-window.ts`). And rows that can use the full width
+   of a narrow panel. */
+#tray .lim-list { max-height: none; overflow: visible; padding: 0; gap: 2px; }
+#tray .lim-open { padding: var(--sp-1) var(--sp-2); border-radius: var(--r-sm); }
+
+@media (forced-colors: active) {
+  /* The rail is a fill, and a fill is replaced by a system colour — so the row
+     would lose the one channel that says "this one is waiting". The state word
+     beside the name is a real text node and survives, which is why it is there
+     rather than being a colour alone. */
+  #tray { border-color: CanvasText; }
+  .tray-sess { border-left-color: CanvasText; }
+}

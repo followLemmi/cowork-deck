@@ -21,7 +21,9 @@ export default defineConfig({
     target: "es2021",
     outDir: "dist",
     rollupOptions: {
-      input: { main: "index.html", workspace: "workspace.html" },
+      input: {
+        main: "index.html", tray: "tray.html", workspace: "workspace.html",
+      },
     },
   },
 });

@@ -762,22 +762,17 @@ const CASES = [
     threshold: TEXT, sc: "1.4.3",
   },
   {
-    what: "the tier label",
-    where: "REPORTED / OBSERVED beside the number — the label ADR-0009 refuses to make a tooltip. "
-      + "The same pair carries the `+3` count, the words about the other AIs and the chevron",
+    what: "the caveat on a reading",
+    where: "THIS APP ONLY / ESTIMATE after the number — the qualifier ADR-0009's amendment "
+      + "refuses to make a tooltip. The same pair carries the `+3` count, the words about the "
+      + "other AIs and the chevron",
     fg: "--fg-dim", backdrop: ["--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
-    what: "the tier label on a hovered row",
-    where: "the same label once the row's own hover has raised the ground",
+    what: "the caveat on a hovered row",
+    where: "the same words once the row's own hover has raised the ground",
     fg: "--fg-dim", backdrop: ["--bg-hover"],
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "a reported tier label",
-    where: "the one tier drawn a step brighter, because it is the one that can be relied on",
-    fg: "--fg-mid", backdrop: ["--bg-void"],
     threshold: TEXT, sc: "1.4.3",
   },
   {

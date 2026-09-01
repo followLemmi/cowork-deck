@@ -3,6 +3,7 @@ import type { AiUsage, LimitState, LimitWindow, UsageSource } from "../src/ipc";
 import {
   deckLimit,
   formatReset,
+  limitFoot,
   formatTokens,
   LimitNotifier,
   meterFraction,
@@ -12,6 +13,7 @@ import {
   sourceLabel,
   stateClass,
   rankedAis,
+  tierNote,
   usageGlance,
 } from "../src/usage";
 
@@ -245,6 +247,30 @@ describe("saying where a number came from", () => {
     expect(new Set(labels).size).toBe(4);
   });
 
+  /** What a ROW says, which is no longer the tier's name — see ADR-0009's
+   *  amendment. The dialog still uses `sourceLabel` above; this is the row. */
+  it("says nothing beside the account's own figure", () => {
+    expect(tierNote(win({ usedFraction: 0.23, source: "reported" }))).toBeNull();
+  });
+
+  /** The failure ADR-0009 exists to prevent runs one way: this app's own
+   *  narrower count being read as the account's. Labelling that direction is
+   *  what keeps the protection while the strong tier goes quiet. */
+  it("says what a weaker number is, in words a person can act on", () => {
+    expect(tierNote(win({ usedFraction: 0.5, source: "observed" }))).toBe("this app only");
+    expect(tierNote(win({ usedFraction: 0.5, source: "estimated" }))).toBe("estimate");
+  });
+
+  /** `readingOf` has already said "no reading", and two ways of saying nothing
+   *  read as two facts — the rule `limitFoot` keeps about an absent reset. */
+  it("adds nothing to a window that has no reading at all", () => {
+    expect(tierNote(win({ source: "unknown" }))).toBeNull();
+  });
+
+  it("does say so if a quantity ever turns up with no known source", () => {
+    expect(tierNote(win({ usedFraction: 0.4, source: "unknown" }))).toBe("source not known");
+  });
+
   it("explains unknown as an absence rather than as a zero", () => {
     expect(sourceExplanation("unknown")).toContain("not the same as nothing being spent");
   });
@@ -357,5 +383,44 @@ describe("telling somebody who is not looking at the window", () => {
     expect(withTime!.body).toContain("nothing will move until");
     const without = new LimitNotifier().next({ exhausted: true, resetsAt: null, provider: null }, now);
     expect(without!.body).toContain("no reset time is known");
+  });
+});
+
+/** The line under a reading. Shared by the limits block and the status-area
+ *  menu, which is why it is a rule in this file rather than a branch in either
+ *  of them — see ADR-0011. */
+describe("what a row says under its reading", () => {
+  const now = Date.parse("2026-08-27T12:00:00Z");
+  const at = Date.parse("2026-08-27T19:00:00Z");
+
+  it("says nothing moves, and until when", () => {
+    expect(limitFoot(win({ state: "exhausted", resetsAt: at }), null, now))
+      .toBe(`nothing moves until ${formatReset(at, now)}`);
+  });
+
+  /** A window known to be spent whose reset the provider did not say. Not the
+   *  same as an unknown window, and it must not read like one. */
+  it("says a spent window has no known reset rather than implying one", () => {
+    expect(limitFoot(win({ state: "exhausted" }), null, now))
+      .toBe("nothing moves — no reset time known");
+  });
+
+  it("carries a reset time on a window that is not spent", () => {
+    expect(limitFoot(win({ state: "ok", usedFraction: 0.2, resetsAt: at }), null, now))
+      .toBe(`resets ${formatReset(at, now)}`);
+  });
+
+  /** An error is what an unreadable row has to add. "Not known" would repeat
+   *  the reading beside it, and two ways of saying nothing read as two facts. */
+  it("falls back to the error, and to nothing at all without one", () => {
+    expect(limitFoot(win(), "claude is not on the PATH", now)).toBe("claude is not on the PATH");
+    expect(limitFoot(win(), null, now)).toBeNull();
+  });
+
+  /** A reset time outranks an error: the number is readable, so the caveat
+   *  about reading it is not the useful half. */
+  it("prefers a reset time to an error when it has both", () => {
+    expect(limitFoot(win({ usedFraction: 0.5, resetsAt: at }), "stale", now))
+      .toBe(`resets ${formatReset(at, now)}`);
   });
 });

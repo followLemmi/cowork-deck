@@ -12,6 +12,14 @@ use tokio::sync::Notify;
 /// The window the app opens with, and the only one that outlives every other.
 pub const MAIN: &str = "main";
 
+/// The panel behind the status-area icon.
+///
+/// A window rather than a native menu, because a menu cannot draw a meter and a
+/// meter is what a limit wants — see ADR-0013. Hidden by default and positioned
+/// under the icon each time it is shown, so where it was last is of no use: it
+/// belongs to the icon, not to wherever somebody last put it.
+pub const TRAY: &str = "tray";
+
 /// What a workspace window's label begins with.
 ///
 /// A hyphen rather than a colon, and not for taste. `tauri-utils` documents a
@@ -161,6 +169,45 @@ mod tests {
             "capabilities/default.json must list {glob} among its windows, or every \
              invoke from a workspace window fails silently",
         );
+    }
+
+    /// The same trap as the glob above, for the fixed labels. A window whose
+    /// label is not in that list gets no permissions at all, and the symptom is
+    /// a window that draws and then does nothing — no error anywhere.
+    #[test]
+    fn every_fixed_label_is_in_the_capability_file() {
+        let capabilities = include_str!("../capabilities/default.json");
+        for label in [MAIN, TRAY] {
+            assert!(
+                capabilities.contains(&format!("\"{label}\"")),
+                "capabilities/default.json must list \"{label}\" among its windows",
+            );
+        }
+    }
+
+    /// A window this app can show and cannot hide.
+    ///
+    /// `core:window:default` is read-only getters — `allow-hide` is not in it,
+    /// and neither is `allow-show`. The capability file grants `show` because
+    /// something needed it; `hide` was not granted because nothing had needed it
+    /// yet, and then the tray panel did. The symptom is the worst kind: `hide()`
+    /// is denied, the promise rejects into a `void`, and Escape simply does
+    /// nothing on a window with no chrome and no other way out.
+    ///
+    /// Stated as a pair rather than as "hide must be listed", because the pair is
+    /// the actual rule: a surface the app puts up is a surface it has to be able
+    /// to take down.
+    #[test]
+    fn a_window_the_app_can_show_it_can_also_hide() {
+        let capabilities = include_str!("../capabilities/default.json");
+        if capabilities.contains("\"core:window:allow-show\"") {
+            assert!(
+                capabilities.contains("\"core:window:allow-hide\""),
+                "capabilities/default.json grants allow-show without allow-hide, so a window \
+                 this app opens cannot be dismissed — `hide()` is denied and the rejection \
+                 goes nowhere",
+            );
+        }
     }
 
     #[test]

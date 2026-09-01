@@ -19,6 +19,7 @@ mod scheduler;
 mod tasks_cmd;
 mod resume_ids;
 mod transcripts;
+mod tray;
 mod usage;
 mod which;
 mod ownership;
@@ -137,6 +138,13 @@ fn main() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                // The tray panel is the one window whose position is not a
+                // choice anybody made: it is placed under the status-area icon
+                // every time it opens, and its height follows its content. A
+                // remembered geometry would be applied at launch and then
+                // overwritten on the first click, which is a restore that only
+                // ever produces one wrong frame.
+                .with_denylist(&[windows::TRAY])
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -256,9 +264,39 @@ fn main() {
             // #35 set for memory generally — it stays off the launch path.
             sync_cmd::spawn(handle.clone());
 
+            // The status-area icon and the menu behind it. Put up here and never
+            // taken down: the point of the surface is that it is there when the
+            // window is not, and it survives a restart because it is built in
+            // setup rather than by anything the frontend does.
+            //
+            // What the menu SAYS arrives later, from the deck, through
+            // `tray::tray_update` — this file's job is only to exist. See
+            // ADR-0013 for why the panel is a native menu and why its rows are
+            // composed in the webview.
+            if let Err(e) = tray::install(&handle) {
+                eprintln!("error: failed to create the status-area icon ({e})");
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
+            // The dock badge is a way of telling somebody who is not looking at
+            // the deck. While they are looking, it has nothing to say — so focus
+            // clears it, and a report arriving while the window is in front does
+            // not put it back (`tray::badge_count`). Only the main window counts:
+            // a workspace window is a place sessions live, not the deck.
+            if let tauri::WindowEvent::Focused(focused) = event {
+                if window.label() == windows::MAIN {
+                    tray::set_focused(window.app_handle(), *focused);
+                }
+                // And the panel behind the status-area icon goes when it loses
+                // the keyboard, which is the only way a window with no chrome
+                // can be dismissed by clicking away from it. It is focusable for
+                // exactly this reason — see `tray::build_panel`.
+                if window.label() == windows::TRAY && !*focused {
+                    tray::panel_blurred(window.app_handle());
+                }
+            }
             // `Destroyed`, not `CloseRequested`: the latter is preventable and
             // also fires while the runtime tears everything down at quit, so a
             // window that refused to close would be marked gone while it is
@@ -440,6 +478,9 @@ fn main() {
             tasks_cmd::board_config_save,
             tasks_cmd::board_step_rewrite,
             tasks_cmd::board_step_usage,
+            tray::tray_update,
+            tray::tray_resize,
+            tray::tray_activate,
         ])
         .build(tauri::generate_context!())
         .expect("error while building cowork-deck")
@@ -461,6 +502,11 @@ fn main() {
                 }
             }
             tauri::RunEvent::Exit => {
+                // Before the sessions, because this one talks to the desktop and
+                // `kill_all` can take a moment. A launcher told a count over
+                // D-Bus keeps showing it after the process is gone, which is the
+                // worst version of a stale badge — see `tray::clear_badge`.
+                tray::clear_badge(app);
                 if let Some(state) = app.try_state::<AppState>() {
                     // Before the PTYs go, and this is the ordering that matters:
                     // which conversation each session is in is learned from a

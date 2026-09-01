@@ -26,12 +26,15 @@ import {
   hostPlatform,
   configPaths,
   usageSnapshot, onUsageChanged,
+  trayUpdate, onTrayAction, onTrayAsk, TRAY_FACTS,
   type AiUsage,
   type HandOffTile,
   type SessionState,
 } from "./ipc";
 import { LimitsBlock } from "./usage-block";
 import { deckLimit, LimitNotifier } from "./usage";
+import { parseAction, trayPanel } from "./tray-panel";
+import { openUsageDialog } from "./usage-dialog";
 import { offerUpdateIfAvailable } from "./updater";
 import { TerminalDrawer, DEFAULT_TERMINAL_ROWS } from "./drawer";
 import type { Skill, Workspace } from "./ipc";
@@ -73,6 +76,7 @@ import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { listen, emit, emitTo } from "@tauri-apps/api/event";
+import { allSessions, windowOf } from "./cross-window";
 import type { RemoteSession, SessionsByWindow, WindowSessions } from "./cross-window";
 import { addressedTo, MAIN_WINDOW_LABEL, workspaceIdOf, workspaceLabel } from "./window-role";
 import { hasLeftWindow, pressStartsOnControl, startsTearOut } from "./tear-out";
@@ -2086,9 +2090,53 @@ export function startApp(role: WindowRole): Promise<void> {
     }
   }
 
+  /** A row of the status-area menu was chosen.
+   *
+   *  The main window only, for the reason above: it is the only participant that
+   *  can tell which window holds a session. Rust sends the row's `action` back
+   *  exactly as `tray-panel.ts` minted it and reads nothing in it — the
+   *  vocabulary lives at both ends of `parseAction`, and an action this build
+   *  does not know is dropped rather than guessed at.
+   *
+   *  Nothing was raised before this arrived, deliberately: a session may live in
+   *  a workspace window, and raising the deck first would flash the wrong window
+   *  forward. Each branch below raises what it is about to show.
+   */
+  if (isMain) void onTrayAction(async (action) => {
+    const chosen = parseAction(action);
+    if (!chosen) return;
+    if (chosen.verb === "session") {
+      const where = windowOf(sessionsByWindow, chosen.id);
+      if (where && where !== myLabel) {
+        await emitTo(where, "session://focus", { session: chosen.id });
+        return;
+      }
+      await raiseThisWindow();
+      deck.focusSession(chosen.id);
+      return;
+    }
+    // The snapshot on hand rather than a fresh read: the panel was drawn from
+    // it, and re-reading here would let the deck say something the row the
+    // person clicked did not.
+    const snap = lastUsage.find((u) => u.provider === chosen.id);
+    if (!snap) return;
+    await raiseThisWindow();
+    if (chosen.verb === "probe") {
+      // The one thing a person can do about a row nobody can read, reached from
+      // the other surface. The tray has no tiles, so it asks for one here.
+      if (snap.probeCommand) {
+        void deck.openCommandTile(`${snap.label}: limits`, snap.probeCommand, limitsHost.cwd());
+      }
+      return;
+    }
+    // A limit row opens the same dialog its row in the deck's own block opens —
+    // one screen, two ways in.
+    openUsageDialog(snap, limitsHost, () => limits.redraw(Date.now()));
+  });
+
   /** Focus a session because another window asked — the far end of `onRemoteFocus`
-   *  below, which is both the next-waiting command reaching another window and a
-   *  click on a detached workspace's session row (#244).
+   *  below, of the tray routing above, and of a click on a detached workspace's
+   *  session row (#244).
    *
    *  Raising happens here rather than at the sender, and only on an explicit
    *  gesture. `set_focus` on a window living on another macOS Space yanks the
@@ -2132,12 +2180,16 @@ export function startApp(role: WindowRole): Promise<void> {
      provider that spawns a process anywhere near the tick is the mistake
      `sessions.ts` already documents, so it gets its own slow loop. */
   const limitsEl = document.querySelector<HTMLElement>("#limits")!;
-  const limits = new LimitsBlock(limitsEl, {
-    openCommandTile: (t, c, cwd) => deck.openCommandTile(t, c, cwd),
+  /** Named rather than inlined, because the status-area menu opens the same
+   *  dialog from the same host: a row in the menu bar and a row in the panel are
+   *  two ways to reach one screen, not two screens. */
+  const limitsHost = {
+    openCommandTile: (t: string, c: string, cwd: string) => deck.openCommandTile(t, c, cwd),
     cwd: () => workspaces.active?.path ?? ".",
-  });
-  /** The last snapshot, so the block on screen and the notification agree on one
-   *  reading rather than each asking for its own. */
+  };
+  const limits = new LimitsBlock(limitsEl, limitsHost);
+  /** The last snapshot, so the block on screen, the notification and the tray
+   *  report agree on one reading rather than each asking for its own. */
   let lastUsage: AiUsage[] = [];
   const limitNotifier = new LimitNotifier();
 
@@ -2156,19 +2208,63 @@ export function startApp(role: WindowRole): Promise<void> {
 
   /** Tell somebody who is not looking at the window.
    *
-   *  The one thing left that speaks when the deck is not in front. The pill used
-   *  to be the other, from the same `deckLimit` so the two told one story; #394
-   *  removed it, and until #393 puts a badge and a tray panel there this is the
-   *  whole of it. On screen the same reading is the limits block above.
+   *  One of the two, and the only one that interrupts: the status-area panel is
+   *  where the same `deckLimit` is read at a glance, and `announceOutside` below
+   *  is what keeps the two a tick apart at most. On screen the same reading is
+   *  the limits block above.
    *
    *  Once for the whole deck, because the notifier holds its own state and twelve
    *  notifications about one ceiling is the bug #305 exists to prevent. */
   function announceLimit(): void {
     if (!isMain) return;
+    announceOutside();
     const notice = limitNotifier.next(deckLimit(lastUsage));
     // Through the deck, which owns the one permission request — see `canNotify`.
     if (notice && deck.canNotify()) sendNotification({ title: notice.title, body: notice.body });
   }
+
+  /** Tell everything that speaks for the deck while its window is not in front.
+   *
+   *  Two surfaces — the status-area panel and the dock badge — and one call,
+   *  because they are answers to the same two questions and must never be a tick
+   *  apart. Only the main window sends: it is the only participant that hears
+   *  every window's sessions, which is why the count behind both is added up
+   *  here (#243).
+   *
+   *  Safe on every tick. An identical tray report is dropped in Rust rather than
+   *  rebuilding a native menu under an open cursor — see ADR-0013.
+   */
+  function announceOutside(): void {
+    if (!isMain) return;
+    const sessions = allSessions(sessionsByWindow);
+    // Twice, and they are not the same message. Rust gets the composed report —
+    // the tooltip, the badge count, and the sentences the Linux menu is built
+    // from. The panel window gets the FACTS, because it runs the same helpers
+    // and the same `LimitsBlock` the deck's own block does, and a meter is not a
+    // string. One `PANEL` list decides both (`tray-panel.ts`).
+    const panel = trayPanel({ usage: lastUsage, sessions, now: Date.now() });
+    // A surface that stopped updating looks exactly like a deck with nothing to
+    // report, so the failure is said rather than swallowed — but it is not worth
+    // a modal: the next tick is the recovery.
+    void trayUpdate(panel).catch((e) => console.debug("tray: could not update the surface", e));
+    void emit(TRAY_FACTS, {
+      usage: lastUsage,
+      // Only what the panel draws. A `RemoteSession` also carries the workspace
+      // it belongs to, which is the main window's own bookkeeping and not
+      // something to hand another window that has no use for it.
+      sessions: sessions.map((s) => ({ session: s.session, name: s.name, state: s.state })),
+      // The panel is a separate document, so the text-size setting does not
+      // reach it on its own — see `applyScale`.
+      scale: currentScale(),
+    });
+  }
+
+  /** The panel behind the status-area icon has just been shown.
+   *
+   *  A report goes out every few seconds anyway; this is so the panel is right
+   *  at the instant somebody opens it, which is exactly the moment being up to a
+   *  tick stale would matter. */
+  if (isMain) void onTrayAsk(() => announceOutside());
 
   /** Every window's sessions, as each of them last reported. Only the main
    *  window keeps this filled — it is the only participant that hears everybody
@@ -2179,8 +2275,10 @@ export function startApp(role: WindowRole): Promise<void> {
     if (!isMain) return;
     sessionsByWindow.set(e.payload.label, e.payload.sessions);
     // Kept here, where the whole picture is: this window is the only participant
-    // that hears every other one. What it is for is `showElsewhere` below and
-    // `focusNextWaiting` reaching the other monitor through the proxies it sets.
+    // that hears every other one. What it is for is `showElsewhere` below,
+    // `focusNextWaiting` reaching the other monitor through the proxies it sets,
+    // and the count the status area and the dock badge are told.
+    announceOutside();
     showElsewhere();
   });
 
@@ -2195,6 +2293,7 @@ export function startApp(role: WindowRole): Promise<void> {
   const windowGoneListener = listen<{ label: string }>("window://gone", (e) => {
     if (!isMain) return;
     if (!sessionsByWindow.delete(e.payload.label)) return;
+    announceOutside();
     showElsewhere();
   });
 

@@ -8,11 +8,13 @@
  *  codebase already uses for `nextWaitingAcross`, `zoomParticipants` and
  *  `serializeTiles`.
  *
- *  It was three functions before #394. Adding the reports up, finding the window
- *  that holds a session, and flattening them into one stable order all existed
- *  for the floating pill's click and its count; the deck reads the same reports
- *  through the proxy rows it renders from them, which carry their own window's
- *  label, so none of the three had a caller left.
+ *  It was three functions before #394, all three for the floating pill's click
+ *  and its count. Adding the reports up went with the pill and has not come
+ *  back: nothing counts windows any more, because the status-area panel is a
+ *  list and the badge's number is composed with it (`tray-panel.ts`). The other
+ *  two are here because #393 gave them a caller again — the panel names every
+ *  session in one order, and a click on one of those rows has to reach the
+ *  window that holds it.
  */
 import type { SessionState } from "./ipc";
 
@@ -22,9 +24,9 @@ import type { SessionState } from "./ipc";
  *  file small — and what let the floating pill go (#394) without taking anything
  *  with it. A count would have answered "how many are waiting" and nothing else;
  *  the same message carrying the sessions answers which window to raise when
- *  somebody asks for the next one, *and* what to draw in the main window's
- *  sidebar for a workspace that has been pulled out. Two problems that outlived
- *  the count, one message.
+ *  somebody clicks a row in the status-area panel, *and* what to draw in the
+ *  main window's sidebar for a workspace that has been pulled out. Two problems
+ *  that outlived the count, one message.
  */
 export interface RemoteSession {
   session: string;
@@ -41,6 +43,31 @@ export interface WindowSessions {
 
 /** Every window's report, keyed by the window that sent it. */
 export type SessionsByWindow = Map<string, RemoteSession[]>;
+
+/** The window that holds `session`, or null if nobody reports it.
+ *
+ *  What lets a row of the status-area panel reach the session it names: the main
+ *  window composes the panel out of every window's report, and this says where
+ *  to send the click when the row belongs to somebody else.
+ */
+export function windowOf(byWindow: SessionsByWindow, session: string): string | null {
+  for (const [label, sessions] of byWindow) {
+    if (sessions.some((s) => s.session === session)) return label;
+  }
+  return null;
+}
+
+/** Every session any window reports, in a stable order.
+ *
+ *  Ordered by window label and then by the order that window listed them, so the
+ *  panel lists the same sessions in the same order twice running. Without it the
+ *  order would depend on `Map` insertion order, which depends on which window
+ *  happened to report first after a restart — and a menu whose rows move between
+ *  two openings is a menu you cannot click without reading it again.
+ */
+export function allSessions(byWindow: SessionsByWindow): RemoteSession[] {
+  return [...byWindow.keys()].sort().flatMap((label) => byWindow.get(label) ?? []);
+}
 
 /** A starting point for notification ids that no two windows share.
  *

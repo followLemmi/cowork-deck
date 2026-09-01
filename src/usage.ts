@@ -158,7 +158,53 @@ export function stateClass(state: LimitState): string {
   }
 }
 
-/** What to call a tier on screen. One word, always shown, never a tooltip. */
+/** What a ROW says about where its number came from, or `null` when it needs to
+ *  say nothing.
+ *
+ *  ADR-0009 decision 1 required the tier beside every reading, in every row, in
+ *  the tier's own name — "Reported", "Observed". The person who wrote that
+ *  record then read `Claude · REPORTED · 29% used` in the status-area panel and
+ *  asked what the word meant, which is as clear a verdict on a label as there
+ *  is. The record is amended rather than abandoned; this function is the
+ *  amendment, and the reasoning is there.
+ *
+ *  Two changes, and the second is what makes the first safe:
+ *
+ *  1. **The strongest tier says nothing.** An unqualified number is the
+ *     account's own figure, which is what a person assumes anyway — and the
+ *     failure ADR-0009 exists to prevent is the other direction: this app's own
+ *     narrower count being read as the account's. Labelling only the weaker
+ *     tiers prevents exactly that, and stops spending a quarter of a 340px row
+ *     on a word that changes nothing.
+ *  2. **The weaker tiers say what they mean, not what they are called.**
+ *     "Observed" is the tier's name; "this app only" is the fact a person can
+ *     act on. The names live on in the dialog, next to the sentence that
+ *     defines them (`sourceExplanation`) — that is where a vocabulary is taught,
+ *     and a row is not.
+ *
+ *  `unknown` also says nothing, because `readingOf` has already said "no
+ *  reading" and two ways of saying nothing read as two facts — the same rule
+ *  `limitFoot` keeps about an absent reset.
+ */
+export function tierNote(w: LimitWindow): string | null {
+  switch (w.source) {
+    case "reported":
+      return null;
+    case "observed":
+      return "this app only";
+    case "estimated":
+      return "estimate";
+    default:
+      // Not reachable from any provider today: a window with no quantity is
+      // where `unknown` comes from. Kept honest rather than assumed — a source
+      // that says it does not know, over a number, is worth printing.
+      return w.usedFraction === null && w.amount === null ? null : "source not known";
+  }
+}
+
+/** What to call a tier by name, for the dialog. One word, and there it is always
+ *  shown — the dialog is where the vocabulary is defined, beside
+ *  `sourceExplanation`. A ROW uses `tierNote` instead; see the note there. */
 export function sourceLabel(source: UsageSource): string {
   switch (source) {
     case "reported":
@@ -239,6 +285,46 @@ export function meterFraction(w: LimitWindow): number | null {
   if (w.usedFraction !== null) return Math.max(0, Math.min(1, w.usedFraction));
   if (w.state === "exhausted") return 1;
   return null;
+}
+
+/** The line under a reading: what the state means, in a sentence.
+ *
+ *  Extracted from the limits block when the tray menu needed the same sentence.
+ *  It is the same rule as `readingOf` and for the same reason — the block, the
+ *  tray and anything after them must not each have their own opinion about what
+ *  "exhausted with no known reset" reads as. A row saying one thing in the panel
+ *  and another in the menu bar is the bug the pure helpers in this file exist to
+ *  prevent. `usage-block.ts` adds the tone and drops the sentence where its
+ *  surface has no room for it; the words are all decided here.
+ *
+ *  Three states worth a sentence and one that is not:
+ *
+ *  - **Spent.** When it lifts, or that nobody said. The whole answer to "can I
+ *    keep working" is here and nowhere else.
+ *  - **Nearly spent.** Said in words as well as in a hue, because a difference
+ *    carried by hue alone is one a person who cannot see the hue does not get.
+ *    The reset when there is one and the ERROR when there is not: an error
+ *    arrives beside the windows rather than instead of them, so a near reading
+ *    and "token expired" can be true at once, and a reading nobody can refresh
+ *    is worth less than the reason why.
+ *  - **Working, with a known reset.** The time, plainly.
+ *
+ *  `null` is a row with nothing to add: the reading beside it already said
+ *  everything. An unknown row deliberately does NOT get "not known" here — that
+ *  repeats the reading, and two ways of saying nothing read as two facts.
+ */
+export function limitFoot(w: LimitWindow, error: string | null, now: number): string | null {
+  if (w.state === "exhausted") {
+    return w.resetsAt === null
+      ? "nothing moves — no reset time known"
+      : `nothing moves until ${formatReset(w.resetsAt, now)}`;
+  }
+  if (w.state === "near") {
+    const why = w.resetsAt !== null ? `resets ${formatReset(w.resetsAt, now)}` : error;
+    return why ? `nearly spent — ${why}` : "nearly spent";
+  }
+  if (w.resetsAt !== null) return `resets ${formatReset(w.resetsAt, now)}`;
+  return error;
 }
 
 /* --- Telling somebody who is not looking at the window -------------------- */
