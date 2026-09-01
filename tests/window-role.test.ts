@@ -15,9 +15,8 @@ describe("workspaceIdOf", () => {
       .toBe("3f2b1c4e-0a11-4c2d-9f77-1b2c3d4e5f60");
   });
 
-  it("says nothing for the windows that are not workspaces", () => {
+  it("says nothing for the window that is not a workspace", () => {
     expect(workspaceIdOf("main")).toBeNull();
-    expect(workspaceIdOf("pill")).toBeNull();
   });
 
   /** The bare prefix names no workspace. Otherwise an empty id would round trip
@@ -29,7 +28,7 @@ describe("workspaceIdOf", () => {
   /** A prefix match, not a substring one: a label that merely contains the word
    *  must not be read as a workspace window. */
   it("matches at the start and nowhere else", () => {
-    expect(workspaceIdOf("pill-workspace-w1")).toBeNull();
+    expect(workspaceIdOf("not-workspace-w1")).toBeNull();
   });
 });
 

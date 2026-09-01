@@ -241,11 +241,12 @@
   --fs-lg: 1.1875rem;     /* 19px — row and card titles */
   --fs-xl: 1.375rem;      /* 22px — one screen title per view */
   /* No 30px step. One was declared during the redesign for "a count, a stat" and
-     then nothing in the app needed it: the only candidate is the floating pill's
-     number, and the pill is a second window with its own stylesheet and no access to
-     these tokens. A declared token nothing uses is a claim nobody checks, so it is
-     better absent than aspirational — add it back in the commit that first renders at
-     30px, with the `contrast.mjs` case for the large-text threshold it crosses.
+     then nothing in the app needed it: the only candidate was the floating pill's
+     number, in a second window with its own stylesheet and no access to these
+     tokens, and #394 removed that window. A declared token nothing uses is a claim
+     nobody checks, so it is better absent than aspirational — add it back in the
+     commit that first renders at 30px, with the `contrast.mjs` case for the
+     large-text threshold it crosses.
      `--r-md` and `--shadow-tile` went the same way: superseded by `--r-island` and by
      the two shadows above, and left declared for a while after nothing used them. */
 

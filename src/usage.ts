@@ -1,10 +1,11 @@
-/** The decisions the limits block, the dialog and the pill all have to agree on
- *  — and none of them knows the name of a provider.
+/** The decisions the limits block, the dialog and the limit notification all
+ *  have to agree on — and none of them knows the name of a provider.
  *
  *  Pure: no DOM, no IPC, no timers, so every rule in here is unit-tested as a
- *  rule. That is the same reason `pill-util.ts` is a separate file, and it
- *  matters more here: three surfaces draw from one snapshot, and a rule about
- *  which window a row shows is a rule that must not be written twice.
+ *  rule. Three surfaces draw from one snapshot, and a rule about which window a
+ *  row shows is a rule that must not be written twice — which is what happened
+ *  when the floating pill carried its own copy of the shorter reset format
+ *  (#394 removed it, and the copy with it).
  */
 
 import type { AiUsage, LimitState, LimitWindow, UsageSource } from "./ipc";

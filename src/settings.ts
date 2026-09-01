@@ -21,8 +21,9 @@
 // It stays a modal rather than becoming a screen or a second OS window. A screen
 // would need a page in the panel, and the panel's pages are things you WORK in;
 // settings is a thing you visit. A second window would need its own entry point,
-// its own stylesheet copy (see `pill.css`) and a story for what happens when the
-// main window closes under it.
+// its own copy of the stylesheet — the floating pill had one, and it fell behind
+// two palettes in a row before #394 removed the window — and a story for what
+// happens when the main window closes under it.
 
 import { openDialog } from "./dialog-shell";
 import { syncQuestions, syncSummary } from "./ipc";

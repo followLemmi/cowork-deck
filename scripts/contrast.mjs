@@ -201,13 +201,6 @@ const termColor = (name) => {
   return m[1];
 };
 
-/** The pill is a second window with its own entry point, so it never loads
- *  `styles.css` and its colours are literals in `src/pill.css`. Read from there
- *  rather than restated, for the same reason every value in this file is read
- *  from the rule it belongs to: a number nobody can re-derive is a number nobody
- *  can change. `decl` throws if the rule or the property has gone. */
-const pillCss = readFileSync(join(root, "src/pill.css"), "utf8");
-
 const TEXT = 4.5;   // 1.4.3
 const UI = 3.0;     // 1.4.11
 const EXEMPT = 0;   // measured and reported, but disabled controls are exempt
@@ -811,23 +804,6 @@ const CASES = [
     where: "rejected — the same reasoning one ground up: measured so the step is on record, "
       + "and it is a step (1.27 here, 1.39 out on the strip) rather than an accident",
     fg: "--bg-hover-2", backdrop: ["--bg-island", "--bg-inset"],
-    threshold: UI, sc: "1.4.11",
-  },
-  /* The pill in its second state. Its own window, its own ground, its own
-     hand-copied literals — so this pair is measured against `src/pill.css` and
-     not against the app's palette. */
-  {
-    what: "the pill saying a limit",
-    where: "red ink on the pill's own chrome, in a window that loads no `:root`",
-    fg: decl(pillCss, "#pill.pill--limit", "color"),
-    backdrop: [decl(pillCss, "#pill", "background")],
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "the limit pill's edge",
-    where: "the border that tells the pill's two states apart at a glance across the screen",
-    fg: decl(pillCss, "#pill.pill--limit", "border-color"),
-    backdrop: [decl(pillCss, "#pill", "background")],
     threshold: UI, sc: "1.4.11",
   },
   {

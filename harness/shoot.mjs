@@ -254,24 +254,8 @@ async function shootWorkspaceWindow(browser) {
   console.log(`workspace-window.png ${(size / 1024).toFixed(0)} kB`);
 }
 
-/** The pill is a window of its own, so it is shot on its own: no page around
- *  it, cropped to the element, on transparency. */
-async function shootPill(browser) {
-  const page = await browser.newPage({
-    viewport: { width: 420, height: 120 }, deviceScaleFactor: SCALE,
-  });
-  await page.goto(`${BASE}/harness/pill.html`, { waitUntil: "load" });
-  await page.waitForFunction(() => (document.getElementById("pill-text")?.textContent ?? "") !== "");
-  await page.waitForTimeout(400);
-  const file = join(OUT, "pill.png");
-  await page.locator("#pill").screenshot({ path: file, omitBackground: true });
-  await page.close();
-  const size = shrink(file);
-  console.log(`pill.png            ${(size / 1024).toFixed(0)} kB`);
-}
-
 const wanted = process.argv.slice(2);
-const names = wanted.length ? wanted : [...Object.keys(SHOTS), "pill", "workspace-window"];
+const names = wanted.length ? wanted : [...Object.keys(SHOTS), "workspace-window"];
 
 /* WebGL off, on purpose, and the shots are the reason.
  *
@@ -290,7 +274,6 @@ const browser = await chromium.launch({
   args: ["--disable-webgl", "--disable-webgl2"],
 });
 for (const name of names) {
-  if (name === "pill") { await shootPill(browser); continue; }
   if (name === "workspace-window") { await shootWorkspaceWindow(browser); continue; }
   const shot = SHOTS[name];
   if (!shot) { console.error(`no such shot: ${name}`); process.exitCode = 1; continue; }

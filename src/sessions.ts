@@ -127,8 +127,9 @@ const LABEL: Record<SessionState, string> = {
   ended: "exited", error: "error",
 };
 // `done` is here because "the agent finished the job" is exactly what an
-// unsupervised session is started for. It stays out of the pill, though: the
-// pill answers "how many sessions are blocked on me".
+// unsupervised session is started for. It stays out of the waiting count,
+// though: "how many sessions are blocked on me" is a different question, and it
+// is the one the ledger's reading and `focusNextWaiting` both answer.
 const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
 
 /** What an empty deck should say, and which one action it should offer.
@@ -331,7 +332,8 @@ export class Deck {
    *  what its sessions are doing. The ledger in the top bar reads these rather
    *  than counting again: the two statements of "N waiting" this app used to make
    *  — a sidebar heading and the floating pill — came from two different places,
-   *  and with two windows open they disagreed. */
+   *  and with two windows open they disagreed. The pill is gone (#394) and the
+   *  heading with it; one reading, from one count, is what is left. */
   setCounts(fn: (counts: SessionCounts) => void) {
     this.onCounts = fn;
     this.renderList();
@@ -1318,13 +1320,55 @@ export class Deck {
     const id = ids[n - 1];
     if (id) this.focusTile(id);
   }
+  /** "Who is blocked on me" — the next session waiting for input, wherever it is.
+   *
+   *  **The proxies count, not just this window's tiles.** A workspace pulled onto
+   *  a second monitor is still work this person is holding up, and answering for
+   *  one window is answering a different question. When the answer is elsewhere,
+   *  that window raises itself and focuses it — the same path a click on the proxy
+   *  row takes (`onRemoteFocus`).
+   *
+   *  Until #394 that half was reachable only by clicking the floating pill, whose
+   *  handler in `app.ts` was the only thing that did the routing; the hotkey
+   *  beside it had the local half of the same command. The pill had no other
+   *  interaction at all, so removing it left one command, and this is it.
+   *
+   *  **This window first, and the two searches are why.** One list of tiles and
+   *  proxies together would put a session on the other monitor between two on
+   *  this screen — purely because the active tile happened to be the last one
+   *  launched — and throw a person with three sessions waiting here across a
+   *  monitor, or a macOS Space, and back. Every waiting session is still reached,
+   *  in the order that costs the least to follow.
+   *
+   *  Cycling starts from the active tile, so pressing the hotkey again walks the
+   *  waiting sessions instead of returning to the same one; that is also why an
+   *  active tile which is itself waiting is skipped rather than re-focused. Only
+   *  the main window is told about proxies (`setRemoteSessions`), so in a window
+   *  pinned to a workspace this is its own tiles and nothing else — everything
+   *  such a window can see. */
   focusNextWaiting() {
-    const tiles = [...this.tiles.values()];
-    const target = nextWaitingAcross(
-      tiles.map((t) => ({ session: t.session, workspaceId: t.workspaceId, state: t.state })),
+    const here = nextWaitingAcross(
+      [...this.tiles.values()].map((t) => ({
+        session: t.session, workspaceId: t.workspaceId, state: t.state,
+      })),
       this.activeSession,
     );
-    if (target) this.focusSessionAnywhere(target.session);
+    if (here) {
+      this.focusSessionAnywhere(here.session);
+      return;
+    }
+    // From the start rather than from anything remembered: nothing on this screen
+    // is a position in the other windows' list. The proxies arrive in a stable
+    // order — `showElsewhere` in `app.ts` sorts by window label before setting
+    // them — so this answers the same way twice running.
+    const away = nextWaitingAcross(
+      this.remote.map((r) => ({
+        session: r.session, workspaceId: r.workspaceId, state: r.state,
+      })),
+      null,
+    );
+    const elsewhere = away && this.remote.find((r) => r.session === away.session);
+    if (elsewhere) this.onRemoteFocus(elsewhere.label, elsewhere.session);
   }
   async closeActive() {
     const id = this.activeSession;
@@ -1472,8 +1516,8 @@ export class Deck {
    *  and focusing it silently would look like the control did nothing.
    *
    *  Public because the history screen's "go to the session" needs exactly the
-   *  path the pill and the notification already take. Returns false when there
-   *  is no such tile: the caller decides whether that is worth saying. */
+   *  path a notification click already takes. Returns false when there is no such
+   *  tile: the caller decides whether that is worth saying. */
   focusSession(session: string): boolean {
     if (!this.tiles.has(session)) return false;
     this.focusSessionAnywhere(session);
@@ -2063,12 +2107,14 @@ export class Deck {
     // What this window has, not what the app has — and said as a list rather
     // than a number.
     //
-    // It used to send `pill://count` with its own partial total, which the pill
-    // trusted absolutely: with two windows open the pill flapped between two
-    // partial counts every five seconds, whichever arrived last winning. The
-    // main window now does the adding, because it is the only participant that
-    // sees everybody. The same message also says *where* each session is, which
-    // is what lets "who is blocked on me" reach the other monitor.
+    // It used to send a count of its own, which the floating pill trusted
+    // absolutely: with two windows open the pill flapped between two partial
+    // totals every five seconds, whichever arrived last winning. A window says
+    // what it holds and the main window works out the rest, because it is the
+    // only participant that hears everybody. That is what survived the pill
+    // (#394): the message says *where* each session is, which is what lets "who
+    // is blocked on me" reach the other monitor, and what the main window's
+    // sidebar draws a pulled-out workspace from.
     //
     // Sent on every render, unchanged included. A listener registers
     // asynchronously, and an event arriving before it is ready is dropped rather

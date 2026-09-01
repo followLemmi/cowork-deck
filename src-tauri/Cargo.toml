@@ -25,7 +25,13 @@ path = "src/lib.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+# No `macos-private-api`. It gated the one transparent window this app had, the
+# floating pill, and #394 removed it — a private-API opt-in with no caller is a
+# claim nobody checks. Whatever next wants a transparent or vibrant window turns
+# it back on in the same commit, together with `macOSPrivateApi` in
+# `tauri.conf.json`: the two must move as a pair, or the build fails on a config
+# asking for an API the crate was not compiled with.
+tauri = { version = "2", features = [] }
 tauri-plugin-notification = "2"
 portable-pty = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
