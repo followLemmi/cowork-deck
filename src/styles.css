@@ -316,6 +316,25 @@
      system has. */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --dur-1: 120ms; --dur-2: 220ms; --dur-3: 340ms;
+
+  /* The two ambient periods, and they are a different kind of number from the
+     three above. A `--dur-*` is something a person waits out once; these repeat
+     for as long as the state does, which for `waitingInput` is until a human
+     acts. What is watched for minutes on end is chosen by how little it costs
+     the eye, not by how far the dot travels.
+
+     Both used to be roughly twice as fast — 1.4s and 1.8s — and at 0.55-0.7 Hz a
+     dot does not read as breathing. It reads as an indicator lamp, which is a
+     thing that has GONE WRONG rather than a thing that is happening, and a deck
+     of tiles waiting for a decision was a wall of them. These are near a resting
+     breath instead: 0.28 Hz and 0.42 Hz.
+
+     Two numbers rather than one because the rate is half of what tells the two
+     states apart (see `@keyframes pulse-dot` for the other half). Waiting is the
+     faster, and that is the entire argument for which way round they go: it is
+     the one with a person at the end of it. */
+  --breath-working: 3.6s;
+  --breath-waiting: 2.4s;
 }
 
 /* One switch, honoured everywhere. The durations collapse and so do the DELAYS —
@@ -495,7 +514,12 @@ body {
 /* The one ambient loop in the bar, and it is on the reading that means somebody is
    being kept waiting. `--st-error` deliberately does not pulse: a stopped session
    is not going to become un-stopped while the eye is elsewhere. */
-.led--wait::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
+.led--wait::before {
+  animation: pulse-dot var(--breath-waiting) ease-in-out infinite;
+  /* Rebuilt from scratch every time the ledger is redrawn, so without this it
+     restarts its swell on every poll. See `src/dot-phase.ts`. */
+  animation-delay: var(--dot-phase, 0ms);
+}
 
 /* --- Settings, and the sections of it ------------------------------------
    A modal rather than a screen or a second window: the panel's pages are things
@@ -1598,17 +1622,43 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    this quiet. */
 .state-error        { color: var(--st-error);   background: rgba(251, 129, 122, 0.06); border-color: rgba(251, 129, 122, 0.42); }
 
-.state-waitingInput::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
+.state-waitingInput::before {
+  animation: pulse-dot var(--breath-waiting) ease-in-out infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
 /* transform + opacity only — GPU-composited, no per-frame repaint. Animating
    box-shadow here forced WebKit to repaint every frame for the whole
    animation's lifetime (a waitingInput session never leaves that state until
-   the user acts), pegging WindowServer and lagging the entire system. */
+   the user acts), pegging WindowServer and lagging the entire system.
+
+   `animation-delay` is a SEEK, not a stagger, and is written by `syncDotPhase`
+   — the note in `src/dot-phase.ts` is the long version. It is set once when the
+   element is made and never touched again, so it costs the compositor nothing
+   and the paragraph above still holds.
+
+   The curve is `ease-in-out` and not `--ease-out`, which is what this was, and
+   the swap matters more than the period does. `--ease-out` is "fast out, long
+   settle": right for a thing that travels once and stops, wrong for a two-stop
+   loop, where it means the dot jumps most of the way in the first fraction of
+   every half-cycle and then crawls. That is a snap and a hold — a blink at any
+   period you care to choose. A loop wants a symmetric curve.
+
+   1.7 was most of a doubling in size, on a dot 7px across, twice a second. At
+   1.35 the swell is still the channel that separates this state from `working`
+   below — which changes size not at all — without being the thing in the corner
+   of the eye that stops anything else being read. */
 @keyframes pulse-dot {
-  0%, 100% { transform: scale(1);   opacity: 1; }
-  50%      { transform: scale(1.7); opacity: 0.45; }
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(1.35); opacity: 0.55; }
 }
-.state-working::before { animation: breathe 1.8s ease-in-out infinite; }
-@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+/* Opacity alone, and slower than waiting: work in progress is not addressed to
+   anybody. The trough was 0.4, which on a small saturated dot is close enough to
+   gone that the eye reads the return as an arrival rather than as a swell. */
+.state-working::before {
+  animation: breathe var(--breath-working) ease-in-out infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 /* Layout, hover and the rail come from the shared row rule far above; what is left
    here is what only a session row needs. `padding`, `border-radius` and `display`
    used to be re-declared at this point and silently outranked the shared rule by
@@ -3909,7 +3959,10 @@ h6.md-head { font-size: var(--fs-sm); }
 }
 /* Something is actually happening, so the dot breathes — the same shape channel
    `.state-working` uses, and the reason a finished run's chip does not. */
-.run-running::before { animation: breathe 1.8s ease-in-out infinite; }
+.run-running::before {
+  animation: breathe var(--breath-working) ease-in-out infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
 
 .hist-result-box { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .hist-result {
@@ -3986,7 +4039,10 @@ h6.md-head { font-size: var(--fs-sm); }
   background: none; border: 2px solid currentColor; box-sizing: border-box;
 }
 /* Something is actually happening — the breathing the chip has, for its reason. */
-.sk-dot.run-running::before { animation: breathe 1.8s ease-in-out infinite; }
+.sk-dot.run-running::before {
+  animation: breathe var(--breath-working) ease-in-out infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
 .sk-dot:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .sk-dot:hover { transform: scale(1.25); }
 

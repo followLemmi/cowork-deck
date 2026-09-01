@@ -6,6 +6,7 @@ import { confirmModal } from "./modal";
 import { skillForm } from "./forms";
 import { scheduleRowText } from "./schedule";
 import { RUN_STATUS_LABEL, agoLabel, runStatusClass } from "./runs";
+import { syncDotPhase } from "./dot-phase";
 import { icon, iconButton, SCENARIO_ICONS, type IconName } from "./icons";
 
 /** A scenario pinned to a workspace that no longer exists. It cannot run —
@@ -183,6 +184,8 @@ export class SkillsPanel {
       if (last) {
         dot = document.createElement("button");
         dot.className = `sk-dot ${runStatusClass(last.status)}`;
+        // Remade by this list's own minute timer; see `src/dot-phase.ts`.
+        syncDotPhase(dot);
         dot.type = "button";
         const label = `Last run: ${RUN_STATUS_LABEL[last.status]}, ${agoLabel(last.startedAt, Date.now())}`;
         dot.title = `${label} — open this scenario's history`;
