@@ -406,18 +406,25 @@ export class Deck {
     this.deckEl.appendChild(box);
   }
 
-  /** Start polling, when the deck stops being empty.
+  /** A tile arrived: poll, and keep polling while anyone is looking.
    *
    *  The tick here is not the poll and is deliberately not focus-gated: it is
    *  what fills a new tile's branch, its context count and its transcript title,
    *  and a background window's tiles are on screen in every *other* window's
    *  session list, by name. Leaving them blank until this window is focused
    *  would be a blank row in a window that is. What the gate below stops is the
-   *  every-five-seconds part, which is the part that costs. */
+   *  every-five-seconds part, which is the part that costs.
+   *
+   *  It is every arriving tile that gets that read, not only the one that ends
+   *  an empty deck — a scheduled scenario fires into a window nobody is looking
+   *  at, which is the whole point of scheduling one, and its tile would otherwise
+   *  wait for a focus that may not come today. A restore is the one exception:
+   *  it adds tiles one at a time and `restore` reads once when the last is in,
+   *  rather than a whole deck's worth of transcripts per tile across the slowest
+   *  moment the app has. */
   private startPolling() {
-    if (this.polling) return;
     this.polling = true;
-    void this.pollOnce();
+    if (!this.restoring) void this.pollOnce();
   }
 
   /** Stop for good — nothing is left to poll. The counterpart of `pausePolling`,
@@ -1275,6 +1282,11 @@ export class Deck {
     } finally {
       this.restoring = false;
     }
+    // The one read a restore gets, now that the whole layout is in: `startPolling`
+    // holds off per tile so a boot with a dozen sessions does not read every
+    // transcript a dozen times over. `polling` is already set; this is the tick
+    // and, if the window is focused, the chain it arms.
+    if (this.tiles.size > 0) this.startPolling();
     void this.persistLayout();
   }
 
@@ -2209,8 +2221,9 @@ export function nextWaitingAcross(
 /** What reaches `sessions.json`.
  *
  *  `name` is the **launch** name — never the resolved one. A transcript title is
- *  not persisted at all: `startPolling()` fires a tick immediately, so a restored
- *  tile refills it within one round trip and a stored copy could only go stale.
+ *  not persisted at all: `restore` polls once as soon as the layout is in, so a
+ *  restored tile refills it within one round trip and a stored copy could only go
+ *  stale.
  *  A hand-typed name goes in its own field, and `nameKind` records which of the
  *  two kinds `name` is, so the next launch knows whether a title may replace it. */
 export function serializeTiles(

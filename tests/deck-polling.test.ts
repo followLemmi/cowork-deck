@@ -108,6 +108,14 @@ const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve()
  *  drawer's. */
 const ticks = () => snapshotsMock.mock.calls.length;
 
+/** `Cmd+N` is `new-session`, the cheapest way to make a tile arrive from
+ *  outside — a scheduled scenario firing into a background window is the case
+ *  that matters and it lands on the same `launch`. */
+const newSessionKey = () =>
+  document.body.dispatchEvent(new KeyboardEvent("keydown", {
+    code: "KeyN", key: "n", metaKey: true, bubbles: true, cancelable: true,
+  }));
+
 // One test, not five: `startApp` installs the window's `focus` and `blur`
 // handlers, so a second boot in one file would leave two decks answering one
 // event and every count below would be doubled. The lifecycle is walked in
@@ -115,6 +123,7 @@ const ticks = () => snapshotsMock.mock.calls.length;
 describe("the deck's poll", () => {
   it("runs only while the window is focused, and reads once on the way back", async () => {
     vi.useFakeTimers();
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
     document.body.innerHTML =
       // Mirrors index.html — `#rail` and `#workarea` are not optional: `app.ts`
       // mounts into both and asserts they exist.
@@ -141,18 +150,29 @@ describe("the deck's poll", () => {
     await flush();
     expect(ticks()).toBe(1);
 
+    // A tile arriving in an unfocused window is read too, and for the same reason
+    // the restored one was: this is where a scheduled scenario lands, which is
+    // the case scheduling exists for, and its branch and context count are a row
+    // in every window that *is* being looked at. Still no chain behind it.
+    newSessionKey();
+    await flush();
+    expect(ticks()).toBe(2);
+    await vi.advanceTimersByTimeAsync(600_000);
+    await flush();
+    expect(ticks()).toBe(2);
+
     // Focus reads at once rather than at the next tick — the whole point of
     // pausing — and re-arms the chain, which then runs at five seconds.
     hasFocus.mockReturnValue(true);
     window.dispatchEvent(new Event("focus"));
     await flush();
-    expect(ticks()).toBe(2);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await flush();
     expect(ticks()).toBe(3);
     await vi.advanceTimersByTimeAsync(5_000);
     await flush();
     expect(ticks()).toBe(4);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await flush();
+    expect(ticks()).toBe(5);
 
     // One tick ahead and no more: the chain is a single timer re-armed after each
     // read, not an interval, so a slow read cannot queue the next one behind it.
@@ -161,7 +181,7 @@ describe("the deck's poll", () => {
     snapshotsMock.mockReturnValueOnce(new Promise((r) => { settle = r; }));
     await vi.advanceTimersByTimeAsync(15_000);
     await flush();
-    expect(ticks()).toBe(5);
+    expect(ticks()).toBe(6);
     settle({});
     await flush();
 
