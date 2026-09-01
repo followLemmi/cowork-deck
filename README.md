@@ -86,18 +86,21 @@ Three surfaces, and they answer different questions on purpose.
   or *limit · resets 19:00* when the budget is spent, because a queue of questions is not the useful
   fact when nothing can move. It is up only while there is something to say, and clicking it takes you
   to the session that is waiting.
-- **The status area** — the menu bar on macOS, the top panel on Linux, the notification area on
-  Windows — is always there, and it answers on demand rather than at a glance. Its menu carries every
-  connected AI's limit *with the tier beside it*, the sessions that are waiting, and a way into each:
-  a limit row opens that provider's detail, a session row raises the window it lives in. It never
-  carries a count, because that is the pill's sentence and two surfaces saying it would be one too
-  many.
+- **The status area** — the menu bar on macOS, the notification area on Windows — is always there, and
+  it answers on demand rather than at a glance. Click the icon and a small panel drops under it, drawn
+  with the deck's own components: every connected AI's **meter** with its tier beside the reading, and
+  the deck's sessions ordered by what wants a person, each one a row that takes you to it. A limit row
+  opens that provider's detail; a session row raises the window it lives in, even if that is a
+  workspace window on another monitor. It never carries a count, because that is the pill's sentence
+  and two surfaces saying it would be one too many.
 - **The dock**, or the taskbar, carries the number of sessions waiting. It clears the moment you look
   at the deck — a badge you have learned to ignore is worse than none.
 
-The menu is a native one, so it behaves like the desktop's own on all three platforms, and adding a
-section to it is a list entry rather than a layout change. Why it is a menu and not a small window is
-[ADR-0011](docs/adr/0011-the-tray-panel-is-a-native-menu-whose-rows-are-written-in-the-webview.md).
+On Linux the icon carries a **native menu** with the same sections instead of the panel, because an
+indicator's click is not deliverable to the application on most desktops and a panel opened on a click
+would never open. Both are built from one list, so adding a section is a list entry rather than a
+layout change in either. The decision, and why the panel is a window rather than a menu everywhere, is
+[ADR-0011](docs/adr/0011-the-tray-panel-is-a-window-and-a-menu-is-the-linux-fallback.md).
 
 ## Sessions
 

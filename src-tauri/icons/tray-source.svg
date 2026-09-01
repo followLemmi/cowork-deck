@@ -1,21 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36">
-  <!-- cowork-deck status-area icon — the app icon's mark, and nothing else.
+  <!-- cowork-deck status-area icon — four tiles, one lit.
+       The mark of `icons/icon-source.svg`, and the half of it that is the app
+       rather than the terminal inside it.
+
        Monochrome by construction: macOS draws a template image from its alpha
        channel alone and tints it for a light menu bar, a dark one, and the
-       inverted state while the menu is open. A hue here would be discarded on
+       inverted state while the panel is open. A hue here would be discarded on
        macOS and would disagree with the app icon everywhere else, so there is
        none — see docs/adr/0011.
 
-       The 2x2 tiles of icons/icon-source.svg are dropped: four 308-unit squares
-       become four 2px squares at this size, which is noise rather than a mark.
-       What survives is the prompt chevron and the cursor block, which is the
-       half of the app icon that still reads at 18 points.
+       A template image has exactly one contrast to spend, and it goes where the
+       app icon spends its accent: the top-left tile is solid and the other three
+       are outlines. That is not a state signal — the icon never changes — it is
+       what makes four squares read as a deck with something in it rather than as
+       a window-tiling utility.
 
-       Rasterised by scripts/tray-icon.mjs, which draws these two shapes
-       directly. Editing this file does not change the PNG on its own; the
-       script carries the same numbers and is the thing that runs. -->
-  <g fill="none" stroke="#000" stroke-width="6.323" stroke-linecap="round" stroke-linejoin="round">
-    <polyline points="4.13,7.16 18.4,18 4.13,28.84"/>
+       The first draft was this icon's chevron and cursor block instead, on the
+       theory that four squares would be noise at menu-bar size. In a real menu
+       bar it was wrong twice over: 36 pixels is room for four 14-pixel tiles
+       with a 3-pixel gutter, and the chevron alone said "a terminal", which
+       every other icon up there could also say.
+
+       Rasterised by scripts/tray-icon.mjs, which carries the same numbers and is
+       the thing that runs. Editing this file does not change the PNG. -->
+  <rect x="2.5" y="2.5" width="14" height="14" rx="3.5" fill="#000"/>
+  <g fill="none" stroke="#000" stroke-width="2">
+    <rect x="19.5" y="2.5" width="14" height="14" rx="3.5"/>
+    <rect x="2.5" y="19.5" width="14" height="14" rx="3.5"/>
+    <rect x="19.5" y="19.5" width="14" height="14" rx="3.5"/>
   </g>
-  <rect x="21.47" y="14.21" width="13.55" height="7.59" rx="1.81" fill="#000"/>
 </svg>

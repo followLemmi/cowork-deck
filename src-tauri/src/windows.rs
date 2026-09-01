@@ -15,6 +15,14 @@ pub const MAIN: &str = "main";
 /// The floating "N waiting" status pill.
 pub const PILL: &str = "pill";
 
+/// The panel behind the status-area icon.
+///
+/// A window rather than a native menu, because a menu cannot draw a meter and a
+/// meter is what a limit wants — see ADR-0011. Hidden by default and positioned
+/// under the icon each time it is shown, so nothing about where it was last
+/// helps: unlike the pill, this one is not somewhere the person dragged it.
+pub const TRAY: &str = "tray";
+
 /// What a workspace window's label begins with.
 ///
 /// A hyphen rather than a colon, and not for taste. `tauri-utils` documents a
@@ -163,6 +171,20 @@ mod tests {
             "capabilities/default.json must list {glob} among its windows, or every \
              invoke from a workspace window fails silently",
         );
+    }
+
+    /// The same trap as the glob above, for the fixed labels. A window whose
+    /// label is not in that list gets no permissions at all, and the symptom is
+    /// a window that draws and then does nothing — no error anywhere.
+    #[test]
+    fn every_fixed_label_is_in_the_capability_file() {
+        let capabilities = include_str!("../capabilities/default.json");
+        for label in [MAIN, PILL, TRAY] {
+            assert!(
+                capabilities.contains(&format!("\"{label}\"")),
+                "capabilities/default.json must list \"{label}\" among its windows",
+            );
+        }
     }
 
     #[test]

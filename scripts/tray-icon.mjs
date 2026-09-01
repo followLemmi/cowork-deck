@@ -33,29 +33,6 @@ const ICONS = join(dirname(fileURLToPath(import.meta.url)), "..", "src-tauri", "
 
 /* --- Shapes, as distance functions ---------------------------------------- */
 
-/** Distance from `p` to the segment `a`-`b`. */
-function toSegment(px, py, ax, ay, bx, by) {
-  const vx = bx - ax, vy = by - ay;
-  const wx = px - ax, wy = py - ay;
-  const len2 = vx * vx + vy * vy;
-  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2));
-  const dx = wx - t * vx, dy = wy - t * vy;
-  return Math.hypot(dx, dy);
-}
-
-/** A stroked polyline with round caps and joins: the union of one capsule per
- *  segment. Round joins are what make the union correct — a mitre would need the
- *  corner drawn as a third shape. */
-const capsules = (points, radius) => (px, py) => {
-  let d = Infinity;
-  for (let i = 0; i + 1 < points.length; i++) {
-    const [ax, ay] = points[i];
-    const [bx, by] = points[i + 1];
-    d = Math.min(d, toSegment(px, py, ax, ay, bx, by) - radius);
-  }
-  return d;
-};
-
 /** A rounded rectangle, by the usual box SDF: the distance to the shrunken box
  *  less the corner radius. */
 const roundedRect = (x, y, w, h, r) => (px, py) => {
@@ -67,6 +44,13 @@ const roundedRect = (x, y, w, h, r) => (px, py) => {
 
 /** A disc. */
 const disc = (cx, cy, r) => (px, py) => Math.hypot(px - cx, py - cy) - r;
+
+/** The outline of a shape rather than its body: everything within `width / 2` of
+ *  its edge, inside and out. `Math.abs` on a signed distance is the whole trick,
+ *  and it is the reason these are distance functions and not paths — the outline
+ *  of a rounded rectangle has no closed form as a path, and has an exact one as
+ *  this. */
+const ring = (sdf, width) => (px, py) => Math.abs(sdf(px, py)) - width / 2;
 
 /** Coverage of a shape at one pixel.
  *
@@ -162,22 +146,29 @@ function overlay(base, over) {
 
 /* --- The two icons -------------------------------------------------------- */
 
-/* The mark of `icons/icon-source.svg`, mapped from its 1024 grid onto 36 with a
-   4px margin top and bottom. The numbers are the source's own: the chevron
-   398,392 → 556,512 → 398,632 at stroke 70, and the cursor block at 590,470,
-   150x84, radius 20. Its 2x2 tiles are dropped — four 308-unit squares become
-   four 2px squares here, which is noise rather than a mark. `tray-source.svg`
-   carries the results of this arithmetic so the shapes can be looked at; this is
-   where it is done. */
-const S = 28 / 310;
-const OX = 0.97, OY = 4;
-const at = (x, y) => [(x - 363) * S + OX, (y - 357) * S + OY];
+/* Four tiles, one lit — the mark of `icons/icon-source.svg`, and the half of it
+   that is the app rather than the terminal inside it.
+   The first draft was the chevron and the cursor block, on the theory that four
+   squares would be noise at menu-bar size. Looked at in a real menu bar that was
+   wrong twice over: 36 pixels is room for four 14-pixel tiles with a 3-pixel
+   gutter, which reads perfectly well — and the chevron alone said "a terminal",
+   which every other icon up there could also say. The tiles are the thing this
+   app is, and they are what the person looking for it recognises.
+   A template image has exactly one contrast to spend, and it goes where the app
+   icon spends its accent: the top-left tile is solid and the other three are
+   outlines. Not a state signal — the icon never changes, see ADR-0011 — it is
+   what makes four squares read as a deck with something in it rather than as a
+   window-tiling utility. */
+const TILE = 14, GAP = 3, EDGE = 2.5, RADIUS = 3.5, STROKE = 2;
+const tile = (col, row) => [EDGE + col * (TILE + GAP), EDGE + row * (TILE + GAP), TILE, TILE, RADIUS];
 
 writeFileSync(
   join(ICONS, "tray-mac.png"),
   png(36, 36, paint(36, [
-    capsules([at(398, 392), at(556, 512), at(398, 632)], 35 * S),
-    roundedRect(...at(590, 470), 150 * S, 84 * S, 20 * S),
+    roundedRect(...tile(0, 0)),
+    ring(roundedRect(...tile(1, 0)), STROKE),
+    ring(roundedRect(...tile(0, 1)), STROKE),
+    ring(roundedRect(...tile(1, 1)), STROKE),
   ], [0, 0, 0])),
 );
 

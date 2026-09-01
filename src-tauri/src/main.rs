@@ -124,6 +124,13 @@ fn main() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                // The tray panel is the one window whose position is not a
+                // choice anybody made: it is placed under the status-area icon
+                // every time it opens, and its height follows its content. A
+                // remembered geometry would be applied at launch and then
+                // overwritten on the first click, which is a restore that only
+                // ever produces one wrong frame.
+                .with_denylist(&[windows::TRAY])
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -297,6 +304,13 @@ fn main() {
                 if window.label() == windows::MAIN {
                     tray::set_focused(window.app_handle(), *focused);
                 }
+                // And the panel behind the status-area icon goes when it loses
+                // the keyboard, which is the only way a window with no chrome
+                // can be dismissed by clicking away from it. It is focusable for
+                // exactly this reason — see `tray::build_panel`.
+                if window.label() == windows::TRAY && !*focused {
+                    tray::panel_blurred(window.app_handle());
+                }
             }
             // `Destroyed`, not `CloseRequested`: the latter is preventable and
             // also fires while the runtime tears everything down at quit, so a
@@ -469,6 +483,8 @@ fn main() {
             tasks_cmd::board_step_rewrite,
             tasks_cmd::board_step_usage,
             tray::tray_update,
+            tray::tray_resize,
+            tray::tray_activate,
         ])
         .build(tauri::generate_context!())
         .expect("error while building cowork-deck")

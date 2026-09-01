@@ -26,7 +26,7 @@ import {
   hostPlatform,
   configPaths,
   usageSnapshot, onUsageChanged,
-  trayUpdate, onTrayAction,
+  trayUpdate, onTrayAction, onTrayAsk, TRAY_FACTS,
   type AiUsage,
   type HandOffTile,
   type SessionState,
@@ -2110,13 +2110,22 @@ export function startApp(role: WindowRole): Promise<void> {
       deck.focusSession(chosen.id);
       return;
     }
-    // A limit row opens the same dialog its row in the panel opens — one screen,
-    // two ways in. The snapshot is the one on hand rather than a fresh read: the
-    // menu was drawn from it, and re-reading here would let the dialog say
-    // something the row the person clicked did not.
+    // The snapshot on hand rather than a fresh read: the panel was drawn from
+    // it, and re-reading here would let the deck say something the row the
+    // person clicked did not.
     const snap = lastUsage.find((u) => u.provider === chosen.id);
     if (!snap) return;
     await raiseThisWindow();
+    if (chosen.verb === "probe") {
+      // The one thing a person can do about a row nobody can read, reached from
+      // the other surface. The tray has no tiles, so it asks for one here.
+      if (snap.probeCommand) {
+        void deck.openCommandTile(`${snap.label}: limits`, snap.probeCommand, limitsHost.cwd());
+      }
+      return;
+    }
+    // A limit row opens the same dialog its row in the deck's own block opens —
+    // one screen, two ways in.
     openUsageDialog(snap, limitsHost, () => limits.redraw(Date.now()));
   });
 
@@ -2217,16 +2226,35 @@ export function startApp(role: WindowRole): Promise<void> {
   function announceOutside(): void {
     if (!isMain) return;
     void emit("pill://count", { n: sumWaiting(sessionsByWindow), limit: deckLimit(lastUsage) });
-    const panel = trayPanel({
-      usage: lastUsage,
-      sessions: allSessions(sessionsByWindow),
-      now: Date.now(),
-    });
-    // A menu that stopped updating looks exactly like a deck with nothing to
+    const sessions = allSessions(sessionsByWindow);
+    // Twice, and they are not the same message. Rust gets the composed report —
+    // the tooltip, the badge count, and the sentences the Linux menu is built
+    // from. The panel window gets the FACTS, because it runs the same helpers
+    // and the same `LimitsBlock` the deck's own block does, and a meter is not a
+    // string. One `PANEL` list decides both (`tray-panel.ts`).
+    const panel = trayPanel({ usage: lastUsage, sessions, now: Date.now() });
+    // A surface that stopped updating looks exactly like a deck with nothing to
     // report, so the failure is said rather than swallowed — but it is not worth
     // a modal: the next tick is the recovery, as it is for the pill.
-    void trayUpdate(panel).catch((e) => console.debug("tray: could not update the menu", e));
+    void trayUpdate(panel).catch((e) => console.debug("tray: could not update the surface", e));
+    void emit(TRAY_FACTS, {
+      usage: lastUsage,
+      // Only what the panel draws. A `RemoteSession` also carries the workspace
+      // it belongs to, which is the main window's own bookkeeping and not
+      // something to hand another window that has no use for it.
+      sessions: sessions.map((s) => ({ session: s.session, name: s.name, state: s.state })),
+      // The panel is a separate document, so the text-size setting does not
+      // reach it on its own — see `applyScale`.
+      scale: currentScale(),
+    });
   }
+
+  /** The panel behind the status-area icon has just been shown.
+   *
+   *  A report goes out every few seconds anyway; this is so the panel is right
+   *  at the instant somebody opens it, which is exactly the moment being up to a
+   *  tick stale would matter. */
+  if (isMain) void onTrayAsk(() => announceOutside());
 
   /** Every window's sessions, as each of them last reported. Only the main
    *  window keeps this filled — it is the only participant that hears everybody

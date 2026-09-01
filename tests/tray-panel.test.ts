@@ -1,14 +1,26 @@
-/** What the status-area menu says.
+// @vitest-environment jsdom
+/** What the status-area surface shows.
  *
- *  Tested at the model rather than through a menu, which is the point of
- *  ADR-0011's split: no test can open a native menu, and every rule about what a
- *  row reads as is a pure function of a snapshot. The Rust half is tested where
- *  it lives (`src-tauri/src/tray.rs`) and knows none of this.
+ *  Both renderings, from the one `PANEL` list: the rows the Linux menu is built
+ *  from, and the panel window's own DOM. Tested here rather than through either
+ *  surface, which is the point of ADR-0011's split — no test can open a native
+ *  menu or a window positioned under a status icon, and every rule about what a
+ *  row says is a function of a snapshot. The Rust half is tested where it lives
+ *  (`src-tauri/src/tray.rs`) and knows none of this.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+vi.mock("../src/ipc", async (orig) => ({
+  ...(await orig<typeof import("../src/ipc")>()),
+  usageClearObserved: vi.fn().mockResolvedValue(undefined),
+}));
+
 import type { AiUsage, LimitWindow } from "../src/ipc";
 import type { RemoteSession } from "../src/cross-window";
-import { ACTIONS, PANEL_SECTIONS, parseAction, trayPanel, type TrayFacts } from "../src/tray-panel";
+import {
+  ACTIONS, PANEL_SECTIONS, byUrgency, fillPanel, parseAction, stateWord, trayPanel,
+  type TrayFacts,
+} from "../src/tray-panel";
 
 const win = (over: Partial<LimitWindow> = {}): LimitWindow => ({
   id: "session", label: "Current session", usedFraction: null, amount: null,
@@ -230,6 +242,37 @@ describe("the tooltip", () => {
   });
 });
 
+describe("how sessions are ordered and named", () => {
+  /** By what wants a person: blocked, then broken, then finished-and-parked.
+   *  The same order `nextWaitingAcross` and the top bar's ledger use. */
+  it("puts what wants a person first", () => {
+    const order = byUrgency([
+      session({ session: "e", state: "ended" }),
+      session({ session: "i", state: "idle" }),
+      session({ session: "w", state: "working" }),
+      session({ session: "d", state: "done" }),
+      session({ session: "x", state: "error" }),
+      session({ session: "q", state: "waitingInput" }),
+    ]).map((s) => s.session);
+    expect(order).toEqual(["q", "x", "d", "w", "i", "e"]);
+  });
+
+  /** Two draws must agree, or the panel reshuffles under a cursor every tick. */
+  it("keeps the reported order inside a rank", () => {
+    const same = ["a", "b", "c"].map((id) => session({ session: id, state: "working" }));
+    expect(byUrgency(same).map((s) => s.session)).toEqual(["a", "b", "c"]);
+  });
+
+  /** `done` is not folded into `idle`: an agent parked at the prompt having
+   *  finished is not one that never started, and the deck already keeps them
+   *  apart. */
+  it("says finished a turn and idle differently", () => {
+    expect(stateWord("done")).toBe("finished a turn");
+    expect(stateWord("idle")).toBe("idle");
+    expect(stateWord("error")).toBe("stopped on an error");
+  });
+});
+
 describe("the action vocabulary", () => {
   /** Both ends of the string, in one file, because Rust reads neither: it
    *  carries the action out to the menu and back verbatim. */
@@ -245,10 +288,162 @@ describe("the action vocabulary", () => {
     expect(parseAction("session:a:b")).toEqual({ verb: "session", id: "a:b" });
   });
 
+  it("round-trips the probe verb the panel needs and the deck answers", () => {
+    expect(parseAction(ACTIONS.probe("claude"))).toEqual({ verb: "probe", id: "claude" });
+  });
+
   it("refuses anything it did not mint", () => {
     expect(parseAction("quit")).toBeNull();
     expect(parseAction("open:")).toBeNull();
     expect(parseAction(":claude")).toBeNull();
     expect(parseAction("")).toBeNull();
+  });
+});
+
+/* --- The panel window ------------------------------------------------------
+   The half a menu could not draw, and the reason the surface is a window. */
+
+describe("the panel, drawn", () => {
+  const draw = (f: TrayFacts) => {
+    const root = document.createElement("div");
+    const acts: string[] = [];
+    fillPanel(root, f, (a) => acts.push(a));
+    return { root, acts };
+  };
+
+  it("draws one section per entry in PANEL, each with its heading", () => {
+    const { root } = draw(facts());
+    expect(root.querySelectorAll(".tray-sec")).toHaveLength(PANEL_SECTIONS.length);
+    for (const el of root.querySelectorAll(".tray-sec")) {
+      expect(el.querySelector("h2")!.textContent).not.toBe("");
+      expect(el.querySelector(".tray-body")!.childNodes.length).toBeGreaterThan(0);
+    }
+  });
+
+  /** The whole reason this is a window and not a menu. */
+  it("draws a meter for a limit that has a share", () => {
+    const f = facts({ usage: [snap({
+      windows: [win({ usedFraction: 0.23, state: "ok", source: "reported" })],
+    })] });
+    const fill = draw(f).root.querySelector<HTMLElement>(".lim-meter .lim-fill")!;
+    expect(fill.style.width).toBe("23%");
+  });
+
+  /** ADR-0009 survives the change of surface: the tier is beside the number
+   *  here exactly as it is in the deck's own block. */
+  it("prints the tier beside the reading", () => {
+    const f = facts({ usage: [snap({
+      windows: [win({ usedFraction: 0.5, state: "ok", source: "observed" })],
+    })] });
+    const row = draw(f).root.querySelector(".lim-row")!;
+    expect(row.querySelector(".lim-src")!.textContent).toBe("Observed");
+    expect(row.querySelector(".lim-reading")!.textContent).toBe("50% used");
+  });
+
+  /** No share, no meter — the same rule, drawn by the same code. */
+  it("draws no meter where there is no share to draw one from", () => {
+    const f = facts({ usage: [snap({
+      windows: [win({ amount: { used: 412_000, limit: null, unit: "tokens" }, source: "observed" })],
+    })] });
+    expect(draw(f).root.querySelector(".lim-meter")).toBeNull();
+  });
+
+  /** The block hides itself when nothing is detected, which is right in the
+   *  deck's panel and wrong under a heading this surface has already drawn. */
+  it("says so under its own heading when there is no AI on the machine", () => {
+    const body = draw(facts()).root.querySelector('[data-section="limits"] .tray-body')!;
+    expect(body.textContent).toContain("No AI detected on this machine.");
+    expect((body as HTMLElement).hidden).toBe(false);
+  });
+
+  it("sends a limit row's click to the deck as the provider it is about", () => {
+    const f = facts({ usage: [snap({ provider: "gemini", label: "Gemini CLI" })] });
+    const { root, acts } = draw(f);
+    root.querySelector<HTMLElement>(".lim-open")!.click();
+    expect(acts).toEqual([ACTIONS.usage("gemini")]);
+  });
+
+  /** The tray has no tiles, so the "Ask" button asks the deck for one rather
+   *  than throwing itself against a host that cannot open one. */
+  it("sends an unreadable row's Ask to the deck instead of opening a tile", () => {
+    const f = facts({ usage: [snap({ probeCommand: "claude /usage" })] });
+    const { root, acts } = draw(f);
+    root.querySelector<HTMLElement>(".lim-probe")!.click();
+    expect(acts).toEqual([ACTIONS.probe("claude")]);
+  });
+
+  /** The window lists the deck, where the menu lists only what is blocked. That
+   *  is the one place the two renderings differ, and it is a budget rather than
+   *  a content difference — the panel scrolls and a menu does not. */
+  it("draws a row per session, urgent first, each carrying its state", () => {
+    const f = facts({ sessions: [
+      session({ session: "b", name: "deck", state: "working" }),
+      session({ session: "a", name: "relay", state: "waitingInput" }),
+    ] });
+    const rows = draw(f).root.querySelectorAll<HTMLElement>(".tray-sess");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].dataset.state).toBe("waitingInput");
+    expect(rows[0].querySelector(".tray-sess-name")!.textContent).toBe("relay");
+    expect(rows[0].querySelector(".tray-sess-state")!.textContent).toBe("waiting for input");
+    expect(rows[1].querySelector(".tray-sess-state")!.textContent).toBe("working");
+  });
+
+  it("sends a session row's click to the deck", () => {
+    const f = facts({ sessions: [session({ session: "a", state: "waitingInput" })] });
+    const { root, acts } = draw(f);
+    root.querySelector<HTMLElement>(".tray-sess")!.click();
+    expect(acts).toEqual([ACTIONS.session("a")]);
+  });
+
+  /** A session's name comes from a transcript this app did not write, so it
+   *  goes in as text. The same rule as `usage-block.ts` and `github-screen.ts`. */
+  it("puts a session's own name in as text", () => {
+    const nasty = '<img src=x onerror="alert(1)">';
+    const f = facts({ sessions: [session({ name: nasty, state: "waitingInput" })] });
+    const { root } = draw(f);
+    expect(root.querySelector(".tray-sess-name")!.textContent).toBe(nasty);
+    expect(root.querySelector("img")).toBeNull();
+  });
+
+  it("stops at ten rows and says how many it did not name", () => {
+    const many = Array.from({ length: 14 }, (_, i) =>
+      session({ session: `s${i}`, name: `w${i}`, state: "waitingInput" }));
+    const body = draw(facts({ sessions: many })).root
+      .querySelector('[data-section="sessions"] .tray-body')!;
+    expect(body.querySelectorAll(".tray-sess")).toHaveLength(10);
+    expect(body.textContent).toContain("4 more sessions");
+  });
+
+  it("says one left over in the singular", () => {
+    const many = Array.from({ length: 11 }, (_, i) =>
+      session({ session: `s${i}`, name: `w${i}`, state: "working" }));
+    const body = draw(facts({ sessions: many })).root
+      .querySelector('[data-section="sessions"] .tray-body')!;
+    expect(body.textContent).toContain("1 more session");
+  });
+
+  /** The sentence and the list, not one instead of the other: "nothing is
+   *  waiting" is worth more when you can see the eleven that are working. */
+  it("says nothing is waiting AND still lists the sessions that are not", () => {
+    const f = facts({ sessions: [session({ name: "relay", state: "working" })] });
+    const body = draw(f).root.querySelector('[data-section="sessions"] .tray-body')!;
+    expect(body.textContent).toContain("Nothing is waiting for input.");
+    expect(body.querySelectorAll(".tray-sess")).toHaveLength(1);
+  });
+
+  it("says so when there are no sessions at all", () => {
+    const body = draw(facts()).root.querySelector('[data-section="sessions"] .tray-body')!;
+    expect(body.textContent).toContain("No sessions are open.");
+  });
+
+  /** Drawn twice with different facts is the ordinary case — the deck reports
+   *  every few seconds — and a renderer that appended would grow without bound. */
+  it("replaces what it drew rather than adding to it", () => {
+    const root = document.createElement("div");
+    const f = facts({ sessions: [session({ state: "waitingInput" })] });
+    fillPanel(root, f, () => {});
+    fillPanel(root, f, () => {});
+    expect(root.querySelectorAll(".tray-sec")).toHaveLength(PANEL_SECTIONS.length);
+    expect(root.querySelectorAll(".tray-sess")).toHaveLength(1);
   });
 });

@@ -37,6 +37,25 @@ export interface LimitsHost extends CommandRunner, UsageDialogHost {
    *  about an account, not about a repository — so this is the active workspace
    *  simply because that is the folder a person is already thinking about. */
   cwd(): string;
+  /* --- What the tray panel needs, and the deck does not ------------------
+     Three optional hooks, each defaulting to what this block has always done,
+     because the block is now drawn in two windows: the deck's panel and the
+     small window behind the status-area icon (ADR-0011). The alternative was a
+     second implementation of a row — the meter, the tier chip, the foot
+     sentence, the accessible name — and a second implementation is how the two
+     surfaces would come to disagree about a number, which is the thing
+     `usage.ts` exists to prevent. */
+
+  /** Draw the block's own heading. Omitted where the surface already has one:
+   *  the tray panel draws its section headings itself, and two "Limits" in a
+   *  340px window is a mistake nobody has to make twice. */
+  heading?: boolean;
+  /** What a row's click opens. The dialog in this window by default. The tray
+   *  panel has no room for a dialog, so it sends the person to the deck's. */
+  openDetail?(snap: AiUsage): void;
+  /** What the "Ask" button on an unreadable row does. Runs the command in a
+   *  tile here; the tray panel has no tiles, so it asks the deck for one. */
+  openProbe?(snap: AiUsage): void;
 }
 
 function span(cls: string, text: string): HTMLSpanElement {
@@ -71,9 +90,11 @@ export class LimitsBlock {
     this.el.hidden = false;
     const island = document.createElement("div");
     island.className = "island lim-block";
-    const head = document.createElement("h3");
-    head.textContent = "Limits";
-    island.append(head);
+    if (this.host.heading !== false) {
+      const head = document.createElement("h3");
+      head.textContent = "Limits";
+      island.append(head);
+    }
     for (const snap of snaps) island.append(this.row(snap, now));
     this.el.append(island);
   }
@@ -110,7 +131,10 @@ export class LimitsBlock {
         .filter(Boolean)
         .join(", "),
     );
-    open.onclick = () => openUsageDialog(snap, this.host, () => this.redraw(Date.now()));
+    open.onclick = () =>
+      this.host.openDetail
+        ? this.host.openDetail(snap)
+        : openUsageDialog(snap, this.host, () => this.redraw(Date.now()));
 
     const line = document.createElement("span");
     line.className = "lim-line";
@@ -166,6 +190,7 @@ export class LimitsBlock {
       ask.title = `Run ${probe} in a tile`;
       ask.setAttribute("aria-label", `Ask ${snap.label} what is left — runs ${probe} in a tile`);
       ask.onclick = () => {
+        if (this.host.openProbe) return this.host.openProbe(snap);
         void this.host.openCommandTile(`${snap.label}: limits`, probe, this.host.cwd());
       };
       row.append(ask);
