@@ -313,7 +313,10 @@ reads it there, and one control gives the deck back.
 command palette, which lands on it — takes a sentence rather than a keyword: the notes are
 indexed by meaning, so "why did the cross build pick the wrong architecture" finds the
 session that answered it. Press Enter to search: a search embeds your sentence against the
-model, which is work worth asking for rather than doing on every keystroke. Emptying the
+model, which is work worth asking for rather than doing on every keystroke. Opening
+the page starts loading the model in the background, so by the time you have read
+the list a search takes milliseconds rather than seconds; it is given back after a
+few minutes of not being used, and the next search loads it again. Emptying the
 field goes back to the whole corpus at once. A result opens the same way a listed note
 does.
 Searching needs a 479 MB embedding model, downloaded once per machine and offered rather

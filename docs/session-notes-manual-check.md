@@ -217,6 +217,12 @@ offers. The search is the field at the top of the memory page; the palette's
       **resumes** rather than restarting from zero.
 - [ ] Typing into the field searches nothing. Enter is what searches, and while
       it runs the page says so.
+- [ ] The FIRST search after opening the page is fast, not two seconds: opening
+      the page starts loading the model. Leave the page alone for six minutes and
+      search again — the first one is slow again, which is the model having been
+      given back.
+- [ ] `ps` shows one `cowork_memory serve` while the model is held, and none
+      before the page is opened or after it has been idle.
 - [ ] With a note captured, search for something in it by meaning rather than by
       its words — "why did the build pick the wrong architecture", not the
       filename. It comes back.

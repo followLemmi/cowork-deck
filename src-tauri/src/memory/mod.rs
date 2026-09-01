@@ -28,6 +28,7 @@ pub mod capture;
 pub mod corpus;
 pub mod prompt;
 pub mod queue;
+pub mod resident;
 pub mod rooms;
 pub mod sidecar;
 pub mod transcript;
@@ -367,9 +368,48 @@ pub fn memory_search(
         Some(id) => sidecar::Scope::Workspace(id),
         None => sidecar::Scope::Everything,
     };
-    indexer()
-        .ok_or_else(|| "memory is not wired up".to_string())?
-        .search(&query, &scope, top.unwrap_or(10))
+    search_scoped(&query, &scope, top.unwrap_or(10))
+}
+
+/// Search, through the process that already has the model if there is one.
+///
+/// The one route every search takes — the palette, the page, the prompt hook —
+/// so the resident process is shared rather than one per caller. `None` from
+/// [`resident::search`] means there is no resident path to take, and the answer
+/// is then the one search per process that came before it: slower, never worse.
+pub fn search_scoped(
+    query: &str,
+    scope: &sidecar::Scope,
+    top: usize,
+) -> Result<Vec<sidecar::Hit>, String> {
+    let indexer = indexer().ok_or_else(|| "memory is not wired up".to_string())?;
+    if let Some(hits) = resident::search(&indexer, query, scope, top) {
+        return Ok(hits);
+    }
+    indexer.search(query, scope, top)
+}
+
+/// Load the model before anything asks for it.
+///
+/// Called when the memory page is opened. On a thread, because it is 1.7 s of
+/// somebody else's CPU — and returning immediately is the point: the warm-up
+/// overlaps with reading the list, and the first search is already instant.
+///
+/// Deliberately not called at launch. Warming costs 1.7 s and holds 1.6 GB, and
+/// paying that on every start charges every person who never searches — the same
+/// objection ADR-0003 and #35 made about the launch path.
+#[tauri::command]
+pub fn memory_warm() -> bool {
+    let Some(indexer) = indexer() else { return false };
+    if !indexer.is_staged() {
+        return false;
+    }
+    std::thread::spawn(move || {
+        if resident::warm(&indexer) {
+            eprintln!("memory: the model is loaded and searches are warm");
+        }
+    });
+    true
 }
 
 /// Bring the index up to date, on a thread of its own.
@@ -701,7 +741,9 @@ pub fn prompt_context(workspace: Option<&str>, payload: &str) -> Option<String> 
         Some(id) if !id.trim().is_empty() => sidecar::Scope::Workspace(id.to_string()),
         _ => sidecar::Scope::Everything,
     };
-    let hits = indexer.search(&query, &scope, prompt::TOP).ok()?;
+    // Through the resident process too: a prompt worth searching should not pay
+    // a model load, which is the cost #388 assumed was already avoided.
+    let hits = search_scoped(&query, &scope, prompt::TOP).ok()?;
     Some(prompt::context_block(&scope, &hits))
 }
 

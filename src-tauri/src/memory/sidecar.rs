@@ -157,7 +157,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    fn as_arg(&self) -> String {
+    pub(super) fn as_arg(&self) -> String {
         match self {
             Scope::Workspace(id) => id.clone(),
             Scope::Lessons => "lessons".to_string(),
@@ -193,6 +193,12 @@ impl Sidecar {
     #[allow(dead_code)]
     pub fn program(&self) -> &std::path::Path {
         &self.program
+    }
+
+    /// The corpus root this sidecar is pointed at. Read by [`super::resident`],
+    /// which spawns the same binary with the same root and keeps it.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
     }
 
     /// Whether the binary is where it should be.

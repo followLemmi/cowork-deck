@@ -53,6 +53,54 @@ own target directory. A root `[workspace]` would move `src-tauri`'s target
 directory and break `scripts/stage-reporter.sh`, so the crate stays outside one
 and its staging script builds from its own manifest.
 
+**Amended by #389: one sidecar process, kept, rather than one per search.**
+
+"Run it as a sidecar binary" was a decision about where ONNX Runtime lives, and
+it stands. What it did not say is how many times that binary runs, and the answer
+until now was *once per search* — which measured, on a real corpus with the model
+file warm in the page cache:
+
+| | wall | peak RSS |
+|---|---|---|
+| everything except the model — spawn, index read, cosine, JSON out | 0.02 s | 6.7 MB |
+| the same search with the model | 2.03 s | 1830 MB |
+
+So 99% of a search was ORT building the graph, and it is CPU rather than disk:
+three consecutive searches ran 2.15 / 2.04 / 2.03 s with the file warm
+throughout, which is what rules out OS-level prewarming as an answer. The corpus
+is not the cost and will not become it — the index grows at ~3.5 KB per chunk, so
+a hundred thousand chunks is 350 MB against the model's gigabyte and a half.
+
+Held resident, the same searches take **6 ms**. The sidecar therefore grows a
+`serve` mode — line-delimited JSON, one request per line — and the app keeps one
+process for the whole deck. Three decisions came with it:
+
+- **Its own mode rather than MCP**, which is also a long-lived stdio loop. MCP is
+  a contract with Claude Code, so every change here would be a change to
+  something a session depends on; and its answers are prose in content blocks
+  written to be read by a model, which the app would have to parse back into the
+  `Hit` records it just formatted.
+- **It starts on demand, never at launch.** Warming costs 1.7 s and holds
+  1.6 GB, and paying that on every start charges every person who never searches
+  — the same objection this ADR and #35 already made about the launch path. The
+  app warms it when the memory page is opened, where the wait overlaps with
+  reading the list; every other caller warms it lazily on first use and then
+  shares it.
+- **It is reaped after five minutes idle**, because 1589 MB was measured resident
+  after loading and it does not fall — the graph stays materialised. A deck open
+  all day would otherwise hold that for a search somebody ran in the morning. The
+  trade is the right way round: memory given back is certain, and a slow first
+  search afterwards is one sentence on screen.
+
+Everything degrades to the one-shot spawn it replaces. A sidecar that will not
+start, a pipe that breaks, a reply that does not parse: the caller gets the old
+path and a slow answer rather than no answer.
+
+One defect this found rather than introduced: #376's MCP server took a closure to
+build the embedder lazily and called it **per tool call**, so a session asking
+three questions paid three graph builds. `embed::Lazy` builds once per process,
+which fixes the MCP path as well as this one.
+
 **Amended by #388: a session is told with the prompt, not only at startup.**
 
 The original account of what a session is told was #35's — an MCP tool plus a

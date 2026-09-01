@@ -55,6 +55,8 @@ vi.mock("../src/ipc", async (orig) => ({
   taskMigrationStatus: vi.fn().mockResolvedValue(null),
   listTasks: vi.fn().mockResolvedValue([]),
   listRuns: vi.fn().mockResolvedValue([]),
+  memoryNotes: vi.fn().mockResolvedValue([]),
+  memoryWarm: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../src/workspaces", () => ({
@@ -147,6 +149,20 @@ describe("which stack each page belongs to", () => {
     for (const id of ["ws-page", "history", "sk-page", "mem-page"]) {
       expect(document.querySelector(`#${id} .island`), id).not.toBeNull();
     }
+  });
+
+  /** #389. A search is 6 ms with the model in memory and two seconds without,
+   *  and opening this page is the clearest signal anybody is about to search —
+   *  so the warm-up overlaps with reading the list rather than landing on the
+   *  first query. Not at launch: it costs 1.7 s and holds 1.6 GB, and paying
+   *  that on every start charges every person who never searches. */
+  it("warms the model when the memory page is opened, and not before", async () => {
+    const { memoryWarm } = await import("../src/ipc");
+    expect(memoryWarm).not.toHaveBeenCalled();
+
+    document.querySelector<HTMLElement>('#rail .rail-btn[data-page="memory"]')!.click();
+    await flush();
+    expect(memoryWarm).toHaveBeenCalled();
   });
 
   /** The journal's head, which is real code rather than a mock: it says the name the

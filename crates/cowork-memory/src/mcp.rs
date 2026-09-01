@@ -40,7 +40,7 @@
 //! scope a suggestion — so both tools apply it, and the read applies it to the
 //! resolved path rather than to the string it was given.
 
-use crate::embed::Embedder;
+use crate::embed::Lazy;
 use crate::index::{self, Hit, SearchScope};
 use crate::DIARY_SCOPE;
 use anyhow::Result;
@@ -110,13 +110,15 @@ impl Served {
 
 /// Serve until stdin closes.
 ///
-/// `embedder` is a closure rather than a value because loading the model costs
+/// `embedder` is a [`Lazy`] rather than a value because loading the model costs
 /// seconds and 479 MB of memory-mapped file, and a session that never asks
-/// memory anything should pay neither. It is called on the first tool call that
-/// needs it.
+/// memory anything should pay neither. It is built on the first tool call that
+/// needs it — and **only** on the first: this took a closure until #389, which
+/// called it per tool call, so a session asking three questions paid three graph
+/// builds of two seconds each.
 pub fn serve(
     served: &Served,
-    embedder: &dyn Fn() -> Result<Box<dyn Embedder>>,
+    embedder: &Lazy,
     input: &mut dyn BufRead,
     output: &mut dyn Write,
 ) -> Result<()> {
@@ -146,7 +148,7 @@ pub fn serve(
 /// match to anything.
 fn handle(
     served: &Served,
-    embedder: &dyn Fn() -> Result<Box<dyn Embedder>>,
+    embedder: &Lazy,
     raw: &str,
 ) -> Option<String> {
     let msg: Value = match serde_json::from_str(raw) {
@@ -290,7 +292,7 @@ fn text(body: impl Into<String>, is_error: bool) -> Value {
 
 fn call(
     served: &Served,
-    embedder: &dyn Fn() -> Result<Box<dyn Embedder>>,
+    embedder: &Lazy,
     params: &Value,
 ) -> Result<Value> {
     let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
@@ -304,7 +306,7 @@ fn call(
 
 fn search_memory(
     served: &Served,
-    embedder: &dyn Fn() -> Result<Box<dyn Embedder>>,
+    embedder: &Lazy,
     args: &Value,
 ) -> Value {
     let query = args.get("query").and_then(Value::as_str).unwrap_or_default().trim();
@@ -321,7 +323,7 @@ fn search_memory(
             false,
         );
     }
-    let emb = match embedder() {
+    let emb = match embedder.get() {
         Ok(e) => e,
         Err(e) => {
             return text(
@@ -338,7 +340,7 @@ fn search_memory(
     } else {
         served.scope()
     };
-    match index::search(&ix, emb.as_ref(), query, &scope, TOP, served.min_score) {
+    match index::search(&ix, emb, query, &scope, TOP, served.min_score) {
         Ok(hits) if hits.is_empty() => text(
             "Nothing in memory matches that. It is searched by meaning, so rephrasing \
              as a different question sometimes helps.",
@@ -457,7 +459,7 @@ mod tests {
         Served { root, cache, workspace: workspace.map(str::to_string), min_score: -1.0 }
     }
 
-    fn embedder() -> Box<dyn Embedder> {
+    fn embedder() -> Box<dyn crate::embed::Embedder> {
         Box::new(FakeEmbedder::new())
     }
 
@@ -467,7 +469,8 @@ mod tests {
         let body = requests.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("\n") + "\n";
         let mut input = Cursor::new(body.into_bytes());
         let mut out: Vec<u8> = Vec::new();
-        serve(s, &|| Ok(embedder()), &mut input, &mut out).expect("serve");
+        let build = || Ok(embedder());
+        serve(s, &Lazy::new(&build), &mut input, &mut out).expect("serve");
         String::from_utf8(out)
             .unwrap()
             .lines()
@@ -546,7 +549,8 @@ mod tests {
         let body = "not json at all\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n";
         let mut input = Cursor::new(body.as_bytes().to_vec());
         let mut out: Vec<u8> = Vec::new();
-        serve(&s, &|| Ok(embedder()), &mut input, &mut out).unwrap();
+        let build = || Ok(embedder());
+        serve(&s, &Lazy::new(&build), &mut input, &mut out).unwrap();
         let lines: Vec<&str> = std::str::from_utf8(&out).unwrap().lines().collect();
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("\"id\":3"));
@@ -673,9 +677,10 @@ mod tests {
     #[test]
     fn a_missing_model_says_where_to_get_one() {
         let s = served("no-model", Some("ws-1"));
+        let build = || anyhow::bail!("embedding model not found in /r/.model");
         let out = exchange_with(
             &s,
-            &|| anyhow::bail!("embedding model not found in /r/.model"),
+            &Lazy::new(&build),
             &[json!({
                 "jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": { "name": "search_memory", "arguments": { "query": "anything" } },
@@ -689,7 +694,7 @@ mod tests {
 
     fn exchange_with(
         s: &Served,
-        embedder: &dyn Fn() -> Result<Box<dyn Embedder>>,
+        embedder: &Lazy,
         requests: &[Value],
     ) -> Vec<Value> {
         let body = requests.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("\n") + "\n";

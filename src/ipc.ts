@@ -747,6 +747,13 @@ export const memoryWriteNote = (workspaceId: string, title: string, tldr: string
  *  and markdown with no `## TL;DR`. */
 export const memorySaveNote = (file: string, markdown: string) =>
   invoke<void>("memory_save_note", { file, markdown });
+/** Load the embedding model before anything asks for it.
+ *
+ *  Resolves as soon as the warm-up is *started*, not when it finishes — it is
+ *  1.7 s of CPU, and the point is that it overlaps with reading the list rather
+ *  than landing on the first search. `false` means there is nothing to warm: no
+ *  sidecar staged on this build. */
+export const memoryWarm = () => invoke<boolean>("memory_warm");
 /** Everything ever written down, newest first.
  *
  *  A directory walk rather than a search, which is why the memory page is useful

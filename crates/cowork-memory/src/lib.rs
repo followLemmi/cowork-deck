@@ -5,6 +5,7 @@ pub mod mcp;
 pub mod model;
 pub mod onnx;
 pub mod scan;
+pub mod serve;
 
 /// Bytes. Above this, only the TL;DR plus a head excerpt is indexed.
 pub const BIG_FILE: usize = 30_000;

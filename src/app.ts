@@ -18,7 +18,7 @@ import {
 import type { PanelPage, WorkspacePage } from "./view";
 import {
   claudeAvailable, closeSession, deleteSkillHistory, listRuns, loadLayout, loadUiState,
-  memoryForgetCaptureAnswer, onMemoryChanged, onRunsChanged,
+  memoryForgetCaptureAnswer, memoryWarm, onMemoryChanged, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
   revealPath, saveUiState, scheduleAck, schedulerReady, openWorkspaceWindow, onSessionOwner,
   onWorkspacesChanged,
@@ -952,6 +952,11 @@ export function startApp(role: WindowRole): Promise<void> {
        holding, and leaving gives the deck back. Leaving is not allowed to throw
        away an edit: `close` is skipped while somebody is typing into a note. */
     if (page === "memory") {
+      /* Load the model while the person reads the list. A search is 6 ms with it
+         in memory and two seconds without, and opening this page is the clearest
+         signal anybody is about to search (#389). Fire and forget: it resolves
+         when the warm-up starts, and a build with no sidecar answers false. */
+      void memoryWarm().catch(() => {});
       void memoryView.refresh().then(() => noteReader.showLanding(memoryView.summary()));
       noteReader.showLanding(memoryView.summary());
     } else if (!noteReader.isEditing()) {
