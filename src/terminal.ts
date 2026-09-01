@@ -379,7 +379,17 @@ export class TerminalPanel {
   private watchVisibility() {
     if (typeof IntersectionObserver === "undefined") return;
     this.io = new IntersectionObserver((entries) => {
-      const onScreen = entries.some((e) => e.isIntersecting);
+      // One element is observed, so a batch of several records is that element's
+      // own history in time order and the last record is where it stands now.
+      // `entries.some` answers a different question — "on screen at any point in
+      // this batch" — and a batch of [shown, hidden] is the worst case for the
+      // resync below: it would run against a tile that is hidden again, measure a
+      // box of zero height and write the short scroll area straight back. Worse,
+      // `onScreen` would latch true, so no later return counts as a transition and
+      // nothing resyncs ever again.
+      const latest = entries[entries.length - 1];
+      if (!latest) return;
+      const onScreen = latest.isIntersecting;
       if (onScreen === this.onScreen) return;
       this.onScreen = onScreen;
       if (!onScreen) { TerminalPanel.releaseGpu(this); return; }

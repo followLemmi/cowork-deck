@@ -21,6 +21,11 @@ const watchers: { cb: (e: { isIntersecting: boolean }[]) => void; el: Element }[
 const setOnScreen = (el: Element, isIntersecting: boolean) => {
   for (const w of [...watchers]) if (w.el === el) w.cb([{ isIntersecting }]);
 };
+/** Several records delivered in one callback — what a real observer does when two
+ *  update steps elapse before delivery. */
+const setOnScreenBatch = (el: Element, states: boolean[]) => {
+  for (const w of [...watchers]) if (w.el === el) w.cb(states.map((isIntersecting) => ({ isIntersecting })));
+};
 
 const syncScrollArea = vi.fn();
 
@@ -101,6 +106,25 @@ describe("the scrollbar on the way back from hidden", () => {
     setOnScreen(el, true);
 
     expect(syncScrollArea).toHaveBeenCalledTimes(2);
+  });
+
+  /** A batch can hold more than one record for the same element, and only one
+   *  element is observed here — so a batch is that element's history, and the last
+   *  record is the state it is in now. Read as "intersecting somewhere in the
+   *  batch", a [shown, hidden] delivery resyncs a tile that is hidden again, which
+   *  measures a box of zero height and writes the broken scroll area straight
+   *  back — and latches `onScreen`, so nothing resyncs on any later return. */
+  it("reads the newest record in a batch, not any intersecting one", () => {
+    const { el } = panel();
+
+    setOnScreenBatch(el, [true, false]);
+
+    expect(syncScrollArea).not.toHaveBeenCalled();
+
+    // And the state did not latch: the next real return is still a transition.
+    setOnScreen(el, true);
+
+    expect(syncScrollArea).toHaveBeenCalledTimes(1);
   });
 });
 
