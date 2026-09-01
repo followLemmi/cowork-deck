@@ -1516,12 +1516,18 @@ export class Deck {
    *  like it was in it, and the next keystroke went to the window handler instead
    *  of to the pty — which is how `Escape` came to unzoom the deck rather than
    *  reach `vim`, `less`, `htop` or claude's own "esc to interrupt" (#269). Not
-   *  only zoom: a session launched while another one is being typed into re-parents
-   *  every tile too, and took the keyboard with it just the same.
+   *  only zoom: a *background* launch — a scheduled run, or tiles handed over from
+   *  another window — re-parents every tile too, and there this is the only thing
+   *  that puts the keyboard back, because that path reaches here through
+   *  `applyWorkspaceVisibility` and never calls `focusTile`. An interactive launch
+   *  is the other way round by design: it ends in `focusTile`, which claims the
+   *  keyboard for the new tile, and this restore is overwritten a moment later.
    *
    *  Restored only when this is what dropped it — focus back on `<body>`, and the
-   *  element still in the document. A layout that hid the tile (a workspace switch)
-   *  or removed it (a close) leaves focus alone, and the callers that move focus
+   *  element still in the document, so a layout that removed the tile (a close)
+   *  leaves focus alone. A layout that merely hid it (a workspace switch) is left
+   *  to the platform rather than checked for here: `.ws-hidden` is `display: none`,
+   *  and `focus()` on an element inside one does nothing. Callers that move focus
    *  themselves run after this and still win. */
   private applyLayout() {
     const had = document.activeElement as HTMLElement | null;

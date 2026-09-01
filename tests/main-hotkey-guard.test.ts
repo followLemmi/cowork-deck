@@ -165,7 +165,12 @@ describe("the window hotkey handler and text entry", () => {
    *  focused terminal — it writes the byte to the pty and stops the event dead.
    *  The guard is what keeps that true of anything else focusable inside `.xterm`,
    *  and of the next person to move this handler somewhere it fires first; a
-   *  synthetic keydown is the only way to reach it, which is what this dispatches. */
+   *  synthetic keydown is the only way to reach it, which is what this dispatches.
+   *
+   *  `isTerminalCaret` has two clauses and both are driven below, because in
+   *  production only the second can ever be the sole one that matches: xterm always
+   *  nests its hidden textarea inside `.xterm`, so the class check alone would prove
+   *  nothing about the container check that the guard is actually written for. */
   it("does not unzoom the deck on an Escape that came from a terminal", async () => {
     const deckEl = document.querySelector<HTMLElement>("#deck")!;
     // Two visible tiles: zooming the only tile there is has nothing to minimize
@@ -174,13 +179,35 @@ describe("the window hotkey handler and text entry", () => {
     await flush();
     expect(deckEl.querySelectorAll(".tile").length).toBeGreaterThan(1);
 
-    const helper = document.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!;
+    /* The terminal's own shape, which the mocked `TerminalPanel` does not build:
+       xterm renders `.xterm` around both its hidden input and its screen. Built
+       here rather than borrowed from the case above — that one leaves a bare
+       textarea on `<body>`, which is outside any `.xterm` and would leave the
+       clause this guard exists for untested, and reaching for it across cases
+       makes the order of the two an unwritten requirement. */
+    const term = document.createElement("div");
+    term.className = "xterm";
+    const helper = document.createElement("textarea");
+    helper.className = "xterm-helper-textarea";
+    // Focusable, inside `.xterm`, and not the helper: this is the clause that is
+    // the app's own rule rather than a restatement of xterm's class name.
+    const screen = document.createElement("div");
+    screen.className = "xterm-screen";
+    screen.tabIndex = 0;
+    term.append(helper, screen);
+    deckEl.querySelector<HTMLElement>(".tile .tile-body")!.append(term);
+
     zoomKey(helper);
     await flush();
     expect(deckEl.classList.contains("is-zoomed")).toBe(true);
 
-    // The program's key, not the deck's.
+    // The program's key, not the deck's — from the hidden input...
     escapeKey(helper);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+
+    // ...and from anything else the terminal contains.
+    escapeKey(screen);
     await flush();
     expect(deckEl.classList.contains("is-zoomed")).toBe(true);
 

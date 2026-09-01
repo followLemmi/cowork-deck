@@ -62,6 +62,10 @@ import { onExit, describeExit } from "../src/ipc";
 import type { Task, BoardConfig } from "../src/ipc";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
+/** A scheduled scenario, which is how this file reaches a launch that does not
+ *  take the keyboard — `launchScheduled` is one of the two `grabAttention: false`
+ *  callers of `spawnTile`, the other being `receive`. */
+const SKILL = { id: "s1", name: "Nightly review", icon: "▶", prompt: "review", workspaceId: null };
 
 describe("Deck.launch error handling", () => {
   beforeEach(() => {
@@ -369,7 +373,7 @@ describe("Deck zoom edge cases", () => {
    *
    *  The terminal is mocked here, so the caret is a textarea in the tile body —
    *  which is exactly what xterm's own hidden input is. */
-  it("keeps the keyboard in the terminal across a zoom and back", async () => {
+  it("keeps the keyboard in the terminal across a zoom and a background launch", async () => {
     const deckEl = document.createElement("div");
     const listEl = document.createElement("div");
     document.body.append(deckEl, listEl);
@@ -398,9 +402,16 @@ describe("Deck zoom edge cases", () => {
     expect(deck.exitZoom()).toBe(true);
     expect(document.activeElement).toBe(caret);
 
-    // Not only zoom: launching a session lays the deck out too, and took the
-    // keyboard with it just the same.
-    await deck.launch(WS as any, null);
+    // Not only zoom, and this is the launch that shows it. A background launch —
+    // a scheduled run, or tiles handed over from another window — reaches
+    // `applyLayout` through `applyWorkspaceVisibility` and never calls
+    // `focusTile`, so the restore is the only thing holding the keyboard.
+    //
+    // An interactive launch is deliberately the other way round: it ends in
+    // `focusTile`, which puts the caret in the *new* tile. Asserting the caret
+    // stayed put across one of those would pass only because this file stubs
+    // `TerminalPanel.focus`, and would encode behaviour the app does not have.
+    await deck.launchScheduled(WS as any, SKILL as any, "review", "schedule");
     expect(document.activeElement).toBe(caret);
   });
 });
