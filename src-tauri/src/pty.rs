@@ -127,6 +127,66 @@ fn classify(status: &portable_pty::ExitStatus) -> Exit {
     }
 }
 
+/// Where a session's output goes: a slot that can be pointed somewhere else,
+/// holding a handle that can be cloned out and called with the lock released.
+/// Both halves are load-bearing — see `Session::sink` and `retarget`.
+type Sink = Arc<Mutex<Arc<dyn Fn(Vec<u8>) + Send + Sync>>>;
+
+/// Collect reads that arrive within `window` of each other and pass them on as
+/// one.
+///
+/// Order is preserved and no byte is added, dropped or reframed — a batch is
+/// exactly the concatenation of the reads it replaces, which is what lets
+/// xterm's stateful UTF-8 decoder keep working across a glyph split by a read
+/// boundary.
+///
+/// It checks the generation flag too, and it is the one that has to: the reader
+/// breaking on a dead generation drops its sender, which is a `Disconnected`
+/// here and would otherwise flush a batch belonging to a process the app has
+/// already forgotten into its successor's terminal.
+///
+/// `window` is an argument rather than `COALESCE_WINDOW` read straight from the
+/// constant, and that is the whole reason this loop is a function: **how much it
+/// batches is a fact about arrival times, so a test that spawns a process can
+/// only ever hope for one.** Given the window instead, a test states it: a window
+/// no run can outlive turns every already-queued read into a single callback, a
+/// zero window turns each one into its own, and neither answer moves when the
+/// machine is busy. Every caller in the app passes `COALESCE_WINDOW`.
+fn coalesce(rx: mpsc::Receiver<Vec<u8>>, window: Duration, live: Arc<AtomicBool>, sink: Sink) {
+    // `recv` blocks, so nothing is polled while the session is idle, and it
+    // ends the loop when the reader thread hits EOF and drops its sender.
+    while let Ok(mut batch) = rx.recv() {
+        let deadline = Instant::now() + window;
+        let mut closed = false;
+        while batch.len() < MAX_BATCH {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            match rx.recv_timeout(deadline - now) {
+                Ok(more) => batch.extend_from_slice(&more),
+                Err(RecvTimeoutError::Timeout) => break,
+                // The reader hit EOF. Flush what is in hand before leaving,
+                // or the last of a short-lived command's output is lost.
+                Err(RecvTimeoutError::Disconnected) => {
+                    closed = true;
+                    break;
+                }
+            }
+        }
+        if !live.load(Ordering::SeqCst) {
+            break;
+        }
+        // Cloned out under the lock and called with it released, so a
+        // batch crossing into the webview never holds up a `retarget`.
+        let send = Arc::clone(&sink.lock().unwrap());
+        send(batch);
+        if closed {
+            break;
+        }
+    }
+}
+
 /// A session with processes still running inside it, and how many besides the
 /// session's own leader. What "there is something to lose here" is measured
 /// with — see the app-level exit handler in `main.rs`.
@@ -163,7 +223,7 @@ struct Session {
     /// under the lock and calls it with the lock released. Calling through the
     /// lock would make every batch — an IPC crossing — block a `retarget`, and
     /// `retarget` runs while a person is dragging a window.
-    sink: Arc<Mutex<Arc<dyn Fn(Vec<u8>) + Send + Sync>>>,
+    sink: Sink,
 }
 
 #[derive(Clone)]
@@ -303,54 +363,11 @@ impl PtyManager {
             }
         });
 
-        // Coalescer thread: collect reads that arrive within `COALESCE_WINDOW` of
-        // each other and pass them on as one. Order is preserved and no byte is
-        // added, dropped or reframed — a batch is exactly the concatenation of the
-        // reads it replaces, which is what lets xterm's stateful UTF-8 decoder keep
-        // working across a glyph split by a read boundary.
-        //
-        // It checks the generation flag too, and it is the one that has to: the
-        // reader breaking on a dead generation drops its sender, which is a
-        // `Disconnected` here and would otherwise flush a batch belonging to a
-        // process the app has already forgotten into its successor's terminal.
+        // Coalescer thread: one callback per burst of reads. See `coalesce`.
         let live_out = Arc::clone(&live);
-        let sink: Arc<Mutex<Arc<dyn Fn(Vec<u8>) + Send + Sync>>> =
-            Arc::new(Mutex::new(Arc::new(on_output)));
+        let sink: Sink = Arc::new(Mutex::new(Arc::new(on_output)));
         let sink_out = Arc::clone(&sink);
-        std::thread::spawn(move || {
-            // `recv` blocks, so nothing is polled while the session is idle, and it
-            // ends the loop when the reader thread hits EOF and drops its sender.
-            while let Ok(mut batch) = rx.recv() {
-                let deadline = Instant::now() + COALESCE_WINDOW;
-                let mut closed = false;
-                while batch.len() < MAX_BATCH {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        break;
-                    }
-                    match rx.recv_timeout(deadline - now) {
-                        Ok(more) => batch.extend_from_slice(&more),
-                        Err(RecvTimeoutError::Timeout) => break,
-                        // The reader hit EOF. Flush what is in hand before leaving,
-                        // or the last of a short-lived command's output is lost.
-                        Err(RecvTimeoutError::Disconnected) => {
-                            closed = true;
-                            break;
-                        }
-                    }
-                }
-                if !live_out.load(Ordering::SeqCst) {
-                    break;
-                }
-                // Cloned out under the lock and called with it released, so a
-                // batch crossing into the webview never holds up a `retarget`.
-                let send = Arc::clone(&sink_out.lock().unwrap());
-                send(batch);
-                if closed {
-                    break;
-                }
-            }
-        });
+        std::thread::spawn(move || coalesce(rx, COALESCE_WINDOW, live_out, sink_out));
 
         // Waiter thread: report what became of the process.
         //
@@ -813,21 +830,144 @@ mod tests {
         assert_eq!(exit.code, Some(0), "a clean exit is code 0: {exit:?}");
     }
 
+    /// A coalescing window no test run can outlive.
+    ///
+    /// What turns a batch count from a race into a fact: with this window the
+    /// only things that can end a batch are the sender dropping and `MAX_BATCH`
+    /// filling, neither of which is a question about the clock.
+    const NEVER: Duration = Duration::from_secs(3600);
+
+    /// How long a test waits for the *next* batch before calling the stream
+    /// dead. A guard against a hang, not a budget for the run: it is measured
+    /// per batch, so a slow machine that is still delivering never trips it,
+    /// and a machine ten times slower still passes.
+    const STALL: Duration = Duration::from_secs(30);
+
+    /// Run the coalescer over `reads` and return the batches it produced.
+    ///
+    /// Every read is queued and the sender dropped *before* the loop starts, so
+    /// no `recv` inside it can block: what comes back is a function of `window`
+    /// and `MAX_BATCH` and of nothing else — not of how fast a child writes, not
+    /// of when this thread is scheduled. It runs on the calling thread for the
+    /// same reason.
+    fn coalesced(reads: &[Vec<u8>], window: Duration) -> Vec<Vec<u8>> {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        for r in reads {
+            tx.send(r.clone()).unwrap();
+        }
+        drop(tx);
+
+        let batches: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&batches);
+        let sink: Sink =
+            Arc::new(Mutex::new(Arc::new(move |b: Vec<u8>| seen.lock().unwrap().push(b))));
+
+        coalesce(rx, window, Arc::new(AtomicBool::new(true)), sink);
+
+        // `coalesce` returns only once the stream is finished, so nothing is
+        // still in flight and this lock is uncontended.
+        let mut out = Vec::new();
+        out.append(&mut batches.lock().unwrap());
+        out
+    }
+
     /// The coalescer is a batching layer, and a batching layer that is not
     /// byte-transparent silently corrupts every multi-byte glyph it cuts. What is
     /// pinned here is that a batch is the concatenation of the reads it replaced —
-    /// same bytes, same order — including the tail written just before EOF, which
-    /// is the one a naive "flush on timeout" loop drops on the floor.
+    /// same bytes, same order — including the tail handed over just before EOF,
+    /// which is the one a naive "flush on timeout" loop drops on the floor.
     #[test]
-    fn coalescing_is_byte_transparent_including_the_tail_before_eof() {
+    fn a_batch_is_exactly_the_reads_it_replaced_tail_included() {
+        // Multi-byte throughout and cut *inside* glyphs, which is the split this
+        // layer exists to survive: xterm's UTF-8 decoder carries state across
+        // callbacks, so a batch that drops or reorders a continuation byte shows
+        // up as mojibake rather than as a length that no longer matches. 1024 is
+        // Darwin's real per-read cap and no multiple of this unit, so the cuts
+        // land mid-glyph the way the real ones do.
+        let payload: Vec<u8> = "─┤абв┃".repeat(4096).into_bytes();
+        let reads: Vec<Vec<u8>> = payload.chunks(1024).map(<[u8]>::to_vec).collect();
+        assert!(payload.len() < MAX_BATCH, "this test's one-batch claim needs an uncapped batch");
+
+        let batches = coalesced(&reads, NEVER);
+
+        assert_eq!(
+            String::from_utf8_lossy(&batches.concat()),
+            String::from_utf8_lossy(&payload),
+            "coalescing changed the byte stream",
+        );
+        // And it did batch: those reads became one callback. With a window nothing
+        // outlives, the only thing that could have ended this batch is the
+        // sender dropping — so this also pins the flush at EOF, and it holds on
+        // a machine of any speed, which the same claim made through a spawned
+        // process does not.
+        assert_eq!(
+            batches.len(),
+            1,
+            "{} reads should coalesce into one callback, got {} of lengths {:?}",
+            reads.len(),
+            batches.len(),
+            batches.iter().map(Vec::len).collect::<Vec<_>>(),
+        );
+    }
+
+    /// The other end of the same mechanism, and what stops the test above from
+    /// passing for the wrong reason: it is the *window* that does the batching,
+    /// so with no window there is no batching and every read is handed on alone.
+    #[test]
+    fn a_window_of_zero_hands_on_every_read_unbatched() {
+        let reads: Vec<Vec<u8>> = (0..64u8).map(|i| vec![i; 100]).collect();
+
+        assert_eq!(
+            coalesced(&reads, Duration::ZERO),
+            reads,
+            "with no window to wait in, a batch is one read",
+        );
+    }
+
+    /// `MAX_BATCH` is the guard against a process dumping megabytes growing an
+    /// unbounded `Vec`, and an unbounded window is exactly the case it has to
+    /// hold under: here the reads never stop arriving, so the cap is the only
+    /// thing that can end a batch.
+    #[test]
+    fn the_batch_cap_bounds_what_one_callback_carries() {
+        let read = vec![b'x'; 1024];
+        let reads = vec![read.clone(); 3 * (MAX_BATCH / 1024) + 8];
+
+        let batches = coalesced(&reads, NEVER);
+
+        assert_eq!(batches.concat(), reads.concat(), "the cap changed the byte stream");
+        assert!(batches.len() > 1, "a payload past the cap cannot arrive as one callback");
+        for b in &batches {
+            // A batch stops at the first read that reaches the cap, so one read
+            // is the most it can overshoot by.
+            assert!(
+                b.len() <= MAX_BATCH + read.len(),
+                "a batch of {} bytes is past the {MAX_BATCH}-byte cap",
+                b.len(),
+            );
+        }
+    }
+
+    /// What only a real pty can answer, now that the batching itself is pinned
+    /// above without one: that the reader thread, Darwin's 1024-byte read cap
+    /// and a real EOF between them deliver every byte the child wrote, tail
+    /// included.
+    ///
+    /// Nothing here asserts how *much* was batched, and that is the fix rather
+    /// than a gap. How much a real child's output coalesces is a fact about
+    /// arrival times: a machine busy enough to stall the writer between reads
+    /// makes every window close empty and batching legitimately collapses, so
+    /// the old bound held on an idle machine and failed beside the other ~350
+    /// tests. The question is asked above instead, where the answer is fixed.
+    #[test]
+    fn a_real_pty_delivers_every_byte_it_wrote() {
         let mgr = PtyManager::new();
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let (etx, erx) = mpsc::channel::<Exit>();
 
-        // Enough to cross many read boundaries — on Darwin the tty hands back at
-        // most 1024 bytes a read, so this is 256+ of them — and multi-byte
-        // throughout, so any cut mishandled by the batcher shows up as mojibake
-        // rather than as a length that still matches.
+        // Enough to cross many read boundaries — 60+ of them at Darwin's cap —
+        // and multi-byte throughout, so a cut mishandled anywhere on this path
+        // shows up as mojibake rather than as a length that still matches.
         let unit = "─┤абв┃";
         let reps = 4096;
         let expected: String = unit.repeat(reps);
@@ -850,39 +990,44 @@ mod tests {
         )
         .unwrap();
 
-        // Collect until the child has exited AND the stream has gone quiet, so the
-        // final batch — the one flushed on Disconnected — is counted.
+        // Wait for the byte count, not for an interval: the loop ends when the
+        // payload is complete, however long this machine takes to produce it.
         let mut got: Vec<u8> = Vec::new();
-        let mut batches = 0usize;
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            match rx.recv_timeout(Duration::from_millis(400)) {
-                Ok(b) => { batches += 1; got.extend_from_slice(&b); }
-                Err(_) => if got.len() >= expected.len() { break },
+        while got.len() < expected.len() {
+            match rx.recv_timeout(STALL) {
+                Ok(b) => got.extend_from_slice(&b),
+                Err(e) => panic!(
+                    "output stopped for {STALL:?} at {} of {} bytes: {e:?}",
+                    got.len(),
+                    expected.len(),
+                ),
             }
         }
-        let _ = erx.recv_timeout(Duration::from_secs(5));
 
-        // A pty echoes and may translate \n; this payload contains neither, so the
-        // comparison is exact rather than "contains".
+        // A pty echoes and may translate \n; this payload contains neither, and
+        // nothing is written to this session, so the comparison is exact rather
+        // than "contains".
         assert_eq!(
             String::from_utf8_lossy(&got),
             expected,
-            "coalescing changed the byte stream (got {} bytes, wanted {})",
+            "the byte stream changed on its way through the pty (got {} bytes, wanted {})",
             got.len(),
-            expected.len()
+            expected.len(),
         );
 
-        // And it actually batched. Uncoalesced, Darwin's 1024-byte read cap alone
-        // would make this at least `expected.len() / 1024` callbacks — each one a
-        // main-thread `evaluateJavaScript`. The bound is loose on purpose: under
-        // load the windows only grow, so this can fail from too little batching
-        // but never from too much.
-        let uncoalesced_floor = expected.len() / 1024;
-        assert!(
-            batches < uncoalesced_floor / 2,
-            "expected far fewer than {uncoalesced_floor} callbacks, got {batches}"
-        );
+        let exit = erx.recv_timeout(STALL).expect("exit not reported");
+        assert_eq!(exit.code, Some(0), "the child should have run to completion: {exit:?}");
+
+        // Nothing may follow the payload. Drained without waiting, so this can
+        // only ever miss a stray batch, never invent one — a real pty has
+        // nothing left to say here, and if it does, the run that catches it is
+        // reporting a bug rather than a slow machine.
+        if let Ok(extra) = rx.try_recv() {
+            panic!(
+                "{} more bytes arrived after the whole payload had been delivered",
+                extra.len(),
+            );
+        }
     }
 
     #[test]
