@@ -2658,7 +2658,12 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "expand-terminals", title: "Terminals: fill the window, or restore", hotkey: isMacPlatform() ? "Cmd+Shift+E" : "Ctrl+Shift+E", run: () => { void terminals.toggleFull(); } },
       { id: "new-terminal", title: "New terminal", run: () => { void terminals.newTerminal(); } },
       { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
+      /* Both directions, because the palette is where a binding is discoverable
+         and one that is not listed may as well not exist. The key is in the title
+         as well as the `hotkey` column: the filter matches titles only, so this is
+         what makes typing "f6" find them. */
       { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
+      { id: "prev-region", title: "Go to previous region (Shift+F6)", hotkey: "Shift+F6", run: () => cycleRegion(-1) },
       /* One entry per page the rail can select, and the wording says what they are
          now: pages of one panel rather than screens that replace the deck. The rail
          has no digits of its own — ⌘1…⌘5 are "focus session N" in this app — so this
