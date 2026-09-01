@@ -67,6 +67,7 @@ import { appMark, iconButton, installSprite, type IconName } from "./icons";
 import { openGithubScreen } from "./github-screen";
 import { fillPlaceholders, resolvePrompt } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
+import { syncDotPhase } from "./dot-phase";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
@@ -2454,6 +2455,10 @@ export function startApp(role: WindowRole): Promise<void> {
       if (n === 0) return;
       const b = document.createElement("button");
       b.className = `led led--${kind}`;
+      // `drawLedger` replaces its children outright and runs on every list
+      // render, so the waiting lamp is a new element every five seconds. See
+      // `src/dot-phase.ts`.
+      syncDotPhase(b);
       const num = document.createElement("b");
       num.textContent = String(n);
       b.append(num, document.createTextNode(` ${words}`));

@@ -18,6 +18,7 @@ import { shouldSkipOverlap } from "./schedule";
 import { icon, iconButton, type IconName } from "./icons";
 import { linksInWorkspace, liveSessionForTask, taskPrompt, type TaskSessionLink } from "./tasks";
 import { workingStep } from "./board-config";
+import { syncDotPhase } from "./dot-phase";
 
 /** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
  *  команды (установка gh, `gh auth login`): без хуков состояния, без
@@ -1605,6 +1606,10 @@ export class Deck {
     const prev = tile.state;
     tile.state = state;
     tile.label.className = `tile-state state-${state}`;
+    // The chip is not rebuilt by the poll, but this class change restarts its
+    // loop, and from then on it would breathe against the row in the panel
+    // rather than with it. See `src/dot-phase.ts`.
+    syncDotPhase(tile.label);
     // Keeps the tile's rail in step with its chip. Two carriers, one source.
     tile.el.dataset.state = state;
     tile.label.textContent = LABEL[state];
@@ -2281,6 +2286,10 @@ export class Deck {
         // list unreadable. The dot the chip already carries stays, and so does the
         // rail — two channels for the state, which is one more than the name gets.
         stateSpan.className = `tile-state tile-state--bare state-${t.state}`;
+        // This span is thrown away and remade on every render — twelve times a
+        // minute from the poll alone. `src/dot-phase.ts` is why that stopped
+        // being something a person can see.
+        syncDotPhase(stateSpan);
         stateSpan.textContent = LABEL[t.state];
         metaLine.append(stateSpan);
         if (t.branch) {
