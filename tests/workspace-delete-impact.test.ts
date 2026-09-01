@@ -55,6 +55,24 @@ describe("describeDeleteImpact", () => {
       expect(msg).not.toContain("“a”");
     });
 
+    /* A name is only worth printing while it tells the two apart. A session is
+       called "session · <workspace>" until a transcript title replaces it, so
+       two fresh ones in the same workspace are the same string, and naming it
+       twice answers nothing. */
+    it("counts them when the names do not tell them apart", () => {
+      const same = "session · Backend";
+      const msg = describeDeleteImpact("w1", [], [same, same]);
+      expect(msg).toContain("2 sessions are still running in it");
+      expect(msg).not.toContain("\u201c");
+    });
+
+    // Distinctness only decides between naming and counting. One session is
+    // distinct from nothing, so the singular sentence is untouched.
+    it("still names a single session, which nothing can duplicate", () => {
+      expect(describeDeleteImpact("w1", [], ["session · Backend"]))
+        .toContain("“session · Backend” is still running in it");
+    });
+
     // The two halves say opposite things and both have to be said: scenarios
     // stop, sessions carry on with nothing behind them.
     it("reports scenarios and sessions together, each with its own fate", () => {
