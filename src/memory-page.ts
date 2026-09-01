@@ -574,6 +574,20 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     return status;
   };
 
+  /** Back to the corpus, and cancel whatever the field had asked for.
+   *
+   *  The cancelling is the half that is easy to leave out. Emptying the field
+   *  paints the list back at once, but a query queued behind one still running
+   *  would then run anyway and paint hits for a query the box no longer holds —
+   *  and the one in flight would paint over the list on its way past. Dropping
+   *  `pending` stops the first; bumping `seq` makes a reply already on its way
+   *  land nowhere. */
+  const browse = () => {
+    pending = null;
+    seq += 1;
+    if (hits !== null) { hits = null; paint(); }
+  };
+
   /** Run the query, or go back to browsing when there is none.
    *
    *  The readiness check is what keeps an empty result honest: without it, "no
@@ -593,7 +607,7 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     if (!query) {
       // Browsing needs nothing, so clearing the field is instant and asks
       // nothing of the sidecar.
-      if (hits !== null) { hits = null; paint(); }
+      browse();
       return;
     }
     if (running) { pending = query; return; }
@@ -662,7 +676,7 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
   /* Emptying the field goes back to the corpus at once. Only this direction is
      free: the list is already in memory and no process is asked for. */
   field.oninput = () => {
-    if (field.value.trim() === "" && hits !== null) { hits = null; paint(); }
+    if (field.value.trim() === "") browse();
   };
   field.onkeydown = (e) => {
     if (e.key === "Enter") {
@@ -680,7 +694,7 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     e.preventDefault();
     e.stopPropagation();
     field.value = "";
-    if (hits !== null) { hits = null; paint(); }
+    browse();
   };
 
   /** A fact belongs to a project; a lesson does not.

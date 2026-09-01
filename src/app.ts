@@ -957,7 +957,16 @@ export function startApp(role: WindowRole): Promise<void> {
          signal anybody is about to search (#389). Fire and forget: it resolves
          when the warm-up starts, and a build with no sidecar answers false. */
       void memoryWarm().catch(() => {});
-      void memoryView.refresh().then(() => noteReader.showLanding(memoryView.summary()));
+      /* Still on this page, or the landing is not ours to paint. `refresh` waits
+         on the note list and on two answers from the sidecar, which is seconds on
+         a cold machine — long enough to leave for the sessions page first. The
+         `close` below would then have already run, and this would put the cover
+         back over the deck on a page that is not memory, with Escape the only way
+         out of it. */
+      void memoryView.refresh().then(() => {
+        if (currentPage !== "memory") return;
+        noteReader.showLanding(memoryView.summary());
+      });
       noteReader.showLanding(memoryView.summary());
     } else if (!noteReader.isEditing()) {
       noteReader.close();
@@ -2627,7 +2636,10 @@ export function startApp(role: WindowRole): Promise<void> {
    *  worse than the button this window already does not have. */
   const APP_WIDE_COMMANDS = new Set([
     "panel", "sessions", "history", "scenarios", "memory", "notes-search", "notes-jobs",
-    "settings", "sync",
+    // The three that open the app's own settings window. `notes` is as much one
+    // of those as `settings` and `sync` are — it is the same window on a
+    // different tab.
+    "settings", "sync", "notes",
   ]);
 
   function paletteCommands(): Command[] {

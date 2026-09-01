@@ -382,17 +382,27 @@ fn read_note(served: &Served, args: &Value) -> Value {
         return text("That is not a note.", true);
     }
     if !served.admits(rel) {
-        // The scope is a boundary or it is decoration.
+        // A cheap first pass on the string, which keeps a plainly out-of-scope
+        // path from touching the filesystem at all. The check that counts is
+        // the one below, on the path this resolves to.
         return text("That note belongs to another project.", true);
     }
     match under(&served.root, rel) {
-        Some(path) => match std::fs::read(&path) {
-            // Lossily, like everywhere else that reads somebody's markdown: a
-            // note that is not quite text is better read imperfectly than
-            // refused.
-            Ok(bytes) => text(String::from_utf8_lossy(&bytes).into_owned(), false),
-            Err(e) => text(format!("Could not read that note ({}).", e.kind()), true),
-        },
+        Some((path, landed)) => {
+            if !served.admits(&landed) {
+                // `ws-1/../ws-2/31-other.md` passes the check above — its first
+                // segment is this session's workspace — and lands in another
+                // project. The scope is a boundary or it is decoration.
+                return text("That note belongs to another project.", true);
+            }
+            match std::fs::read(&path) {
+                // Lossily, like everywhere else that reads somebody's markdown:
+                // a note that is not quite text is better read imperfectly than
+                // refused.
+                Ok(bytes) => text(String::from_utf8_lossy(&bytes).into_owned(), false),
+                Err(e) => text(format!("Could not read that note ({}).", e.kind()), true),
+            }
+        }
         None => text("That note is not there.", true),
     }
 }
@@ -402,10 +412,25 @@ fn read_note(served: &Served, args: &Value) -> Value {
 /// `canonicalize` before the containment check, so `..` and symlinks are
 /// resolved rather than pattern-matched: a prefix test on the joined string
 /// would follow a link out of the corpus without noticing.
-fn under(root: &Path, rel: &str) -> Option<PathBuf> {
+///
+/// The second half of the pair is where inside the corpus the path landed, and
+/// it is what the scope is judged on. `..` and symlinks are gone by the time it
+/// is built, so `ws-1/../ws-2/31-other.md` reads back as `ws-2/31-other.md` —
+/// which is the only form of it [`Served::admits`] can answer honestly.
+fn under(root: &Path, rel: &str) -> Option<(PathBuf, String)> {
     let real = root.join(rel).canonicalize().ok()?;
     let real_root = root.canonicalize().ok()?;
-    (real.starts_with(&real_root) && real.is_file()).then_some(real)
+    if !real.is_file() {
+        return None;
+    }
+    let landed = real
+        .strip_prefix(&real_root)
+        .ok()?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Some((real, landed))
 }
 
 #[cfg(test)]
@@ -760,6 +785,24 @@ mod tests {
         let v = read(&s, "ws-2/Sessions/2026-08/31-other.md");
         assert_eq!(v["result"]["isError"], true);
         assert!(tool_text(&v).contains("another project"));
+    }
+
+    /// The scope has to be applied to where a path lands, not to how it reads.
+    /// `ws-1/..` is this session's own workspace by the first segment and
+    /// another project after `canonicalize` — so a check on the string alone
+    /// hands over the note the test above refuses.
+    #[test]
+    fn another_projects_note_is_refused_by_a_path_that_climbs_through_this_one() {
+        let s = served("read-climb", Some("ws-1"));
+        for file in [
+            "ws-1/../ws-2/Sessions/2026-08/31-other.md",
+            "ws-1/Sessions/../../ws-2/Sessions/2026-08/31-other.md",
+            "Diaries/../ws-2/Sessions/2026-08/31-other.md",
+        ] {
+            let v = read(&s, file);
+            assert_eq!(v["result"]["isError"], true, "{file}");
+            assert!(!tool_text(&v).contains("another project entirely"), "{file}");
+        }
     }
 
     #[test]

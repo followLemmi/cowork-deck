@@ -80,6 +80,13 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return n;
 }
 
+/** The three controls a note written by hand is typed into. */
+interface ComposeFields {
+  title: HTMLInputElement;
+  tldr: HTMLTextAreaElement;
+  body: HTMLTextAreaElement;
+}
+
 export interface NoteReaderOptions {
   /** Where to put the cover. `#workarea`, which is the column the deck is in and
    *  is already `position: relative` for the terminal drawer's own full mode. */
@@ -109,6 +116,13 @@ export class NoteReader {
   private markdown = "";
   /** The editor, while one is open. Its presence is the mode. */
   private editor: HTMLTextAreaElement | null = null;
+  /** The fields of a note being written by hand, while one is on screen.
+   *
+   *  Its presence is that mode, exactly as the editor's is — and it is held for
+   *  the same reason: without it a half-written note is not "being edited" by
+   *  anything that asks, so leaving the page, pressing Escape or coming back to
+   *  the memory page threw the draft away without a word. */
+  private composing: ComposeFields | null = null;
 
   constructor(opts: NoteReaderOptions) {
     this.opts = opts;
@@ -127,12 +141,33 @@ export class NoteReader {
 
   isOpen(): boolean { return !this.el.hidden; }
 
-  /** Whether somebody is typing into a note.
+  /** Whether somebody is typing into a note — an existing one or a new one.
    *
-   *  Read by the window's Escape, which must not take the deck back from under
-   *  an unsaved edit: a keystroke that discards what you have written is the one
-   *  thing this surface must never do by accident. */
-  isEditing(): boolean { return this.editor !== null; }
+   *  Read by the window's Escape and by the page switch, neither of which may
+   *  take the deck back from under unsaved words: a keystroke that discards what
+   *  you have written is the one thing this surface must never do by accident.
+   *  Both modes count, because the accident is the same one either way. */
+  isEditing(): boolean { return this.editor !== null || this.composing !== null; }
+
+  /** Whether a note being written has anything in it yet. */
+  private draftIsEmpty(): boolean {
+    const c = this.composing;
+    return c === null
+      || (!c.title.value.trim() && !c.tldr.value.trim() && !c.body.value.trim());
+  }
+
+  /** Leave a note being written. Asks first when there is something to lose.
+   *
+   *  The compose form's own way out, and the counterpart of `discard` for an
+   *  edit: an explicit click may throw a draft away, but not without saying
+   *  so. */
+  private async leaveCompose(): Promise<void> {
+    if (!this.draftIsEmpty()) {
+      const sure = await confirmModal("Discard this note?");
+      if (!sure) return;
+    }
+    this.close();
+  }
 
   /** Which note is on screen, by its path relative to the corpus root. */
   current(): string | null { return this.note?.file ?? null; }
@@ -198,6 +233,7 @@ export class NoteReader {
    *  of its own to go around it with. */
   async open(note: MemoryNoteEntry): Promise<void> {
     this.note = note;
+    this.composing = null;
     this.el.hidden = false;
     const mine = ++this.seq;
     this.body.replaceChildren(el("p", "note-reader-wait", "Reading…"));
@@ -240,6 +276,7 @@ export class NoteReader {
     this.el.hidden = true;
     this.note = null;
     this.editor = null;
+    this.composing = null;
     this.markdown = "";
     // Nothing is being read any more, so a read still in flight must not paint.
     this.seq += 1;
@@ -336,6 +373,9 @@ export class NoteReader {
     const body = el("textarea", "note-reader-field note-reader-field--tall");
     body.placeholder = "The rest, in markdown (optional)";
     body.dataset.fk = "note-compose-body";
+    // From here on this is a note being written, and everything that asks
+    // whether there is something to lose gets a truthful answer.
+    this.composing = { title, tldr, body };
     const why = el(
       "p",
       "note-reader-rule",
@@ -371,7 +411,10 @@ export class NoteReader {
     back.title = "Give the deck back (Escape)";
     back.setAttribute("aria-label", "Give the deck back");
     back.append(icon("x", 14));
-    back.onclick = () => this.close();
+    // Not a bare `close`: while a note is being edited there is no such button
+    // at all — Discard is the way out and it asks — so the one control that can
+    // throw a draft away asks the same question.
+    back.onclick = () => { void this.leaveCompose(); };
     acts.append(save, back);
     this.head.replaceChildren(named, acts);
 

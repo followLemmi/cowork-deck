@@ -561,15 +561,27 @@ impl Queue {
         Ok(out)
     }
 
-    /// Take the next queued job, marking it started, or `None` when there is
-    /// nothing to do.
+    /// Take one job by name, marking it started, or `None` if it is not queued
+    /// any more.
     ///
-    /// Oldest first, so a queue that built up while the app was shut does not
-    /// serve the most recent session first and leave the rest waiting.
-    pub fn next(&self) -> io::Result<Option<WrapupJob>> {
-        let Some(mut job) = self.jobs().into_iter().find(|j| j.state == JobState::Queued) else {
+    /// **By name, and that is the point.** This took the oldest queued job until
+    /// the bug in [`Queue::drain`] that the ordering caused: `drain` works
+    /// through a snapshot of what was queued when it began, and a taker that
+    /// always returns the oldest hands straight back the job `drain` has just
+    /// requeued — spending every attempt on the first failure in the queue and
+    /// skipping everything behind it. Order is `drain`'s to decide, and it reads
+    /// it off `jobs()`, which is oldest first.
+    fn take(&self, job_id: &str) -> io::Result<Option<WrapupJob>> {
+        let Some(job) = self.jobs().into_iter().find(|j| j.job_id == job_id) else {
             return Ok(None);
         };
+        if job.state != JobState::Queued {
+            return Ok(None);
+        }
+        self.mark_started(job).map(Some)
+    }
+
+    fn mark_started(&self, mut job: WrapupJob) -> io::Result<WrapupJob> {
         self.append(&JobEvent::Started(JobStarted {
             v: WRAPUP_QUEUE_VERSION,
             job_id: job.job_id.clone(),
@@ -577,7 +589,7 @@ impl Queue {
         }))?;
         job.attempts += 1;
         job.state = JobState::Running;
-        Ok(Some(job))
+        Ok(job)
     }
 
     /// The job wrote its note, or decided there was nothing to write.
@@ -672,16 +684,11 @@ impl Queue {
 
         let mut report = DrainReport::default();
         for job_id in planned {
-            // Re-read rather than trust the snapshot: `run` is arbitrary code and
-            // may have finished or failed this job itself.
-            let Some(job) = self.jobs().into_iter().find(|j| j.job_id == job_id) else {
-                continue;
-            };
-            if job.state != JobState::Queued {
-                continue;
-            }
-            let Some(job) = self.next()? else { continue };
-            debug_assert_eq!(job.job_id, job_id, "next() must take the oldest queued job");
+            // By name, and re-read rather than trusted from the snapshot: `run`
+            // is arbitrary code and may have finished or failed this job itself,
+            // and asking for the *oldest* queued job here would keep handing
+            // back whichever one this pass has already requeued.
+            let Some(job) = self.take(&job_id)? else { continue };
             match run(&job) {
                 Ok((note, cost)) => {
                     let wrote = note.is_some();
@@ -970,6 +977,39 @@ mod tests {
         assert_eq!(job.last_error.as_deref(), Some("claude timed out"));
     }
 
+    /// The test above only queues one job, which is exactly the shape that hid
+    /// this: `drain` walked a snapshot of job ids but asked for the *oldest
+    /// queued* job on each turn, so a first job that failed was requeued and
+    /// handed straight back — spending every attempt in one pass and never
+    /// reaching the jobs behind it.
+    #[test]
+    fn a_failure_does_not_cost_the_jobs_behind_it_their_turn() {
+        let q = Queue::new(tmp("drain-order"));
+        let first = q.enqueue(&req("s-1")).unwrap();
+        let second = q.enqueue(&req("s-2")).unwrap();
+        let third = q.enqueue(&req("s-3")).unwrap();
+
+        let mut seen: Vec<String> = Vec::new();
+        let report = q
+            .drain(|job| {
+                seen.push(job.session_id.clone());
+                if job.session_id == "s-1" {
+                    Err("claude timed out".into())
+                } else {
+                    Ok((Some(format!("{}.md", job.session_id)), None))
+                }
+            })
+            .unwrap();
+
+        assert_eq!(seen, ["s-1", "s-2", "s-3"], "each queued job once, oldest first");
+        assert_eq!(report, DrainReport { wrote: 2, empty: 0, requeued: 1, failed: 0 });
+        let failed = one(&q, &first);
+        assert_eq!(failed.attempts, 1, "one attempt, not three");
+        assert_eq!(failed.state, JobState::Queued, "waiting for the next drain");
+        assert_eq!(one(&q, &second).state, JobState::Done);
+        assert_eq!(one(&q, &third).state, JobState::Done);
+    }
+
     #[test]
     fn a_job_that_keeps_failing_is_given_up_on_and_stays_visible() {
         let q = Queue::new(tmp("drain-cap"));
@@ -1007,7 +1047,7 @@ mod tests {
 
     // ----- durability -----
 
-    /// The guarantee. `next` without a matching `finish` is what a `SIGKILL`
+    /// The guarantee. `take` without a matching `finish` is what a `SIGKILL`
     /// mid-job leaves on disk, and nothing else can leave it.
     #[test]
     fn a_job_the_app_died_inside_is_queued_again_after_a_restart() {
@@ -1015,7 +1055,7 @@ mod tests {
         let id = {
             let q = Queue::new(dir.clone());
             let id = q.enqueue(&req("s-1")).unwrap();
-            let taken = q.next().unwrap().expect("a job to take");
+            let taken = q.take(&id).unwrap().expect("a job to take");
             assert_eq!(taken.state, JobState::Running);
             id
         };
@@ -1054,7 +1094,7 @@ mod tests {
 
         for _ in 0..MAX_ATTEMPTS {
             // Each iteration: the job is taken, and the app dies inside it.
-            assert!(q.next().unwrap().is_some());
+            assert!(q.take(&id).unwrap().is_some());
             q.recover().unwrap();
         }
 
@@ -1076,9 +1116,9 @@ mod tests {
     fn recovery_leaves_a_queue_with_nothing_running() {
         let dir = tmp("recover-clean");
         let q = Queue::new(dir);
-        q.enqueue(&req("s-1")).unwrap();
+        let first = q.enqueue(&req("s-1")).unwrap();
         q.enqueue(&req("s-2")).unwrap();
-        q.next().unwrap();
+        q.take(&first).unwrap();
         q.recover().unwrap();
         assert!(q.jobs().iter().all(|j| j.state != JobState::Running));
     }
@@ -1206,7 +1246,7 @@ mod tests {
         let q = Queue::new(tmp("retry-live"));
         let id = q.enqueue(&req("s-1")).unwrap();
         assert!(!q.retry(&id).unwrap(), "already queued");
-        q.next().unwrap();
+        q.take(&id).unwrap();
         assert!(!q.retry(&id).unwrap(), "and running is not to be reopened");
         assert!(!q.retry("never-existed").unwrap());
     }
@@ -1216,7 +1256,7 @@ mod tests {
         let dir = tmp("terminal");
         let q = Queue::new(dir);
         let id = q.enqueue(&req("s-1")).unwrap();
-        q.next().unwrap();
+        q.take(&id).unwrap();
         q.finish(&id, Some("/notes/a.md".into()), None).unwrap();
 
         // A stale writer trying to reopen it.
@@ -1270,7 +1310,7 @@ mod tests {
         let mut ids = Vec::new();
         for i in 0..KEEP_TERMINAL + 5 {
             let id = q.enqueue(&req(&format!("s-{i}"))).unwrap();
-            q.next().unwrap();
+            q.take(&id).unwrap();
             q.finish(&id, None, None).unwrap();
             ids.push(id);
         }

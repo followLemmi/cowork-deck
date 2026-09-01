@@ -45,13 +45,15 @@
 //! # A failure is never worse than what it replaces
 //!
 //! Everything here degrades to the one-shot spawn that came before it. A sidecar
-//! that will not start, a pipe that breaks, a reply that does not parse: the
-//! caller gets the old path and a slow answer rather than no answer.
+//! that will not start, a pipe that breaks, a reply that does not parse, a
+//! request that goes unanswered past [`REQUEST_DEADLINE`]: the caller gets the
+//! old path and a slow answer rather than no answer.
 
 use super::sidecar::{Hit, Scope, Sidecar};
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -89,7 +91,15 @@ struct Reply {
 struct Live {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// Lines off the child's stdout, read by a thread of their own.
+    ///
+    /// A thread rather than a `read_line` on this one, because a read on a pipe
+    /// cannot be given a deadline and [`REQUEST_DEADLINE`] has to be a real
+    /// bound: `ask` holds the global mutex for the whole round trip, so a
+    /// sidecar that takes a request and never answers would otherwise wedge the
+    /// reaper, every search, and every prompt hook behind it, with nothing short
+    /// of quitting the app to recover.
+    replies: Receiver<String>,
     /// When it last answered something. The reaper's whole input.
     used: Instant,
     next_id: u64,
@@ -102,14 +112,22 @@ impl Live {
     /// half-written request or a half-read reply leaves the stream out of step,
     /// and the next caller would read this one's answer. So the caller drops the
     /// process on any error and the request is retried on a one-shot.
-    fn ask(&mut self, req: &serde_json::Value) -> Result<Reply, String> {
+    ///
+    /// A request that outlives `deadline` is one of these failures too: the
+    /// process is wedged rather than working, and the caller is better served by
+    /// a slow one-shot than by a wait with no end.
+    fn ask(&mut self, req: &serde_json::Value, deadline: Duration) -> Result<Reply, String> {
         let line = format!("{req}\n");
         self.stdin.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
         self.stdin.flush().map_err(|e| e.to_string())?;
-        let mut answer = String::new();
-        if self.stdout.read_line(&mut answer).map_err(|e| e.to_string())? == 0 {
-            return Err("the memory sidecar closed its output".to_string());
-        }
+        let answer = self.replies.recv_timeout(deadline).map_err(|e| match e {
+            RecvTimeoutError::Timeout => {
+                format!("no answer in {}s", deadline.as_secs())
+            }
+            RecvTimeoutError::Disconnected => {
+                "the memory sidecar closed its output".to_string()
+            }
+        })?;
         self.used = Instant::now();
         serde_json::from_str(answer.trim()).map_err(|e| e.to_string())
     }
@@ -156,7 +174,7 @@ fn spawn(sidecar: &Sidecar) -> Result<Live, String> {
     if !sidecar.is_staged() {
         return Err("the memory sidecar is not installed".to_string());
     }
-    let mut child = Command::new(sidecar.program())
+    let child = Command::new(sidecar.program())
         .arg("--root")
         .arg(sidecar.root())
         .arg("serve")
@@ -167,15 +185,36 @@ fn spawn(sidecar: &Sidecar) -> Result<Live, String> {
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("the memory sidecar would not start: {e}"))?;
+    adopt(child)
+}
+
+/// Wrap a spawned child, putting a reader on its stdout.
+///
+/// Split out from [`spawn`] so a test can hand this any process at all —
+/// including one that never answers, which is the case [`REQUEST_DEADLINE`]
+/// exists for and the one a real sidecar cannot be asked to perform.
+fn adopt(mut child: Child) -> Result<Live, String> {
     let stdin = child.stdin.take().ok_or("no stdin on the memory sidecar")?;
     let stdout = child.stdout.take().ok_or("no stdout on the memory sidecar")?;
-    Ok(Live {
-        child,
-        stdin,
-        stdout: BufReader::new(stdout),
-        used: Instant::now(),
-        next_id: 1,
-    })
+    let (tx, replies) = mpsc::channel();
+    // Ends of its own accord: the read returns 0 when the child is killed — which
+    // is what dropping `Live` does — and the send fails once nobody is holding
+    // the other end.
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {
+                    if tx.send(line).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    Ok(Live { child, stdin, replies, used: Instant::now(), next_id: 1 })
 }
 
 /// Run one request against the resident process, starting it if needed.
@@ -198,7 +237,7 @@ fn ask(sidecar: &Sidecar, mut make: impl FnMut(u64) -> serde_json::Value) -> Opt
     let live = slot.as_mut()?;
     let id = live.next_id;
     live.next_id += 1;
-    match live.ask(&make(id)) {
+    match live.ask(&make(id), REQUEST_DEADLINE) {
         Ok(r) => Some(r),
         Err(e) => {
             eprintln!("memory: the resident sidecar failed ({e}); restarting it next time");
@@ -216,7 +255,6 @@ fn ask(sidecar: &Sidecar, mut make: impl FnMut(u64) -> serde_json::Value) -> Opt
 /// the 1.7 s overlaps with reading the list rather than landing on the first
 /// search — and called on a thread, because it is 1.7 s.
 pub fn warm(sidecar: &Sidecar) -> bool {
-    let _ = REQUEST_DEADLINE; // documented above; enforced by the sidecar's own exit
     ask(sidecar, |id| serde_json::json!({ "id": id, "op": "warm" }))
         .is_some_and(|r| r.ok)
 }
@@ -266,6 +304,34 @@ mod tests {
         assert!(!s.is_staged());
         assert_eq!(search(&s, "anything", &Scope::Everything, 5), None);
         assert!(!warm(&s));
+    }
+
+    /// The case the deadline is for: a process that takes the request and never
+    /// answers. Before it was enforced, `ask` blocked on the read forever while
+    /// holding the global mutex — so the reaper, every other search and every
+    /// prompt hook queued behind one wedged child until the app was quit.
+    #[test]
+    fn a_request_that_is_never_answered_gives_up_rather_than_waiting_forever() {
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sleep");
+        let mut live = adopt(child).expect("adopt the child");
+
+        let began = Instant::now();
+        let req = serde_json::json!({ "id": 1, "op": "warm" });
+        let answer = live.ask(&req, Duration::from_millis(250));
+        let waited = began.elapsed();
+
+        assert!(answer.is_err(), "a silent process is a failure, not a wait");
+        assert!(answer.unwrap_err().contains("no answer"));
+        assert!(waited < Duration::from_secs(5), "gave up after {waited:?}");
+        // Dropping it kills the child, which is what the caller does on any
+        // error from `ask`.
+        drop(live);
     }
 
     #[test]

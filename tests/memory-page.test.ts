@@ -757,6 +757,38 @@ describe("searching from the page", () => {
     expect(search.mock.calls.map((c) => c[0])).toEqual(["first", "third"]);
   });
 
+  /** Emptying the field paints the corpus back at once — but a query already
+   *  queued behind a running one kept its turn, so it ran anyway and painted
+   *  hits over a field that was empty. Cancelling is the other half of going
+   *  back to browsing. */
+  it("cancels what was queued when the field is cleared", async () => {
+    let release: ((v: unknown) => void) | null = null;
+    search.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    search.mockResolvedValue([hit()]);
+
+    const view = mount();
+    await view.refresh();
+    await flush();
+
+    await ask("first");
+    expect(search).toHaveBeenCalledTimes(1);
+    await ask("second"); // queued behind it
+    expect(search).toHaveBeenCalledTimes(1);
+
+    // The field is emptied while the first is still in flight.
+    await type("");
+    release!([hit()]);
+    await flush();
+    await flush();
+
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(search.mock.calls.map((c) => c[0])).toEqual(["first"]);
+    // And neither reply painted over the list the empty field asked for:
+    // results replace the headings with a flat list, so their presence is the
+    // proof that browsing is what is on screen.
+    expect(document.querySelectorAll(".mem-group")).toHaveLength(2);
+  });
+
   /** Reading the status spawns the sidecar. Asking before each search put a
    *  second process on the path of every query. */
   it("does not re-read the status for every query", async () => {

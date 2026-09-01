@@ -109,13 +109,42 @@ fn prompt_rooms() -> Vec<rooms::Room> {
 
 /// Whether a drain is already running.
 ///
-/// The queue's own `next` stops one job being taken twice, but two *drains*
+/// The queue's own `take` stops one job being taken twice, but two *drains*
 /// would each take a different job and spawn `claude` side by side. This is what
 /// keeps "one at a time" true across the two things that start a drain: the
 /// startup pass, and a close (#366).
 fn draining() -> &'static std::sync::atomic::AtomicBool {
     static DRAINING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     &DRAINING
+}
+
+/// One of the "already running" flags, held for as long as this lives.
+///
+/// A drop guard rather than a `store(false)` at the end of the worker's body,
+/// because that store is skipped when the body panics — and each of these flags
+/// is a static that outlives the thread. A single panic inside a drain, a
+/// reindex or a download would leave its flag stuck at `true` for the rest of the
+/// process: `spawn_drain` and the rest would answer `false` from then on, no
+/// note would ever be captured again, and nothing on screen would say why.
+///
+/// Moved into the worker rather than kept here, so it is the work that holds the
+/// flag and not the call that started it.
+struct Busy(&'static std::sync::atomic::AtomicBool);
+
+impl Busy {
+    /// Claim the flag, or `None` when somebody else is holding it.
+    fn claim(flag: &'static std::sync::atomic::AtomicBool) -> Option<Busy> {
+        use std::sync::atomic::Ordering;
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Busy(flag))
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Run whatever is on the queue, on a thread of its own.
@@ -125,16 +154,10 @@ fn draining() -> &'static std::sync::atomic::AtomicBool {
 /// of the delay it would cost a window to open. Returns whether a drain was
 /// started — `false` when one already is.
 pub fn spawn_drain() -> bool {
-    use std::sync::atomic::Ordering;
-    if draining()
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return false;
-    }
-    std::thread::spawn(|| {
+    let Some(busy) = Busy::claim(draining()) else { return false };
+    std::thread::spawn(move || {
+        let _busy = busy;
         drain_now();
-        draining().store(false, Ordering::SeqCst);
     });
     true
 }
@@ -420,7 +443,6 @@ pub fn memory_warm() -> bool {
 /// path, and this is the call that would break that promise if it were
 /// synchronous.
 pub fn spawn_reindex() -> bool {
-    use std::sync::atomic::Ordering;
     let Some(s) = indexer() else { return false };
     if !s.is_staged() {
         // Ordinary on a build that did not stage it, and not worth a warning on
@@ -431,12 +453,12 @@ pub fn spawn_reindex() -> bool {
     // would each embed the same notes, on the CPU, at the same time. The two
     // things that start one — a startup pass and a drain that wrote a note — can
     // easily coincide on a machine that was shut with work queued.
-    if reindexing().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return false;
-    }
+    let Some(busy) = Busy::claim(reindexing()) else { return false };
     std::thread::spawn(move || {
         let out = s.update();
-        reindexing().store(false, Ordering::SeqCst);
+        // Here rather than at the end of the body, so the flag is free again the
+        // moment the indexing is — what follows only reports what happened.
+        drop(busy);
         match out {
         Ok(ix) if ix.changed > 0 => {
             eprintln!(
@@ -862,7 +884,6 @@ fn emit_model(ev: ModelDownload) {
 /// a sentence at the moment somebody is looking.
 #[tauri::command]
 pub fn memory_download_model() -> bool {
-    use std::sync::atomic::Ordering;
     let Some(s) = indexer() else { return false };
     if !s.is_staged() {
         emit_model(ModelDownload {
@@ -874,9 +895,7 @@ pub fn memory_download_model() -> bool {
         });
         return false;
     }
-    if downloading().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return false;
-    }
+    let Some(busy) = Busy::claim(downloading()) else { return false };
 
     std::thread::spawn(move || {
         let mut last = ModelDownload {
@@ -911,7 +930,9 @@ pub fn memory_download_model() -> bool {
                 s.update().map(|_| ())
             }
         };
-        downloading().store(false, Ordering::SeqCst);
+        // As in `spawn_reindex`: free once the work is done, before the
+        // reporting that follows it.
+        drop(busy);
 
         match out {
             Ok(()) => {
@@ -969,6 +990,29 @@ pub fn memory_jobs() -> Vec<queue::WrapupJob> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reason [`Busy`] is a guard and not a `store(false)` at the end of a
+    /// thread body: a panic anywhere in the work skipped that store, and the
+    /// flag is a static — so one failed drain disabled capture for the rest of
+    /// the process, silently, with `spawn_drain` answering `false` forever after.
+    #[test]
+    fn a_panic_in_the_work_still_gives_the_flag_back() {
+        static FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let busy = Busy::claim(&FLAG).expect("nothing holds it yet");
+        assert!(Busy::claim(&FLAG).is_none(), "and a second claim is refused");
+
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let died = std::thread::spawn(move || {
+            let _busy = busy;
+            panic!("the work died");
+        })
+        .join();
+        std::panic::set_hook(previous);
+
+        assert!(died.is_err(), "the worker panicked");
+        assert!(Busy::claim(&FLAG).is_some(), "the unwind gave the flag back");
+    }
 
     fn corpus(name: &str) -> PathBuf {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

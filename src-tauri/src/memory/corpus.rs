@@ -834,7 +834,12 @@ fn locate(rel: &str) -> Option<(String, Option<String>, &'static str, String)> {
     }
     if parts.len() == 4 && parts[1] == SESSIONS {
         let month = parts[2];
-        let day = &parts[3][..parts[3].len().min(2)];
+        // By characters rather than bytes. The fourth arm of this function
+        // exists because a file in the corpus may be one somebody wrote
+        // themselves, and `&name[..2]` on a name that opens with a multi-byte
+        // character is a panic — taken here, in the middle of listing, it would
+        // be the whole memory page rather than one unreadable row.
+        let day: String = parts[3].chars().take(2).collect();
         let when = if is_month(month) && day.len() == 2 && day.chars().all(|c| c.is_ascii_digit()) {
             format!("{month}-{day}")
         } else {
@@ -1219,6 +1224,35 @@ mod tests {
         assert_eq!(notes[0].scope, "ws-1");
         // The stem, which is what `find_title` falls back to in the sidecar.
         assert_eq!(notes[0].title, "scratch");
+    }
+
+    /// A session note this module did not write, in a session directory: the
+    /// date is read off the first two characters of the filename, and reading
+    /// them as the first two *bytes* panicked on any name that opens with a
+    /// multi-byte character — taking the whole listing, not one row, with it.
+    #[test]
+    fn a_session_note_with_a_multi_byte_name_is_listed_rather_than_fatal() {
+        let root = tmp("listing-multibyte");
+        std::fs::create_dir_all(root.join("ws-1/Sessions/2026-08")).unwrap();
+        // Escaped rather than written out: CLAUDE.md keeps non-Latin literals to
+        // the two files that name them, and what matters here is the byte width
+        // of the first character, which the escapes state exactly.
+        let names = [
+            "\u{65e5}\u{8a18}.md",                     // three bytes to the first char
+            "\u{e9}t\u{e9}.md",                         // two
+            "\u{440}\u{430}\u{437}\u{431}\u{43e}\u{440}.md", // two, and six of them
+        ];
+        for name in names {
+            std::fs::write(root.join("ws-1/Sessions/2026-08").join(name), "# A note\n").unwrap();
+        }
+
+        let notes = Corpus::new(root).notes();
+        assert_eq!(notes.len(), 3);
+        for n in &notes {
+            assert_eq!(n.kind, "session");
+            assert_eq!(n.scope, "ws-1");
+            assert_eq!(n.when, "", "no date to read off a name that does not carry one");
+        }
     }
 
     /// Newest first, by mtime, because it is the only key the three shapes share.

@@ -304,8 +304,10 @@ describe("writing a note by hand", () => {
   beforeEach(() => {
     readNote.mockReset();
     writeNote.mockReset();
+    confirm.mockReset();
     readNote.mockResolvedValue({ path: "/corpus/a.md", markdown: MARKDOWN });
     writeNote.mockResolvedValue("ws-1/Sessions/2026-08/31-a-note.md");
+    confirm.mockResolvedValue(true);
   });
 
   it("takes three fields and opens what it wrote", async () => {
@@ -325,6 +327,54 @@ describe("writing a note by hand", () => {
     );
     expect(wrote).toEqual(["ws-1/Sessions/2026-08/31-a-note.md"]);
     expect(readNote).toHaveBeenCalledWith("ws-1/Sessions/2026-08/31-a-note.md");
+  });
+
+  /** The guarantee an edit already had and a new note did not: `isEditing` was
+   *  the editor's presence alone, so a half-written note was not "being edited"
+   *  by anything that asked — and the page switch and the window's Escape both
+   *  ask before they take the deck back. */
+  it("counts as editing, so nothing takes the deck back from under it", () => {
+    const { reader } = mount();
+    expect(reader.isEditing()).toBe(false);
+    reader.compose({ workspaceId: "ws-1", workspaceName: "deck" });
+    expect(reader.isEditing()).toBe(true);
+    (fk("note-compose-tldr") as HTMLTextAreaElement).value = "half a thought";
+    expect(reader.isEditing()).toBe(true);
+  });
+
+  /** `showLanding` runs on every entry to the memory page, and it replaces the
+   *  body — so a draft was thrown away by walking back onto the page it was
+   *  being written on. */
+  it("survives coming back to the memory page", () => {
+    const { reader } = mount();
+    reader.compose({ workspaceId: "ws-1", workspaceName: "deck" });
+    (fk("note-compose-title") as HTMLInputElement).value = "reading the corpus";
+    reader.showLanding({ corpus: "12 notes.", readiness: null });
+    expect((fk("note-compose-title") as HTMLInputElement).value).toBe("reading the corpus");
+    expect(fk("note-reader-landing")).toBeNull();
+  });
+
+  it("asks before its own control throws a draft away, and not when there is none", async () => {
+    const { reader } = mount();
+    reader.compose({ workspaceId: "ws-1", workspaceName: "deck" });
+    fk("note-reader-close")!.click();
+    await flush();
+    expect(confirm).not.toHaveBeenCalled();
+    expect(reader.isOpen()).toBe(false);
+
+    reader.compose({ workspaceId: "ws-1", workspaceName: "deck" });
+    (fk("note-compose-tldr") as HTMLTextAreaElement).value = "worth keeping";
+    confirm.mockResolvedValue(false);
+    fk("note-reader-close")!.click();
+    await flush();
+    expect(confirm).toHaveBeenCalled();
+    expect(reader.isOpen()).toBe(true);
+
+    confirm.mockResolvedValue(true);
+    fk("note-reader-close")!.click();
+    await flush();
+    expect(reader.isOpen()).toBe(false);
+    expect(reader.isEditing()).toBe(false);
   });
 
   it("writes nothing without a title and a TL;DR", async () => {
