@@ -3800,6 +3800,15 @@ h6.md-head { font-size: var(--fs-sm); }
 .term-grip {
   flex: 0 0 auto; height: 4px; cursor: ns-resize; background: transparent;
   margin-top: -4px; padding-top: 4px; box-sizing: content-box;
+  /* Positioned for the four pixels above the drawer, and it is those four pixels
+     that need it. `#deck` is `position: relative`, so it paints — and therefore
+     hit-tests — in a later step than a sibling that is not positioned, whatever
+     the tree order says; the overhang lay under `#deck`'s own opaque `--bg-void`.
+     Three of the eight pixels the comment above promises took no `pointerdown` at
+     all, and the focus ring below was cut off along its top. `position: relative`
+     puts the grip in the same step, where tree order decides and the grip comes
+     later. No `z-index`: there is nothing in that step to rank it against. */
+  position: relative;
   /* The hit area is the element and the drawing is the bar inside it, which is
      `.pr-drawer-grip`'s shape turned on its side. It became necessary with the
      corners: the fill used to be on the element itself, and a full-width band
@@ -3818,8 +3827,11 @@ h6.md-head { font-size: var(--fs-sm); }
 }
 .term-grip:hover::before { background: var(--accent); }
 .term-grip:focus-visible { outline: none; }
-/* The ring goes on the bar for the reason `.pr-drawer-grip` gives: around the
-   element it is a full-width lozenge that the tab bar below paints over. */
+/* The ring goes on the bar for the shape, which is not the reason
+   `.pr-drawer-grip` gives for its own: nothing paints over this one — `.term-bar`
+   below sets no fill at all — but around the element the ring is a full-width
+   lozenge, and a full-width anything across this edge hangs its square ends past
+   both corners. The same argument as the fill above, and the same answer. */
 .term-grip:focus-visible::before { background: var(--accent); box-shadow: var(--focus-ring); }
 
 /* The bar's whole drawing is a fill, and forced colours replace a fill with the

@@ -270,7 +270,16 @@ export class TerminalDrawer {
    *
    *  `offsetHeight - clientHeight` is that border, and it is read from the
    *  element rather than from the stylesheet for the same reason as the two
-   *  above. Zero while the drawer is hidden, along with the rest of this sum. */
+   *  above. Zero while the drawer is hidden, along with the rest of this sum.
+   *
+   *  Over by four pixels on the grip, and named here rather than corrected:
+   *  `.term-grip` is an 8px box hung on `margin-top: -4px`, so `offsetHeight`
+   *  reports the eight while the column only spends four of them. Left alone
+   *  deliberately — `.term-body`'s own 8px of padding is not in this sum either,
+   *  the two errors point opposite ways, and what the pair is worth is the row
+   *  count xterm reports, which is a browser measurement. Correcting one half of
+   *  a balance inside a function that reads 0 in jsdom is a change no test here
+   *  can catch. */
   private barPx(): number {
     const bar = this.el.querySelector<HTMLElement>(".term-bar");
     const grip = this.el.querySelector<HTMLElement>(".term-grip");
