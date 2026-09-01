@@ -207,6 +207,7 @@ export const snapshots: Record<string, SessionSnapshot> = {
     },
     title: "Refund webhook retries", titleSource: "ai",
     calls: 148,
+    resumeId: null,
   },
   [S_WAIT]: {
     tokens: {
@@ -215,6 +216,7 @@ export const snapshots: Record<string, SessionSnapshot> = {
     },
     title: null, titleSource: null,
     calls: 0,
+    resumeId: null,
   },
   [S_DONE]: {
     tokens: {
@@ -223,6 +225,7 @@ export const snapshots: Record<string, SessionSnapshot> = {
     },
     title: "Dependency sweep", titleSource: "custom",
     calls: 334,
+    resumeId: null,
   },
   [S_ERR]: {
     tokens: {
@@ -231,6 +234,7 @@ export const snapshots: Record<string, SessionSnapshot> = {
     },
     title: null, titleSource: null,
     calls: 3,
+    resumeId: null,
   },
   [S_AUTO]: {
     tokens: {
@@ -239,6 +243,10 @@ export const snapshots: Record<string, SessionSnapshot> = {
     },
     title: "Trace the retry budget through the gateway", titleSource: "prompt",
     calls: 27,
+    // The one session here that has been `/clear`ed: the deck knows it by the id
+    // it launched it with and resumes this one instead (#199). `null` on every
+    // other, which is a session still in its launch conversation.
+    resumeId: "9f2c8f4e-1d7a-4a55-b0c9-2b6f1e0a7c31",
   },
 };
 

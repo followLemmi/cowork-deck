@@ -69,6 +69,17 @@ export interface SessionEntry {
    *  a CLI an older build has never heard of must still restore its tile rather
    *  than fail the whole parse. */
   cliKind?: CliKind;
+  /** Which conversation this tile resumes, when it is no longer the one it was
+   *  launched with. **Absent until a `/clear` happens**, which is what every
+   *  entry written before this field existed says.
+   *
+   *  `sessionId` above stays the launch id — the pty key, the `COWORK_SESSION`
+   *  in the session's argv, and the key every hook event is attributed by. What
+   *  a clear changes is the conversation: Claude Code mints a new id, and
+   *  `claude --resume <launch-id>` then quietly restores the conversation the
+   *  person cleared away (#199). Written by the poll tick, which is where the
+   *  backend reports it. */
+  resumeId?: string;
 }
 export type NameKind = "context" | "placeholder";
 export interface UiState {
@@ -1062,6 +1073,14 @@ export interface SessionSnapshot {
    *  is the reading being unavailable and `0` is a session that has made no
    *  calls; the panel says two different sentences for those. */
   calls: number | null;
+  /** The conversation this session is in now, when it is no longer the one the
+   *  deck launched it with — i.e. after a `/clear`. `null` means it still is.
+   *
+   *  The deck persists this into the session's layout entry: it is the only copy
+   *  that survives a restart, and so the only thing auto-restore has to resume
+   *  by. Without it a restart brings back the conversation the person cleared
+   *  away and orphans the one they were working in (#199). */
+  resumeId: string | null;
 }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
 

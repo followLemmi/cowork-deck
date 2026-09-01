@@ -224,7 +224,8 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
       // a mock that dropped the unknown ones would hide the bug it exists to show.
       const out: Record<string, unknown> = {};
       for (const id of args.sessionIds as string[]) {
-        out[id] = F.snapshots[id] ?? { tokens: null, title: null, titleSource: null, calls: null };
+        out[id] = F.snapshots[id]
+          ?? { tokens: null, title: null, titleSource: null, calls: null, resumeId: null };
       }
       return out;
     }

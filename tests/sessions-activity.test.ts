@@ -65,7 +65,9 @@ function roll(calls: number): ActivityRoll {
 }
 
 function snap(calls: number | null): SessionSnapshot {
-  return { tokens: null, title: null, titleSource: null, calls };
+  // `resumeId: null` — this session is still in the conversation it was
+  // launched with, which is what every session here is about.
+  return { tokens: null, title: null, titleSource: null, calls, resumeId: null };
 }
 
 beforeEach(() => {
