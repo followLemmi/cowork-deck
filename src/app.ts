@@ -842,11 +842,18 @@ export function startApp(role: WindowRole): Promise<void> {
   let boardVisible = false;
   let boardTimer: ReturnType<typeof setTimeout> | null = null;
   let currentPage: PanelPage = "sessions";
-  /** Whether the panel took the deck's width, and whether taking it is what
-   *  zoomed the deck. Both halves matter: leaving the page has to give back
+  /** The workspace the panel took the deck's width in, or `undefined` when it
+   *  has taken nothing. Both halves matter: leaving the page has to give back
    *  exactly what was taken, and a tile a person zoomed themselves must not be
-   *  un-zoomed by a panel narrowing under them. */
-  let wideZoomed = false;
+   *  un-zoomed by a panel narrowing under them.
+   *
+   *  The workspace and not merely a flag, because a zoom belongs to the
+   *  workspace it was made in (#224) and this borrowing outlives a switch: the
+   *  panel stays wide across one, while the diff that asked for the width does
+   *  not. `undefined` rather than `null` for "nothing taken" — `null` is a
+   *  workspace key like any other, the one a window with no workspace selected
+   *  zooms under. */
+  let wideZoomedIn: string | null | undefined = undefined;
 
   function stopBoardPolling() {
     if (boardTimer !== null) { clearTimeout(boardTimer); boardTimer = null; }
@@ -897,10 +904,13 @@ export function startApp(role: WindowRole): Promise<void> {
   function setWspWide(on: boolean) {
     wspEl.classList.toggle("is-wide", on);
     if (on) {
-      if (!deck.isZoomed()) wideZoomed = deck.zoomActive();
-    } else if (wideZoomed) {
-      deck.exitZoom();
-      wideZoomed = false;
+      if (!deck.isZoomed() && deck.zoomActive()) wideZoomedIn = workspaces.active?.id ?? null;
+    } else if (wideZoomedIn !== undefined) {
+      // Given back where it was taken. The workspace on screen may not be the
+      // one that lent it, and un-zooming that one instead would take a zoom the
+      // person made themselves and leave the borrowed one on for good.
+      deck.exitZoomIn(wideZoomedIn);
+      wideZoomedIn = undefined;
     }
     deck.refit();
   }
@@ -1186,11 +1196,14 @@ export function startApp(role: WindowRole): Promise<void> {
       // The backend emits one `schedule://fire`. Every window listening would
       // launch the scenario and acknowledge it, so a nightly job would run as
       // many times as there are windows open.
-      ...(isMain ? [() => onScheduledFire((skillId, occurrenceMs, catchUp) => {
+      ...(isMain ? [() => onScheduledFire(({ skillId, workspaceId: where, occurrenceMs, catchUp }) => {
         const missedAt = catchUp
           ? new Date(occurrenceMs).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
           : undefined;
-        void handleScheduledFire(skillId, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
+        // Where it runs comes down with the fire: the backend resolved the pin
+        // against `workspaces.json`, so this window's own selection has no say
+        // in which repository an unattended session works in (#249).
+        void handleScheduledFire(skillId, where, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
           if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
           // Tell the backend what came of it: an occurrence it emitted counts as
           // a run only once a session has actually started. Anything else also
@@ -2026,6 +2039,10 @@ export function startApp(role: WindowRole): Promise<void> {
    *  scheduled run cannot ask) and launch it as a fresh tile. */
   async function handleScheduledFire(
     skillId: string,
+    /** The workspace the run belongs in. Never the active one: for a scheduled
+     *  fire this is what the backend resolved, and for the ⏰ button it is the
+     *  scenario's own pin. */
+    workspaceId: string | null,
     /** Which path the fire came down. Both are journalled — the question a
      *  history answers is "when did this scenario last run", not "who pressed
      *  it" — and both are told apart, so the screen can filter one out. */
@@ -2034,7 +2051,7 @@ export function startApp(role: WindowRole): Promise<void> {
   ): Promise<FireResult> {
     const skill = skills.find(skillId);
     if (!skill?.schedule?.enabled) return { outcome: "not-scheduled", workspaceId: null };
-    const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
+    const res = resolveScheduledWorkspace(workspaceId, workspaces.all);
     if (!res.ok) return { outcome: res.reason, workspaceId: null };
     const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
     const launched = await deck.launchScheduled(res.workspace, skill, filled, trigger, catchUpFor);
@@ -2051,11 +2068,13 @@ export function startApp(role: WindowRole): Promise<void> {
    *  loop, so the regular occurrence still fires. Unlike a backend-driven fire,
    *  a click must say why nothing happened. */
   async function runScheduledNow(skill: Skill) {
-    const { outcome } = await handleScheduledFire(skill.id, "runNow");
+    const { outcome } = await handleScheduledFire(skill.id, skill.workspaceId ?? null, "runNow");
     if (outcome === "skipped-overlap") {
       await alertModal("Run skipped: the previous one is still active.");
     } else if (outcome === "no-workspace") {
-      await alertModal("This scenario has no workspace available: pin it to one or pick a workspace.");
+      await alertModal(
+        "This scenario is not pinned to a workspace that exists, so there is nowhere to run it. "
+        + "Edit it with the workspace it belongs to open.");
     }
   }
 
@@ -2115,9 +2134,11 @@ export function startApp(role: WindowRole): Promise<void> {
   }
 
   /* --- What every connected AI has left -----------------------------------
-     The block lives in the panel of every window, including one pinned to a
+     One line at the foot of the panel of every window, including one pinned to a
      workspace: a shared ceiling above twelve sessions is not a property of a
      repository, and a person in a detached window needs it as much as anybody.
+     What that line holds, and why it is a line rather than a row per AI, is
+     `usage-block.ts` and ADR-0011; nothing here changed when it shrank.
 
      Read on a timer of its own and NOT on the five-second poll tick. The
      registry behind it holds a TTL cache, so this interval is how often the
@@ -2385,7 +2406,8 @@ export function startApp(role: WindowRole): Promise<void> {
     (skill) => { void launchScenario(skill); },
     (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
      () => workspaces.active?.name ?? null,
-     (skill) => openHistoryFor(skill));
+     (skill) => openHistoryFor(skill),
+     (id) => workspaces.all.find((w) => w.id === id)?.name ?? null);
   // Deleting a workspace strands the scenarios pinned to it — the confirmation
   // says how many before it happens.
   workspaces.setSkillsSource(() => skills.all);
@@ -2651,7 +2673,7 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "close-active", title: "Close active session", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
       { id: "rename-active", title: "Rename active session", hotkey: "F2", run: () => deck.renameActive() },
       { id: "next-waiting", title: "Go to next session waiting for input", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
-      { id: "zoom", title: "Zoom active session", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
+      { id: "zoom", title: "Zoom active session, or leave zoom", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
       { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
       { id: "clear", title: "Clear terminal", run: () => deck.clearActive() },
       { id: "toggle-terminals", title: "Terminals: show or hide the drawer", hotkey: hotkeyLabel("J"), run: () => { void terminals.toggle(); } },
@@ -2661,7 +2683,12 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "expand-terminals", title: "Terminals: fill the window, or restore", hotkey: isMacPlatform() ? "Cmd+Shift+E" : "Ctrl+Shift+E", run: () => { void terminals.toggleFull(); } },
       { id: "new-terminal", title: "New terminal", run: () => { void terminals.newTerminal(); } },
       { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
+      /* Both directions, because the palette is where a binding is discoverable
+         and one that is not listed may as well not exist. The key is in the title
+         as well as the `hotkey` column: the filter matches titles only, so this is
+         what makes typing "f6" find them. */
       { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
+      { id: "prev-region", title: "Go to previous region (Shift+F6)", hotkey: "Shift+F6", run: () => cycleRegion(-1) },
       /* One entry per page the rail can select, and the wording says what they are
          now: pages of one panel rather than screens that replace the deck. The rail
          has no digits of its own — ⌘1…⌘5 are "focus session N" in this app — so this
@@ -2957,6 +2984,32 @@ export function startApp(role: WindowRole): Promise<void> {
     return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
   }
 
+  /** Whether the keystroke came from a terminal — the pty's keyboard, not the
+   *  app's.
+   *
+   *  `isTextEntry` answers false for the terminal's hidden textarea on purpose,
+   *  because `Cmd+N` and `Cmd+W` have to keep working with the caret in one. That
+   *  is right for the hotkey table and wrong for `Escape`, which no table claims:
+   *  `Escape` belongs to whatever has the keyboard, and in a terminal that is the
+   *  program — `vim`, `less`, `htop`, `fzf`, claude's own "esc to interrupt" (#269).
+   *
+   *  Second line rather than first. xterm consumes `Escape` while its own textarea
+   *  has focus: it writes the byte to the pty and then calls `preventDefault` *and*
+   *  `stopPropagation`, so the event never reaches this listener at all — the same
+   *  fact `diff-drawer.ts` binds its own `Escape` on `.pr-view` for. The first line
+   *  is therefore that focus is really in the terminal, which is what
+   *  `Deck.applyLayout` now keeps true across a zoom.
+   *
+   *  This guard is what makes the rule the app's own rather than a dependency's. It
+   *  holds for anything focusable inside `.xterm` that is not that textarea, and
+   *  for the next person to move this listener somewhere it fires ahead of xterm —
+   *  which is precisely the mistake `diff-drawer.ts` documents not making. */
+  function isTerminalCaret(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    if (!el || !(el instanceof HTMLElement)) return false;
+    return el.classList.contains("xterm-helper-textarea") || el.closest(".xterm") !== null;
+  }
+
   window.addEventListener("keydown", (e) => {
     if (document.querySelector(".modal-overlay")) return; // do not intercept while a modal, the palette or a form is open
     // Without this, Cmd+N spawned a session and Cmd+W closed the tile while the
@@ -2973,7 +3026,12 @@ export function startApp(role: WindowRole): Promise<void> {
       if (!noteReader.isEditing()) noteReader.close();
       return;
     }
-    if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
+    /* Unzooming is what `Escape` means when focus is anywhere but a terminal. With
+       focus in one the deck stays exactly as it is and the byte is the program's,
+       so the keyboard way out of a zoom is the zoom key itself — `Cmd+Enter` /
+       `Ctrl+Shift+Enter`, which `matchHotkey` claims above the pty and which is in
+       the palette by name — or `F6` out of the terminal region first. */
+    if (e.key === "Escape" && !isTerminalCaret(e.target) && deck.exitZoom()) { e.preventDefault(); return; }
     const id = matchHotkey(e, isMacPlatform());
     if (!id) return;
     if (id.startsWith("focus-")) {

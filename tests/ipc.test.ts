@@ -118,15 +118,34 @@ describe("ipc", () => {
 
   // The occurrence has to survive the round trip: the backend records only
   // that it attempted a fire, and matches the ack against that exact
-  // occurrence before it will record a run.
-  it("onScheduledFire hands the occurrence to the callback", async () => {
+  // occurrence before it will record a run. So does the workspace the backend
+  // resolved the fire to — the frontend no longer has a say in it (#249).
+  it("onScheduledFire hands the occurrence and its workspace to the callback", async () => {
     const cb = vi.fn();
     await onScheduledFire(cb);
 
     const handler = vi.mocked(listen).mock.calls[0][1] as (e: unknown) => void;
-    handler({ payload: { skillId: "s1", occurrenceMs: 1_700_000_000_000, catchUp: true } });
+    handler({ payload: {
+      skillId: "s1", workspaceId: "w1", occurrenceMs: 1_700_000_000_000, catchUp: true,
+    } });
 
-    expect(cb).toHaveBeenCalledWith("s1", 1_700_000_000_000, true);
+    expect(cb).toHaveBeenCalledWith({
+      skillId: "s1", workspaceId: "w1", occurrenceMs: 1_700_000_000_000, catchUp: true,
+    });
+  });
+
+  // A pin naming a workspace that no longer exists still fires, so the refusal
+  // is journalled rather than the schedule going quiet.
+  it("onScheduledFire reports an unresolved workspace as null", async () => {
+    const cb = vi.fn();
+    await onScheduledFire(cb);
+
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: unknown) => void;
+    handler({ payload: { skillId: "s1", occurrenceMs: 1_700_000_000_000 } });
+
+    expect(cb).toHaveBeenCalledWith({
+      skillId: "s1", workspaceId: null, occurrenceMs: 1_700_000_000_000, catchUp: false,
+    });
   });
 
   it("scheduleAck reports the outcome for that occurrence", async () => {

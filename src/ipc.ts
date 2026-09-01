@@ -915,11 +915,28 @@ export const quitCancelled = () => invoke<void>("quit_cancelled");
 /** Released once, after the fire listener below is attached, so the backend
  *  scheduler's first (catch-up) tick has somewhere to land. */
 export const schedulerReady = () => invoke<void>("scheduler_ready");
+/** One occurrence coming due, as the backend resolved it.
+ *
+ *  `workspaceId` is where the run belongs, decided by the scheduler against
+ *  `workspaces.json` rather than by whichever workspace this window happens to
+ *  have selected (#249). `null` means the scenario's pin names no workspace that
+ *  exists: the fire is still delivered, so the refusal is journalled instead of
+ *  the schedule going quiet. */
+export interface ScheduledFire {
+  skillId: string;
+  workspaceId: string | null;
+  occurrenceMs: number;
+  catchUp: boolean;
+}
 export const onScheduledFire = (
-  cb: (skillId: string, occurrenceMs: number, catchUp: boolean) => void,
+  cb: (fire: ScheduledFire) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ skillId: string; occurrenceMs: number; catchUp: boolean }>("schedule://fire", (e) =>
-    cb(e.payload.skillId, e.payload.occurrenceMs, e.payload.catchUp ?? false));
+  listen<ScheduledFire>("schedule://fire", (e) => cb({
+    skillId: e.payload.skillId,
+    workspaceId: e.payload.workspaceId ?? null,
+    occurrenceMs: e.payload.occurrenceMs,
+    catchUp: e.payload.catchUp ?? false,
+  }));
 
 /** Report what a fire produced. The backend records only that it attempted a
  *  run; `lastRun` advances only when this says a session actually started.

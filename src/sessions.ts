@@ -236,7 +236,40 @@ export class Deck {
   private usage = new Map<string, SessionTokens>();
   private activeWorkspaceId: string | null = null;
   private collapsed = new Set<string>();
-  private zoomedSession: string | null = null;
+  /** Which session is zoomed, keyed by the workspace it is zoomed *in*.
+   *
+   *  A zoom is a fact about one workspace's layout, not about the deck: leaving
+   *  a workspace used to drop it, so coming back gave you a grid and no hint
+   *  that anything had been zoomed there. Keyed by workspace, the switch reads
+   *  the entry instead of resetting it.
+   *
+   *  `null` is a key like any other, and it is two things at once — the window
+   *  that adopts orphans before any workspace is active, and, in that window,
+   *  the workspaces panel's "no workspace selected". Both are the same view, so
+   *  they are the same entry.
+   *
+   *  Read and written through `zoomedSession` below, never directly, except by
+   *  `forgetZoom` — which is the one operation that is about the whole map. */
+  private zoomedByWorkspace = new Map<string | null, string>();
+  /** The zoom of the workspace on screen — the only zoom any caller means.
+   *
+   *  An accessor rather than a field because every site that had the field
+   *  wanted exactly this: `applyLayout` renders the active workspace, `zoomTo`
+   *  and `toggleZoom` act on the tiles it is showing, and a tile made visible
+   *  by an orphan's adoption is zoomed *here*, under this window's key. Writing
+   *  the map by hand at ten call sites would be ten chances to key an entry to
+   *  the workspace being left.
+   *
+   *  Setting `null` forgets this workspace's entry rather than remembering a
+   *  null: absent and "not zoomed" are the same state, and the map should not
+   *  grow an entry per workspace ever visited. */
+  private get zoomedSession(): string | null {
+    return this.zoomedByWorkspace.get(this.activeWorkspaceId) ?? null;
+  }
+  private set zoomedSession(session: string | null) {
+    if (session === null) this.zoomedByWorkspace.delete(this.activeWorkspaceId);
+    else this.zoomedByWorkspace.set(this.activeWorkspaceId, session);
+  }
   private strip: HTMLElement | null = null;
   private emptyEl: HTMLElement | null = null;
   private emptyActions: {
@@ -762,7 +795,10 @@ export class Deck {
   }
 
   setActiveWorkspace(id: string | null) {
-    this.zoomedSession = null;
+    // The zoom is NOT cleared here. It belongs to the workspace being left, and
+    // it is what makes coming back come back to the same layout; the workspace
+    // being entered brings its own, which `applyLayout` below reads. See
+    // `zoomedByWorkspace`.
     this.activeWorkspaceId = id;
     // Resolve this workspace's account binding now, while nobody is waiting for
     // it. Entering a workspace is the last moment before a launch that is not
@@ -787,7 +823,14 @@ export class Deck {
     this.applyLayout();
     const active = this.activeSession;
     const activeHidden = !active || !!this.tiles.get(active)?.el.classList.contains("ws-hidden");
-    if (activeHidden && firstVisible) this.focusTile(firstVisible); // focusTile calls renderList
+    // The restored zoom takes precedence over the first tile in the grid: it is
+    // the tile this workspace was left looking at, and `focusTile` juggles the
+    // zoom onto whatever it focuses — so focusing anything else here would
+    // restore the layout and then immediately move it. `applyLayout` has already
+    // dropped an entry it could not honour, so this is null unless a zoom is on
+    // screen.
+    const target = this.zoomedSession ?? firstVisible;
+    if (activeHidden && target) this.focusTile(target); // focusTile calls renderList
     else this.renderList();
   }
 
@@ -989,6 +1032,15 @@ export class Deck {
     // A panel taking over a live session is born without resize authority: it
     // must not tell the PTY its geometry before it owns the session.
     const panel = new TerminalPanel(session, mount, isCommand, opts.attach !== undefined);
+    // The one state change no hook reports. See `interruptedTurn`.
+    //
+    // Not on a command tile. It runs one command rather than an agent, so it has
+    // no turn to end and prints no hint of its own — the string can only reach
+    // its screen as ordinary output, and `git log` on this branch prints it
+    // literally. Its real ending is its exit, which `onExit` already reports.
+    // A drawer's shell terminal is left out the same way: by never being given
+    // an `onInterrupt`.
+    if (!isCommand) panel.onInterrupt = (s) => this.interruptedTurn(s);
     const names: TileNames = {
       // The placeholder slot always holds the launch string. On a context-named
       // tile it is the same string as `context`, which the resolver never reaches
@@ -1016,6 +1068,10 @@ export class Deck {
     // zoom has to be dropped, so this cannot wait for it — the panel would sit under the
     // new terminal until something else moved the layout.
     this.renderEmpty();
+    // A tile that takes the keyboard takes the stage with it, so the zoom it
+    // displaces is forgotten rather than merely un-rendered — and the entry
+    // dropped is this workspace's, which is the only one a grabbing launch can
+    // land in (see `newSessionIn`: a launch activates its workspace first).
     if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
@@ -1490,7 +1546,41 @@ export class Deck {
     this.renderList();
   }
 
-  private setState(session: string, state: SessionState) {
+  /** A turn this session's terminal ended under an interrupt, which is a turn
+   *  Claude Code's `Stop` hook does not report (#333).
+   *
+   *  Treated exactly as `Stop` would have been — `done`, the state that says the
+   *  agent finished and the prompt is free — and by the same door, so the
+   *  scheduler's overlap guard, the card's status and the pill all read one
+   *  answer. `setState` is enough to carry it to the other windows too: the
+   *  owning window is the source of truth for its own tiles, and `renderList`
+   *  emits `session://waiting` from here.
+   *
+   *  Only from busy. A `done`, `idle` or `ended` tile has nothing to correct,
+   *  and `ended` in particular must never be walked back — the panel's own
+   *  evidence is a screen that has stopped being repainted, which cannot outrank
+   *  a process that is gone. `waitingInput` is included because it is a state a
+   *  running turn can be sitting in: `PermissionRequest` reports it, and nothing
+   *  reports the approval that put the agent back to work.
+   *
+   *  Reported without a notification, which is the one thing here that is NOT
+   *  what `Stop` gets. Every other `done` notification exists because the person
+   *  may not be looking; this one follows a key they just pressed themselves, at
+   *  the tile they were pressing it in, so it is noise every single time. The
+   *  notification is a side effect of the door rather than part of the state
+   *  going through it, and the state is what has to be identical.
+   */
+  private interruptedTurn(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    if (tile.state !== "working" && tile.state !== "waitingInput") return;
+    this.setState(session, "done", { notify: false });
+  }
+
+  /** @param opts.notify Whether a state worth a notification raises one. True
+   *   everywhere but the interrupt path — a reported event may be the first the
+   *   person hears of it, a keystroke of their own never is. */
+  private setState(session: string, state: SessionState, opts: { notify?: boolean } = {}) {
     const tile = this.tiles.get(session);
     if (!tile) return;
     const prev = tile.state;
@@ -1504,7 +1594,7 @@ export class Deck {
     const restartable = tile.kind !== "command" && (state === "ended" || state === "error");
     tile.restartBtn.style.display = restartable ? "inline" : "none";
     this.renderList();
-    if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
+    if (opts.notify !== false && state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       const id = this.notify.register(session);
       sendNotification({
         id, title: `cowork-deck · ${LABEL[state]}`, body: resolveTileName(tile.names),
@@ -1530,7 +1620,42 @@ export class Deck {
     return { kind: "Started by hand", detail: null, prompt: tile.prompt };
   }
 
+  /** Lay the deck out, and give the keyboard back to whatever was holding it.
+   *
+   *  `appendChild` on a node already in the document is a *move* — remove, then
+   *  insert — and removing a node unfocuses anything inside it. Every re-parent
+   *  below is therefore a blur: the terminal somebody was typing into loses focus
+   *  and `<body>` gets it, with nothing on screen saying so.
+   *
+   *  Zoom is where that was felt. The tile filled the deck, the caret still looked
+   *  like it was in it, and the next keystroke went to the window handler instead
+   *  of to the pty — which is how `Escape` came to unzoom the deck rather than
+   *  reach `vim`, `less`, `htop` or claude's own "esc to interrupt" (#269). Not
+   *  only zoom: a *background* launch — a scheduled run, or tiles handed over from
+   *  another window — re-parents every tile too, and there this is the only thing
+   *  that puts the keyboard back, because that path reaches here through
+   *  `applyWorkspaceVisibility` and never calls `focusTile`. An interactive launch
+   *  is the other way round by design: it ends in `focusTile`, which claims the
+   *  keyboard for the new tile, and this restore is overwritten a moment later.
+   *
+   *  Restored only when this is what dropped it — focus back on `<body>`, and the
+   *  element still in the document, so a layout that removed the tile (a close)
+   *  leaves focus alone. A layout that merely hid it (a workspace switch) is left
+   *  to the platform rather than checked for here: `.ws-hidden` is `display: none`,
+   *  and `focus()` on an element inside one does nothing. Callers that move focus
+   *  themselves run after this and still win. */
   private applyLayout() {
+    const had = document.activeElement as HTMLElement | null;
+    const keep = had && had !== document.body && this.deckEl.contains(had) ? had : null;
+    this.layOutTiles();
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (keep && keep.isConnected && lost) keep.focus();
+  }
+
+  /** The layout itself: which tile is zoomed, which are in the strip, and what
+   *  each one hangs from. Called only by `applyLayout`, which says why the two are
+   *  separate. */
+  private layOutTiles() {
     const parts = zoomParticipants(
       [...this.tiles.values()].map((t) => ({
         session: t.session, hidden: t.el.classList.contains("ws-hidden"),
@@ -1546,11 +1671,12 @@ export class Deck {
         this.deckEl.appendChild(t.el);
       }
       if (this.strip) { this.strip.remove(); this.strip = null; }
-      this.onZoom?.(false);
-      // Last, so the panel is appended after the tiles it replaces have been moved —
-      // and here rather than in each caller, because this is the one function every
-      // path that changes what the deck holds already goes through.
+      // Before the listener, so the panel is appended after the tiles it replaces
+      // have been moved — and here rather than in each caller, because this is the
+      // one function every path that changes what the deck holds already goes
+      // through.
       this.renderEmpty();
+      this.notifyZoom(false);
       return;
     }
     // A zoomed session is a session, so the deck is not empty.
@@ -1561,7 +1687,23 @@ export class Deck {
       this.strip = document.createElement("div");
       this.strip.className = "deck-strip";
     }
-    this.onZoom?.(true);
+    // Tiles outside this zoom — every other workspace's — go back to the deck
+    // with neither role. They are hidden, so nothing of this shows; but a zoom
+    // now survives a workspace switch, so the grid branch above is no longer
+    // guaranteed to run between one workspace's zoom and the next, and it was
+    // the only thing undressing them. Left alone, another workspace's zoomed
+    // tile keeps its class (and its tools) and its minimized siblings sit in
+    // this workspace's strip.
+    const inZoom = new Set<string>([parts.zoomed, ...parts.minimized]);
+    for (const t of this.tiles.values()) {
+      if (inZoom.has(t.session)) continue;
+      t.el.classList.remove("minimized", "zoomed", "solo");
+      t.tools.setZoomed(false);
+      // Moved only if it is somewhere else — out of a strip, typically. A tile
+      // holds a live terminal, and re-appending one that is already here would
+      // reparent that canvas on every layout for nothing.
+      if (t.el.parentElement !== this.deckEl) this.deckEl.appendChild(t.el);
+    }
     const z = this.tiles.get(parts.zoomed)!;
     z.el.classList.add("zoomed");
     z.el.classList.remove("minimized", "solo");
@@ -1575,6 +1717,7 @@ export class Deck {
       t.tools.setZoomed(false);
       this.strip.appendChild(t.el);
     }
+    this.notifyZoom(true);
   }
 
   // FLIP: measure visible tiles (First), run the layout mutation (Last),
@@ -1613,6 +1756,24 @@ export class Deck {
         t.panel.fit();
       }
     }, 220);
+  }
+
+  /** Forget a session's zoom in every workspace that remembers it.
+   *
+   *  For a tile that is going: closed, or handed to the window that claimed its
+   *  session. `applyLayout` already reconciles the workspace on screen — the
+   *  entry it cannot honour is dropped there — but an entry belonging to a
+   *  workspace that is not showing would go on naming a session this deck no
+   *  longer holds, and re-zoom nothing every time somebody came back to it.
+   *
+   *  One session can be named by more than one entry: an orphan is zoomable in
+   *  the window that adopts it, under that window's key, while an entry made
+   *  before its workspace was deleted is still filed under the old id. So this
+   *  sweeps rather than deleting one key. */
+  private forgetZoom(session: string) {
+    for (const [ws, s] of this.zoomedByWorkspace) {
+      if (s === session) this.zoomedByWorkspace.delete(ws);
+    }
   }
 
   zoomTo(session: string | null) {
@@ -1662,6 +1823,31 @@ export class Deck {
    *  behaviour wired at five call sites is a behaviour with four bugs in it. */
   setZoomListener(fn: (zoomed: boolean) => void) { this.onZoom = fn; }
   private onZoom: ((zoomed: boolean) => void) | null = null;
+  /** What the listener was last told, and the reason it is told anything at all
+   *  from one place.
+   *
+   *  Two rules, both learned from the listener re-entering `applyLayout`:
+   *
+   *  - **Told last.** The listener closes the workspace panel, which can hand the
+   *    borrowed zoom back — an `exitZoom` that re-enters `applyLayout` and, in
+   *    its grid branch, drops the strip. Told from the middle of the zoom branch,
+   *    that left the outer call appending a strip that was now `null`. Told after
+   *    the layout is whole, a re-entrant call is just the next layout.
+   *  - **Told on the edge.** `applyLayout` runs on every launch, close and
+   *    workspace switch, and it used to announce a zoom on each of them — closing
+   *    a panel and collapsing a sidebar the person may have opened since. What
+   *    the listener is for is the deck entering and leaving zoom, not repeating
+   *    that it is still in one.
+   *
+   *  Starts at `false` and is not replayed on registration, which is honest
+   *  because the listener is wired once at boot — before there is a tile to
+   *  zoom, let alone a zoom. */
+  private zoomTold = false;
+  private notifyZoom(zoomed: boolean) {
+    if (zoomed === this.zoomTold) return;
+    this.zoomTold = zoomed;
+    this.onZoom?.(zoomed);
+  }
 
   /** Zoom the active tile and say whether that is what happened.
    *
@@ -1709,6 +1895,24 @@ export class Deck {
     return true;
   }
 
+  /** Leave the zoom of ONE named workspace, whether or not it is on screen.
+   *
+   *  For the borrower that has to give back exactly what it took: `zoomActive`
+   *  zooms the workspace showing at the time, and a zoom now belongs to that
+   *  workspace rather than to the deck. Somebody can switch workspace between
+   *  the taking and the giving back — the workspace panel's wide mode survives
+   *  a switch, the diff inside it does not — and `exitZoom` would then un-zoom
+   *  whatever is on screen instead: a zoom the person made themselves goes, and
+   *  the borrowed one stays on for as long as the deck lives.
+   *
+   *  Off screen there is no layout to redo, so the entry is simply dropped;
+   *  coming back to that workspace then finds a grid, which is what it was
+   *  before the borrowing. */
+  exitZoomIn(workspaceId: string | null): boolean {
+    if (workspaceId === this.activeWorkspaceId) return this.exitZoom();
+    return this.zoomedByWorkspace.delete(workspaceId);
+  }
+
   /** Give a tile up because another window has taken its session over.
    *
    *  Everything `remove` does except ending the session — the PTY, the process
@@ -1726,6 +1930,7 @@ export class Deck {
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
+    this.forgetZoom(session);
     if (tile.scheduledSkillId && this.scheduledSessions.get(tile.scheduledSkillId) === session) {
       this.scheduledSessions.delete(tile.scheduledSkillId);
     }
@@ -1799,6 +2004,7 @@ export class Deck {
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
+    this.forgetZoom(session);
     if (tile.scheduledSkillId && this.scheduledSessions.get(tile.scheduledSkillId) === session) {
       this.scheduledSessions.delete(tile.scheduledSkillId);
     }
@@ -1858,9 +2064,17 @@ export class Deck {
     // focus; now that rows are buttons, the focused key has to be remembered
     // and restored, or keyboard focus would jump to the top of the page twice
     // a minute.
-    const focusKey = this.listEl.contains(document.activeElement)
-      ? (document.activeElement as HTMLElement).dataset.focusKey ?? null
-      : null;
+    //
+    // Read off the document rather than out of `this.listEl`, and restored the
+    // same way at the end: with a tree, every focusable row this function paints
+    // goes into a workspace's host in the sidebar's panel — the heading is not
+    // painted at all — so `listEl` holds none of them in the arrangement the app
+    // ships. Scoped to `listEl`, the capture was blind there and the restore
+    // never fired: the rows a person tabs through were the ones losing focus.
+    // Nothing outside this function writes `data-focus-key`, and the two passes
+    // below paint any one workspace exactly once, so reading and querying wider
+    // cannot reach a row this function did not paint or find two of the same.
+    const focusKey = (document.activeElement as HTMLElement | null)?.dataset.focusKey ?? null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
     this.onCounts?.({
@@ -1924,6 +2138,10 @@ export class Deck {
       this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path })),
     );
     const ORPHAN_KEY = "__orphan__";
+    /* Which workspaces this pass painted a host for. The loop below only sees
+       workspaces that have tiles, and the one after it has to tell "already
+       painted" from "has nothing to paint" — see the note over it. */
+    const painted = new Set<string>();
     for (const g of groups) {
       const wsId = g.workspace?.id ?? ORPHAN_KEY;
       const color = g.workspace?.color ?? "var(--fg-subtle)";
@@ -1939,6 +2157,7 @@ export class Deck {
       if (g.workspace) {
         this.tree?.waiting(g.workspace.id, groupWaiting);
         this.tree?.expanded(g.workspace.id, !collapsed);
+        painted.add(g.workspace.id);
       }
       let into: HTMLElement = this.listEl;
       if (host) {
@@ -2066,13 +2285,24 @@ export class Deck {
        nothing is running in produces no group. It is also the case that needs the
        row most — an empty workspace's only useful sentence is "start something
        here" — and without this it was the one row in the tree that could not be
-       created into. */
+       created into.
+
+       Which makes this the ONLY pass that ever visits an emptied workspace, and
+       so the only place its host can be cleared. Closing the last session of a
+       workspace left the closed session's row in the sidebar (#358): the loop
+       above clears a host on its way to refilling it, and a workspace with no
+       tiles never reaches it. The count on the row above went stale the same
+       way — nobody was left to say it was zero — so both are written here,
+       unconditionally, rather than inferred from what the host still holds. */
     if (this.tree) {
       for (const w of this.workspaces()) {
+        if (painted.has(w.id)) continue;
         const host = this.tree.host(w.id);
-        if (!host || host.childElementCount > 0) continue;
+        if (!host) continue;
+        host.replaceChildren();
         const folded = this.collapsed.has(w.id);
         host.hidden = folded;
+        this.tree.waiting(w.id, 0);
         this.tree.expanded(w.id, !folded);
         if (!folded) host.appendChild(this.createRow(w.id, w.name));
       }
@@ -2083,7 +2313,7 @@ export class Deck {
        an orphan group appearing is what fills this again. */
     this.listEl.hidden = this.listEl.childElementCount === 0;
     if (focusKey) {
-      this.listEl.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
+      document.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
     }
   }
 }
