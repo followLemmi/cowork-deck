@@ -1899,6 +1899,10 @@ export class Deck {
       this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path })),
     );
     const ORPHAN_KEY = "__orphan__";
+    /* Which workspaces this pass painted a host for. The loop below only sees
+       workspaces that have tiles, and the one after it has to tell "already
+       painted" from "has nothing to paint" — see the note over it. */
+    const painted = new Set<string>();
     for (const g of groups) {
       const wsId = g.workspace?.id ?? ORPHAN_KEY;
       const color = g.workspace?.color ?? "var(--fg-subtle)";
@@ -1914,6 +1918,7 @@ export class Deck {
       if (g.workspace) {
         this.tree?.waiting(g.workspace.id, groupWaiting);
         this.tree?.expanded(g.workspace.id, !collapsed);
+        painted.add(g.workspace.id);
       }
       let into: HTMLElement = this.listEl;
       if (host) {
@@ -2041,13 +2046,24 @@ export class Deck {
        nothing is running in produces no group. It is also the case that needs the
        row most — an empty workspace's only useful sentence is "start something
        here" — and without this it was the one row in the tree that could not be
-       created into. */
+       created into.
+
+       Which makes this the ONLY pass that ever visits an emptied workspace, and
+       so the only place its host can be cleared. Closing the last session of a
+       workspace left the closed session's row in the sidebar (#358): the loop
+       above clears a host on its way to refilling it, and a workspace with no
+       tiles never reaches it. The count on the row above went stale the same
+       way — nobody was left to say it was zero — so both are written here,
+       unconditionally, rather than inferred from what the host still holds. */
     if (this.tree) {
       for (const w of this.workspaces()) {
+        if (painted.has(w.id)) continue;
         const host = this.tree.host(w.id);
-        if (!host || host.childElementCount > 0) continue;
+        if (!host) continue;
+        host.replaceChildren();
         const folded = this.collapsed.has(w.id);
         host.hidden = folded;
+        this.tree.waiting(w.id, 0);
         this.tree.expanded(w.id, !folded);
         if (!folded) host.appendChild(this.createRow(w.id, w.name));
       }
