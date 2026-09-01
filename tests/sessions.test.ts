@@ -62,6 +62,10 @@ import { onExit, describeExit } from "../src/ipc";
 import type { Task, BoardConfig } from "../src/ipc";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
+/** A scheduled scenario, which is how this file reaches a launch that does not
+ *  take the keyboard — `launchScheduled` is one of the two `grabAttention: false`
+ *  callers of `spawnTile`, the other being `receive`. */
+const SKILL = { id: "s1", name: "Nightly review", icon: "▶", prompt: "review", workspaceId: null };
 
 describe("Deck.launch error handling", () => {
   beforeEach(() => {
@@ -357,6 +361,58 @@ describe("Deck zoom edge cases", () => {
     const zoomedTile = deckEl.querySelector(".tile.zoomed") as HTMLElement;
     expect(zoomedTile).not.toBeNull();
     expect(zoomedTile).not.toBe(firstZoomed);
+  });
+
+  /** The deck's twin of the session list's focus test below, and the fix for #269.
+   *
+   *  `applyLayout` moves tiles with `appendChild`, which on a node already in the
+   *  document removes it first — and a removal blurs whatever it contained. So
+   *  zooming used to drop the caret out of the terminal onto `<body>`, from where
+   *  the window's `Escape` handler unzoomed the deck instead of the byte reaching
+   *  `vim`, `less`, `htop` or claude's "esc to interrupt".
+   *
+   *  The terminal is mocked here, so the caret is a textarea in the tile body —
+   *  which is exactly what xterm's own hidden input is. */
+  it("keeps the keyboard in the terminal across a zoom and a background launch", async () => {
+    const deckEl = document.createElement("div");
+    const listEl = document.createElement("div");
+    document.body.append(deckEl, listEl);
+    const deck = new Deck(deckEl, listEl, () => [WS]);
+
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("a" as any)
+      .mockReturnValueOnce("b" as any);
+
+    await deck.launch(WS as any, null);
+    await deck.launch(WS as any, null);
+
+    // The first tile in the deck is "a", the first session launched: grid mode
+    // appends tiles in Map order.
+    const caret = document.createElement("textarea");
+    caret.className = "xterm-helper-textarea";
+    deckEl.querySelectorAll<HTMLElement>(".tile .tile-body")[0].append(caret);
+    caret.focus();
+    expect(document.activeElement).toBe(caret);
+
+    deck.zoomTo("a");
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+    expect(document.activeElement).toBe(caret);
+
+    // And back, which re-parents every tile again.
+    expect(deck.exitZoom()).toBe(true);
+    expect(document.activeElement).toBe(caret);
+
+    // Not only zoom, and this is the launch that shows it. A background launch —
+    // a scheduled run, or tiles handed over from another window — reaches
+    // `applyLayout` through `applyWorkspaceVisibility` and never calls
+    // `focusTile`, so the restore is the only thing holding the keyboard.
+    //
+    // An interactive launch is deliberately the other way round: it ends in
+    // `focusTile`, which puts the caret in the *new* tile. Asserting the caret
+    // stayed put across one of those would pass only because this file stubs
+    // `TerminalPanel.focus`, and would encode behaviour the app does not have.
+    await deck.launchScheduled(WS as any, SKILL as any, "review", "schedule");
+    expect(document.activeElement).toBe(caret);
   });
 });
 
