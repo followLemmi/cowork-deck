@@ -5,7 +5,7 @@ deciders:
   - evgenykharetski
 ---
 
-# ADR-0011 — One instance per config directory, claimed with a lock in it
+# ADR-0012 — One instance per config directory, claimed with a lock in it
 
 ## Context
 

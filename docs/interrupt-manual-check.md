@@ -8,7 +8,7 @@ run. Record the result in the pull request description.
 
 `npm run dev`, a real workspace, a real session. The deck's state chip and the
 tile's rail are what to watch: **working** while the turn runs, **done** once it
-is over. ADR-0011 carries why the deck reads the terminal's screen for this.
+is over. ADR-0015 carries why the deck reads the terminal's screen for this.
 
 ## The fix itself
 

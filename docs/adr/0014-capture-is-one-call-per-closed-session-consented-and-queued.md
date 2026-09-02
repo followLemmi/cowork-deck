@@ -5,7 +5,12 @@ deciders:
   - evgenykharetski
 ---
 
-# ADR-0010 — Capture is one model call per closed session, consented at the close and owed to a queue
+# ADR-0014 — Capture is one model call per closed session, consented at the close and owed to a queue
+
+> Filed as ADR-0010 and renumbered here. `dev` had shipped two 0010s and two 0011s — this
+> record and *Where there is no remote, the folder is the identity* both claimed 0010, so a
+> reference to "ADR-0010" pointed at either. The earlier of the two keeps the number; this one
+> moves. See #451.
 
 ## Context
 

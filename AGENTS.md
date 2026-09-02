@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **tracker** (834 symbols, 2232 relationships, 64 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **cowork-deck** (5772 symbols, 18038 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -17,7 +17,7 @@ This project is indexed by GitNexus as **tracker** (834 symbols, 2232 relationsh
 
 1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
 2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
-3. `READ gitnexus://repo/tracker/process/{processName}` — trace the full execution flow step by step
+3. `READ gitnexus://repo/cowork-deck/process/{processName}` — trace the full execution flow step by step
 4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "dev"})` — see what your branch changed
 
 ## When Refactoring
@@ -56,10 +56,10 @@ This project is indexed by GitNexus as **tracker** (834 symbols, 2232 relationsh
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/tracker/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/tracker/clusters` | All functional areas |
-| `gitnexus://repo/tracker/processes` | All execution flows |
-| `gitnexus://repo/tracker/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/cowork-deck/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/cowork-deck/clusters` | All functional areas |
+| `gitnexus://repo/cowork-deck/processes` | All execution flows |
+| `gitnexus://repo/cowork-deck/process/{name}` | Step-by-step execution trace |
 
 ## Self-Check Before Finishing
 

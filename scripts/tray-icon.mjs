@@ -35,7 +35,7 @@
  *  What is left — the frame's outline, the chevron, the cursor block — is the
  *  logo's silhouette, and it is legible at 16, 18 and 22 points. Five other
  *  candidates were drawn and compared against a light bar and a dark bar before
- *  this one was picked; ADR-0011 decision 5 records the sequence, because it took
+ *  this one was picked; ADR-0013 decision 5 records the sequence, because it took
  *  three attempts and two of them shipped.
  *
  *  ## Where the numbers come from
