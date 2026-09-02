@@ -4590,34 +4590,52 @@ h6.md-head { font-size: var(--fs-sm); }
    meanings: something has stopped, and something is about to want you. A person
    who has learned those two colours anywhere in this app has learned them here.
    `npm run contrast` measures every pair below. */
-/* A strip at the foot of the panel, not an island in it (#392, ADR-0011).
-   One row per AI at three lines each made this a slab that grew with the number
-   of accounts and never yielded — `flex: none` above a `1fr` stack means the
-   space came out of the page being worked in. So the always-there part is ONE
-   line, and the rows are behind it.
+/* In the TOP BAR since #461, and it was a strip at the foot of the panel (#392,
+   ADR-0011, and the amendment at the foot of that record).
+   Two things about the panel made the foot the wrong home, and only one of them
+   was height. The strip and the tree were the same kind of surface stacked in one
+   280px column, separated by a hairline — and because `#sidebar`'s third row is
+   `auto` against a `minmax(0, 1fr)` stack, opening the rows took up to 15rem out
+   of the tree while its `scrollTop` stayed put. The rows a person was reading
+   went below the fold and the strip's hairline landed where the tree's last
+   visible row had been. Nothing overlapped; the tree moved, which is worse.
+   The other is that a collapsed panel took the reading with it, and a limit is
+   not a property of the panel being open.
+   The top bar has neither problem: it does not grow, it does not scroll, and it
+   is there when the panel is not.
 
-   Chrome rather than a card, and the hairline is the whole treatment: the islands
-   above are lists you work in, and this is the panel's own footer. A one-line
-   island would have been a card with less in it than its own border.
+   No border and no ground of its own here — it is IN the chrome now rather than
+   bounded by it, and a hairline inside a 44px bar would read as a divider between
+   two things that are one row of readings.
 
-   `column-reverse`, and the reverse is the whole trick: the strip comes FIRST in
-   the DOM, so a screen reader moving forward off the control it just pressed
-   arrives inside the rows that press revealed — a disclosure whose content sits
-   before its own button reads as content the button leads away from. On screen
-   they swap back, and the rows grow upward out of the panel's foot so the thing
-   under the pointer stays under it. */
+   `column-reverse` is gone with the move, and its whole purpose survives: the
+   strip stays FIRST in the DOM, so a screen reader moving forward off the control
+   it just pressed arrives inside the rows that press revealed. The rows now open
+   DOWNWARD, which they should — the bar is at the top of the window — so the DOM
+   order and the visual order finally agree and no reversal is needed to reconcile
+   them. */
 #limits {
-  flex: none; display: flex; flex-direction: column-reverse;
-  border-top: 1px solid var(--line); background: var(--bg-void);
+  /* `align-self: stretch` so the box is the bar's full 44px and `top: 100%` on
+     the popover below is exactly the bar's bottom edge. Sized to its content it
+     was 29px, and the popover then hung four pixels INTO the bar. */
+  flex: none; align-self: stretch; position: relative;
+  display: flex; align-items: center; min-width: 0;
 }
 #limits[hidden] { display: none; }
-/* Bounded, and that is the point of the number rather than the number itself: the
-   rows open on demand, and a deck with eight accounts connected must not be able
-   to push the page above out of the window by unfolding. Past the cap it scrolls,
-   which is the one thing the fixed slab could not do. */
+/* Out of the flow, so the rows cost the bar no height and the deck below does not
+   move when they open — which is the fault this whole move is about, one surface
+   up. An island, because unlike the panel's foot this one floats over the work:
+   it needs its own ground, its own edge and a shadow to sit above the deck.
+   Bounded and scrolling as before: a deck with eight accounts connected must not
+   be able to open a list taller than the window. `right: 0`, so it grows leftward
+   from the reading rather than out past the window's edge. */
 .lim-list {
-  max-height: min(38vh, 15rem); overflow-y: auto;
-  padding: var(--sp-1) var(--sp-2);
+  position: absolute; top: 100%; right: 0; z-index: 20;
+  min-width: 22rem; max-width: min(28rem, 90vw);
+  max-height: min(60vh, 26rem); overflow-y: auto;
+  padding: var(--sp-1); border-radius: var(--r-island);
+  background: var(--bg-island); border: 1px solid var(--line-strong);
+  box-shadow: var(--sh-float);
   display: flex; flex-direction: column; gap: var(--sp-1);
 }
 .lim-list[hidden] { display: none; }
@@ -4627,19 +4645,35 @@ h6.md-head { font-size: var(--fs-sm); }
 .lim-row { display: flex; align-items: stretch; gap: var(--sp-1); }
 /* The strip is the same shape as a row, and for the same reason: the summary is a
    control and the way out of an unreadable reading is a second one beside it. */
-.lim-strip { display: flex; align-items: stretch; gap: var(--sp-1); padding: var(--sp-1) var(--sp-2); }
+/* In the bar, so `align-items: center` and no vertical padding of its own: the
+   44px row sets the height and this sits in it. */
+.lim-strip { display: flex; align-items: center; gap: var(--sp-1); min-width: 0; }
+/* ONE line, and that is the constraint the bar imposes. In the panel's foot this
+   was a column — the reading on the first line and the state's words on a second
+   that appeared when something was nearly spent, where "being larger is the
+   point rather than the complaint". A 44px bar has no second line to give, so
+   the words go inline after the reading and the cost is width instead. Which is
+   what ADR-0011's amendment argues about: the reading and the tier are
+   ADR-0009's floor, and the NAME is what gives way. */
 .lim-summary {
-  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
-  padding: var(--sp-1) var(--sp-2); border: 0; border-radius: var(--r-ctl);
+  min-width: 0; display: flex; flex-direction: row; align-items: baseline; gap: var(--sp-2);
+  padding: 4px var(--sp-2); border: 0; border-radius: var(--r-ctl);
   background: transparent; color: var(--fg); text-align: left; cursor: pointer;
-  font: inherit;
+  font: inherit; font-size: var(--fs-xs);
 }
 .lim-summary:hover { background: var(--bg-hover); }
 .lim-summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 /* Gaps at `--sp-1` rather than `--sp-2`, which is not a preference: name, tier,
-   reading, meter and count are five things in a 280px column, and at 8px apart
-   there was not room for all five. */
-.lim-strip .lim-line { gap: var(--sp-1); }
+   reading and count are four things on one line, and at 8px apart there was not
+   room for all four in the 280px column this used to live in. The bar has more
+   room and keeps the tighter gap anyway — beside `#ledger`'s own `--sp-1` these
+   are one row of readings rather than two clusters. */
+.lim-strip .lim-line { gap: var(--sp-1); display: inline-flex; align-items: baseline; min-width: 0; }
+/* The words about the state, inline. `flex: 0 1 auto` so they are the second
+   thing to give way after the name — and at the narrowest window they go
+   entirely, which the media query at the foot of this block does, leaving the
+   reading and its tier: ADR-0009's floor. */
+.lim-strip .lim-foot { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* And the reading is the item that must NOT give way. `.lim-reading` is `flex: 1`
    in a row, where the row has a line to itself and nothing to compete with; on
    the strip that made it the first thing to shrink, and "23% us…" is the one word
@@ -4655,21 +4689,13 @@ h6.md-head { font-size: var(--fs-sm); }
   flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .lim-strip .lim-reading { flex: none; text-align: left; }
-/* Open, the rows above carry all of it, so the strip stops being a copy of the
-   row at the top of them and becomes the block's name and the way to put it away.
-   The same caps treatment an island's head takes, on the one surface in this
-   column that has no island to put a head on. */
-.lim-word {
-  display: none; flex: 1; font-size: var(--fs-xs); font-weight: var(--fw-bold);
-  text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--fg-dim);
-}
-.lim-strip[data-open="true"] .lim-word { display: block; }
-.lim-strip[data-open="true"] .lim-name,
-.lim-strip[data-open="true"] .lim-src,
-.lim-strip[data-open="true"] .lim-reading,
-.lim-strip[data-open="true"] .lim-rest,
-.lim-strip[data-open="true"] .lim-foot,
-.lim-strip[data-open="true"] .lim-probe { display: none; }
+/* `.lim-word` and the whole `[data-open]` display swap are gone with the move to
+   the bar (#461). In the panel the rows opened ABOVE the strip, so an open strip
+   was their head and gave its line up for the word "Limits" — every reading below
+   was already saying what it had been saying. In the bar the rows open below in
+   a popover with its own edge, and the reading is the reason the bar carries the
+   line at all: a bar that blanked its own number on a press would answer less the
+   more you asked it. The strip keeps its glance open or shut. */
 /* How many AIs are not the one being named, and what is wrong with them when
    something is. Never a bare count in that case — see `restOf`. */
 /* The padding is the whole reason this is not butted against the reading: "62%
@@ -4679,10 +4705,28 @@ h6.md-head { font-size: var(--fs-sm); }
 /* Pushed to the end whether or not there is a reading before it, so the line
    ends the same way when a provider has nothing to say. */
 .lim-caret { display: inline-flex; align-items: center; flex: none; margin-left: auto; color: var(--fg-dim); }
-.lim-caret .icon { transition: transform var(--dur-2) var(--ease-out); transform: rotate(-90deg); }
-/* Up while folded, down while open: the rows are ABOVE this line, so the chevron
-   points at where they are rather than at the angle a downward list would use. */
-.lim-summary[aria-expanded="true"] .lim-caret .icon { transform: rotate(90deg); }
+/* DOWN while folded and up while open, and the pair swapped with the move to the
+   bar: a disclosure's caret points at where its content is, and the rows are now
+   below this line rather than above it. */
+.lim-caret .icon { transition: transform var(--dur-2) var(--ease-out); transform: rotate(90deg); }
+.lim-summary[aria-expanded="true"] .lim-caret .icon { transform: rotate(-90deg); }
+
+/* What the bar gives up first, and in what order, as the window narrows. The
+   reading and its tier are ADR-0009's floor and are in neither list: a bare
+   percentage is not an acceptable compression, and a reading with no tier is the
+   failure that record exists to prevent.
+   At 60rem the state's words go — they are a repeat of what the reading's own
+   colour already says at a glance, and the popover carries them in full. At
+   43.75rem the count of the other AIs goes too, and the name is already
+   truncating by then. Below that the window has bigger problems: `minWidth` is
+   900px (56.25rem), so the second step is only reachable at a text scale, which
+   is exactly the case a `px` breakpoint would have missed. */
+@media (max-width: 60rem) {
+  .lim-strip .lim-foot { display: none; }
+}
+@media (max-width: 43.75rem) {
+  .lim-strip .lim-rest { display: none; }
+}
 .lim-summary:hover .lim-caret { color: var(--fg-mid); }
 .lim-open {
   flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;
