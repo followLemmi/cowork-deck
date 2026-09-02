@@ -32,13 +32,13 @@ import {
   type SyncSummary,
 } from "./ipc";
 import {
-  agoLabel,
   blockedCopy,
   faultCopy,
   questionCopy,
   questionCountLabel,
   repoCopy,
 } from "./sync-copy";
+import { agoLabel } from "./format";
 
 /** The name offered when creating. Fixed rather than generated from anything
  *  local: it is the name the *second* machine will look for. */
@@ -140,9 +140,16 @@ function renderOn(body: HTMLElement, summary: SyncSummary, refresh: () => void) 
   // broken for three weeks and a working one look identical from outside until
   // a disk dies and the remote turns out to be a month stale.
   const when = el("p", "sync-when");
+  /* `× 1000` at the call site, visibly, because `agoLabel` takes milliseconds
+     and this state is in seconds — which is the whole reason there is one
+     `agoLabel` now and not two (`format.ts`). `"days"` rather than a date past a
+     week: the age of the last push is the one number that says whether sync is
+     working, and "21 days ago" is the point where a date would make the reader
+     do the subtraction. */
+  const ms = (s: number | null) => (s === null ? null : s * 1000);
   when.textContent =
-    `Last sent ${agoLabel(summary.state.lastPush, now)}`
-    + ` · last received ${agoLabel(summary.state.lastPull, now)}`;
+    `Last sent ${agoLabel(ms(summary.state.lastPush), now * 1000, "days")}`
+    + ` · last received ${agoLabel(ms(summary.state.lastPull), now * 1000, "days")}`;
   body.append(when);
 
   // The questions a pull raised, in the one place that already reports what

@@ -1,14 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-(globalThis as any).ResizeObserver = class {
-  observe() {} unobserve() {} disconnect() {}
-};
-(globalThis as any).window.__TAURI_INTERNALS__ = {
-  transformCallback: () => 1,
-  unregisterCallback: () => {},
-};
-
 /** The same driveable observer `terminal-gpu.test.ts` uses: the resync hangs off
  *  visibility, so the test has to be the thing that says when a tile is on screen. */
 const watchers: { cb: (e: { isIntersecting: boolean }[]) => void; el: Element }[] = [];

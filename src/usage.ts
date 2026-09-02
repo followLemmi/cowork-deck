@@ -9,6 +9,7 @@
  */
 
 import type { AiUsage, LimitState, LimitWindow, UsageSource } from "./ipc";
+import { formatTokens } from "./format";
 
 /** Which window a one-line row should draw.
  *
@@ -247,17 +248,6 @@ export function formatReset(at: number, now: number): string {
   const tomorrow = new Date(now + 24 * 60 * 60 * 1000);
   if (tomorrow.toDateString() === d.toDateString()) return `tomorrow ${clock}`;
   return `${d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })} ${clock}`;
-}
-
-/** Tokens, at the precision anybody reads them at.
- *
- *  A burn figure is six or seven digits and nobody counts them, so it is scaled
- *  — and it is never rounded up to a value that has not been reached: 999 999
- *  reads as 999k, not as 1.0M. */
-export function formatTokens(n: number): string {
-  if (n < 1_000) return String(n);
-  if (n < 1_000_000) return `${Math.floor(n / 1_000)}k`;
-  return `${(Math.floor(n / 100_000) / 10).toFixed(1)}M`;
 }
 
 /** The one line a row shows beside its meter: the reading, in whatever terms the

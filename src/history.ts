@@ -5,11 +5,12 @@ import { syncDotPhase } from "./dot-phase";
 // "Journal", the palette says "Journal", and now so does its own head.
 import { PANEL_TITLE } from "./view";
 import {
-  agoLabel, canEraseHistory, canJump, canRerun, canReveal, chainRuns, durationLabel,
+  canEraseHistory, canJump, canRerun, canReveal, chainRuns, durationLabel,
   emptyHistoryCopy, filterRuns, noResultReason, RUN_STATUS_LABEL, RUN_TRIGGER_LABEL,
   runStatusClass,
   type ActionVerdict, type RunFilters,
 } from "./runs";
+import { agoLabel } from "./format";
 
 export interface HistoryState {
   /** This workspace's records, newest first, as `list_runs` returned them. */

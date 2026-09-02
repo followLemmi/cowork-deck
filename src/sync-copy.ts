@@ -94,21 +94,6 @@ export function repoCopy(r: SyncRepoState): { ok: boolean; text: string } {
   }
 }
 
-/** "3 weeks ago", for the one number that matters most.
- *
- *  A sync broken for three weeks and one working look identical from outside
- *  until a disk dies and the remote turns out to be a month stale. */
-export function agoLabel(then: number | null, now: number): string {
-  if (then === null) return "never";
-  const s = Math.max(0, now - then);
-  if (s < 90) return "just now";
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m} min ago`;
-  const h = Math.round(m / 60);
-  if (h < 48) return `${h} h ago`;
-  return `${Math.round(h / 24)} days ago`;
-}
-
 /** One thing a pull could not decide, and the actions that decide it.
  *
  *  Every question names both answers, and neither is a default. A duplicate in
