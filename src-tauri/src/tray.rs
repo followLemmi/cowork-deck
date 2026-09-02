@@ -24,7 +24,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tauri::image::Image;
 use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Rect, Runtime};
@@ -67,7 +67,7 @@ const PANEL_GAP: f64 = 6.0;
 /// three tests below and they are worth running on the machine this is written
 /// on, which is the same argument `action_prefix` makes in the other direction.
 #[cfg(any(not(target_os = "linux"), test))]
-const REOPEN_GUARD: Duration = Duration::from_millis(250);
+const REOPEN_GUARD: std::time::Duration = std::time::Duration::from_millis(250);
 
 /* --- The model the deck sends -------------------------------------------- */
 
