@@ -43,7 +43,7 @@ import {
   resolveTask, taskCapabilities, onTasksChanged, taskWatchSync, createTask,
   taskMigrate, taskMigrationDismiss, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage,
-  prList, prDetail, prDiff, prFilePatch, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
+  prDetail, prDiff, prFilePatch, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
   prWorktreePath, prWorktreeRemove,
   issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove,
 } from "./ipc";
@@ -53,16 +53,16 @@ import { issuePrompt } from "./tasks";
 import { pollIntervalMs } from "./pr";
 import { Poller } from "./poll";
 import { BoardController } from "./board-controller";
+import { PrController } from "./pr-controller";
 import {
   boardPollMs, needsCloseConfirmation,
-  fsRootOf, repoFromIssueUrl, sourceOf, unavailableFrom,
+  fsRootOf, repoFromIssueUrl, sourceOf,
 } from "./issues";
 import { HistoryView } from "./history";
 import { reconcileParams, type RunFilters } from "./runs";
 import { PrView } from "./pr-view";
 import { DiffDrawer } from "./diff-drawer";
 import type { GhUnavailable } from "./gh-unavailable";
-import type { PrState } from "./pr-view";
 import { alertModal, confirmModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -1632,21 +1632,20 @@ export function startApp(role: WindowRole): Promise<void> {
 
   /* --- Pull requests ------------------------------------------------------- */
 
-  /** Which workspace the pull request view is showing an answer for — rows, an error
-   *  beside them, or an unavailable box. The board's `boardShowing`, for the same
-   *  reason and with the same rule: a skeleton is painted only where nothing on
-   *  screen belongs to the workspace about to be read.
+  /** The pull request list's state and its read, in `pr-controller.ts` since
+   *  #463 — the symmetric half of the board's cut, and its note says where the
+   *  two views genuinely differ now that the poll they were said to share is
+   *  `poll.ts`.
    *
-   *  Not derivable from `prState`. `workspace` alone says which workspace the state is
-   *  *about*, and pairing it with `fetchedAt === null` was wrong in the case that
-   *  matters most: a first read that fails leaves both set that way, so every tick
-   *  from then on would blank the error — or the unavailable box and its only button —
-   *  for grey boxes and then put it back. */
-  let prShowing: string | null = null;
-  let prState: PrState = {
-    workspace: null, unavailable: null, prs: [], error: null, fetchedAt: null, total: null,
-    loading: false,
-  };
+   *  What is still here is the poll and every action. `prVisible` is two DOM
+   *  facts that belong to the panel, and the actions — launching from a row,
+   *  merging, closing, reopening, the worktree cleanup — each reach into session
+   *  launching and the modal stack. */
+  const prCtl = new PrController({
+    workspaces: { get active() { return workspaces.active; } },
+    prView,
+    onPolled: (prs) => diffDrawer.onPoll(prs),
+  });
 
   /** The mirror of `boardVisible`, and a function rather than a variable because
    *  the pull request page has no watcher to keep one honest: the answer is two
@@ -1658,85 +1657,9 @@ export function startApp(role: WindowRole): Promise<void> {
    *  (`pollIntervalMs`), which is why it is read per tick rather than captured. */
   const prPoll = new Poller({
     wanted: prVisible,
-    every: () => pollIntervalMs(prState.prs),
-    tick: () => readPrs(),
+    every: () => pollIntervalMs(prCtl.prs),
+    tick: () => prCtl.read(),
   });
-
-  /** Re-read the list.
-   *
-   *  Not the poll's entry point — `prPoll.run()` is, and it drops the pending
-   *  tick before this runs and arms the next after it. This is only the read, so
-   *  a manual ↻ and a timer take exactly the same path. */
-  async function readPrs() {
-    const ws = workspaces.active;
-    if (!ws) {
-      prState = {
-        ...prState, workspace: null, unavailable: "no-account", prs: [], loading: false,
-      };
-      prView.render(prState, Date.now());
-      // No workspace is nobody's answer, so the next one read gets a skeleton rather
-      // than inheriting this screen.
-      prShowing = null;
-      return;
-    }
-    if (!ws.github) {
-      prState = {
-        ...prState, workspace: ws.name, unavailable: "no-account", prs: [], loading: false,
-      };
-      prView.render(prState, Date.now());
-      prShowing = ws.id;
-      // Nothing will change here without a human editing the workspace, so this
-      // state does not poll — but it also must not leave the previous one polling.
-      return;
-    }
-    const wsId = ws.id;
-    // Only where there is nothing of this workspace's to keep: a poll tick every 15 s
-    // keeps the rows it already has, with the age line above saying how old they are.
-    if (prShowing !== wsId) {
-      prState = {
-        workspace: ws.name, unavailable: null, prs: [], error: null, fetchedAt: null,
-        total: null, loading: true,
-      };
-      prView.render(prState, Date.now());
-    }
-    try {
-      const prs = await prList(wsId);
-      // The workspace may have been switched while we waited on IPC: a late reply
-      // must not repaint the view with another workspace's pull requests.
-      if (workspaces.active?.id !== wsId) return;
-      prState = {
-        workspace: ws.name, unavailable: null, prs,
-        error: null, fetchedAt: Date.now(),
-        // What came back, and nothing more: `pr_list` asks for one page, so the
-        // number of open pull requests the repository has is not knowable from
-        // here (see #115).
-        total: prs.length,
-        loading: false,
-      };
-    } catch (e) {
-      if (workspaces.active?.id !== wsId) return;
-      const msg = String((e as { message?: string })?.message ?? e);
-      // Known unavailabilities become their own screen; everything else — a
-      // missing `repo` scope, the rate limit, an offline machine — keeps the last
-      // good list on screen beside the error, with its age. The mapping itself now
-      // lives in `issues.ts` and is read by the board too: it used to be an
-      // if-chain here, which was one place for the two GitHub views to disagree
-      // about what "no repository" looks like.
-      const known = unavailableFrom(msg);
-      if (known !== null) prState = { ...prState, unavailable: known, loading: false };
-      else prState = { ...prState, error: msg, loading: false };
-    }
-    prView.render(prState, Date.now());
-    // After the render and after the two late-reply guards, so the drawer is never
-    // told about a workspace whose answer was discarded. It re-reads the head of
-    // whichever pull request it is showing and offers a Reload if the branch has
-    // moved — it never swaps the diff out from under a reader.
-    diffDrawer.onPoll(prState.prs);
-    // Whatever it ended up drawing, it is this workspace's answer — so the next tick
-    // keeps it. After the render, and after the two late-reply guards above, so a
-    // reply that was discarded does not claim the screen.
-    prShowing = wsId;
-  }
 
   /** What a manual refresh and the focus handler call: read now, then re-arm. */
   const refreshPrs = () => prPoll.run();
