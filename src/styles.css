@@ -2209,7 +2209,27 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .mem-readiness {
   margin: 0; color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body);
 }
-.mem-empty { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-body); }
+/* An empty state with its first action in it, and it was a paragraph alone
+   (#463): `Write a note` lived in the block at the foot of the page, past the
+   readiness line and past the list that is the reason the page is empty. A box
+   rather than a `<p>` so the two can stack; the paragraph keeps the type it had.
+   `align-items: start` so the button is its own width and not the column's. */
+.mem-empty {
+  display: flex; flex-direction: column; align-items: start; gap: var(--sp-3);
+}
+.mem-empty-body { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-body); }
+/* The `.rooms-add` shape, which is this page's own button: the same control the
+   write block at the foot offers, so the two do not read as two different
+   things. Named separately rather than reusing the class so that a change to
+   either can be made without moving the other. */
+.mem-empty-do {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg); background: var(--bg-inset);
+  border: 1px solid var(--line-strong); border-radius: var(--r-ctl); padding: 6px var(--sp-3);
+  min-height: 30px; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.mem-empty-do:hover { background: var(--bg-hover-2); border-color: var(--fg-dim); }
+.mem-empty-do:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .mem-list { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
 .mem-group { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .mem-group-head {
@@ -2556,6 +2576,44 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   align-items: start;
   overflow-x: auto;
   padding-bottom: var(--sp-3);
+  /* `proximity`, never `mandatory`: a person dragging a card wants the row to
+     stay where they left it, and mandatory snapping fights that on every
+     release. What this buys is that a flick lands on a column edge rather than
+     halfway through a card. */
+  scroll-snap-type: x proximity;
+}
+.tk-col { scroll-snap-align: start; }
+
+/* Which way there is more, and it was nothing at all (#463). The board read as
+   three columns when it had five: the third showed a third of itself, and on
+   macOS an overlay scrollbar is invisible until something is already moving — so
+   there was no moment at which the interface said the row continued.
+
+   A fade rather than a permanent scrollbar, and only while there IS more: a
+   chrome that never changes is a chrome the eye stops reading, which is precisely
+   how a hidden scrollbar came to answer nothing. `overflow.ts` writes
+   `data-overflow`; this draws it.
+
+   `mask-image` and not a gradient overlay, for two reasons that are about this
+   layout rather than taste: an overlay would need a positioned child inside a
+   grid whose children are all columns, and a scrolling box's `::after` scrolls
+   with the content rather than staying at the viewport's edge. A mask fades the
+   content itself, at the box's own edge, and costs no node. */
+.tk-cols[data-overflow="right"] {
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--sp-6)), transparent);
+}
+.tk-cols[data-overflow="left"] {
+  mask-image: linear-gradient(to left, #000 calc(100% - var(--sp-6)), transparent);
+}
+.tk-cols[data-overflow="both"] {
+  mask-image: linear-gradient(
+    to right, transparent, #000 var(--sp-6), #000 calc(100% - var(--sp-6)), transparent);
+}
+/* Under forced colours a fade can only take information away: the platform draws
+   its own scrollbar there, and every colour this mask blends towards is replaced
+   by a system colour anyway. */
+@media (forced-colors: active) {
+  .tk-cols[data-overflow] { mask-image: none; }
 }
 /* The app has one idiom for "a heading over a list" — `#sidebar h3`: uppercase,
    tracked, bold, subtle — and the board did not use it, so a column's name read
@@ -4093,6 +4151,32 @@ h6.md-head { font-size: var(--fs-sm); }
    read far more often than acted on — and they stay in the DOM rather than
    appearing on hover, so they are in the tab order and reachable by touch. */
 .hist-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: 2px; }
+/* A row's secondary actions, revealed rather than hidden. Five records meant
+   fifteen identically-shaped buttons in a column 280–384px wide, and at that
+   density the eye stops reading them (#463) — so a row leads with one action and
+   the rest arrive when it is being worked with.
+
+   The same idiom as `.tile-rename` and `.tile-activity` in a tile's head, and the
+   same guarantee: `opacity`, never `display`, so the control keeps its place in
+   the tab order and `:focus-within` brings it into view for a keyboard. What is
+   traded is discoverability on touch, where there is no hover — the same trade
+   the tile head already makes, and the reason exactly one action stays visible.
+
+   `visibility` is deliberately not touched either: a refused action is
+   `aria-disabled` with its reason on activation, and a reason a screen reader
+   cannot reach is not a reason. */
+.hist-action--more {
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+.hist-row:hover .hist-action--more,
+.hist-row:focus-within .hist-action--more { opacity: 1; }
+/* And always, for anyone who has asked not to be shown things that move: the
+   reveal IS the motion here, so removing it has to leave the controls present
+   rather than leave them at zero. */
+@media (prefers-reduced-motion: reduce) {
+  .hist-action--more { opacity: 1; }
+}
 .hist-action {
   font-size: var(--fs-xs); color: var(--fg-mid); background: var(--bg-void);
   border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px var(--sp-2);

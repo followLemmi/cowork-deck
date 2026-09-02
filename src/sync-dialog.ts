@@ -72,9 +72,30 @@ export function mountSync(body: HTMLElement): { dispose: () => void } {
   const render = async () => {
     if (gone) return;
     body.replaceChildren();
-    const summary = await syncSummary();
-    if (summary.on) renderOn(body, summary, render);
-    else await renderOff(body, render);
+    try {
+      const summary = await syncSummary();
+      if (summary.on) renderOn(body, summary, render);
+      else await renderOff(body, render);
+    } catch (e) {
+      /* A read that fails left this section showing its blurb and nothing else,
+         for the life of the window, with the rejection going nowhere — `void
+         render()` below swallowed it (#463). The audit found the Settings page's
+         "Config repository" section blank and could not tell whether that was the
+         harness or the app; it was both, and this is the app's half.
+         `renderOff`'s own two failure paths already say the same kind of thing
+         about `gh` — "a failed listing is a fault, not an empty one" — and this is
+         that sentence one level up, about the state file rather than the accounts. */
+      body.append(el(
+        "p",
+        "sync-fault-text",
+        `Whether syncing is on could not be read: ${e instanceof Error ? e.message : String(e)}`,
+      ));
+      const again = el("button", "modal-ok", "Try again");
+      again.type = "button";
+      again.dataset.fk = "sync-retry";
+      again.onclick = () => { void render(); };
+      body.append(again);
+    }
   };
   void render();
   void onSyncState((s: SyncState) => {
@@ -84,6 +105,13 @@ export function mountSync(body: HTMLElement): { dispose: () => void } {
       if (gone || !sum.on) return;
       body.replaceChildren();
       renderOn(body, { ...sum, state: s }, render);
+    }).catch((e) => {
+      // Not a re-render into the fault text: a push arriving while the state
+      // cannot be read says nothing new about what is on screen, and replacing a
+      // working panel with an error because one poll failed is worse than
+      // leaving it. `render`'s own catch is what a person sees, on open and on
+      // retry.
+      console.debug("sync state push could not be read", e);
     });
   }).then((u) => {
     // A dispose that beat the listen call would otherwise leak it.
