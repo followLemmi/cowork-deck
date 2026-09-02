@@ -294,21 +294,35 @@ export class HistoryView {
     return row;
   }
 
-  /** Three actions, and deliberately no fourth.
+  /** Three actions, and deliberately no fourth — but only ONE of them at rest.
    *
-   *  None of them is destructive, and none of them edits or deletes a single
-   *  record: history is immutable, and a journal whose rows can be revised
-   *  answers nothing. Erasing exists at one granularity only — the whole of one
+   *  Five records meant fifteen identically-shaped buttons in a column 280 to
+   *  384px wide, and at that density the eye stops reading them (#463). So the
+   *  row leads with its primary action and the other two carry
+   *  `.hist-action--more`, which the stylesheet reveals on hover or focus —
+   *  the idiom `.tile-rename` and `.tile-activity` already use in a tile's head,
+   *  for the same reason and with the same guarantee: they are always in the DOM,
+   *  so they are always in the tab order.
+   *
+   *  **Which one leads depends on the row**, and it has to: "Go to the session"
+   *  exists only while that session is live, so a rule that always led with it
+   *  would leave every finished run — which is most of them — with no visible
+   *  action at all, and two invisible ones. A finished run leads with `Re-run…`
+   *  instead, which is the thing a person looking at a finished run reaches for.
+   *
+   *  None of the three is destructive, and none edits or deletes a record:
+   *  history is immutable, and a journal whose rows can be revised answers
+   *  nothing. Erasing exists at one granularity only — the whole of one
    *  scenario's history, offered from the head above when the screen is narrowed
    *  to that scenario. */
   private actions(rec: RunRecord, state: HistoryState): HTMLElement {
     const row = el("div", "hist-actions");
-    if (canJump(rec, state.liveSessions)) {
-      const jump = el("button", "hist-action", "Go to the session");
-      jump.dataset.fk = `jump-${rec.runId}`;
-      jump.onclick = () => this.handlers.onJump(rec);
-      row.append(jump);
-    }
+    const live = canJump(rec, state.liveSessions);
+
+    const jump = el("button", "hist-action", "Go to the session");
+    jump.dataset.fk = `jump-${rec.runId}`;
+    jump.onclick = () => this.handlers.onJump(rec);
+
     const skill = state.skills.find((s) => s.id === rec.skillId);
     // The scenario as it stands now, not as the record remembers it: whether it
     // can run again is a fact about today.
@@ -322,14 +336,20 @@ export class HistoryView {
     // nothing until it is confirmed.
     if (rerunOk.ok) rerun.onclick = () => this.handlers.onRerun(rec, skill!);
     else refuse(rerun, rerunOk, this.handlers.onRefused);
-    row.append(rerun);
 
     const revealOk = canReveal(rec);
     const reveal = el("button", "hist-action", "Reveal the transcript");
     reveal.dataset.fk = `reveal-${rec.runId}`;
     if (revealOk.ok) reveal.onclick = () => this.handlers.onReveal(rec);
     else refuse(reveal, revealOk, this.handlers.onRefused);
-    row.append(reveal);
+
+    /* The secondary two are marked, not reordered: the DOM order stays
+       jump-rerun-reveal so the tab order does, and a row whose controls moved
+       under the keyboard as it gained a live session would be worse than a dense
+       one. */
+    for (const b of live ? [rerun, reveal] : [reveal]) b.classList.add("hist-action--more");
+    if (live) row.append(jump);
+    row.append(rerun, reveal);
     return row;
   }
 
