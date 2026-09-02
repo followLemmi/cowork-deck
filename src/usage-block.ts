@@ -1,18 +1,35 @@
-/** The limits: one line at the foot of the panel, and every row behind it.
+/** The limits: one line in the top bar, and every row behind it.
  *
- *  Still a block in the panel rather than a page of it, and that half of the
- *  decision has not moved: `deck`, `journal` and `scenarios` are places you go; a
- *  limit is something you glance at while working, and a screen you have to
- *  navigate to would be consulted exactly once — on the day you first found it,
- *  and never at the moment it mattered.
+ *  A GLANCE rather than a page, and that half of the decision has never moved:
+ *  `deck`, `journal` and `scenarios` are places you go; a limit is something you
+ *  glance at while working, and a screen you have to navigate to would be
+ *  consulted exactly once — on the day you first found it, and never at the
+ *  moment it mattered.
  *
- *  What moved is how much of the panel it takes. One row per AI, three lines
- *  each, meant the block was a slab that grew with the number of accounts and
- *  never yielded, and the space came out of the page above it — the part being
- *  worked in. So the glance is now ONE line for the whole deck: the AI that is
- *  worst off, named, with its tier and its reading, and a count of the others.
- *  The rows are still here, one press away, and the strip stays put when they
- *  open because the list grows upward from it. See ADR-0011.
+ *  What has moved twice is where the glance lives. First it was a slab in the
+ *  panel — one row per AI, three lines each — which grew with the number of
+ *  accounts and took the space out of the page above it. #392 and ADR-0011 made
+ *  it ONE line for the whole deck: the AI that is worst off, named, with its tier
+ *  and its reading, and a count of the others.
+ *
+ *  Then #461 moved that line out of the panel's foot and into the top bar. The
+ *  one line was not small enough to fix what was wrong: `#sidebar`'s third row is
+ *  `auto` against a `minmax(0, 1fr)` stack, so opening the rows took up to 15rem
+ *  out of the tree while its `scrollTop` stayed where it was — the rows a person
+ *  was reading went under the fold, and the strip landed where the tree's last
+ *  visible row had been. And a collapsed panel took the reading away with it,
+ *  which a limit is not a property of. The bar does not grow, does not scroll,
+ *  and is there when the panel is not. See the amendment at the foot of ADR-0011.
+ *
+ *  Two consequences of the new home are in this file rather than only in the
+ *  stylesheet. The rows open DOWNWARD, out of a bar at the top of the window, so
+ *  the `column-reverse` that used to reconcile the DOM order with the visual one
+ *  is gone and the strip-first DOM order now simply IS the reading order. And the
+ *  strip keeps its reading while the rows are open: it used to give the line up
+ *  for the word "Limits", because in the panel the rows sat above it and it
+ *  became their head — in the bar the reading is the reason the bar carries it,
+ *  and a bar that blanked its own number on a press would be answering less the
+ *  more you asked.
  *
  *  A row is one AI: which AI, which tier the number is on, the reading, a thin
  *  meter, and when it lifts. The detail is in the dialog, because the question a
@@ -308,9 +325,9 @@ export class LimitsBlock {
     strip.dataset.state = win?.state ?? "unknown";
     strip.dataset.provider = snap.provider;
     // Folded or not, said twice on purpose. `aria-expanded` belongs to the
-    // CONTROL, and the rules that swap the glance for the block's name have to
-    // reach every span inside the strip — so the styling hook sits on the one
-    // element that is an ancestor of all of them.
+    // CONTROL; `data-open` is on the strip so the stylesheet can reach the caret
+    // without a second carrier. It no longer swaps the glance for the block's
+    // name — see the note at the top of this file.
     strip.dataset.open = String(this.open);
 
     const note = noteFor(snap, win, now, true);
@@ -352,12 +369,6 @@ export class LimitsBlock {
 
     const line = document.createElement("span");
     line.className = "lim-line";
-    // The block's name, and it shows only while the rows are open — at which
-    // point every reading below says what this line was saying, and a strip
-    // repeating the row above it is the same fact printed twice. Folded, the
-    // reading is worth more than the word; open, the word is all that is left to
-    // say, and it is where a person finally learns what the strip is called.
-    line.append(span("lim-word", "Limits"));
     line.append(span("lim-name", snap.label));
     if (win) {
       line.append(span("lim-reading", readingOf(win)));
@@ -376,9 +387,13 @@ export class LimitsBlock {
     line.append(caret);
     open.append(line);
 
-    // The second line, and the only thing that can make this strip two lines
-    // tall: it appears when something is nearly or wholly spent, which is when
-    // being larger is the point rather than the complaint.
+    // The words about the state, and in the bar they are INLINE after the reading
+    // rather than on a second line under it. The second line was affordable at
+    // the foot of a panel — "being larger is the point rather than the
+    // complaint" — and a 44px bar has no second line to give. So this costs
+    // width instead, which is what ADR-0011's amendment is about: the tier and
+    // the reading are ADR-0009's floor and never give way, and the NAME is what
+    // truncates when the bar runs out.
     if (note) open.append(footOf(note, alarm));
     strip.append(open);
 

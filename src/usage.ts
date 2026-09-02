@@ -49,8 +49,7 @@ function byUrgency(a: LimitWindow | null, b: LimitWindow | null): number {
   return (b?.usedFraction ?? -1) - (a?.usedFraction ?? -1);
 }
 
-/** What the one line at the foot of the panel says, out of every connected AI at
- *  once.
+/** What the one line in the top bar says, out of every connected AI at once.
  *
  *  One AI is named and the rest are counted, because the question a glance asks
  *  is "can I keep working" and that is answered by whichever AI is worst off —
