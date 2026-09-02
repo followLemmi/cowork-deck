@@ -4,7 +4,6 @@ import {
   deckLimit,
   formatReset,
   limitFoot,
-  formatTokens,
   LimitNotifier,
   meterFraction,
   primaryWindow,
@@ -319,18 +318,7 @@ describe("how much of the meter to fill", () => {
   });
 });
 
-describe("tokens, at the precision anybody reads them at", () => {
-  it("never rounds up to a figure that has not been reached", () => {
-    expect(formatTokens(999_999)).toBe("999k");
-    expect(formatTokens(1_099_999)).toBe("1.0M");
-  });
-
-  it("leaves small numbers alone", () => {
-    expect(formatTokens(0)).toBe("0");
-    expect(formatTokens(999)).toBe("999");
-    expect(formatTokens(1_000)).toBe("1k");
-  });
-});
+// `formatTokens` and its cases moved to `src/format.ts` — see there.
 
 describe("a reset time", () => {
   const now = new Date("2026-08-27T13:30:00").getTime();
