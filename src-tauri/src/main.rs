@@ -23,6 +23,7 @@ mod tray;
 mod usage;
 mod which;
 mod ownership;
+mod reachable;
 mod windows;
 use cowork_deck::tasks;
 
@@ -159,8 +160,25 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // Config dir for the store.
-            let dir = app.path().app_config_dir().expect("app config dir");
+            // Config dir for the store. Everything below is rooted here — the
+            // store, the journal, the memory corpus, the single-instance claim
+            // — so there is nothing to degrade to and this is the one place a
+            // failure is fatal. An error rather than a panic, though: `setup`
+            // returns `Result`, and Tauri reports what comes out of it, where a
+            // panic here gave a backtrace naming this line and nothing a person
+            // could act on (#463).
+            let dir = match app.path().app_config_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    return Err(format!(
+                        "cowork-deck cannot find a configuration directory to use, and \
+                         everything it remembers lives in one: {e}. On Linux this is \
+                         $XDG_CONFIG_HOME or ~/.config; on macOS ~/Library/Application \
+                         Support.",
+                    )
+                    .into());
+                }
+            };
             let store = store::Store::new(dir.clone());
 
             // A scheduled scenario now runs only in the workspace it is pinned
@@ -206,13 +224,32 @@ fn main() {
             memory::spawn_reindex();
 
             // Start the status listener on the tokio runtime Tauri provides.
+            //
+            // A bind that fails is not fatal, and used to be (#463): a firewall
+            // or a security product that forbids a loopback listener took the
+            // whole app down with `expect("listener bind")`, on a machine where
+            // every terminal would have worked. Port 0 is the "no listener"
+            // value, and it degrades along a path the app already has — the
+            // reporter's `TcpStream::connect` to port 0 fails at once and it
+            // exits quietly, exactly as it does when the app is not running, so
+            // a tile's state label stays `idle` while the terminal under it is
+            // unaffected. That is the graceful degradation the README
+            // documents, reached by one more route.
             let handle_for_cb = handle.clone();
             let port = tauri::async_runtime::block_on(async move {
                 listener::start_listener(move |session, state| {
                     commands::emit_state(&handle_for_cb, session, state);
                 })
                 .await
-                .expect("listener bind")
+            })
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "warning: could not listen on 127.0.0.1 ({e}). Sessions will run, but \
+                     nothing will report their state: every tile will read `idle`, \
+                     notifications and the waiting count will stay empty, and a session \
+                     will not be handed what memory has on its prompt.",
+                );
+                0
             });
             // And now the guard can say where to knock. Until this line the
             // claim on the config directory names a pid and nothing else, so a
@@ -443,8 +480,6 @@ fn main() {
             sync_cmd::sync_questions,
             sync_cmd::sync_merge_workspaces,
             sync_cmd::sync_keep_distinct,
-            sync_cmd::sync_blocked_kinds,
-            sync_cmd::sync_fault,
             commands::start_command_session,
             commands::gh_status,
             commands::pr_list,
@@ -519,10 +554,8 @@ fn main() {
                     // while the window has focus, so a person who clears, tabs
                     // away and quits an hour later never ticked at all. A hard
                     // kill still loses it, as it loses every other unsaved thing.
-                    if let Ok(store) = state.store.lock() {
-                        if let Err(e) = store.update_resume_ids(&resume_ids::all()) {
-                            eprintln!("warning: could not write the conversations to resume ({e})");
-                        }
+                    if let Err(e) = state.store().update_resume_ids(&resume_ids::all()) {
+                        eprintln!("warning: could not write the conversations to resume ({e})");
                     }
                     state.pty.kill_all();
                 }

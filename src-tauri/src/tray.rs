@@ -604,7 +604,7 @@ pub fn tray_resize(app: AppHandle, height: f64) {
     // No floor beyond "positive": the panel is as tall as what it drew, and on a
     // machine with no AI and no sessions that is two sentences and a footer.
     // `PANEL_HEIGHT` is only what the window opens at before the page reports.
-    let h = height.max(1.0).min(PANEL_MAX_HEIGHT);
+    let h = height.clamp(1.0, PANEL_MAX_HEIGHT);
     if win.set_size(LogicalSize::new(PANEL_WIDTH, h)).is_err() {
         return;
     }
