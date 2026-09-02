@@ -1,0 +1,13 @@
+# A `#[tauri::command]` spends up to four parameters before the first one the
+# frontend sends: `AppHandle`, the `WebviewWindow`, `State<AppState>` and an
+# output `Channel`. Against clippy's default of 7 that leaves three payload
+# fields before the lint fires, which is below what several of these commands
+# legitimately take — `start_shell_session` sends five, and bundling five named
+# properties into a struct to satisfy an arity count would be worse to read at
+# both ends.
+#
+# 9 rather than "off": the lint still caught the real case. `start_session` took
+# fourteen, and at that width `cols`/`rows` and two adjacent `bool`s could be
+# swapped by a caller and still compile — that one became `LaunchRequest`, and
+# this threshold is what keeps the next one from getting there.
+too-many-arguments-threshold = 9

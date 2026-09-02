@@ -525,7 +525,13 @@ export const startSession = (
    *  launches can be in flight before the first resolves. */
   replace = false,
 ) => invoke<SessionAuth>("start_session", {
-  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, sink, scenario, replace,
+  /* One `req` object, not eleven properties: the Rust side takes a
+     `LaunchRequest` struct, because at fourteen parameters `cols`/`rows` and the
+     two adjacent booleans could be swapped by a caller and still compile. `sink`
+     stays outside it — Tauri gives a `Channel` its identity from the payload,
+     and it does not deserialise from inside a struct. */
+  req: { session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario, replace },
+  sink,
 });
 
 /** Resolve a workspace's account binding and `claude`'s location ahead of a

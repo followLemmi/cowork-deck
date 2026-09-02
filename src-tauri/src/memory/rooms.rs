@@ -315,9 +315,8 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = dir.join(format!(".{name}.tmp"));
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    std::fs::rename(&tmp, path).inspect_err(|_e| {
         let _ = std::fs::remove_file(&tmp);
-        e
     })
 }
 

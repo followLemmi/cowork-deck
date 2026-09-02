@@ -129,6 +129,68 @@ pub struct AppState {
     pub usage: std::sync::Arc<crate::usage::registry::Registry>,
 }
 
+/// Take one of `AppState`'s locks, poisoned or not.
+///
+/// A poisoned mutex is one whose holder panicked while holding it. `lock()` then
+/// returns `Err` **forever**, so `lock().unwrap()` converts a single panic inside
+/// one command into a panic in every later command touching the same lock: the
+/// app is dead from the first fault rather than degraded by it. The store lock is
+/// the worst of them, because nearly every command takes it — a panic anywhere
+/// under `save_workspace` and the deck stops answering, including the commands
+/// that would let a person save their work and leave.
+///
+/// `PoisonError::into_inner` takes the guard anyway, and that is sound for these
+/// six specifically. None of them guards an invariant-carrying structure that can
+/// be observed mid-update: `Store` is a handle to a directory, re-reading and
+/// atomically rewriting whole JSON files (see `store.rs`), and the five caches
+/// beside it are maps whose worst reachable state is a stale or missing entry —
+/// each one already has a miss path, because each is empty on launch. A torn
+/// write is not observable through any of them, so carrying on with the data as
+/// it stands is strictly better than refusing to serve it.
+///
+/// Three styles used to coexist for the store lock alone: `unwrap()` in nineteen
+/// places, `map_err(|_| "store lock")` in six, `if let Ok` in four. The same fault
+/// was therefore fatal, an error message, or silence depending on which command
+/// met it first (#463).
+fn taken<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The six locks in `AppState`, each reached by a method that cannot panic.
+///
+/// The fields stay `pub` because `main.rs` builds the state with a struct
+/// literal, so the accessors are a convention rather than a wall — and
+/// `no_state_lock_is_unwrapped` below is what makes the convention hold.
+impl AppState {
+    /// The store: workspaces, skills, layouts, the journal, `ui_state`.
+    pub fn store(&self) -> std::sync::MutexGuard<'_, Store> { taken(&self.store) }
+
+    /// Account tokens, in memory only. See `workspace_token`.
+    pub fn gh_tokens(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<(String, String), String>> {
+        taken(&self.gh_tokens)
+    }
+
+    /// Per-workspace repository facts, as `gh` resolved them.
+    pub fn gh_repos(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, cowork_deck::tasks::gh_issues::RepoFacts>> {
+        taken(&self.gh_repos)
+    }
+
+    /// Identity environments resolved ahead of a launch. See `session_auth`.
+    pub fn session_envs(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, AuthOutcome>> {
+        taken(&self.session_envs)
+    }
+
+    /// Live shell ids, for the cap in `start_shell_session`.
+    pub fn shells(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+        taken(&self.shells)
+    }
+
+    /// The open-issue count each GitHub workspace's board last saw.
+    pub fn issue_open_counts(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, usize>> {
+        taken(&self.issue_open_counts)
+    }
+}
+
 /// Build the argv (after the program name) for launching an interactive claude
 /// session. First launch pins our own session id via `--session-id`; restart/
 /// restore resumes a conversation via `--resume` (no prompt — context already
@@ -210,27 +272,26 @@ pub fn build_claude_args(
 /// damaged, uncleared ones included, and those are the great majority and would
 /// all have been right. A tile that loses one `/clear` is the smaller harm than
 /// a deck that will not restart anything, so this reads what it can get.
-fn resume_target(store: &Mutex<Store>, session: &str) -> String {
+fn resume_target(store: &Store, session: &str) -> String {
     if let Some(current) = crate::resume_ids::get(session) {
         return current;
     }
-    // One small JSON file in the app's own directory, and the lock is taken and
-    // released here rather than held into the launch — see the note at the top
-    // of this file about what `start_session` may and may not do.
+    // Takes the store rather than the mutex, and the caller passes
+    // `&state.store()` — so the guard is a temporary, dropped at the end of that
+    // statement rather than held into the launch. See the note at the top of
+    // this file about what `start_session` may and may not do. It used to take
+    // the mutex and `lock().ok()`, which meant a poisoned lock fell back to the
+    // launch id silently: after a `/clear` that is the conversation the person
+    // just left, resumed on purpose (#463).
     //
     // Every window's entries, not this window's: a session that was handed to
     // another deck is owned by that one, and the id it should resume is a fact
     // about the conversation rather than about who is showing it.
     store
-        .lock()
-        .ok()
-        .and_then(|store| {
-            store
-                .layout()
-                .into_iter()
-                .find(|e| e.session_id == session)
-                .and_then(|e| e.resume_id)
-        })
+        .layout()
+        .into_iter()
+        .find(|e| e.session_id == session)
+        .and_then(|e| e.resume_id)
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| session.to_string())
 }
@@ -345,33 +406,25 @@ fn run_status_of(exit: &crate::pty::Exit) -> crate::runs::RunStatus {
 /// survive an invoke that fails.
 #[tauri::command]
 pub fn list_workspaces(state: State<AppState>) -> Result<Vec<Workspace>, String> {
-    state.store.lock().unwrap().try_workspaces().map_err(|e| e.to_string())
+    state.store().try_workspaces().map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Workspace>, String> {
     // The binding may have just changed; a stale cached token would keep this
     // workspace talking as the old account. The map holds a handful of entries,
     // so clearing all of it costs nothing and precision buys nothing.
-    if let Ok(mut cache) = state.gh_tokens.lock() {
-        cache.clear();
-    }
+    state.gh_tokens().clear();
     // The resolved environment is the same binding one step further on: a
     // workspace that now points at another account would otherwise keep handing
     // new sessions the old account's token. This is the invalidation point the
     // fork-time resolution never had.
-    if let Ok(mut cache) = state.session_envs.lock() {
-        cache.clear();
-    }
+    state.session_envs().clear();
     // A re-pointed folder is a different repository, and a re-sourced tracker is
     // a different count. Both caches are keyed by workspace, so both would
     // otherwise keep answering for the workspace this one used to be.
-    if let Ok(mut cache) = state.gh_repos.lock() {
-        cache.clear();
-    }
-    if let Ok(mut cache) = state.issue_open_counts.lock() {
-        cache.clear();
-    }
-    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    state.gh_repos().clear();
+    state.issue_open_counts().clear();
+    let store = state.store();
     // Seeded the same way the tracker reads them, so a version 1 config's
     // cards are not forgotten by the very save that bumps it to version 2.
     let old = store
@@ -385,7 +438,7 @@ pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Works
 #[tauri::command]
 pub fn remove_workspace(state: State<AppState>, id: String) -> Result<Vec<Workspace>, String> {
     let (left, dir) = {
-        let store = state.store.lock().unwrap();
+        let store = state.store();
         (store.delete_workspace(&id).map_err(|e| e.to_string())?, store.dir.clone())
     };
     // Deletion is an event, and this is the moment it happens. Sync cannot work
@@ -398,16 +451,16 @@ pub fn remove_workspace(state: State<AppState>, id: String) -> Result<Vec<Worksp
 }
 #[tauri::command]
 pub fn list_skills(state: State<AppState>) -> Vec<Skill> {
-    state.store.lock().unwrap().skills()
+    state.store().skills()
 }
 #[tauri::command]
 pub fn save_skill(state: State<AppState>, sk: Skill) -> Result<Vec<Skill>, String> {
-    state.store.lock().unwrap().upsert_skill(sk).map_err(|e| e.to_string())
+    state.store().upsert_skill(sk).map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn remove_skill(state: State<AppState>, id: String) -> Result<Vec<Skill>, String> {
     let (left, dir) = {
-        let store = state.store.lock().unwrap();
+        let store = state.store();
         (store.delete_skill(&id).map_err(|e| e.to_string())?, store.dir.clone())
     };
     crate::sync::publish::forget_scenario(&dir, &id);
@@ -432,7 +485,7 @@ pub struct ScheduleView {
 pub fn load_schedule_state(
     state: State<AppState>,
 ) -> std::collections::HashMap<String, ScheduleView> {
-    let store = state.store.lock().unwrap();
+    let store = state.store();
     let runs = store.schedule_state();
     let skills = store.skills();
     let now = chrono::Local::now().naive_local();
@@ -473,7 +526,7 @@ pub fn schedule_ack(
     // attempts that launched nothing, and deriving "did we already fire" by
     // scanning the journal would be both slower and semantically wrong.
     {
-        let store = state.store.lock().unwrap();
+        let store = state.store();
         let mut st = store.schedule_state();
         let Some(updated) = crate::scheduler::apply_ack(st.get(&skill_id), occurrence_ms, &outcome)
         else {
@@ -506,7 +559,7 @@ pub fn list_runs(
     workspace_id: Option<String>,
     skill_id: Option<String>,
 ) -> Vec<crate::runs::RunRecord> {
-    let runs = { state.store.lock().unwrap().runs() };
+    let runs = { state.store().runs() };
     crate::runs::scoped(runs, workspace_id.as_deref(), skill_id.as_deref())
 }
 
@@ -519,7 +572,7 @@ pub fn delete_skill_history(
     skill_id: String,
     workspace_id: Option<String>,
 ) -> Result<(), String> {
-    let store = state.store.lock().unwrap();
+    let store = state.store();
     store
         .delete_skill_history(&skill_id, workspace_id.as_deref())
         .map_err(|e| e.to_string())
@@ -572,8 +625,20 @@ pub fn reveal_argv(path: &std::path::Path) -> (String, Vec<String>) {
 /// this must not become the one that does not. Their stdio is discarded too —
 /// `xdg-open`'s diagnostics belong nowhere near the app's own output.
 #[tauri::command(async)]
-pub fn reveal_path(path: String) -> Result<(), String> {
-    let p = std::path::PathBuf::from(&path);
+pub fn reveal_path(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    // Checked before the file test, so a path outside every root reports the
+    // refusal rather than reporting on a file's existence — a "no longer there"
+    // for a path that was never openable would answer a question nobody asked.
+    // The three roots are a workspace and its worktrees, this app's own config
+    // directory, and Claude Code's project directory; see `reachable`.
+    if !revealable_roots(&state).contains(&path) {
+        return Err("That file is not one this app has anything to do with.".into());
+    }
+    reveal_file(&path)
+}
+
+fn reveal_file(path: &str) -> Result<(), String> {
+    let p = std::path::PathBuf::from(path);
     if !p.is_file() {
         return Err("The transcript is no longer there.".into());
     }
@@ -781,7 +846,7 @@ pub fn resolve_session_auth(
 /// installation that already has the directory from an older build gets it
 /// fixed, and a failed login cannot leave it writable behind itself.
 fn noauth_dir(state: &State<AppState>) -> std::path::PathBuf {
-    let dir = state.store.lock().unwrap().dir.join("gh-noauth");
+    let dir = state.store().dir.join("gh-noauth");
     let _ = std::fs::create_dir_all(&dir);
     harden_noauth_dir(&dir);
     dir
@@ -821,7 +886,7 @@ fn session_auth(
     github: Option<&WorkspaceGithub>,
 ) -> AuthOutcome {
     if let Some(id) = workspace_id {
-        let hit = state.session_envs.lock().ok().and_then(|c| c.get(id).cloned());
+        let hit = state.session_envs().get(id).cloned();
         if let Some(outcome) = hit {
             return outcome;
         }
@@ -830,9 +895,7 @@ fn session_auth(
     let outcome =
         resolve_session_auth(github, &dir.to_string_lossy(), std::time::Duration::from_secs(5));
     if let (Some(id), None) = (workspace_id, outcome.auth.degraded.as_ref()) {
-        if let Ok(mut cache) = state.session_envs.lock() {
-            cache.insert(id.to_string(), outcome.clone());
-        }
+        state.session_envs().insert(id.to_string(), outcome.clone());
     }
     outcome
 }
@@ -862,10 +925,7 @@ pub fn prepare_workspace(state: State<AppState>, workspace_id: String) -> Sessio
     // somebody is watching.
     let _ = which::login_path();
     let github = {
-        let store = match state.store.lock() {
-            Ok(s) => s,
-            Err(_) => return SessionAuth { account: None, degraded: None },
-        };
+        let store = state.store();
         store.workspaces().into_iter().find(|w| w.id == workspace_id).and_then(|w| w.github)
     };
     session_auth(&state, Some(&workspace_id), github.as_ref()).auth
@@ -1017,13 +1077,11 @@ pub fn pr_changed_files_argv(repo: &str, number: u64) -> Vec<String> {
 /// never logged, never persisted, dropped when a binding changes.
 fn workspace_token(state: &State<AppState>, cfg: &WorkspaceGithub) -> Option<String> {
     let key = (cfg.host.clone(), cfg.login.clone());
-    if let Some(t) = state.gh_tokens.lock().ok()?.get(&key) {
+    if let Some(t) = state.gh_tokens().get(&key) {
         return Some(t.clone());
     }
     let t = gh::token(&cfg.host, &cfg.login, std::time::Duration::from_secs(5)).ok()?;
-    if let Ok(mut cache) = state.gh_tokens.lock() {
-        cache.insert(key, t.clone());
-    }
+    state.gh_tokens().insert(key, t.clone());
     Some(t)
 }
 
@@ -1052,7 +1110,7 @@ fn gh_invocation(
     // `gh::token` blocks for up to five seconds, and holding the shared mutex
     // that long would stall every other operation on the store.
     let ws = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let store = state.store();
         store.workspaces().into_iter().find(|w| w.id == workspace_id)
     }
     .ok_or_else(|| "no such workspace".to_string())?;
@@ -1220,7 +1278,7 @@ pub(crate) fn repo_facts_for(
     state: &State<AppState>,
     workspace_id: &str,
 ) -> Result<cowork_deck::tasks::gh_issues::RepoFacts, String> {
-    if let Some(f) = state.gh_repos.lock().ok().and_then(|c| c.get(workspace_id).cloned()) {
+    if let Some(f) = state.gh_repos().get(workspace_id).cloned() {
         return Ok(f);
     }
     let json = run_gh_for_workspace(
@@ -1229,9 +1287,7 @@ pub(crate) fn repo_facts_for(
         &cowork_deck::tasks::gh_issues::repo_facts_argv(),
     )?;
     let facts = cowork_deck::tasks::gh_issues::parse_repo_facts(&json)?;
-    if let Ok(mut cache) = state.gh_repos.lock() {
-        cache.insert(workspace_id.to_string(), facts.clone());
-    }
+    state.gh_repos().insert(workspace_id.to_string(), facts.clone());
     Ok(facts)
 }
 
@@ -1450,7 +1506,7 @@ fn worktree_is_clean(path: &std::path::Path) -> Result<bool, String> {
 /// git process ever runs while it is held.
 fn workspace_path(state: &State<AppState>, workspace_id: &str) -> Result<String, String> {
     let found = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let store = state.store();
         store.workspaces().into_iter().find(|w| w.id == workspace_id).map(|w| w.path)
     };
     // Empty is not the same as absent, and both are refused: a workspace that
@@ -1771,21 +1827,49 @@ pub fn issue_worktree_remove(
     Ok(())
 }
 
+/// Everything the frontend supplies to launch a `claude` session.
+///
+/// A struct rather than fourteen parameters, which is what this was (#463). The
+/// arity was not the whole objection: at that width a caller passing `cols` where
+/// `rows` belongs, or a `bool` into the wrong one of two, compiles — and both
+/// pairs are adjacent here. Named fields on one side and named properties on the
+/// other remove the class.
+///
+/// The four things NOT in here are the ones the frontend does not send: the
+/// `AppHandle`, the window, the state, and the output channel. `sink` in
+/// particular has to stay a parameter of its own — Tauri gives a `Channel` its
+/// identity from the payload, and burying it in a struct is not a shape it
+/// deserialises.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRequest {
+    pub session: String,
+    pub cwd: String,
+    pub workspace_id: Option<String>,
+    pub initial_prompt: Option<String>,
+    /// Set when the session is launched from (or restored with) a tracker card —
+    /// see `session_env`.
+    pub task_id: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
+    pub resume: bool,
+    /// Set when this launch comes from a scenario, by any route. Absent for a
+    /// card, an issue, a pull request or a bare "+ session" — the journal answers
+    /// "what did my scenarios do", not "what did I run yesterday".
+    pub scenario: Option<crate::run_journal::ScenarioLaunch>,
+    /// Deliberately replacing a process that is still live under this id — the
+    /// restart button, and nothing else. Left false, a launch into an id that is
+    /// already running is refused rather than silently killing what is there; see
+    /// `PtyManager::spawn`.
+    pub replace: bool,
+}
+
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
     window: tauri::WebviewWindow,
     state: State<AppState>,
-    session: String,
-    cwd: String,
-    workspace_id: Option<String>,
-    initial_prompt: Option<String>,
-    // Set when the session is launched from (or restored with) a tracker
-    // card — see `session_env`.
-    task_id: Option<String>,
-    cols: u16,
-    rows: u16,
-    resume: bool,
+    req: LaunchRequest,
     // Where this session's pty output goes.
     //
     // A per-session `Channel` rather than a broadcast `app.emit`, and the
@@ -1803,16 +1887,19 @@ pub fn start_session(
     // preserved by the index the JS `Channel` reorders on, so the byte stream
     // stays intact across a glyph split by a batch boundary.
     sink: Channel<Response>,
-    // Set when this launch comes from a scenario, by any route. Absent for a
-    // card, an issue, a pull request or a bare "+ session" — the journal
-    // answers "what did my scenarios do", not "what did I run yesterday".
-    scenario: Option<crate::run_journal::ScenarioLaunch>,
-    // Deliberately replacing a process that is still live under this id — the
-    // restart button, and nothing else. Left false, a launch into an id that is
-    // already running is refused rather than silently killing what is there;
-    // see `PtyManager::spawn`.
-    replace: bool,
 ) -> Result<SessionAuth, String> {
+    let LaunchRequest {
+        session,
+        cwd,
+        workspace_id,
+        initial_prompt,
+        task_id,
+        cols,
+        rows,
+        resume,
+        scenario,
+        replace,
+    } = req;
     // A workspace that arrived over sync has no folder on this machine until
     // somebody says where it is (#316). Everything downstream — the pty's
     // working directory, worktrees, `gh` resolving a repository from where it
@@ -1838,7 +1925,7 @@ pub fn start_session(
     // The conversation, not merely the fact that there is one to resume: after a
     // `/clear` the launch id names the conversation the person left, and
     // resuming it succeeds — see `resume_target` (#199).
-    let resuming = resume.then(|| resume_target(&state.store, &session));
+    let resuming = resume.then(|| resume_target(&state.store(), &session));
     let args = build_claude_args(
         &settings, &initial_prompt, &session, resuming.as_deref(), &memory,
     );
@@ -1848,7 +1935,7 @@ pub fn start_session(
     // подвесить любую другую операцию со стором.
     let ws = match workspace_id.as_deref() {
         Some(id) => {
-            let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+            let store = state.store();
             store.workspaces().into_iter().find(|w| w.id == id)
         }
         None => None,
@@ -2115,7 +2202,7 @@ pub fn start_shell_session(
     // Ids the manager no longer holds are closed tabs; they must not count
     // toward the cap, and pruning here means no bookkeeping anywhere else.
     {
-        let mut shells = state.shells.lock().map_err(|_| "shell registry".to_string())?;
+        let mut shells = state.shells();
         shells.retain(|id| state.pty.is_live(id));
         if !shells.contains(&session) && shells.len() >= MAX_SHELLS {
             return Err(format!("terminal-limit:{MAX_SHELLS}"));
@@ -2124,7 +2211,7 @@ pub fn start_shell_session(
 
     let ws = match workspace_id.as_deref() {
         Some(id) => {
-            let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+            let store = state.store();
             store.workspaces().into_iter().find(|w| w.id == id)
         }
         None => None,
@@ -2158,9 +2245,7 @@ pub fn start_shell_session(
         .map_err(|e| e.to_string())?;
 
     state.session_owners.claim(&session, window.label());
-    if let Ok(mut shells) = state.shells.lock() {
-        shells.insert(session);
-    }
+    state.shells().insert(session);
     Ok(ShellStart { auth: outcome.auth, identity, program: shell_name(&program) })
 }
 
@@ -2192,7 +2277,7 @@ pub fn session_jobs(state: State<AppState>, session: String) -> usize {
 
 #[tauri::command]
 pub fn load_terminals(state: State<AppState>) -> crate::model::TerminalLayout {
-    state.store.lock().unwrap().terminals()
+    state.store().terminals()
 }
 
 #[tauri::command]
@@ -2200,7 +2285,7 @@ pub fn save_terminals(
     state: State<AppState>,
     layout: crate::model::TerminalLayout,
 ) -> Result<(), String> {
-    state.store.lock().unwrap().save_terminals(&layout).map_err(|e| e.to_string())
+    state.store().save_terminals(&layout).map_err(|e| e.to_string())
 }
 
 /// Input for a session, from the window that owns it.
@@ -2468,7 +2553,7 @@ pub async fn open_workspace_window(
     // re-reads its list when it hears this.
     let title = {
         // Scoped: the guard must not be held across the await below.
-        let store = state.store.lock().unwrap();
+        let store = state.store();
         store.workspaces().into_iter().find(|w| w.id == workspace_id).map(|w| w.name)
     }
     .ok_or_else(|| "that workspace is no longer in the store".to_string())?;
@@ -2555,7 +2640,7 @@ fn fit_to_display(window: &tauri::WebviewWindow) {
 /// `src/ipc.ts` is unchanged and stays that way.
 #[tauri::command]
 pub fn load_layout(window: tauri::WebviewWindow, state: State<AppState>) -> Vec<SessionEntry> {
-    state.store.lock().unwrap().layout_for(window.label())
+    state.store().layout_for(window.label())
 }
 
 /// Write this window's tiles into `sessions.json` without disturbing another
@@ -2585,13 +2670,13 @@ pub fn save_layout(
             entry.resume_id = Some(current);
         }
     }
-    let store = state.store.lock().unwrap();
+    let store = state.store();
     store.save_layout(window.label(), &sessions).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn load_ui_state(state: State<AppState>) -> UiState {
-    state.store.lock().unwrap().ui_state()
+    state.store().ui_state()
 }
 
 #[tauri::command]
@@ -2604,7 +2689,7 @@ pub fn save_ui_state(state: State<AppState>, ui: UiStatePatch) -> Result<(), Str
         state.usage_reported.store(on, std::sync::atomic::Ordering::Relaxed);
         state.usage.invalidate("claude");
     }
-    state.store.lock().unwrap().save_ui_state(&ui).map_err(|e| e.to_string())
+    state.store().save_ui_state(&ui).map_err(|e| e.to_string())
 }
 
 /// How long the whole snapshot may take.
@@ -2657,11 +2742,48 @@ pub fn emit_state(app: &AppHandle, session: String, state: crate::model::Session
     let _ = app.emit("session://state", StatePayload { session, state });
 }
 
+/// The directories a path from the frontend may name, derived from the store.
+///
+/// `worktrees` for the three `git -C` commands, whose argument is always a
+/// session's working directory; `revealable` for `reveal_path`, which is also
+/// asked about a note in the config directory and a transcript under Claude
+/// Code's own. See `reachable` for why this is derived rather than recorded, and
+/// for what it does and does not narrow.
+fn git_roots(state: &AppState) -> crate::reachable::Roots {
+    let store = state.store();
+    let workspaces = store.workspaces();
+    crate::reachable::Roots::worktrees(workspaces.iter().map(|w| w.path.as_str()))
+}
+
+fn revealable_roots(state: &AppState) -> crate::reachable::Roots {
+    let store = state.store();
+    let workspaces = store.workspaces();
+    crate::reachable::Roots::revealable(
+        workspaces.iter().map(|w| w.path.as_str()),
+        &store.dir,
+    )
+}
+
 #[tauri::command(async)]
-pub fn git_status(cwd: String) -> GitStatus {
+pub fn git_status(state: State<'_, AppState>, cwd: String) -> GitStatus {
+    // A path outside every workspace answers the way an unreadable one does —
+    // the frontend already draws nothing for a branchless status, and a refusal
+    // it had to render would be a message about a path nobody typed.
+    if !git_roots(&state).contains(&cwd) {
+        return GitStatus { branch: None, dirty: false };
+    }
+    git_status_in(&cwd)
+}
+
+/// `git_status` with the reachability check already made.
+///
+/// Split out so the tests can reach it: the check needs `State<AppState>`, which
+/// a unit test cannot build, and a body only reachable through a Tauri command is
+/// a body with no tests. The same split is below for the other three.
+fn git_status_in(cwd: &str) -> GitStatus {
     use std::process::Command;
     let branch = Command::new("git")
-        .arg("-C").arg(&cwd)
+        .arg("-C").arg(cwd)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output().ok()
         .filter(|o| o.status.success())
@@ -2669,7 +2791,7 @@ pub fn git_status(cwd: String) -> GitStatus {
         .filter(|s| !s.is_empty() && s != "HEAD");
     let dirty = branch.is_some()
         && Command::new("git")
-            .arg("-C").arg(&cwd)
+            .arg("-C").arg(cwd)
             .args(["status", "--porcelain"])
             .output().ok()
             .map(|o| !o.stdout.is_empty())
@@ -2712,7 +2834,7 @@ fn config_files(dir: &std::path::Path) -> Vec<ConfigFile> {
 pub fn config_paths(state: State<AppState>) -> ConfigPaths {
     // The lock is taken and released around the reads rather than held across
     // them, which is the rule the note at the top of this file states.
-    let dir = { state.store.lock().unwrap().dir.clone() };
+    let dir = { state.store().dir.clone() };
     ConfigPaths {
         dir: dir.to_string_lossy().to_string(),
         files: config_files(&dir),
@@ -2733,10 +2855,17 @@ pub fn config_paths(state: State<AppState>) -> ConfigPaths {
 /// newline in it comes back quoted by git and is left that way rather than
 /// silently splitting into two files that do not exist.
 #[tauri::command(async)]
-pub fn worktree_files(cwd: String) -> Vec<String> {
+pub fn worktree_files(state: State<'_, AppState>, cwd: String) -> Vec<String> {
+    if !git_roots(&state).contains(&cwd) {
+        return Vec::new();
+    }
+    worktree_files_in(&cwd)
+}
+
+fn worktree_files_in(cwd: &str) -> Vec<String> {
     use std::process::Command;
     let out = Command::new("git")
-        .arg("-C").arg(&cwd)
+        .arg("-C").arg(cwd)
         .args(["ls-files", "--cached", "--others", "--exclude-standard"])
         .output().ok()
         .filter(|o| o.status.success())
@@ -2755,11 +2884,18 @@ pub fn worktree_files(cwd: String) -> Vec<String> {
 /// files and how, `--numstat` says how much. A file appears once, with zeroes when
 /// git has nothing to diff it against.
 #[tauri::command(async)]
-pub fn git_changes(cwd: String) -> GitChanges {
+pub fn git_changes(state: State<'_, AppState>, cwd: String) -> GitChanges {
+    if !git_roots(&state).contains(&cwd) {
+        return GitChanges { branch: None, files: Vec::new() };
+    }
+    git_changes_in(&cwd)
+}
+
+fn git_changes_in(cwd: &str) -> GitChanges {
     use std::process::Command;
     let git = |args: &[&str]| {
         Command::new("git")
-            .arg("-C").arg(&cwd)
+            .arg("-C").arg(cwd)
             .args(args)
             .output().ok()
             .filter(|o| o.status.success())
@@ -3462,7 +3598,7 @@ mod tests {
     /// going between the render and the click.
     #[test]
     fn revealing_a_file_that_is_gone_refuses_rather_than_spawning_anything() {
-        let err = reveal_path("/nowhere/at/all/missing.jsonl".into())
+        let err = reveal_file("/nowhere/at/all/missing.jsonl")
             .expect_err("a missing transcript must not reach the file manager");
         assert!(err.contains("no longer there"), "{err}");
     }
@@ -4260,10 +4396,10 @@ branch refs/heads/feature/y\n";
     #[test]
     fn resume_target_falls_back_to_the_launch_id() {
         let store = store_in_a_temp_dir();
-        assert_eq!(resume_target(&store, "t-plain"), "t-plain");
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-plain"), "t-plain");
         // Including one whose layout entry exists and says nothing.
         store.lock().unwrap().save_layout("main", &[entry("t-stored-none", None)]).unwrap();
-        assert_eq!(resume_target(&store, "t-stored-none"), "t-stored-none");
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-stored-none"), "t-stored-none");
     }
 
     /// The auto-restore path: the app has been closed and reopened, so nothing
@@ -4276,7 +4412,7 @@ branch refs/heads/feature/y\n";
             .unwrap()
             .save_layout("main", &[entry("t-restored", Some("conversation-2"))])
             .unwrap();
-        assert_eq!(resume_target(&store, "t-restored"), "conversation-2");
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-restored"), "conversation-2");
     }
 
     /// A `/clear` followed by a ⟳ before the poll tick has persisted anything —
@@ -4291,7 +4427,7 @@ branch refs/heads/feature/y\n";
             .save_layout("main", &[entry("t-live", Some("conversation-2"))])
             .unwrap();
         crate::resume_ids::record("t-live", "conversation-3");
-        assert_eq!(resume_target(&store, "t-live"), "conversation-3");
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-live"), "conversation-3");
         crate::resume_ids::forget("t-live");
     }
 
@@ -4306,7 +4442,7 @@ branch refs/heads/feature/y\n";
             .unwrap()
             .save_layout("main", &[entry("t-blank", Some("   "))])
             .unwrap();
-        assert_eq!(resume_target(&store, "t-blank"), "t-blank");
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-blank"), "t-blank");
     }
 
     #[test]
@@ -4323,15 +4459,15 @@ branch refs/heads/feature/y\n";
         run(&["add", "."]);
         run(&["commit", "-m", "init"]);
 
-        let clean = git_status(cwd.to_string());
+        let clean = git_status_in(cwd);
         assert!(clean.branch.is_some(), "committed repo must report a branch");
         assert!(!clean.dirty, "just-committed repo is clean");
 
         std::fs::write(dir.join("b.txt"), "new").unwrap(); // untracked → dirty
-        let dirty = git_status(cwd.to_string());
+        let dirty = git_status_in(cwd);
         assert!(dirty.dirty, "untracked file makes it dirty");
 
-        let non_repo = git_status(std::env::temp_dir().to_str().unwrap().to_string());
+        let non_repo = git_status_in(std::env::temp_dir().to_str().unwrap());
         // temp_dir itself is not a repo (usually); branch None. Tolerate either but dirty must be false when branch is None.
         if non_repo.branch.is_none() { assert!(!non_repo.dirty); }
     }
@@ -4705,6 +4841,53 @@ branch refs/heads/feature/y\n";
         "quit_cancelled",
         "host_platform",
     ];
+
+    /// Every `AppState` lock is taken through its accessor, and none of them
+    /// panics on a poisoned mutex.
+    ///
+    /// Scanned rather than trusted, because the failure is invisible until it
+    /// happens and total when it does: a poisoned mutex returns `Err` forever, so
+    /// one `lock().unwrap()` on the store turns a single panic into a dead app —
+    /// every later command that touches the store panics too, including the ones
+    /// that would let a person save and leave. Nineteen of them were there when
+    /// the audit found this (#463).
+    ///
+    /// A scan for the field name is the right shape here, unlike the allow-list
+    /// above: the fault is one expression, spelled the same way every time, and a
+    /// new command reaching for `state.store.lock()` is exactly what this must
+    /// catch. `taken()` itself is the one place that may call `lock()`, and it is
+    /// matched by its own definition rather than by a field.
+    #[test]
+    fn no_state_lock_is_unwrapped() {
+        const LOCKS: [&str; 6] =
+            ["store", "gh_tokens", "gh_repos", "session_envs", "shells", "issue_open_counts"];
+        let files = [
+            ("commands.rs", include_str!("commands.rs")),
+            ("tasks_cmd.rs", include_str!("tasks_cmd.rs")),
+            ("sync_cmd.rs", include_str!("sync_cmd.rs")),
+            ("activity/mod.rs", include_str!("activity/mod.rs")),
+        ];
+        let mut found = Vec::new();
+        for (name, src) in files {
+            for (i, line) in src.lines().enumerate() {
+                // This test's own source names the pattern it forbids.
+                if line.trim_start().starts_with("//") || line.contains("LOCKS") {
+                    continue;
+                }
+                for field in LOCKS {
+                    if line.contains(&format!(".{field}.lock()")) {
+                        found.push(format!("{name}:{} — {}", i + 1, line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "these take an AppState lock directly instead of through its accessor, so a \
+             poisoned mutex is fatal rather than survivable: {found:#?}. Use \
+             `state.store()` and its five siblings — see `taken()`.",
+        );
+    }
 
     /// A synchronous `#[tauri::command]` runs on the main thread, and on Linux that
     /// is the thread painting the WebView — so one that shells out freezes the
