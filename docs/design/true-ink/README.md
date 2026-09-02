@@ -546,11 +546,14 @@ doing the shooting — `magick` is what draws the window's rounded corners and r
 npm run contrast
 ```
 
-58 cases from `src/styles.css` and `src/terminal.ts`, 52 with a threshold and all of them
-clear, 3 documented rejections. The script reads both files rather than restating them, so
+78 cases from `src/styles.css` and `src/terminal.ts`, 73 with a threshold and all of them
+clear, 5 documented rejections. The script reads both files rather than restating them, so
 a palette edit moves these numbers instead of silently disagreeing with them. Six of the
 cases are this pass's: the ledger's two hues on the chrome and on the ground their own
 hover paints, and the rail's dot in both states.
+
+It runs in CI (#455). Before that it exited non-zero on failure and nobody called it, which
+made the gate an intention rather than a gate.
 
 ```
 npm test            # 1138, including the panel's contract and the 80-column floor

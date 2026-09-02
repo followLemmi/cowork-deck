@@ -4,7 +4,7 @@
 # `v*` tag — so the whole suite ran only where somebody remembered to run it,
 # and `dev` was a convention rather than a gate.
 #
-# Two things this deliberately does NOT do:
+# Three things this deliberately does NOT do:
 #
 #   * No `cargo fmt --check`. The Rust here is hand-formatted denser than
 #     rustfmt wants, throughout — adding the check would fail every run until
@@ -13,6 +13,10 @@
 #   * No bundling. `tauri build` is the release workflow's job; duplicating it
 #     per pull request would multiply the slowest step in the project for no
 #     answer that a tag build does not already give.
+#   * No `cargo clippy -- -D warnings`. The crate carries 21 warnings today;
+#     turning the gate on before they are fixed would fail every run, which is
+#     the same objection as `cargo fmt`. Unlike fmt, this one is meant to end —
+#     see #463.
 name: ci
 
 on:
@@ -49,6 +53,21 @@ jobs:
       - name: Tests
         run: npm test
 
+      # `scripts/contrast.mjs` exits non-zero when a pair the design system
+      # claims does not actually reach its WCAG ratio. It has been in the repo,
+      # exiting correctly, and called by nobody — so three green ticks could sit
+      # over a contrast regression (#455). It reads styles.css and needs no
+      # browser, which is why it costs a second and runs here rather than in a
+      # job of its own.
+      - name: Contrast
+        run: npm run contrast
+
+      # Two ADRs numbered 0010 and two numbered 0011 reached `dev` and stayed
+      # there (#451), which no test could have caught and a listing makes
+      # obvious. Cheap enough to sit beside the contrast gate.
+      - name: ADR numbering
+        run: npm run adr:check
+
   rust:
     # Both platforms, and not for symmetry: the terminal bugs this project has
     # shipped were platform-shaped. The Darwin tty caps a pty read at 1024 bytes
@@ -60,6 +79,12 @@ jobs:
       matrix:
         platform: [ubuntu-22.04, macos-latest]
     runs-on: ${{ matrix.platform }}
+    # Named by OS family rather than by runner label, and that is load-bearing:
+    # a required status check is matched by name, so `rust (ubuntu-22.04)` would
+    # silently stop being required the day this matrix moves to 24.04 — the check
+    # a branch ruleset waits for would be one that no longer runs, and every
+    # merge would block on a tick that never arrives.
+    name: rust (${{ startsWith(matrix.platform, 'ubuntu') && 'linux' || 'macos' }})
     steps:
       - uses: actions/checkout@v4
 

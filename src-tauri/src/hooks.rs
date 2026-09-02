@@ -27,7 +27,7 @@ pub fn build_settings_json(
     // stand for the rest of the session's life, and `working` is what the
     // scheduler's overlap guard and a card's status read (#333). The end of a
     // turn nobody reports is read off the terminal's own screen instead; see
-    // `src/interrupt.ts` and ADR-0011. Nothing about this table changes for it:
+    // `src/interrupt.ts` and ADR-0015. Nothing about this table changes for it:
     // a hook that does run is still the better answer, and this one stays the
     // only source for every turn that ends on its own.
     let mapping = [

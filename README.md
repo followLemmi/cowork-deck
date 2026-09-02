@@ -14,7 +14,7 @@ answers one question at a glance: *which of these needs me?*
 ![TypeScript](https://img.shields.io/badge/frontend-TypeScript-3178C6?logo=typescript&logoColor=white)
 ![xterm.js](https://img.shields.io/badge/terminal-xterm.js-2A2A2A)
 ![No framework](https://img.shields.io/badge/UI-vanilla%20TS-informational)
-![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-lightgrey)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows%20from%20source-lightgrey)
 
 <br />
 
@@ -461,16 +461,20 @@ npm run contrast                                    # every colour pair the desi
 cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
 ```
 
-> In a fresh clone or worktree, run `npm install && npm run build && npm run stage:reporter` once
-> before `cargo test`: neither `dist/` nor `src-tauri/binaries/` is in git, and Tauri's build script
-> fails without them.
+> In a fresh clone or worktree, run `npm install && npm run build && bash scripts/stage-sidecar.sh
+> --seed-only` once before `cargo test`: neither `dist/` nor `src-tauri/binaries/` is in git, and
+> Tauri's build script fails while any sidecar declared in `bundle.externalBin` is missing from disk.
+> `--seed-only` writes an empty placeholder for each of the three, which is all a `cargo test` needs;
+> `npm run tauri build` stages the real ones itself.
 
 **Two environment variables**, both optional: `COWORK_CLAUDE_PATH` pins a `claude` that is not on
 `PATH` (without it, and with none found, the app says so on startup), and `COWORK_GH_PATH` does the
 same for `gh`.
 
-**The memory sidecar** is a separate crate under `crates/cowork-memory`, built and tested on its own
-(`npm run stage:memory`). Its tests use a deterministic fake embedder; the ones needing the real model
+**The memory sidecar** is a separate crate under `crates/cowork-memory`, with a target directory of
+its own outside any root `[workspace]`, so `npm run stage:memory` builds and stages it rather than the
+script the other two sidecars share. `beforeBuildCommand` calls all three, so a release bundle carries
+the sidecar it declares. Its tests use a deterministic fake embedder; the ones needing the real model
 are `#[ignore]`d.
 
 ## The design
@@ -482,7 +486,8 @@ this ground a cast shadow has nowhere to go), and the terminal deliberately does
 palette — it is a window onto another program, and those six ANSI hues are Claude Code's.
 
 Every colour pair it claims is measured by `npm run contrast`, which fails if one falls under its
-threshold and documents the three that deliberately do. The reasoning, the tokens, the mockups and the
+threshold and documents the five that deliberately do. It runs on every pull request (#455), so a
+regression in the stylesheet cannot pass three green ticks. The reasoning, the tokens, the mockups and the
 measurements are in [docs/design/true-ink](docs/design/true-ink/README.md).
 
 ## Graceful degradation
@@ -528,7 +533,13 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 Two places and no third: **GitHub issues** carry the work, and **[`docs/adr/`](docs/adr/)** carries the
 decisions worth outliving the issue that prompted them. `CLAUDE.md` at the root is the contract for
 anyone — human or agent — sending a change: English everywhere that outlives a conversation, `dev` as
-the trunk, `main` as the released state.
+the trunk, `main` as the released state. **[`CONTEXT.md`](CONTEXT.md)** is the vocabulary those three
+are written in — what a tile is against a session, a workspace against a project, a note against a
+fact.
+
+Nine things in `docs/` are checklists rather than prose: what to look at in a real window, for the
+features whose faults a test cannot see. They are listed in **[`docs/README.md`](docs/README.md)**,
+which exists because they were reachable only by knowing they were there.
 
 The screenshots above come from [`harness/`](docs/images/README.md), which is the app itself with the
 backend replaced by fixtures: real xterm instances holding real bytes, invented accounts and

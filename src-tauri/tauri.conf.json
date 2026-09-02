@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml --bin cowork_report --bin cowork_task && npm run dev",
-    "beforeBuildCommand": "npm run build && npm run stage:reporter && npm run stage:task"
+    "beforeDevCommand": "bash scripts/stage-sidecar.sh --seed-only && cargo build --manifest-path src-tauri/Cargo.toml --bin cowork_report --bin cowork_task && npm run dev",
+    "beforeBuildCommand": "npm run build && npm run stage:reporter && npm run stage:task && npm run stage:memory"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -16,6 +16,8 @@
         "title": "cowork-deck",
         "width": 1200,
         "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
         "resizable": true
       }
     ],

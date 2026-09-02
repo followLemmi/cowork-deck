@@ -54,7 +54,7 @@ wired to launch the sidecar.
 
 > **Answered since.** It is the app's config directory — the store's directory
 > and the sync repository root, one and the same. ADR-0006 decided it for sync;
-> ADR-0010 says plainly that it is also the corpus root, so this paragraph is no
+> ADR-0014 says plainly that it is also the corpus root, so this paragraph is no
 > longer an open question.
 
 

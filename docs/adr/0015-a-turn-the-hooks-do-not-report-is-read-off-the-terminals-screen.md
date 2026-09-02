@@ -5,7 +5,11 @@ deciders:
   - evgenykharetski
 ---
 
-# ADR-0011 — A turn the hooks do not report is read off the terminal's own screen
+# ADR-0015 — A turn the hooks do not report is read off the terminal's own screen
+
+> Filed as ADR-0011 and renumbered here, for the reason ADR-0014 gives: two records claimed
+> 0011, and *The limits are one line at the foot of the panel* — landed minutes earlier and
+> referred to from four places in the code — keeps it. See #451.
 
 ## Context
 
