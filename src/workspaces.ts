@@ -137,8 +137,8 @@ export class WorkspacesPanel {
     private mount: HTMLElement,
     private onSelect: (ws: Workspace) => void,
     private onChanged?: () => void,
-    /** Привязка воркспейса к GitHub-аккаунту изменилась: живые сессии этого
-     *  воркспейса работают на устаревшем окружении до перезапуска. */
+    /** The workspace's GitHub binding changed, so its live sessions are running
+     *  on a stale environment until they restart. */
     private onGithubChanged: (workspaceId: string) => void = () => {},
     /** Whether selecting a workspace here is remembered as the app's startup
      *  workspace.

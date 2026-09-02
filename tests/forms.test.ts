@@ -160,8 +160,8 @@ describe("workspaceForm", () => {
     void workspaceForm();
     fillTracker("/vault", "");
     await settle();
-    // Не «ни одного вызова»: форма спрашивает `gh_status` при открытии, чтобы
-    // заполнить список аккаунтов. Молчать должен именно предпросмотр.
+    // Not "no calls at all": the form asks `gh_status` when it opens, to fill the
+    // account list. What has to stay silent is the preview.
     expect(invoke).not.toHaveBeenCalledWith("tracker_root_preview", expect.anything());
     expect(document.querySelector(".tk-f-preview-path")).toBeNull();
   });

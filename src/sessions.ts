@@ -20,9 +20,9 @@ import { linksInWorkspace, liveSessionForTask, taskPrompt, type TaskSessionLink 
 import { workingStep } from "./board-config";
 import { syncDotPhase } from "./dot-phase";
 
-/** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
- *  команды (установка gh, `gh auth login`): без хуков состояния, без
- *  перезапуска и, главное, без автовосстановления. */
+/** An ordinary tile is a `claude` session. A command tile is one run of
+ *  something the person typed — installing `gh`, `gh auth login` — with no state
+ *  hooks, no restart, and above all no restore on the next launch. */
 export type TileKind = "claude" | "command";
 
 interface Tile {
@@ -50,10 +50,12 @@ interface Tile {
   authBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
-  /** Исход привязки GitHub-аккаунта на момент СТАРТА процесса. Живой сессии
-   *  окружение не поменять, поэтому значение не обновляется до перезапуска. */
+  /** How the GitHub binding resolved at the moment the process STARTED. A live
+   *  session's environment cannot be changed, so this is not updated until it
+   *  restarts. */
   auth?: SessionAuth;
-  /** Привязка воркспейса изменилась после старта — окружение устарело. */
+  /** The workspace's binding changed after the start, so the environment this
+   *  session is running on is stale. */
   authStale?: boolean;
   kind?: TileKind;
   /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
@@ -722,8 +724,9 @@ export class Deck {
     b.className = "tile-auth hidden";
   }
 
-  /** Привязка воркспейса изменилась: у живых сессий окружение уже зафиксировано
-   *  при fork, поменять его нельзя — честно помечаем как устаревшее. */
+  /** The workspace's binding changed. A live session's environment was fixed at
+   *  fork and cannot be changed, so it is marked stale rather than quietly left
+   *  looking current. */
   markAuthStale(workspaceId: string) {
     for (const t of this.tiles.values()) {
       if (t.workspaceId !== workspaceId || t.kind === "command") continue;
@@ -732,9 +735,9 @@ export class Deck {
     }
   }
 
-  /** Открывает тайл с разовой пользовательской командой (установка gh,
-   *  `gh auth login`). Такой тайл не сохраняется в layout: восстановление
-   *  молча перезапустило бы sudo-команду на следующем старте приложения. */
+  /** Open a tile running one command the person typed — installing `gh`,
+   *  `gh auth login`. It is not saved to the layout: a restore would silently
+   *  re-run a `sudo` command on the app's next launch. */
   async openCommandTile(titleText: string, command: string, cwd: string) {
     await this.spawnTile({
       session: crypto.randomUUID(),
@@ -981,7 +984,7 @@ export class Deck {
      *  False for unattended work: a scheduled run announces itself through a
      *  notification, not by yanking the caret out of whatever is being typed. */
     grabAttention?: boolean;
-    /** "command" — разовый запуск `command` вместо сессии claude. */
+    /** `"command"` runs `command` once instead of starting a `claude` session. */
     kind?: TileKind;
     /** Take over a session that is already running instead of starting one, and
      *  put this scrollback back on screen first.
@@ -1210,7 +1213,7 @@ export class Deck {
         void this.persistLayout();
       } else if (isCommand) {
         await panel.startCommand(cwd, opts.command ?? "");
-        // Командный тайл в layout не попадает — persistLayout не зовём.
+        // A command tile is not in the layout, so `persistLayout` is not called.
       } else {
         tile.auth = await panel.start(
           cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume,
@@ -1767,8 +1770,8 @@ export class Deck {
     // Keeps the tile's rail in step with its chip. Two carriers, one source.
     tile.el.dataset.state = state;
     tile.label.textContent = LABEL[state];
-    // У командного тайла перезапуск не предлагаем: он поднял бы claude, а не
-    // повторил команду. Разовое действие повторяется из своего экрана.
+    // No restart is offered on a command tile: it would start `claude` rather
+    // than repeat the command. A one-off action is repeated from its own screen.
     const restartable = tile.kind !== "command" && (state === "ended" || state === "error");
     tile.restartBtn.style.display = restartable ? "inline" : "none";
     this.renderList();
@@ -2611,9 +2614,9 @@ export function serializeTiles(
   }[],
 ): SessionEntry[] {
   return tiles
-    // Командный тайл — разовое действие пользователя (установка пакета, вход в
-    // аккаунт). Восстанавливать его на следующем запуске нельзя: это молча
-    // выполнило бы sudo-команду без спроса.
+    // A command tile is one action the person took — installing a package,
+    // signing in. Restoring it on the next launch is not allowed: that would run
+    // a `sudo` command again without being asked.
     .filter((t) => t.kind !== "command")
     .map((t) => ({
       sessionId: t.session, cwd: t.workspacePath, name: t.name,
