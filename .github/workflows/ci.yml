@@ -36,7 +36,7 @@ jobs:
   frontend:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -86,7 +86,7 @@ jobs:
     # merge would block on a tick that never arrives.
     name: rust (${{ startsWith(matrix.platform, 'ubuntu') && 'linux' || 'macos' }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The crate depends on tauri, so even `cargo test` needs the webkit
       # headers. Same list as the release workflow's, minus the bundling-only
