@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { RunRecord, RunStatus } from "../src/ipc";
 import {
-  agoLabel, canEraseHistory, canJump, canRerun, canReveal, chainRuns, durationLabel,
+  canEraseHistory, canJump, canRerun, canReveal, chainRuns, durationLabel,
   emptyHistoryCopy, filterRuns, noResultReason, reconcileParams, RUN_STATUS_LABEL,
   RUN_TRIGGER_LABEL, runStatusClass,
 } from "../src/runs";
@@ -20,26 +20,7 @@ function rec(o: Partial<RunRecord> & Pick<RunRecord, "runId">): RunRecord {
   };
 }
 
-describe("agoLabel", () => {
-  it("counts in the unit a person would use", () => {
-    expect(agoLabel(NOW - 20_000, NOW)).toBe("just now");
-    expect(agoLabel(NOW - MIN, NOW)).toBe("1 minute ago");
-    expect(agoLabel(NOW - 12 * MIN, NOW)).toBe("12 minutes ago");
-    expect(agoLabel(NOW - 2 * HOUR, NOW)).toBe("2 hours ago");
-    expect(agoLabel(NOW - 3 * DAY, NOW)).toBe("3 days ago");
-  });
-
-  // Past a week "37 days ago" is arithmetic nobody asked for.
-  it("gives up and prints the date past a week", () => {
-    expect(agoLabel(NOW - 30 * DAY, NOW)).toBe(new Date(NOW - 30 * DAY).toLocaleDateString());
-  });
-
-  // Clocks do move backwards — a DST change, an NTP correction — and a journal
-  // entry claiming to be from the future is a distraction, not information.
-  it("does not report a record from the future", () => {
-    expect(agoLabel(NOW + 3 * MIN, NOW)).toBe("just now");
-  });
-});
+// `agoLabel` and its cases moved to `src/format.ts` — see there.
 
 describe("durationLabel", () => {
   it("says nothing at all while a run is still going", () => {
