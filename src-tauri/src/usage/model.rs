@@ -22,11 +22,18 @@ use serde::Serialize;
 /// earn. See `derive(PartialOrd)` below and the note on that function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
+// `Estimated` is never constructed today, and is not dead. ADR-0009 decision 1
+// declares four rungs and the frontend renders all four (`usage.ts`, and the
+// README names them); Claude is the only provider wired so far and it reports or
+// observes. Deleting the rung would narrow the ADR by way of a compiler warning,
+// and re-adding it later would be a change to the serialised contract. See #463.
+#[allow(dead_code)]
 pub enum UsageSource {
     /// Nothing is known. Not "zero" — the distinction this whole module exists
     /// for.
     Unknown,
-    /// This app worked it out from something adjacent, and says so.
+    /// This app worked it out from something adjacent, and says so. No provider
+    /// produces one yet — see the note above the enum.
     Estimated,
     /// This app can see it for itself, from the sessions it runs. Real, and
     /// narrower than the account: other terminals, other machines and subagents
@@ -269,6 +276,12 @@ impl Detection {
 /// string because the registry treats them differently: a timeout is a sentence
 /// about this app's own deadline, and everything else is the provider's.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Two of these are constructed only by the test registry (`registry.rs`), which
+// dead-code analysis does not count, so the non-test build warns about them.
+// They are the provider trait's contract rather than leftovers: a second provider
+// is what will produce them, and `message()` already has the sentence each one
+// puts on screen. See #463.
+#[allow(dead_code)]
 pub enum UsageError {
     /// The provider is not on this machine after all — it was between the
     /// detection and the fetch.
@@ -277,6 +290,7 @@ pub enum UsageError {
     Timeout,
     /// The provider can be asked, but not about this.
     Unsupported,
+    /// Anything else the provider itself reported, in its own words.
     Failed(String),
 }
 

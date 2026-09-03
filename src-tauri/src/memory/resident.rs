@@ -280,17 +280,6 @@ pub fn search(sidecar: &Sidecar, query: &str, scope: &Scope, top: usize) -> Opti
     reply.hits
 }
 
-/// Give the memory back now, whatever the idle clock says.
-///
-/// For a caller that knows nothing will be searched for a while. Nothing calls
-/// it yet; it exists so that the process has one way to be stopped that is not a
-/// timer, and so a test can prove the handle is droppable.
-pub fn release() {
-    if let Ok(mut slot) = held().lock() {
-        *slot = None;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,11 +321,5 @@ mod tests {
         // Dropping it kills the child, which is what the caller does on any
         // error from `ask`.
         drop(live);
-    }
-
-    #[test]
-    fn releasing_with_nothing_held_is_not_an_error() {
-        release();
-        release();
     }
 }

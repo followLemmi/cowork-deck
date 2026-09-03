@@ -49,6 +49,51 @@ beforeEach(() => {
   picker.pickFolder.mockReset();
 });
 
+/** The section a person opens from Settings, when the one read it starts with
+ *  fails.
+ *
+ *  This showed the section's blurb and NOTHING ELSE, for the life of the window,
+ *  with the rejection going nowhere — `void render()` swallowed it (#463). Which
+ *  is the same fault `renderOff` already has two guards against one level down:
+ *  "a failed listing is a fault, not an empty one". */
+describe("when whether sync is on cannot be read at all", () => {
+  it("says so, and offers the read again", async () => {
+    m.syncSummary.mockRejectedValue(new Error("ui_state.json is not readable"));
+    void syncDialog();
+    await settle();
+
+    expect(text()).toContain("could not be read");
+    expect(text()).toContain("ui_state.json is not readable");
+
+    // And the retry is a real one: the next read succeeds and the section fills.
+    m.syncSummary.mockResolvedValue(off);
+    document.querySelector<HTMLButtonElement>('[data-fk="sync-retry"]')!.click();
+    await settle();
+    expect(text()).not.toContain("could not be read");
+    expect(button(/switch on|create|connect/i)).toBeDefined();
+  });
+
+  /** A push arriving while the state cannot be read says nothing new about what
+   *  is on screen, and replacing a working panel with an error because one poll
+   *  failed is worse than leaving it alone. */
+  it("does not tear down a working panel over one failed push", async () => {
+    let push: ((s: typeof on.state) => void) | null = null;
+    m.onSyncState.mockImplementation((fn: (s: typeof on.state) => void) => {
+      push = fn;
+      return Promise.resolve(() => {});
+    });
+    m.syncSummary.mockResolvedValue(on);
+    void syncDialog();
+    await settle();
+    const before = text();
+
+    m.syncSummary.mockRejectedValue(new Error("gone"));
+    push!({ lastPull: 3, lastPush: 4, fault: null });
+    await settle();
+    expect(text()).toBe(before);
+  });
+});
+
 describe("switching sync on", () => {
   it("says what it publishes before anyone agrees to it", async () => {
     void syncDialog();

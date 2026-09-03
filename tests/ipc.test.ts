@@ -30,9 +30,15 @@ describe("ipc", () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
     const sink = {} as OutputSink;
     await startSession("s1", "/proj", "w1", "do the thing", "01AAA", 80, 24, false, sink);
+    // One `req` object and the channel beside it: the Rust command takes a
+    // `LaunchRequest`, and `sink` cannot live inside it — Tauri gives a
+    // `Channel` its identity from the payload's own property.
     expect(invoke).toHaveBeenCalledWith("start_session", {
-      session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing",
-      taskId: "01AAA", cols: 80, rows: 24, resume: false, sink, scenario: null, replace: false,
+      req: {
+        session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing",
+        taskId: "01AAA", cols: 80, rows: 24, resume: false, scenario: null, replace: false,
+      },
+      sink,
     });
   });
 
@@ -44,7 +50,7 @@ describe("ipc", () => {
     vi.mocked(invoke).mockResolvedValue({ account: null, degraded: null });
     await startSession("s1", "/proj", "w1", null, null, 80, 24, true, {} as OutputSink, null, true);
     expect(invoke).toHaveBeenCalledWith("start_session", expect.objectContaining({
-      replace: true,
+      req: expect.objectContaining({ replace: true }),
     }));
   });
 
@@ -86,10 +92,12 @@ describe("ipc", () => {
       continuesRunId: null,
     });
     expect(invoke).toHaveBeenCalledWith("start_session", expect.objectContaining({
-      scenario: {
-        runId: "r1", skillId: "sk1", trigger: "manual", params: { branch: "dev" },
-        continuesRunId: null,
-      },
+      req: expect.objectContaining({
+        scenario: {
+          runId: "r1", skillId: "sk1", trigger: "manual", params: { branch: "dev" },
+          continuesRunId: null,
+        },
+      }),
     }));
   });
 
@@ -97,8 +105,10 @@ describe("ipc", () => {
     vi.mocked(invoke).mockResolvedValue({ account: "followLemmi", degraded: null });
     const auth = await startSession("s1", "/proj", "w1", null, null, 80, 24, false, {} as OutputSink);
     expect(invoke).toHaveBeenCalledWith("start_session", expect.objectContaining({
-      session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: null,
-      taskId: null, cols: 80, rows: 24, resume: false, scenario: null, replace: false,
+      req: expect.objectContaining({
+        session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: null,
+        taskId: null, cols: 80, rows: 24, resume: false, scenario: null, replace: false,
+      }),
     }));
     expect(auth).toEqual({ account: "followLemmi", degraded: null });
   });

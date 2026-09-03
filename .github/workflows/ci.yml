@@ -4,7 +4,7 @@
 # `v*` tag — so the whole suite ran only where somebody remembered to run it,
 # and `dev` was a convention rather than a gate.
 #
-# Three things this deliberately does NOT do:
+# Two things this deliberately does NOT do:
 #
 #   * No `cargo fmt --check`. The Rust here is hand-formatted denser than
 #     rustfmt wants, throughout — adding the check would fail every run until
@@ -13,10 +13,10 @@
 #   * No bundling. `tauri build` is the release workflow's job; duplicating it
 #     per pull request would multiply the slowest step in the project for no
 #     answer that a tag build does not already give.
-#   * No `cargo clippy -- -D warnings`. The crate carries 21 warnings today;
-#     turning the gate on before they are fixed would fail every run, which is
-#     the same objection as `cargo fmt`. Unlike fmt, this one is meant to end —
-#     see #463.
+#
+# Clippy used to be on that list, with 21 warnings standing. It is a gate now
+# (see the step in the `rust` job): the warnings are gone, so `-D warnings` fails
+# only on something new.
 name: ci
 
 on:
@@ -36,9 +36,9 @@ jobs:
   frontend:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -86,7 +86,7 @@ jobs:
     # merge would block on a tick that never arrives.
     name: rust (${{ startsWith(matrix.platform, 'ubuntu') && 'linux' || 'macos' }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The crate depends on tauri, so even `cargo test` needs the webkit
       # headers. Same list as the release workflow's, minus the bundling-only
@@ -108,7 +108,7 @@ jobs:
 
       # `scripts/stage-sidecar.sh` reads the sidecar list out of
       # tauri.conf.json with node.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -131,6 +131,20 @@ jobs:
       # worth.
       - name: Tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # `--all-targets`, so the test code is linted too — and that is not
+      # thoroughness for its own sake: half the dead code the audit turned up was
+      # variants and helpers only the test build constructs, which the default
+      # target set reports as dead and this reports correctly. `-D warnings`
+      # rather than a report nobody reads, because the crate is at zero; the one
+      # configured lint is in `src-tauri/clippy.toml`, with the reason.
+      #
+      # Linux only. Clippy's findings are not platform-shaped the way the pty
+      # tests are, and running it on both would double the slowest half of this
+      # job for the same answer.
+      - name: Clippy
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       # `cowork-memory` is a separate crate with its own target directory,
       # deliberately outside any root `[workspace]` — one would move src-tauri's

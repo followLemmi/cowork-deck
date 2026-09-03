@@ -24,7 +24,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tauri::image::Image;
 use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Rect, Runtime};
@@ -39,6 +39,12 @@ pub const TRAY_ID: &str = "deck";
 const PANEL_WIDTH: f64 = 340.0;
 /// What the panel opens at, before the page has measured itself. Small enough
 /// that the first frame is never a tall empty rectangle.
+///
+/// `cfg`'d away on Linux, where the panel is a menu and no window is ever built —
+/// see ADR-0013, and `install` below. Every item behind one of these attributes
+/// is here for the same reason, and each was a dead-code warning on Linux alone
+/// until #463 turned clippy into a gate.
+#[cfg(not(target_os = "linux"))]
 const PANEL_HEIGHT: f64 = 220.0;
 /// Never taller than this, whatever the content. Past it the panel scrolls
 /// inside itself: a status panel as tall as the screen is a window, and a window
@@ -56,7 +62,12 @@ const PANEL_GAP: f64 = 6.0;
 /// it hides — and then the click arrives and would open it again. The gesture a
 /// person made was "close it". Every popover has this problem and every one of
 /// them solves it with a short deadline.
-const REOPEN_GUARD: Duration = Duration::from_millis(250);
+///
+/// `test` as well as the two platforms with a panel: the deadline's behaviour is
+/// three tests below and they are worth running on the machine this is written
+/// on, which is the same argument `action_prefix` makes in the other direction.
+#[cfg(any(not(target_os = "linux"), test))]
+const REOPEN_GUARD: std::time::Duration = std::time::Duration::from_millis(250);
 
 /* --- The model the deck sends -------------------------------------------- */
 
@@ -119,6 +130,7 @@ struct TrayAction {
 /// Not `always_on_top` by accident: it has to survive being over a full-screen
 /// app, and it has to go away when it loses focus, which is why it is focusable
 /// — the one window in this app that is.
+#[cfg(not(target_os = "linux"))]
 fn build_panel<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     tauri::WebviewWindowBuilder::new(app, windows::TRAY, tauri::WebviewUrl::App("tray.html".into()))
         .inner_size(PANEL_WIDTH, PANEL_HEIGHT)
@@ -220,6 +232,7 @@ fn move_panel<R: Runtime>(app: &AppHandle<R>, anchor: Rect) {
 }
 
 /// Show it under the icon, or hide it if it is already up.
+#[cfg(not(target_os = "linux"))]
 fn toggle_panel<R: Runtime>(app: &AppHandle<R>, anchor: Rect) {
     let Some(win) = panel(app) else { return };
     let Some(state) = app.try_state::<TrayState>() else { return };
@@ -262,10 +275,6 @@ pub fn panel_blurred<R: Runtime>(app: &AppHandle<R>) {
 
 /* --- The Linux menu ------------------------------------------------------- */
 
-/// What a clickable row's id begins with. Everything after it is the row's
-/// action, verbatim, and it is the only thing sent back to the deck.
-#[cfg(target_os = "linux")]
-const ACTION_PREFIX: &str = "tray:do:";
 /// The fixed rows at the foot of the menu, which the deck does not compose.
 #[cfg(target_os = "linux")]
 const OPEN_ID: &str = "tray:open";
@@ -278,9 +287,15 @@ fn action_of(id: &str) -> Option<&str> {
     id.strip_prefix(action_prefix()).filter(|a| !a.is_empty())
 }
 
-/// The prefix, reachable from the tests on every platform. The menu itself is
-/// Linux-only; the id scheme it agrees with `src/tray-panel.ts` on is not
-/// something to leave untested on the machine most of this is written on.
+/// What a clickable row's id begins with. Everything after it is the row's
+/// action, verbatim, and it is the only thing sent back to the deck.
+///
+/// Reachable from the tests on every platform. The menu itself is Linux-only; the
+/// id scheme it agrees with `src/tray-panel.ts` on is not something to leave
+/// untested on the machine most of this is written on.
+///
+/// A `const ACTION_PREFIX` spelling the same string stood beside this and was
+/// called by nothing — the function is what `action_of` and `id_for` use (#463).
 #[cfg(any(target_os = "linux", test))]
 const fn action_prefix() -> &'static str {
     "tray:do:"
@@ -509,6 +524,7 @@ impl TrayState {
     /// Whether the panel went down so recently that this click is the one that
     /// took it down. Consumes the deadline either way: a click that is not the
     /// closing one starts from a clean slate.
+    #[cfg(any(not(target_os = "linux"), test))]
     fn just_hidden(&self) -> bool {
         let mut at = self.hidden_at.lock().expect("tray hidden_at");
         match at.take() {
@@ -604,7 +620,7 @@ pub fn tray_resize(app: AppHandle, height: f64) {
     // No floor beyond "positive": the panel is as tall as what it drew, and on a
     // machine with no AI and no sessions that is two sentences and a footer.
     // `PANEL_HEIGHT` is only what the window opens at before the page reports.
-    let h = height.max(1.0).min(PANEL_MAX_HEIGHT);
+    let h = height.clamp(1.0, PANEL_MAX_HEIGHT);
     if win.set_size(LogicalSize::new(PANEL_WIDTH, h)).is_err() {
         return;
     }

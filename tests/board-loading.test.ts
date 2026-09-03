@@ -19,6 +19,7 @@
  *  workspace" — which is false here, and the one sentence a person acts on by going
  *  to check a setting that was already right. */
 import { describe, it, expect, vi } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 /** Never resolves: the screen stays at whatever the read left drawn. */
 const listTasksMock = vi.fn().mockReturnValue(new Promise(() => {}));
@@ -44,19 +45,9 @@ const CAPS = {
 
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
-  prList: vi.fn().mockResolvedValue([]),
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
+  ...bootIpc(),
   taskCapabilities: capsMock,
   listTasks: listTasksMock,
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
 }));
 
 /** The tree hooks `startApp` hands the workspaces panel — the app's only route

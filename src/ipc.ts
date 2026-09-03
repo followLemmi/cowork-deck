@@ -5,9 +5,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
  *  `done` — the agent finished its turn and the prompt is free: nothing is
  *  blocked, but work got done, which is worth a notification. */
 export type SessionState = "idle" | "working" | "waitingInput" | "done" | "ended" | "error";
-/** Привязка воркспейса к GitHub-аккаунту. Здесь только имя аккаунта —
- *  публичное значение. Токены приложение не хранит: они читаются из keyring
- *  `gh` на старте сессии и живут лишь в памяти дочернего процесса. */
+/** A workspace's binding to a GitHub account. The login only, which is a public
+ *  value: the app stores no token. One is read out of `gh`'s keyring when a
+ *  session starts and lives in that child process's memory and nowhere else —
+ *  ADR-0001's invariant, and `gh.rs` is where it is kept. */
 export interface WorkspaceGithub {
   host: string;
   login: string;
@@ -481,8 +482,9 @@ export const prWorktreeAdd = (
 export const prWorktreeRemove = (workspaceId: string, number: number, branch: string) =>
   invoke<void>("pr_worktree_remove", { workspaceId, number, branch });
 
-/** Исход привязки аккаунта для стартовавшей сессии. Токена тут нет: только имя
- *  аккаунта и, если резолв не удался, причина — её показывает бейдж на тайле. */
+/** How the account binding resolved for a session that has started. No token
+ *  here either: the login, and — where the resolution failed — the reason, which
+ *  is what the badge on the tile says. */
 export interface SessionAuth { account: string | null; degraded: string | null; }
 
 /** Where a session's pty output is delivered. One channel per terminal, created
@@ -525,7 +527,13 @@ export const startSession = (
    *  launches can be in flight before the first resolves. */
   replace = false,
 ) => invoke<SessionAuth>("start_session", {
-  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, sink, scenario, replace,
+  /* One `req` object, not eleven properties: the Rust side takes a
+     `LaunchRequest` struct, because at fourteen parameters `cols`/`rows` and the
+     two adjacent booleans could be swapped by a caller and still compile. `sink`
+     stays outside it — Tauri gives a `Channel` its identity from the payload,
+     and it does not deserialise from inside a struct. */
+  req: { session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario, replace },
+  sink,
 });
 
 /** Resolve a workspace's account binding and `claude`'s location ahead of a
@@ -588,8 +596,9 @@ export const loadTerminals = () => invoke<TerminalLayout>("load_terminals");
 export const saveTerminals = (layout: TerminalLayout) =>
   invoke<void>("save_terminals", { layout });
 
-/** Разовый запуск пользовательской команды в тайле-терминале (установка gh,
- *  `gh auth login`). Не сессия агента: хуков состояния нет. */
+/** One run of a command the person typed, in a terminal tile: installing `gh`,
+ *  `gh auth login`. Not an agent session, so there are no state hooks and nothing
+ *  reports back. */
 export const startCommandSession = (
   session: string, cwd: string, command: string, cols: number, rows: number, sink: OutputSink,
 ) => invoke<void>("start_command_session", { session, cwd, command, cols, rows, sink });

@@ -203,7 +203,7 @@ impl Store {
     /// function nothing pointed at.
     fn write_json<T: serde::Serialize>(path: &PathBuf, value: &T) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(value)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         Self::write_atomic(path, &json)
     }
 
@@ -509,7 +509,7 @@ impl Store {
         }
         line.push_str(
             &ev.to_line()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+                .map_err(std::io::Error::other)?,
         );
         line.push('\n');
         f.write_all(line.as_bytes())
@@ -558,7 +558,7 @@ impl Store {
             for ev in rec.to_events() {
                 body.push_str(
                     &ev.to_line()
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+                        .map_err(std::io::Error::other)?,
                 );
                 body.push('\n');
             }
@@ -611,8 +611,7 @@ impl Store {
             .iter()
             .any(|r| doomed(r) && r.status == crate::runs::RunStatus::Running)
         {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "one of this scenario's runs is still going — its record would be erased out \
                  from under it, and the run would never be journalled at all",
             ));

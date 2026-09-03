@@ -22,7 +22,7 @@
  *  3.0 allowance applies.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -472,6 +472,42 @@ const CASES = [
     fg: "--fg", backdrop: ["--bg-island"], group: [decl(css, ".tk-c-broken", "background")],
     threshold: TEXT, sc: "1.4.3",
   },
+  // The sync dialog's two banners, measured for the first time: both grounds were
+  // `color-mix()` until #463, which this parser cannot read, so neither pair had
+  // ever been through here. The dialog is a modal on an island.
+  {
+    what: "sync fault banner text",
+    where: "the sentence naming what stopped the cycle, on `--bg-error-soft` over the dialog",
+    fg: "--fg", backdrop: ["--bg-island"], group: [decl(css, ".sync-fault", "background")],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "sync question banner text",
+    where:
+      "what a pull could not decide — amber rather than red, because none of these is a " +
+      "failure and every one is something only a person can settle",
+    fg: "--fg", backdrop: ["--bg-island"], group: [decl(css, ".sync-ask", "background")],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  // The border is what tells the two banners apart at a glance, so it carries the
+  // 3.0 threshold a meaningful graphic does — against the ground the banner's own
+  // tint has already laid down, not against the dialog.
+  {
+    what: "sync fault banner border",
+    where: "the red edge of the fault block, over its own tinted ground",
+    fg: "--st-error",
+    backdrop: ["--bg-island"],
+    group: [decl(css, ".sync-fault", "background")],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "sync question banner border",
+    where: "the amber edge of a question block, over its own tinted ground",
+    fg: "--st-waiting",
+    backdrop: ["--bg-island"],
+    group: [decl(css, ".sync-ask", "background")],
+    threshold: UI, sc: "1.4.11",
+  },
   {
     what: "card facts value",
     where: "the facts list's own inset ground inside the dialog",
@@ -835,10 +871,77 @@ function selfCheck() {
 
 // --- report ---------------------------------------------------------------
 
+// --- every var() resolves ---------------------------------------------------
+
+/** Custom properties used without a fallback that nothing declares.
+ *
+ *  An undeclared `var(--x)` with no fallback is not a no-op: the declaration
+ *  becomes invalid at computed-value time, so the property takes its INHERITED
+ *  value and every earlier declaration for it in the cascade is discarded.
+ *  `.tk-c-title` did exactly that (#463) — `font-size: var(--fs-md)` threw away
+ *  `.modal-input`'s own `--fs-base` and inherited from the dialog instead, which
+ *  is invisible in a review and invisible on screen until the two sizes differ.
+ *  Two more like it went unnoticed for a month: `--r-md` on `.hist-row`, which
+ *  therefore had no radius at all, and `--lh-normal` on two wrapping paragraphs.
+ *
+ *  Uses WITH a fallback are skipped, and deliberately: `var(--panel-w, clamp(…))`
+ *  is a value the app may override at runtime and a default when it has not, which
+ *  is the mechanism working rather than a hole.
+ *
+ *  So is anything `src/*.ts` sets with `setProperty` — read out of the source
+ *  rather than listed here, because a list of names would be a second thing to
+ *  keep in step, and the reason a property is legitimately absent from `:root` is
+ *  precisely that JavaScript writes it. `--i` on a staggered animation, `--y` on
+ *  a dragged row, `--depth` on a tree indent: all real, none declarable.
+ */
+function undeclaredVars(css, scripted) {
+  const declared = new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]));
+  const missing = new Map();
+  const lines = css.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    // `var(--name)` and `var( --name )`, but not `var(--name, fallback)`.
+    for (const m of lines[i].matchAll(/var\(\s*(--[\w-]+)\s*\)/g)) {
+      const name = m[1];
+      if (declared.has(name) || scripted.has(name)) continue;
+      if (!missing.has(name)) missing.set(name, []);
+      missing.get(name).push(i + 1);
+    }
+  }
+  return missing;
+}
+
+/** Every custom property `src/*.ts` writes with `setProperty`. */
+function scriptedVars() {
+  const names = new Set();
+  for (const file of readdirSync(join(root, "src"))) {
+    if (!file.endsWith(".ts")) continue;
+    const src = readFileSync(join(root, "src", file), "utf8");
+    for (const m of src.matchAll(/setProperty\(\s*["'`](--[\w-]+)/g)) names.add(m[1]);
+  }
+  return names;
+}
+
 function main() {
   if (!selfCheck()) {
     console.error("\nThe contrast maths is wrong. Fix it before trusting anything below.");
     process.exit(2);
+  }
+
+  // Before the measurements, because a `var()` that does not resolve makes every
+  // number below a measurement of the wrong declaration.
+  const missing = undeclaredVars(css, scriptedVars());
+  if (missing.size) {
+    console.error("\nCustom properties used with no fallback and never declared:\n");
+    for (const [name, at] of missing) {
+      console.error(`  ${name} — src/styles.css:${at.join(", ")}`);
+    }
+    console.error(
+      "\nAn undeclared var() with no fallback is not inert: the declaration is " +
+      "invalid at\ncomputed-value time, so the property inherits and every earlier " +
+      "declaration for it\nin the cascade is discarded. Declare it in `:root`, give " +
+      "it a fallback, or use a\ntoken that exists.\n",
+    );
+    return 1;
   }
 
   const rows = CASES.map((c) => {

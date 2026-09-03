@@ -1,14 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-(globalThis as any).ResizeObserver = class {
-  observe() {} unobserve() {} disconnect() {}
-};
-(globalThis as any).window.__TAURI_INTERNALS__ = {
-  transformCallback: () => 1,
-  unregisterCallback: () => {},
-};
-
 /** A driveable IntersectionObserver: the panel's whole GPU policy hangs off
  *  visibility, so the tests have to be able to say when a tile is on screen. */
 const watchers: { cb: (e: { isIntersecting: boolean }[]) => void; el: Element }[] = [];
