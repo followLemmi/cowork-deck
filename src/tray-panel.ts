@@ -25,6 +25,7 @@ import type { AiUsage, SessionState, TrayPanel, TrayRow } from "./ipc";
 import type { RemoteSession } from "./cross-window";
 import { LimitsBlock } from "./usage-block";
 import { limitFoot, primaryWindow, readingOf, tierNote } from "./usage";
+import { plural } from "./format";
 
 /** Everything a section is allowed to look at. */
 export interface TrayFacts {
@@ -308,10 +309,6 @@ function note(text: string): HTMLElement {
   p.className = "tray-note";
   p.textContent = text;
   return p;
-}
-
-function plural(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`;
 }
 
 /** What the icon says on hover.

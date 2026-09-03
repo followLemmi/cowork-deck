@@ -201,6 +201,51 @@ describe("the row actions", () => {
     expect(onJump).toHaveBeenCalledWith(expect.objectContaining({ runId: "live" }));
   });
 
+  /** One action visible per row, and which one depends on the row.
+   *
+   *  Five records meant fifteen identically-shaped buttons in a column 280–384px
+   *  wide (#463). The other two are marked `.hist-action--more` and revealed on
+   *  hover or focus — `opacity`, so they stay in the tab order, which is asserted
+   *  below rather than assumed.
+   *
+   *  A finished run leads with `Re-run…` because "Go to the session" is not there
+   *  to lead with: a rule that always led with the jump would leave most rows —
+   *  every closed one — showing no action at all and hiding two. */
+  it("leads with one action, and with the one the row actually has", () => {
+    mount({
+      runs: [
+        rec({ runId: "live", status: "running", sessionId: "s1", closedAt: null }),
+        rec({ runId: "done", status: "ended", sessionId: "s9" }),
+      ],
+      liveSessions: ["s1"],
+    });
+    const more = (kind: string, id: string) =>
+      action(kind, id)!.classList.contains("hist-action--more");
+
+    // A live run: the jump leads, the other two are revealed.
+    expect(more("jump", "live")).toBe(false);
+    expect(more("rerun", "live")).toBe(true);
+    expect(more("reveal", "live")).toBe(true);
+
+    // A finished one has no jump at all, so the re-run leads.
+    expect(action("jump", "done")).toBeNull();
+    expect(more("rerun", "done")).toBe(false);
+    expect(more("reveal", "done")).toBe(true);
+  });
+
+  /** `opacity`, never `display: none`: a revealed control is in the tab order
+   *  whether or not it is on screen, and `:focus-within` is what brings it into
+   *  view when a keyboard reaches it. A refused one is `aria-disabled` with its
+   *  reason on activation, and a reason a screen reader cannot reach is not one. */
+  it("keeps every action in the DOM, so the keyboard can still reach it", () => {
+    mount({ runs: [rec({ runId: "r", status: "ended" })] });
+    for (const kind of ["rerun", "reveal"]) {
+      const b = action(kind, "r")!;
+      expect(b.hasAttribute("hidden")).toBe(false);
+      expect(b.style.display).toBe("");
+    }
+  });
+
   // Re-run is offered as a form, never as a launch: the ellipsis is the promise
   // and the handler is what keeps it.
   it("hands a re-run its scenario as it stands now", () => {

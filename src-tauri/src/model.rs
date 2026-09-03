@@ -87,17 +87,17 @@ pub fn parse_schedule_state(
     Ok(raw.into_iter().map(|(k, v)| (k, v.into())).collect())
 }
 
-/// Привязка воркспейса к GitHub-аккаунту.
+/// A workspace's binding to a GitHub account.
 ///
-/// Здесь лежит ТОЛЬКО имя аккаунта — публичное значение. Токен не хранится
-/// ни тут, ни где-либо ещё в приложении: он читается из keyring `gh` в момент
-/// старта сессии и живёт лишь в памяти дочернего процесса.
+/// The login and NOTHING else, which is a public value. No token is stored here
+/// or anywhere else in this app: one is read out of `gh`'s keyring at the moment a
+/// session starts, and lives in that child process's memory alone. ADR-0001.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceGithub {
-    /// Хост GitHub. В UI всегда "github.com"; поле существует, чтобы GHES
-    /// можно было добавить без миграции файла.
+    /// The GitHub host. Always `"github.com"` in the UI today; the field exists
+    /// so that GHES can be added without migrating the file.
     pub host: String,
-    /// Имя аккаунта в gh (как в `gh auth status`).
+    /// The account's login as `gh` knows it — the name `gh auth status` prints.
     pub login: String,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "gitName")]
     pub git_name: Option<String>,
@@ -113,9 +113,9 @@ pub struct Workspace {
     pub name: String,
     pub path: String,
     pub color: String,
-    /// Привязка к GitHub-аккаунту. Отсутствует в файлах, записанных до
-    /// появления фичи; None не сериализуется, поэтому непривязанные
-    /// воркспейсы сохраняют прежнюю форму на диске.
+    /// The GitHub binding. Absent from files written before the feature existed,
+    /// and `None` is not serialised — so an unbound workspace keeps exactly the
+    /// shape it already had on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github: Option<WorkspaceGithub>,
     /// Absent for every workspace created before the tracker existed, and for
@@ -1321,7 +1321,7 @@ mod tests {
             repo: None,
         };
         let json = serde_json::to_string(&ws).unwrap();
-        assert!(!json.contains("github"), "старая форма файла должна остаться байт-в-байт: {json}");
+        assert!(!json.contains("github"), "the old file shape must survive byte for byte: {json}");
     }
 
     #[test]
@@ -1340,7 +1340,7 @@ mod tests {
         };
         let json = serde_json::to_string(&ws).unwrap();
         assert!(json.contains(r#""gitName":"Evgeny""#), "{json}");
-        assert!(!json.contains("sshKey"), "пустые поля не сериализуются: {json}");
+        assert!(!json.contains("sshKey"), "an empty field is not serialised: {json}");
         let back: Workspace = serde_json::from_str(&json).unwrap();
         assert_eq!(back.github, ws.github);
     }

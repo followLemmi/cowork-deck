@@ -248,24 +248,20 @@ fn one_line(s: &str) -> String {
 }
 
 impl Note {
-    /// The note as it is written to disk.
+    /// The note as it is written to disk, saying who wrote it.
     ///
     /// The frontmatter block is byte-exact on purpose: the sidecar strips it
     /// only when the file starts with `---\n` and the block ends with `\n---\n`.
     /// A blank line before it, a BOM, or `--- \n` and every key below is indexed
     /// as prose.
-    pub fn render(&self, workspace_id: &str, date: NaiveDate) -> String {
-        self.render_by(workspace_id, date, Wrote::Capture)
-    }
-
-    /// The same note, saying who wrote it.
     ///
-    /// The `saved` line has been in the frontmatter since #363 with nothing
-    /// reading it — "what distinguishes a note this app wrote from one a person
-    /// wrote by hand in the same directory" — and #386 is what makes the
-    /// distinction real. The tag moves with it: a note somebody typed is not a
-    /// record of a session, and calling it one would make every later reader of
-    /// the corpus wrong about what happened.
+    /// `by` is not defaulted, and there used to be a `render` that defaulted it
+    /// to `Wrote::Capture` (#463 found it unused). The `saved` line was in the
+    /// frontmatter from #363 with nothing reading it — "what distinguishes a note
+    /// this app wrote from one a person wrote by hand in the same directory" —
+    /// and #386 made the distinction real. A note somebody typed is not a record
+    /// of a session, so a caller that did not say would have made every later
+    /// reader of the corpus wrong about what happened.
     pub fn render_by(&self, workspace_id: &str, date: NaiveDate, by: Wrote) -> String {
         let mut s = String::new();
         s.push_str("---\n");
@@ -933,9 +929,8 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
         .unwrap_or_default();
     let tmp = dir.join(format!(".{name}.tmp"));
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    std::fs::rename(&tmp, path).inspect_err(|_e| {
         let _ = std::fs::remove_file(&tmp);
-        e
     })
 }
 
@@ -1377,7 +1372,7 @@ mod tests {
     /// does not depend on.
     #[test]
     fn a_rendered_note_starts_with_frontmatter_the_sidecar_will_strip() {
-        let text = note("what happened").render("ws-1", d(2026, 8, 24));
+        let text = note("what happened").render_by("ws-1", d(2026, 8, 24), Wrote::Capture);
         assert!(text.starts_with("---\n"), "no leading blank line, no BOM:\n{text}");
         let after = text.strip_prefix("---\n").unwrap();
         let end = after.find("\n---\n").expect("the block has to terminate exactly so");
@@ -1391,7 +1386,7 @@ mod tests {
 
     #[test]
     fn a_rendered_note_has_an_h1_and_a_tldr_the_indexer_recognises() {
-        let text = note("three lines of what actually happened").render("ws-1", d(2026, 8, 24));
+        let text = note("three lines of what actually happened").render_by("ws-1", d(2026, 8, 24), Wrote::Capture);
         assert!(
             text.contains("\n# 2026-08-24 — the sidecar staged for the wrong target\n"),
             "{text}"
@@ -1406,7 +1401,7 @@ mod tests {
     fn a_title_carrying_a_newline_does_not_spill_into_the_body() {
         let mut n = note("x");
         n.title = "## a heading\nand a second line".into();
-        let text = n.render("ws-1", d(2026, 8, 24));
+        let text = n.render_by("ws-1", d(2026, 8, 24), Wrote::Capture);
         assert!(text.contains("# 2026-08-24 — a heading\n"), "{text}");
         assert!(!text.contains("and a second line"), "{text}");
     }
@@ -1419,7 +1414,7 @@ mod tests {
             Section { heading: "Dropped".into(), body: "   ".into() },
             Section { heading: "  ".into(), body: "orphaned".into() },
         ];
-        let text = n.render("ws-1", d(2026, 8, 24));
+        let text = n.render_by("ws-1", d(2026, 8, 24), Wrote::Capture);
         assert!(text.contains("## Kept"));
         assert!(!text.contains("## Dropped"));
         assert!(!text.contains("orphaned"));

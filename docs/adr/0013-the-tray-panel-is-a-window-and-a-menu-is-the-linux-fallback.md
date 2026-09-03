@@ -104,9 +104,10 @@ implementation of a row is how the two would come to disagree about a number,
 which is what `usage.ts` exists to prevent.
 
 `strip: false` is the one that is about this surface rather than about what it
-lacks. In the deck the block is a folded line at the foot of the panel with the
-rows behind it (ADR-0011), because the panel is a page being worked in and the
-rows would take height from it. This window is nothing but the glance: it draws
+lacks. In the deck the block is a folded line with the rows behind it (ADR-0011 —
+at the foot of the panel when this was written, in the top bar since #461),
+because the deck is a surface being worked in and the rows would take room from
+it. This window is nothing but the glance: it draws
 its own "Limits" heading, it was opened deliberately, and folding the rows inside
 it would put them two presses deep in a surface that exists to show them in one.
 

@@ -119,25 +119,26 @@ impl UsageProvider for ClaudeUsage {
         let need_burn = rep.as_ref().is_none_or(|r| r.session.is_none() || r.week.is_none());
         let burn = if need_burn { observed::scan(now_ms) } else { observed::Burn::default() };
 
-        let mut windows = Vec::new();
-        windows.push(window(
-            banner::SESSION,
-            "Current session",
-            rep.as_ref().and_then(|r| r.session.clone()),
-            None,
-            now_ms,
-            burn.session,
-        ));
-        windows.push(window(
-            banner::WEEK,
-            "Current week",
-            rep.as_ref().and_then(|r| r.week.clone()),
-            rep.as_ref()
-                .filter(|r| r.model_scoped)
-                .map(|_| "This is a model-scoped weekly limit, which is the one binding first."),
-            now_ms,
-            burn.week,
-        ));
+        let windows = vec![
+            window(
+                banner::SESSION,
+                "Current session",
+                rep.as_ref().and_then(|r| r.session.clone()),
+                None,
+                now_ms,
+                burn.session,
+            ),
+            window(
+                banner::WEEK,
+                "Current week",
+                rep.as_ref().and_then(|r| r.week.clone()),
+                rep.as_ref()
+                    .filter(|r| r.model_scoped)
+                    .map(|_| "This is a model-scoped weekly limit, which is the one binding first."),
+                now_ms,
+                burn.week,
+            ),
+        ];
 
         let mut snap = AiUsage::from_windows(self.id(), self.label(), windows, now_ms);
         if let Some(a) = &auth {
