@@ -73,17 +73,6 @@ const INTERRUPT_POLL_TRIES = 30;
  *  the cap simply run on the DOM renderer, which is correct — only slower. */
 export const MAX_GPU_CONTEXTS = 8;
 
-/** The one piece of `@xterm/xterm`'s inside that this file names.
- *
- *  `Terminal` is the public facade; `_core` is the browser terminal behind it —
- *  the same door `FitAddon` goes through — and `viewport` is the object that owns
- *  the DOM scrollbar. `resyncViewport` explains why it is reached for; this type
- *  is what keeps the reach honest, in that every hop is optional and the call is
- *  guarded rather than asserted. */
-interface ViewportAccess {
-  _core?: { viewport?: { syncScrollArea?: () => void } };
-}
-
 export class TerminalPanel {
   /** Panels currently holding a context, and panels on screen that want one and
    *  are waiting for a slot. Insertion-ordered, so a freed slot goes to whoever
@@ -495,11 +484,9 @@ export class TerminalPanel {
       // One element is observed, so a batch of several records is that element's
       // own history in time order and the last record is where it stands now.
       // `entries.some` answers a different question — "on screen at any point in
-      // this batch" — and a batch of [shown, hidden] is the worst case for the
-      // resync below: it would run against a tile that is hidden again, measure a
-      // box of zero height and write the short scroll area straight back. Worse,
-      // `onScreen` would latch true, so no later return counts as a transition and
-      // nothing resyncs ever again.
+      // this batch" — and a batch of [shown, hidden] would grant a context to a
+      // tile that is hidden again. Worse, `onScreen` would latch true, so no later
+      // return counts as a transition and the tile never gets its slot back.
       const latest = entries[entries.length - 1];
       if (!latest) return;
       const onScreen = latest.isIntersecting;
@@ -507,59 +494,13 @@ export class TerminalPanel {
       this.onScreen = onScreen;
       if (!onScreen) { TerminalPanel.releaseGpu(this); return; }
       TerminalPanel.grantGpu(this);
-      this.resyncViewport();
+      // A tile coming back once had its scrollbar resynced here as well (#340):
+      // xterm 5 rebuilt its DOM scroll area against the tile's zero height while
+      // it was hidden, and nothing put it right on the way back. xterm 6 keeps the
+      // scroll position in a model rather than in the DOM and keeps the last good
+      // cell size under `display: none`, so there is nothing stale to resync.
     });
     this.io.observe(this.mount);
-  }
-
-  /** Rebuild xterm's DOM scroll area against the box the panel actually occupies
-   *  now, because while the tile was hidden it was rebuilt against a box of zero
-   *  height (#340).
-   *
-   *  A hidden tile keeps receiving output, so xterm keeps calling
-   *  `Viewport.syncScrollArea` → `_innerRefresh`, and `_innerRefresh` measures the
-   *  element it is drawing for:
-   *
-   *      this._lastRecordedViewportHeight = this._viewportElement.offsetHeight;
-   *      const e = round(rowHeight * bufferLength)
-   *              + (this._lastRecordedViewportHeight - canvas.height);
-   *      this._scrollArea.style.height = e + "px";
-   *      this._viewportElement.scrollTop = buffer.ydisp * rowHeight;
-   *
-   *  Under `display: none` that height is 0, so the scroll area comes out one
-   *  viewport short and the `scrollTop` written into it is clamped. `ydisp` is
-   *  never touched, which is why the tile still *looks* right when it comes back —
-   *  the rendered rows and the scrollbar have simply come apart, and the first
-   *  wheel tick maps the stale `scrollTop` onto a `ydisp` thousands of lines up.
-   *
-   *  Nothing in xterm puts them back: `syncScrollArea` runs on a buffer-length
-   *  change, on `onDimensionsChange` and on a scroll event, and a return to a
-   *  layout of the same shape produces none of the three. `fit()` is not the fix
-   *  either — `FitAddon.fit` returns without resizing when the grid is unchanged,
-   *  and an unchanged grid is exactly this case.
-   *
-   *  **Why the private call, and not one of the public pokes.** `syncScrollArea`
-   *  is self-guarding: it refreshes only when the recorded viewport height, the
-   *  recorded scroll offset or the cell height disagree with what is on screen, so
-   *  on the common return — a tile that was hidden but idle — this costs a
-   *  comparison and nothing else. The public routes to the same code all have a
-   *  price: `scrollToBottom()` only resyncs when it actually moves the viewport,
-   *  and a viewport already at the bottom is the common case; a `rows` round-trip
-   *  reflows the buffer twice and was measured moving `ydisp` by a line; a
-   *  `scrollback` round-trip resizes both buffers twice to reach a one-line
-   *  method. Reaching for the method itself is the smaller dependency.
-   *
-   *  It is still a dependency on `@xterm/xterm` internals, so it is guarded here
-   *  and pinned by a test — see "xterm's private viewport" in
-   *  `tests/terminal-viewport-resync.test.ts`, which fails on the version bump
-   *  that moves it rather than leaving the scrollbar quietly broken again. */
-  private resyncViewport() {
-    const viewport = (this.term as unknown as ViewportAccess)._core?.viewport;
-    if (typeof viewport?.syncScrollArea !== "function") {
-      console.debug("terminal viewport resync unavailable");
-      return;
-    }
-    viewport.syncScrollArea();
   }
 
   /** Swap this panel onto the WebGL renderer. Called only through `requestGpu`,
