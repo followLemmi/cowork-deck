@@ -36,18 +36,27 @@ pub trait Fetcher {
 
 /// Timeouts for the download.
 ///
-/// `timeout_read` in ureq bounds a single socket read, not the whole transfer,
-/// and that distinction is the reason a timeout is safe here at all: the model
-/// is 470 MB, so a deadline on the request as a whole would abort a download
-/// that is merely slow. What these catch is a connection that has stopped
-/// producing bytes altogether — without them the download waits on a silent
-/// socket forever, and the only symptom the app can show is a progress line
-/// that never advances.
+/// The model is 470 MB, so a deadline on the transfer as a whole is the wrong
+/// tool: it would abort a download that is merely slow. What a timeout has to
+/// catch is a connection that has stopped producing bytes altogether — without
+/// one the download waits on a silent socket forever, and the only symptom the
+/// app can show is a progress line that never advances.
+///
+/// ureq 2 had a per-read socket timeout, which was exactly that. ureq 3 only
+/// has a deadline per phase of one request — connect, headers, body — so the
+/// body is fetched as a sequence of `CHUNK`-sized `Range` requests and
+/// `READ_TIMEOUT` bounds each of them. A stall is still caught within one
+/// deadline. What the deadline now also imposes is a throughput floor of
+/// `CHUNK / READ_TIMEOUT`, about 70 KB/s, at which the model would take two
+/// hours to arrive anyway.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// Bytes per ranged request. See `READ_TIMEOUT` for why it is not the whole body.
+const CHUNK: u64 = 4 * 1024 * 1024;
 
 pub struct HttpFetcher {
     agent: ureq::Agent,
+    chunk: u64,
 }
 
 impl HttpFetcher {
@@ -58,12 +67,18 @@ impl HttpFetcher {
     /// The same fetcher with explicit timeouts, so a test can prove the
     /// deadline fires without waiting a minute for it.
     pub fn with_timeouts(connect: Duration, read: Duration) -> HttpFetcher {
-        HttpFetcher {
-            agent: ureq::AgentBuilder::new()
-                .timeout_connect(connect)
-                .timeout_read(read)
-                .build(),
-        }
+        HttpFetcher::with_timeouts_and_chunk(connect, read, CHUNK)
+    }
+
+    /// And with an explicit chunk size, so a test can walk the chunk
+    /// boundaries on a body of a few hundred bytes.
+    fn with_timeouts_and_chunk(connect: Duration, read: Duration, chunk: u64) -> HttpFetcher {
+        let config = ureq::Agent::config_builder()
+            .timeout_connect(Some(connect))
+            .timeout_recv_response(Some(read))
+            .timeout_recv_body(Some(read))
+            .build();
+        HttpFetcher { agent: config.into(), chunk }
     }
 }
 
@@ -75,13 +90,91 @@ impl Default for HttpFetcher {
 
 impl Fetcher for HttpFetcher {
     fn fetch(&self, url: &str, from: u64) -> Result<Box<dyn Read>> {
-        let req = self.agent.get(url);
-        let req = if from > 0 {
-            req.set("Range", &format!("bytes={from}-"))
-        } else {
-            req
+        let mut reader = ChunkedReader {
+            agent: self.agent.clone(),
+            url: url.to_string(),
+            chunk: self.chunk,
+            pos: from,
+            current: None,
+            in_chunk: 0,
+            ranged: true,
+            done: false,
         };
-        Ok(Box::new(req.call()?.into_reader()))
+        // Open the first chunk here rather than on the first `read`, so a
+        // server that never answers is reported by `fetch` itself, as it was
+        // when one request carried the whole body.
+        reader.open()?;
+        Ok(Box::new(reader))
+    }
+}
+
+/// The body as a sequence of ranged requests, each under its own deadline.
+struct ChunkedReader {
+    agent: ureq::Agent,
+    url: String,
+    chunk: u64,
+    /// The next byte to ask for.
+    pos: u64,
+    /// The chunk being read, if one is open.
+    current: Option<Box<dyn Read>>,
+    /// Bytes read from `current` so far.
+    in_chunk: u64,
+    /// Whether the server honoured `Range`. One that ignores it answers 200
+    /// with the whole body; that body is then all there is, and asking for
+    /// more would only make it re-send everything.
+    ranged: bool,
+    done: bool,
+}
+
+impl ChunkedReader {
+    /// Request the chunk starting at `pos`. A 416 marks the end of the body
+    /// instead of failing: it is what the server says when the previous chunk
+    /// ended exactly on the last byte.
+    fn open(&mut self) -> Result<()> {
+        let end = self.pos + self.chunk - 1;
+        let resp = match self
+            .agent
+            .get(&self.url)
+            .header("Range", format!("bytes={}-{end}", self.pos))
+            .call()
+        {
+            Ok(resp) => resp,
+            Err(ureq::Error::StatusCode(416)) => {
+                self.done = true;
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
+        self.ranged = resp.status() == ureq::http::StatusCode::PARTIAL_CONTENT;
+        self.in_chunk = 0;
+        self.current = Some(Box::new(resp.into_body().into_reader()));
+        Ok(())
+    }
+}
+
+impl Read for ChunkedReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if self.done {
+                return Ok(0);
+            }
+            let Some(body) = self.current.as_mut() else {
+                self.open().map_err(std::io::Error::other)?;
+                continue;
+            };
+            let n = body.read(buf)?;
+            if n > 0 {
+                self.pos += n as u64;
+                self.in_chunk += n as u64;
+                return Ok(n);
+            }
+            // This chunk is spent. A full one may have more behind it; a short
+            // one, or an unranged whole body, was the end.
+            self.current = None;
+            if !self.ranged || self.in_chunk < self.chunk {
+                self.done = true;
+            }
+        }
     }
 }
 
@@ -299,6 +392,195 @@ mod tests {
             "gave up after {:?} — the timeout is not being applied",
             started.elapsed()
         );
+    }
+
+    /// A loopback server that speaks just enough HTTP to answer ranged GETs
+    /// for one body the way a model mirror does: 206 with a `Content-Range`,
+    /// 416 once asked for bytes past the end. `stall_after` makes it fall
+    /// silent that many body bytes into every response, which is what a dying
+    /// connection looks like from here. Every request it sees is recorded in
+    /// `ranges`.
+    struct RangeServer {
+        addr: std::net::SocketAddr,
+        ranges: std::sync::Arc<std::sync::Mutex<Vec<(u64, u64)>>>,
+    }
+
+    fn range_server(body: Vec<u8>, stall_after: Option<usize>) -> RangeServer {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let ranges = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = ranges.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { break };
+                let body = body.clone();
+                let seen = seen.clone();
+                std::thread::spawn(move || {
+                    let mut req = Vec::new();
+                    let mut b = [0u8; 1];
+                    while !req.ends_with(b"\r\n\r\n") {
+                        if s.read(&mut b).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        req.push(b[0]);
+                    }
+                    let req = String::from_utf8_lossy(&req).to_ascii_lowercase();
+                    let len = body.len() as u64;
+                    let (a, b) = req
+                        .lines()
+                        .find_map(|l| l.strip_prefix("range: bytes="))
+                        .and_then(|r| r.split_once('-'))
+                        .map(|(a, b)| (a.parse::<u64>().unwrap(), b.parse::<u64>().unwrap()))
+                        .unwrap_or((0, len.saturating_sub(1)));
+                    seen.lock().unwrap().push((a, b));
+                    if a >= len {
+                        let head = format!(
+                            "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{len}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        );
+                        let _ = s.write_all(head.as_bytes());
+                        return;
+                    }
+                    let b = b.min(len - 1);
+                    let slice = &body[a as usize..=b as usize];
+                    let head = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {a}-{b}/{len}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        slice.len()
+                    );
+                    let _ = s.write_all(head.as_bytes());
+                    match stall_after {
+                        Some(n) if n < slice.len() => {
+                            let _ = s.write_all(&slice[..n]);
+                            let _ = s.flush();
+                            std::thread::park();
+                        }
+                        _ => {
+                            let _ = s.write_all(slice);
+                        }
+                    }
+                });
+            }
+        });
+        RangeServer { addr, ranges }
+    }
+
+    fn pattern(len: u32) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// The reader stitches the ranged chunks back into the one body the
+    /// caller asked for, and picks up exactly where a resume says to.
+    #[test]
+    fn chunks_are_stitched_back_into_one_body_from_the_resume_point() {
+        let body = pattern(1000);
+        let server = range_server(body.clone(), None);
+        let f = HttpFetcher::with_timeouts_and_chunk(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            300,
+        );
+
+        let mut got = Vec::new();
+        f.fetch(&format!("http://{}/model.onnx", server.addr), 250)
+            .unwrap()
+            .read_to_end(&mut got)
+            .unwrap();
+
+        assert_eq!(got, body[250..], "content must be exact from the resume point");
+        assert_eq!(
+            *server.ranges.lock().unwrap(),
+            vec![(250, 549), (550, 849), (850, 1149)],
+            "one request per chunk, starting at the resume point, the last one short"
+        );
+    }
+
+    /// A body that ends exactly on a chunk boundary gives the reader no short
+    /// chunk to stop on. It asks once more, and the 416 is the answer.
+    #[test]
+    fn a_body_ending_on_a_chunk_boundary_finishes_on_the_416() {
+        let body = pattern(900);
+        let server = range_server(body.clone(), None);
+        let f = HttpFetcher::with_timeouts_and_chunk(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            300,
+        );
+
+        let mut got = Vec::new();
+        f.fetch(&format!("http://{}/model.onnx", server.addr), 0)
+            .unwrap()
+            .read_to_end(&mut got)
+            .unwrap();
+
+        assert_eq!(got, body);
+        assert_eq!(
+            server.ranges.lock().unwrap().len(),
+            4,
+            "three chunks and the request that learns there is no fourth"
+        );
+    }
+
+    /// The case the timeouts exist for: headers arrive, some bytes arrive, and
+    /// then the connection goes quiet for good. ureq 3 has no per-read
+    /// timeout, so this only fails fast because each chunk is its own request
+    /// under its own deadline. The bytes that did arrive are handed over
+    /// first, so the resume has them.
+    #[test]
+    fn a_connection_that_dies_mid_body_fails_on_the_chunk_deadline() {
+        let body = pattern(1000);
+        let server = range_server(body.clone(), Some(100));
+        let f = HttpFetcher::with_timeouts_and_chunk(
+            Duration::from_millis(200),
+            Duration::from_millis(200),
+            300,
+        );
+
+        let started = std::time::Instant::now();
+        let mut reader = f
+            .fetch(&format!("http://{}/model.onnx", server.addr), 0)
+            .expect("headers arrive, so fetch itself succeeds");
+        let mut got = Vec::new();
+        let mut buf = [0u8; 64];
+        let err = loop {
+            match reader.read(&mut buf) {
+                Ok(0) => panic!("a stalled body must not read as complete"),
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) => break e,
+            }
+        };
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "gave up after {:?} — the body deadline is not being applied",
+            started.elapsed()
+        );
+        assert_eq!(got, body[..100], "what arrived before the stall must be delivered: {err}");
+    }
+
+    /// End to end through `download_one`: a `.part` from an earlier run, the
+    /// rest fetched in chunks over real HTTP, the exact file renamed into
+    /// place.
+    #[test]
+    fn download_one_resumes_over_http_in_chunks() {
+        let body = pattern(1000);
+        let server = range_server(body.clone(), None);
+        let dir = tmp("http-resume");
+        fs::write(dir.join("model.onnx.part"), &body[..250]).unwrap();
+        let file = ModelFile {
+            url: format!("http://{}/model.onnx", server.addr),
+            name: "model.onnx",
+            expected: 1000,
+        };
+        let f = HttpFetcher::with_timeouts_and_chunk(
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            300,
+        );
+
+        let path = download_one(&dir, &file, &f, &mut |_, _| {}).unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), body);
+        assert_eq!(server.ranges.lock().unwrap()[0], (250, 549), "must resume, not restart");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     struct CannedFetcher {
