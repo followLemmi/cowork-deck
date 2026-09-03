@@ -10,19 +10,11 @@
 // yet succeeds and throws the bytes away. So the panel holds them.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-(globalThis as any).ResizeObserver ??= class {
-  observe() {} unobserve() {} disconnect() {}
-};
-
 // Every spawn opens a real `Channel` for its output, and `Channel`'s constructor
 // registers its handler with Tauri's injected internals — absent in jsdom, so
 // without this the launch throws before it ever reaches the code under test.
 // The output path is `terminal-write.test.ts`'s subject; here only the
 // registration has to exist.
-(globalThis as any).window.__TAURI_INTERNALS__ ??= {
-  transformCallback: () => 1,
-  unregisterCallback: () => {},
-};
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {

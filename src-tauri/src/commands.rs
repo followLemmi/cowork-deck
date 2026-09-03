@@ -679,7 +679,7 @@ pub fn scheduler_ready(state: State<AppState>) {
 pub struct HostPlatform {
     /// "macos" | "windows" | "linux"
     pub os: String,
-    /// ID дистрибутива из /etc/os-release; None на macOS/Windows.
+    /// The distribution's `ID` from `/etc/os-release`; `None` on macOS and Windows.
     pub distro: Option<String>,
     /// Whether this platform lets the app say where a window goes.
     ///
@@ -692,7 +692,7 @@ pub struct HostPlatform {
     pub places_windows: bool,
 }
 
-/// Достаёт `ID=` из /etc/os-release. Кавычки вокруг значения допустимы.
+/// Read `ID=` out of `/etc/os-release`. The value may legitimately be quoted.
 pub fn parse_os_release_id(contents: &str) -> Option<String> {
     contents.lines().find_map(|l| {
         l.strip_prefix("ID=")
@@ -701,9 +701,9 @@ pub fn parse_os_release_id(contents: &str) -> Option<String> {
     })
 }
 
-/// Сообщает факты об ОС. Строку команды установки собирает фронт — так вся
-/// матрица платформ покрывается одним набором тестов, а не двумя на разных
-/// языках.
+/// Report facts about the OS, and nothing more. The install command's text is
+/// composed on the front end, so the whole platform matrix is covered by one set
+/// of tests rather than two in two languages.
 #[tauri::command]
 pub fn host_platform() -> HostPlatform {
     let os = if cfg!(target_os = "macos") {
@@ -783,8 +783,9 @@ pub(crate) fn which_claude() -> Option<which::Resolution> {
     Some(CLAUDE_CACHE.get_or_init(|| found).clone())
 }
 
-/// Что фронт узнаёт про аккаунт стартовавшей сессии. Токена здесь нет и быть
-/// не может — только имя аккаунта и, если что-то пошло не так, причина.
+/// What the front end learns about a started session's account. There is no token
+/// here and there cannot be — the login, and where something went wrong, the
+/// reason.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionAuth {
     pub account: Option<String>,
@@ -797,12 +798,13 @@ pub struct AuthOutcome {
     pub auth: SessionAuth,
 }
 
-/// Резолвит привязку воркспейса в окружение сессии. Сбой резолва НЕ блокирует
-/// старт: сессия поднимается в деградированном режиме (см. `gh::session_env`),
-/// а причина уезжает во фронт для бейджа на тайле.
+/// Resolve a workspace's binding into a session's environment. A failed resolve
+/// does NOT block the launch: the session starts degraded (see `gh::session_env`)
+/// and the reason travels to the front end for the badge on the tile.
 ///
-/// Принимает уже извлечённый конфиг, а не `State`, специально: `gh::token`
-/// блокирует до `timeout`, и держать в это время мьютекс стора нельзя.
+/// Takes the config already extracted rather than `State`, deliberately:
+/// `gh::token` blocks for up to its timeout, and the store's mutex must not be
+/// held for that long.
 pub fn resolve_session_auth(
     cfg: Option<&WorkspaceGithub>,
     noauth_dir: &str,
@@ -1930,9 +1932,9 @@ pub fn start_session(
         &settings, &initial_prompt, &session, resuming.as_deref(), &memory,
     );
 
-    // Замок стора берётся и отпускается ДО резолва токена: gh::token блокирует
-    // до пяти секунд, и удерживать общий мьютекс всё это время означало бы
-    // подвесить любую другую операцию со стором.
+    // The store lock is taken and released BEFORE the token is resolved:
+    // `gh::token` blocks for up to five seconds, and holding the shared mutex
+    // that long would stall every other store operation behind it.
     let ws = match workspace_id.as_deref() {
         Some(id) => {
             let store = state.store();
@@ -2058,12 +2060,13 @@ pub fn start_session(
     Ok(outcome.auth)
 }
 
-/// Запускает произвольную команду в PTY-тайле.
+/// Run one arbitrary command in a PTY tile.
 ///
-/// Команду пишет пользователь и видит её целиком до запуска (форма установки
-/// gh), поэтому приложение не выполняет ничего привилегированного вслепую.
-/// Хуки Claude Code сюда не подставляются: это обычный терминал, а не сессия
-/// агента, и её состояние ведётся только по факту выхода процесса.
+/// The command is typed by the person and shown to them in full before it runs
+/// — the `gh` install form is where this is used — so the app never executes
+/// anything privileged unseen. Claude Code's hooks are not injected here: this is
+/// an ordinary terminal rather than an agent session, and its state is read from
+/// the process exiting and nothing else.
 #[tauri::command]
 pub fn start_command_session(
     app: AppHandle,
@@ -3977,10 +3980,10 @@ branch refs/heads/feature/y\n";
 
     #[test]
     fn the_last_prompt_is_only_a_fallback() {
-        let prompt_only = r#"{"type":"last-prompt","lastPrompt":"собери отчёт"}"#;
+        let prompt_only = r#"{"type":"last-prompt","lastPrompt":"put the report together"}"#;
         assert_eq!(
             last_title_lines(prompt_only).resolved(),
-            Some(("собери отчёт".to_string(), TitleSource::Prompt)),
+            Some(("put the report together".to_string(), TitleSource::Prompt)),
             "23% of sessions never get a title of another kind — this is a primary path",
         );
         let with_ai = format!("{prompt_only}\n{}\n", r#"{"type":"ai-title","aiTitle":"a name"}"#);
@@ -4058,14 +4061,14 @@ branch refs/heads/feature/y\n";
     fn usage_and_title_come_from_one_pass_over_one_buffer() {
         let content = [
             turn("msg_one", 10, 5, 0, 0, &["text"]),
-            r#"{"type":"ai-title","aiTitle":"Отчёт по продажам"}"#.to_string(),
+            r#"{"type":"ai-title","aiTitle":"the sales report"}"#.to_string(),
         ]
         .join("\n");
         let snap = snapshot_from_main(&content, &[]);
         let tokens = snap.tokens.expect("a reading");
         assert_eq!(tokens.spend.input, 10);
         assert_eq!(tokens.spend.output, 5);
-        assert_eq!(snap.title.as_deref(), Some("Отчёт по продажам"));
+        assert_eq!(snap.title.as_deref(), Some("the sales report"));
         assert_eq!(snap.title_source, Some(TitleSource::Ai));
     }
 
@@ -4480,7 +4483,7 @@ branch refs/heads/feature/y\n";
         assert_eq!(parse_os_release_id("ID=\"opensuse-tumbleweed\"\n").as_deref(), Some("opensuse-tumbleweed"));
         assert_eq!(parse_os_release_id("NAME=\"Weird\"\n"), None);
         assert_eq!(parse_os_release_id(""), None);
-        // ID_LIKE не должен побеждать: strip_prefix("ID=") его не матчит.
+        // `ID_LIKE` must not win: `strip_prefix("ID=")` does not match it.
         assert_eq!(parse_os_release_id("ID_LIKE=debian\nID=pop\n").as_deref(), Some("pop"));
     }
 
@@ -4610,11 +4613,11 @@ branch refs/heads/feature/y\n";
         let outcome =
             resolve_session_auth(Some(&cfg), "/tmp/noauth", std::time::Duration::from_secs(5));
         assert_eq!(outcome.auth.account.as_deref(), Some("definitely-not-a-real-account-xyz"));
-        assert!(outcome.auth.degraded.is_some(), "должна быть причина деградации");
+        assert!(outcome.auth.degraded.is_some(), "a degraded launch must carry its reason");
         let keys: Vec<&str> = outcome.env.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(keys.contains(&"GH_CONFIG_DIR"), "деградация обязана увести gh в пустой конфиг");
-        assert!(keys.contains(&"GIT_AUTHOR_NAME"), "идентичность известна и без токена");
-        assert!(!keys.contains(&"GH_TOKEN"), "без токена GH_TOKEN выставлять нельзя");
+        assert!(keys.contains(&"GH_CONFIG_DIR"), "a degraded launch must point gh at an empty config");
+        assert!(keys.contains(&"GIT_AUTHOR_NAME"), "the identity is known without a token");
+        assert!(!keys.contains(&"GH_TOKEN"), "GH_TOKEN must not be set when there is no token");
     }
 
     /// A tab is labelled with the shell, not with the path to it.

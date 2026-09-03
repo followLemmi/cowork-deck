@@ -5,6 +5,7 @@
  *  a screen nobody is looking at, which is exactly the failure no unit test of
  *  `pr.ts` or `pr-view.ts` can catch. */
 import { describe, it, expect, vi } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const prListMock = vi.fn().mockResolvedValue([]);
 const listTasksMock = vi.fn().mockResolvedValue([]);
@@ -35,21 +36,12 @@ const CAPS = {
 // the shape it expects.
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
+  ...bootIpc(),
   prList: prListMock,
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
   // Real capabilities and an empty list, so the board's own read is the thing
   // counted: `refreshBoard` never calls `listTasks` while `caps` is null.
   taskCapabilities: vi.fn().mockResolvedValue(CAPS),
   listTasks: listTasksMock,
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
 }));
 
 // A workspace with an account bound, so the view has something to poll for. The

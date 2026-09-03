@@ -21,8 +21,8 @@ import {
   canRefetch, classifyHunk, diffCacheNext, fileNote, hunkHeading, lineMarker,
   type DiffCacheReason, type DiffLine, type DiffLineKind, type DiffSlot,
 } from "./diff";
-import { startDrag } from "./drag";
 import { wireExternal } from "./external";
+import { wireResizer } from "./resize";
 import type { DiffFile, PrDiff, PullRequest } from "./ipc";
 import { firstFocusable } from "./view";
 
@@ -196,20 +196,7 @@ export class DiffDrawer {
     // handed "file 4 of 62" with no filename in front of it.
     this.live.setAttribute("aria-atomic", "true");
 
-    // A `div` and not a `button`: `role="separator"` is not among the roles a
-    // `<button>` may take, and the stylesheet's focus rule is written for an
-    // element carrying an explicit `tabindex`.
-    this.grip.setAttribute("role", "separator");
-    this.grip.setAttribute("aria-orientation", "vertical");
-    this.grip.setAttribute("aria-label", "Diff pane width");
-    this.grip.setAttribute("aria-valuemin", String(MIN_COLS));
-    this.grip.setAttribute("aria-valuemax", String(MAX_COLS));
-    this.grip.tabIndex = 0;
-    this.grip.addEventListener("pointerdown", (e) => this.dragStart(e));
-    this.grip.addEventListener("keydown", (e) => this.gripKey(e));
-    // The keyboard counterpart of `pointerup`: a held arrow repeats, and one
-    // write per repeat would be one disk write per frame.
-    this.grip.addEventListener("keyup", () => this.h.onWidth(this.cols));
+    this.wireGrip();
 
     for (const b of [this.prevBtn, this.nextBtn, this.closeBtn]) b.type = "button";
     this.prevBtn.title = "The previous file in this pull request";
@@ -483,64 +470,58 @@ export class DiffDrawer {
   // Width
   // -------------------------------------------------------------------------
 
+  /** The width, and only the width. `aria-valuenow` and `aria-valuetext` moved to
+   *  `wireResizer`, which reports every grip's value the same way. */
   private applyCols(): void {
     this.mount.style.width = `${this.cols}ch`;
-    this.grip.setAttribute("aria-valuenow", String(this.cols));
-    // `aria-valuenow` alone is read as a bare number, and "62" is not a width.
-    this.grip.setAttribute("aria-valuetext", `${this.cols} columns`);
     this.applyNarrow();
   }
 
-  private gripKey(e: KeyboardEvent): void {
-    // Right widens the *list* and narrows the drawer, because the drawer is the
-    // right-hand column: the handle moves the way the key points.
-    const to =
-      e.key === "ArrowLeft" ? this.cols + COLS_STEP
-      : e.key === "ArrowRight" ? this.cols - COLS_STEP
-      : e.key === "Home" ? MIN_COLS
-      : e.key === "End" ? MAX_COLS
-      : null;
-    if (to === null) return;
-    e.preventDefault();
-    this.cols = clampCols(to);
-    this.applyCols();
-  }
-
-  /** The gesture, held to the one rule `src/drag.ts` exists for: the layout is read
-   *  once, here, and the width is written at most once a frame.
+  /** The grip, on the app's one resizer since #424.
    *
-   *  What that rule buys is specific. `applyCols` writes a width and `applyNarrow`
-   *  used to read one straight back, so every `pointermove` delivered forced a
-   *  synchronous layout of the drawer — and the drawer contains up to 2500 diff rows
-   *  as 10,000 cells of one grid, which is 15–28 ms of layout, measured. Against a
-   *  6.25 ms frame that is three to four frames spent per event, and the events
-   *  arrive faster than the frames do. */
-  private dragStart(e: PointerEvent): void {
-    startDrag(this.grip, e, {
-      // No layout, no drag. jsdom reports zero for everything, and a drag divided
-      // by zero would set the width to NaN.
-      measure: () => {
-        const m = this.metrics();
-        if (m.ch <= 0) return null;
-        // Held for the gesture, and released in `commit`. Symmetric because
-        // `commit` runs if and only if this measurement was taken.
-        this.frozen = m;
-        return { ch: m.ch, startX: e.clientX, startCols: this.cols };
-      },
-      apply: (ctx, at) => {
-        this.cols = clampCols(ctx.startCols + (ctx.startX - at.x) / ctx.ch);
+   *  This was the most complete of the three implementations and is now the most
+   *  demanding caller: it is the reason `wireResizer` has `unitPx`, `valueText`,
+   *  `commitOn` and `beginGesture` at all. What each of those is here:
+   *
+   *  · `unitPx` — the width is in `ch`, not pixels, because the thing being sized
+   *    is a grid of characters. One `ch` of the drawer's own font, measured.
+   *  · `beginGesture` / `commit` — the metrics snapshot, taken and released as a
+   *    pair. `applyCols` writes a width and `applyNarrow` used to read one
+   *    straight back, so every `pointermove` forced a synchronous layout of a
+   *    grid of up to 10,000 cells: 15–28 ms, measured, against a 6.25 ms frame.
+   *    `src/drag.ts`'s note is the long version, and `wireResizer` now routes
+   *    every grip through it.
+   *  · `commitOn: "keyup"` — a held arrow repeats, and this commit reaches the
+   *    disk and refits the pane.
+   *  · `valueText` — `aria-valuenow` alone is read as a bare number, and "62" is
+   *    not a width. */
+  private wireGrip(): void {
+    wireResizer({
+      grip: this.grip,
+      // Dragging LEFT widens the drawer: it is the right-hand column, so the
+      // handle moves the way the key points and the drag pulls.
+      grow: "left",
+      label: "Diff pane width",
+      min: MIN_COLS,
+      max: () => MAX_COLS,
+      step: COLS_STEP,
+      commitOn: "keyup",
+      unitPx: () => this.metrics().ch,
+      beginGesture: () => { this.frozen = this.metrics(); },
+      read: () => this.cols,
+      write: (cols) => {
+        this.cols = clampCols(cols);
         this.applyCols();
       },
       commit: () => {
         this.frozen = null;
-        // Here and not in `apply`: the drag fires at frame rate and this reaches
-        // the disk.
         this.h.onWidth(this.cols);
-        // Once more with live numbers. `apply` has been keeping the collapse in
-        // step all along, but from a snapshot — and a window resized mid-drag
+        // Once more with live numbers. `write` has been keeping the collapse in
+        // step all along, but from the snapshot — and a window resized mid-drag
         // moves what the snapshot said about the room the list has.
         this.applyNarrow();
       },
+      valueText: (cols) => `${Math.round(cols)} columns`,
     });
   }
 

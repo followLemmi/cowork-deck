@@ -9,6 +9,7 @@ import { ago } from "./pr";
 import { icon } from "./icons";
 import { boardColumns, derivedStatus, isStale, kindLabel, type BoardColumn, type TaskSessionLink } from "./tasks";
 import { skeleton } from "./skeleton";
+import { watchOverflow, type OverflowWatch } from "./overflow";
 
 export interface BoardState {
   project: string;
@@ -118,6 +119,11 @@ export class BoardView {
    *  because the view is not rebuilt from scratch, and nothing outside this class has
    *  any use for it. */
   private label: string | null = null;
+  /** The column row's overflow watch, replaced on every render of the card layout
+   *  and stopped when the row goes. Held on the view rather than left to the
+   *  element's own lifetime because a `ResizeObserver` outlives the node it
+   *  observes, and this view re-renders on every poll tick. */
+  private overflow: OverflowWatch | null = null;
   constructor(private h: BoardHandlers) {}
 
   /** `now` is a parameter, not a `Date.now()` inside, so the age line is
@@ -249,7 +255,11 @@ export class BoardView {
     // the same sort.
     const list = state.source === "github";
     const cols = boardColumns(state.tasks, state.project, caps.board, list ? Infinity : undefined);
-    if (list) this.mount.append(this.list(cols, state, caps, now));
+    if (list) {
+      this.overflow?.stop();
+      this.overflow = null;
+      this.mount.append(this.list(cols, state, caps, now));
+    }
     else {
       const wrap = el("div", "tk-cols");
       for (const c of cols.columns) wrap.append(this.column(c, state, caps));
@@ -263,6 +273,12 @@ export class BoardView {
         wrap.append(unknownCol);
       }
       this.mount.append(wrap);
+      /* Which way there is more, on the box, for the stylesheet to fade. The
+         board is rebuilt whole on every render, so the previous watch's listener
+         went with its element — but the `ResizeObserver` did not, and one per
+         render is one per poll tick. See `overflow.ts`. */
+      this.overflow?.stop();
+      this.overflow = watchOverflow(wrap);
     }
 
     // From its pure rule, and silent unless it has something to say. Outside the
