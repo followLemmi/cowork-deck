@@ -71,7 +71,7 @@ vi.mock("../src/modal", () => ({
   promptModal: vi.fn().mockResolvedValue(null),
 }));
 
-import { TerminalDrawer, bannerLine, drawerHeightPx, rowsForHeight, DEFAULT_TERMINAL_ROWS } from "../src/drawer";
+import { TerminalDrawer, bannerLine, drawerHeightPx, rowPx, DEFAULT_TERMINAL_ROWS } from "../src/drawer";
 import {
   loadTerminals, saveTerminals, saveUiState, sessionJobs, closeSession, gitStatus, onExit,
 } from "../src/ipc";
@@ -150,9 +150,14 @@ describe("the banner line", () => {
 // Rows rather than pixels, for the reason `prDiffCols` is columns: the thing
 // being sized is a grid of characters.
 describe("the drawer's height is a row count", () => {
-  it("survives the round trip through pixels", () => {
+  /** Asserted against the arithmetic rather than round-tripped through an
+   *  inverse, which is what this did until #424: a round trip through
+   *  `rowsForHeight` passed even if both functions were wrong in mirror-image
+   *  ways, and the inverse itself is gone — the grip anchors on the row count it
+   *  started at, so nothing converts an absolute height back any more. */
+  it("is the rows' own line boxes plus whatever the bar costs", () => {
     for (const rows of [4, 14, 30]) {
-      expect(rowsForHeight(drawerHeightPx(rows, 1, 40), 1, 40)).toBe(rows);
+      expect(drawerHeightPx(rows, 1, 40)).toBe(Math.round(rows * rowPx(1)) + 40);
     }
   });
 
@@ -160,12 +165,17 @@ describe("the drawer's height is a row count", () => {
     const small = drawerHeightPx(14, 1, 40);
     const large = drawerHeightPx(14, 1.45, 40);
     expect(large).toBeGreaterThan(small);
-    expect(rowsForHeight(large, 1.45, 40)).toBe(14);
+    // The same fourteen rows, each one 45% taller, and the bar unchanged: it is
+    // chrome, not text.
+    expect(large - 40).toBe(Math.round(14 * rowPx(1.45)));
   });
 
-  it("refuses a drag past what is still a terminal", () => {
-    expect(rowsForHeight(0, 1, 40)).toBe(4);
-    expect(rowsForHeight(100_000, 1, 40)).toBe(30);
+  /** The floor and the ceiling moved from the pixel conversion to the grip's own
+   *  `min`/`max` (`wireResizer`), which is where every other grip's range lives. */
+  it("keeps a row a row at every scale the text control offers", () => {
+    for (const scale of [0.85, 1, 1.15, 1.45]) {
+      expect(rowPx(scale)).toBeGreaterThan(0);
+    }
   });
 });
 

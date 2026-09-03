@@ -118,7 +118,9 @@ happens in one place rather than by hand:
 | `--edge-lit` + `--sh-1` | `--sh-island` | composed: on this ground a raised surface IS a lit hairline plus a contact shadow |
 | `--sh-2` | `--sh-float` | — |
 
-`--st-working`, `--st-waiting`, `--st-error` and the chip fills did not move between the
+`--st-working`, `--st-waiting`, `--st-error` and the chip fills — `--chip-*` since #463,
+where each fill had been written out twice, once for a tile's chip and once for a run's —
+did not move between the
 two passes. `--app` deliberately does not re-emit them: a value printed again invites an
 edit that says it changed.
 
@@ -530,10 +532,17 @@ declares `color-scheme: dark` and has no `[data-theme]` anywhere, so this is a p
 own: every component rule that hard-codes a dark assumption has to be found first, and
 `scripts/contrast.mjs` has to grow a second set of grounds to measure it against.
 
-**The rest of the motion set.** The app has `--dur-1`, `--dur-2`, `--dur-3` and one curve,
-which is what its rules use. `--dur-4`, `--stagger`, `--ease-in-out` and `--ease-spring`
-stay in the mockups until a rule needs them: a declared token nothing renders at is a
-claim nobody checks.
+**The rest of the motion set — most of it is ported now.** `--dur-4`, `--stagger` and
+`--ease-in-out` arrived with the rules that needed them (#423, via #463): the skeleton's
+entrance spends `--stagger` per row and has to fit `--dur-4`, and both ambient breaths run
+on `--ease-in-out`, which is what a loop wants and what they were approximating with the
+UA's own keyword. `--ease-spring` stays in the mockups, on the rule that a declared token
+nothing renders at is a claim nobody checks — it is for an object *arriving*, and nothing
+in the app arrives with an overshoot yet.
+
+The app also carries three ambient periods the mockups do not name: `--breath-working` and
+`--breath-waiting`, which are a state's own rate rather than a duration anybody waits out,
+and `--breath-sweep` with `--sweep-step` for the band of light crossing a skeleton row.
 
 **The README's screenshots.** `docs/images/*.png` still show the four tabs. Re-shooting
 them is `npm run dev` and `node harness/shoot.mjs`, which needs ImageMagick on the machine
@@ -546,8 +555,18 @@ doing the shooting — `magick` is what draws the window's rounded corners and r
 npm run contrast
 ```
 
-78 cases from `src/styles.css` and `src/terminal.ts`, 73 with a threshold and all of them
-clear, 5 documented rejections. The script reads both files rather than restating them, so
+82 cases from `src/styles.css` and `src/terminal.ts`, 77 with a threshold and all of them
+clear, 5 documented rejections. The last four are the sync dialog's two banners, text and
+border: both grounds were `color-mix()`, which this parser cannot read, so the one surface
+in the app putting body text on a tinted amber ground had never been measured (#463).
+
+The script also refuses a `var()` used with no fallback that nothing declares. That is not
+a style rule: such a declaration is invalid at computed-value time, so the property
+inherits and every earlier declaration for it in the cascade is discarded — which is how a
+card title threw away its own field's `--fs-base`, and how `.hist-row` had no radius at
+all, for a month each. Properties `src/*.ts` writes with `setProperty` are read out of the
+source rather than listed, because the reason they are absent from `:root` is that
+JavaScript writes them. The script reads both files rather than restating them, so
 a palette edit moves these numbers instead of silently disagreeing with them. Six of the
 cases are this pass's: the ledger's two hues on the chrome and on the ground their own
 hover paints, and the rail's dot in both states.

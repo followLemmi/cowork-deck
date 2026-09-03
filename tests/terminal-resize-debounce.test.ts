@@ -1,18 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// jsdom has no ResizeObserver; TerminalPanel's constructor needs one.
-(globalThis as any).ResizeObserver ??= class {
-  observe() {} unobserve() {} disconnect() {}
-};
-
 // Every spawn opens a `Channel` for its output, and `Channel`'s constructor
 // registers its handler with Tauri's injected internals — absent in jsdom, so
 // without this a launch throws before it reaches the size bookkeeping under test.
-(globalThis as any).window.__TAURI_INTERNALS__ ??= {
-  transformCallback: () => 1,
-  unregisterCallback: () => {},
-};
 
 /** The `onResize` xterm would call, captured so a test can fire it the way a refit
  *  does. Real xterm hands `{ cols, rows }`; so does this. */

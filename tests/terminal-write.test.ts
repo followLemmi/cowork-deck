@@ -1,14 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// jsdom has no ResizeObserver; TerminalPanel's constructor needs one.
-(globalThis as any).ResizeObserver ??= class {
-  observe() {} unobserve() {} disconnect() {}
-};
-// Nor an IntersectionObserver. Left absent on purpose in the panel — `watchVisibility`
-// treats "no IntersectionObserver" as "never on screen", so no unit test ever tries to
-// make a WebGL context — but stubbed here so the branch that *does* exist is the one
-// under test elsewhere, and so this file pins that its absence is survivable.
+// The one shim this file installs for itself. `ResizeObserver` and Tauri's
+// injected internals come from `tests/setup/dom-shims.ts`; `IntersectionObserver`
+// deliberately does not, because `watchVisibility` treats its absence as "never
+// on screen" and that absence is what keeps a unit test from asking jsdom for a
+// WebGL context. Stubbed here so the branch that DOES exist is the one under
+// test, and so this file pins that its absence is survivable.
 (globalThis as any).IntersectionObserver ??= class {
   observe() {} unobserve() {} disconnect() {}
 };
@@ -42,8 +40,13 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 vi.mock("@xterm/addon-search", () => ({ SearchAddon: class { findNext() {} findPrevious() {} } }));
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
 vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: class { onContextLoss() {} dispose() {} } }));
+// A whole-module mock, so every export the panel reaches for has to be here.
+// `prepareWorkspace` was not, and a launch awaits it to move the account and
+// `claude` lookups off the main thread — so two tests here ran the "resolution
+// failed" path while asserting about byte order (#463).
 vi.mock("../src/ipc", () => ({
   startSession: vi.fn(), startCommandSession: vi.fn(), writeSession: vi.fn().mockResolvedValue(undefined), resizeSession: vi.fn().mockResolvedValue(undefined),
+  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
 }));
 
 import { TerminalPanel } from "../src/terminal";

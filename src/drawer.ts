@@ -8,6 +8,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { confirmModal, promptModal } from "./modal";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
 import { icon } from "./icons";
+import { wireResizer } from "./resize";
 
 /** Must agree with `default_terminal_rows` in `src-tauri/src/model.rs`, which is
  *  what a `ui_state.json` written before the drawer existed reports. */
@@ -80,10 +81,17 @@ export function drawerHeightPx(rows: number, scale: number, barPx: number): numb
   return Math.round(rows * terminalFontPx(scale) * LINE_HEIGHT) + barPx;
 }
 
-/** The inverse, for a drag: which row count a dragged height means. */
-export function rowsForHeight(px: number, scale: number, barPx: number): number {
-  const rows = Math.round((px - barPx) / (terminalFontPx(scale) * LINE_HEIGHT));
-  return Math.min(MAX_ROWS, Math.max(MIN_ROWS, rows));
+/** The pixels one terminal row is worth at a given text scale. What the grip
+ *  divides pointer travel by, so a drag of one line box is a drag of one row —
+ *  see `wireGrip`.
+ *
+ *  This replaced a `rowsForHeight(px, scale, barPx)` that converted an absolute
+ *  dragged height into a row count (#424). Anchoring the gesture on the row count
+ *  it started at rather than on a measured pixel height is both simpler and more
+ *  exact: the tab bar, the grip and the island's border no longer have to be
+ *  subtracted out, and `barPx`'s own comment admits it is four pixels wrong. */
+export function rowPx(scale: number): number {
+  return terminalFontPx(scale) * LINE_HEIGHT;
 }
 
 /** The terminal drawer: a strip under the deck holding interactive shells.
@@ -184,10 +192,6 @@ export class TerminalDrawer {
 
     const grip = document.createElement("div");
     grip.className = "term-grip";
-    grip.setAttribute("role", "separator");
-    grip.setAttribute("aria-orientation", "horizontal");
-    grip.setAttribute("aria-label", "Resize the terminal drawer");
-    grip.tabIndex = 0;
     this.wireGrip(grip);
 
     const bar = document.createElement("div");
@@ -231,34 +235,32 @@ export class TerminalDrawer {
     window.addEventListener(UI_SCALE_EVENT, this.onScale);
   }
 
-  /** Drag, and arrow keys for the same thing — the grip is the only control
-   *  here that would otherwise be mouse-only. */
+  /** On `wireResizer` since #424, and it was a third hand-rolled copy of the same
+   *  gesture. Two things it did not have and now does: `aria-valuenow` and its
+   *  range — it announced itself as a window splitter and then said nothing about
+   *  where it was — and one write per frame rather than one per event.
+   *
+   *  The unit is ROWS, not pixels, which is the whole reason this grip could not
+   *  simply call the shared one before it grew `unitPx`: a row is however tall the
+   *  terminal's line box is at the current text scale, and the drawer's height is
+   *  a row count so that the text-size control moves it. */
   private wireGrip(grip: HTMLElement) {
-    grip.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      grip.setPointerCapture(e.pointerId);
-      const startY = e.clientY;
-      const startPx = this.el.getBoundingClientRect().height;
-      const move = (m: PointerEvent) => {
-        // Dragging up makes it taller, which is why the delta is inverted.
-        this.setRows(rowsForHeight(startPx + (startY - m.clientY), currentScale(), this.barPx()));
-      };
-      const up = () => {
-        grip.removeEventListener("pointermove", move);
-        grip.removeEventListener("pointerup", up);
+    wireResizer({
+      grip,
+      // Dragging UP makes it taller: the drawer hangs below the deck.
+      grow: "up",
+      label: "Resize the terminal drawer",
+      min: MIN_ROWS,
+      max: () => MAX_ROWS,
+      step: 1,
+      unitPx: () => rowPx(currentScale()),
+      read: () => this.rows,
+      write: (rows) => this.setRows(Math.round(rows)),
+      commit: () => {
         void saveUiState({ terminalRows: this.rows }).catch((err) =>
           console.debug("saveUiState failed", err));
-      };
-      grip.addEventListener("pointermove", move);
-      grip.addEventListener("pointerup", up);
-    });
-    grip.addEventListener("keydown", (e) => {
-      const step = e.key === "ArrowUp" ? 1 : e.key === "ArrowDown" ? -1 : 0;
-      if (!step) return;
-      e.preventDefault();
-      this.setRows(Math.min(MAX_ROWS, Math.max(MIN_ROWS, this.rows + step)));
-      void saveUiState({ terminalRows: this.rows }).catch((err) =>
-        console.debug("saveUiState failed", err));
+      },
+      valueText: (rows) => `${Math.round(rows)} rows`,
     });
   }
 

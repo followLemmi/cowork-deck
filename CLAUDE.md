@@ -25,10 +25,14 @@ the conversation itself.
 Writing something in another language and translating it afterwards is not the
 intent: draft it in English in the first place.
 
-### Two deliberate exceptions
+### The deliberate exception: a fixture is not prose
 
-Some Cyrillic in the source is a test fixture or an example, not interface text,
-and must survive any future translation sweep:
+Some Cyrillic in the source is a **test fixture or an example**, not interface
+text, and must survive any future translation sweep. Rewriting one in ASCII does
+not translate the test — it deletes the coverage, because in every case below the
+non-Latin text IS the thing under test.
+
+Two features rest on it directly, and their comments say so:
 
 - `src/placeholders.ts` and `tests/placeholders.test.ts` — the placeholder regex
   uses `\p{L}`, not `\w`, so a name like `{{ветка}}` is recognised. A prompt is
@@ -38,8 +42,32 @@ and must survive any future translation sweep:
   the physical key, because with a Cyrillic layout active `Cmd+K` arrives as
   `л`. An English interface does not imply a Latin keyboard layout.
 
-Deleting either would regress a real feature. The comments explain why; keep
-them intact.
+And four classes of fixture, each testing a rule that an ASCII fixture cannot
+reach:
+
+- **A cap counted in characters, not bytes.** `"я".repeat(300)` and its like in
+  `commands.rs`, `frontmatter.rs`, `memory/corpus.rs`, `memory/rooms.rs` and
+  `memory/transcript.rs`. A byte cap would cut such a name in half and land
+  mid-sequence; an ASCII fixture cannot tell the two apart.
+- **A slug that keeps letters rather than ASCII.** `slug("Память проекта")`,
+  `slugify("Баг: пилюля мигает!")` — `char::is_alphanumeric`, not an ASCII test,
+  because a card title and a note's topic are written in whatever language their
+  author thinks in and the file name has to stay readable.
+- **Multi-byte UTF-8 across a read boundary.** `"─┤абв┃"` in `pty.rs`. The Darwin
+  tty caps a pty read at 1024 bytes where Linux fills 4096, so a glyph split by a
+  buffer boundary is a platform-shaped bug — see the note in `.github/workflows/ci.yml`.
+- **The memory corpus.** `crates/cowork-memory/tests/fixtures/notes/*.md`,
+  `golden.json`, `index.rs`, `cli.rs`, `onnx.rs`, `embed.rs`. The indexer is
+  exercised against a real Russian corpus with a golden parity output, which is
+  the safety property ADR-0003 rests the whole port on; and the embedder's tests
+  assert that two languages embed differently and that "как починить сборку" and
+  "рецепт борща" are far apart. Translating the corpus invalidates the golden
+  file and deletes the property.
+
+The **prose** in these files is English, and all of it is: the audit of
+2 September counted 142 Cyrillic lines across fifteen Rust files, and every
+comment among them is translated (#463). What is left is fixture, and each site
+says why it is one.
 
 ## Branches and releases
 
