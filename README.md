@@ -519,7 +519,7 @@ cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
 > --seed-only` once before `cargo test`: neither `dist/` nor `src-tauri/binaries/` is in git, and
 > Tauri's build script fails while any sidecar declared in `bundle.externalBin` is missing from disk.
 > `--seed-only` writes an empty placeholder for each of the three, which is all a `cargo test` needs;
-> `npm run tauri build` stages the real ones itself.
+> `npm run tauri dev` and `npm run tauri build` stage the real ones themselves.
 
 **Two environment variables**, both optional: `COWORK_CLAUDE_PATH` pins a `claude` that is not on
 `PATH` (without it, and with none found, the app says so on startup), and `COWORK_GH_PATH` does the
@@ -527,9 +527,21 @@ same for `gh`.
 
 **The memory sidecar** is a separate crate under `crates/cowork-memory`, with a target directory of
 its own outside any root `[workspace]`, so `npm run stage:memory` builds and stages it rather than the
-script the other two sidecars share. `beforeBuildCommand` calls all three, so a release bundle carries
-the sidecar it declares. Its tests use a deterministic fake embedder; the ones needing the real model
-are `#[ignore]`d.
+script the other two sidecars share. Its tests use a deterministic fake embedder; the ones needing the
+real model are `#[ignore]`d.
+
+**Both build hooks stage all three sidecars**, through the same three `stage:*` scripts, and that
+symmetry is the point: `bundle.externalBin` declares three binaries, Tauri's build script refuses to
+run while any one of them is missing from disk, and `src-tauri/binaries/` is not in git. A hook that
+staged a subset would work only on a machine where somebody had once run the rest by hand — which is
+exactly how a clean checkout came to be unable to start the app at all.
+
+`dev` therefore stages the same `--release` binaries `build` does, rather than debug ones. It costs a
+release compile of the sidecar trees on the first `dev` in a fresh clone, and again after a change to
+a sidecar's own source; cargo caches both, so the everyday `dev` pays nothing. The alternative —
+teaching the scripts a profile argument and staging debug builds — would buy back those minutes at the
+price of two staging paths to keep correct and a `dev` session running sidecars that are not the ones
+that ship. Neither is free; this is the one that cannot drift.
 
 ## The design
 
