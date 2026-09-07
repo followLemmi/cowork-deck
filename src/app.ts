@@ -516,10 +516,17 @@ export function startApp(role: WindowRole): Promise<void> {
   /* --- The crumb ---------------------------------------------------------
      Which workspace this window is on, and which account a push from it goes out
      as. The panel's head says the same while the panel is open — and that is
-     exactly the reason this exists: the panel CLOSES. Zoom collapses it, which is
-     the state a person spends most of their time in, and in that state nothing
-     else on screen named the folder a session is running in or the account it
-     pushes as. It was answerable before only by leaving the session.
+     exactly the reason this exists: the panel CLOSES. Somebody working in one
+     session collapses it to the rail and leaves it there, and in that state
+     nothing else on screen named the folder a session is running in or the
+     account it pushes as. It was answerable before only by opening the panel
+     again.
+
+     Written when the app did the collapsing itself, on every zoom, which is why
+     this used to say "the state a person spends most of their time in". It no
+     longer does the collapsing (#480) and the crumb is no less needed for it: the
+     panel is still gone whenever somebody has asked for the room, and a rail
+     cannot say whose folder this is.
 
      Pressing it goes to the tree rather than opening a menu of its own: switching
      workspace is what the tree is for, and it is the one that can also say what
@@ -548,16 +555,21 @@ export function startApp(role: WindowRole): Promise<void> {
 
   /* --- The second door to the workspace's own pages ------------------------
      The chip on the active workspace's row is the pointer route to the board and
-     the pull requests, and it lives in the one place a zoom takes away: a zoomed
-     tile collapses the panel to nothing, so from the state a person spends most of
-     their day in there was no way to the board with a mouse at all — only the
-     palette. That is not the zoom being wrong; it is the route having exactly one
-     door, in a room the app closes on purpose.
+     the pull requests, and it lives in the one place a collapse takes away: the
+     panel goes to zero width, chip and all, so from a collapsed panel there was
+     no way to the board with a mouse at all — only the palette. That is not the
+     collapse being wrong; it is the route having exactly one door, in a room that
+     shuts.
+
+     The room used to be shut BY THE APP, on every zoom, which is the state this
+     was written against. It is the person's own doing now (#480), and that changes
+     nothing about the door: somebody who collapsed the panel to get the room did
+     not thereby give up the board.
 
      Here rather than in the rail, and rather than as a fourth control on the right:
      the crumb already names the workspace these two pages are ABOUT, and it is the
-     one thing on screen that survives the zoom. A door beside the name of the thing
-     it opens needs no label explaining which repository it means.
+     one thing on screen that survives a collapse. A door beside the name of the
+     thing it opens needs no label explaining which repository it means.
 
      A toggle, not an opener, because it is now the only control that is visible in
      both states: `aria-expanded` says which, and pressing it twice puts the window
@@ -903,12 +915,32 @@ export function startApp(role: WindowRole): Promise<void> {
     deck.refit();
   }
 
-  /** Collapse the panel to the rail, or bring it back.
+  /** Put the panel where it is and say so on the button. All "collapsed" means to
+   *  the DOM, and no part of the decision — which is why the restore at boot can
+   *  use it: applying a stored answer is not answering. */
+  function applyCollapsed(on: boolean) {
+    sidebar.classList.toggle("is-collapsed", on);
+    shutBtn.setAttribute("aria-label", on ? "Show the panel" : "Collapse the panel");
+    shutBtn.title = shutBtn.getAttribute("aria-label")!;
+    shutBtn.classList.toggle("icon--left", !on);
+  }
+
+  /** Collapse the panel to the rail, or bring it back, **because a person asked.**
    *
-   *  `byHand` is what keeps the automatic version honest: zooming a session
-   *  collapses the panel, and leaving zoom brings it back — unless the person had
-   *  collapsed it themselves, in which case it was not the zoom's to restore. */
-  function setCollapsed(on: boolean, byHand = true) {
+   *  Nothing else calls this now, and that is the change #480 asked for. It used
+   *  to take a `byHand` flag, because the zoom collapsed the panel and the
+   *  un-zoom brought it back unless the person had collapsed it themselves — and
+   *  the asymmetry in that flag was the defect: collapsing by hand latched "leave
+   *  this alone", but OPENING by hand only cleared the latch, which read as "the
+   *  app may take it away again". So there was no way to say "I want the panel
+   *  while zoomed", and every later `false → true` zoom edge collapsed it once
+   *  more. There is no flag now because there is no automatic collapse for one to
+   *  exempt anything from.
+   *
+   *  The one caller that is not a control is `setPanel`, which opens the panel
+   *  because choosing a page is asking to see it — a person's action reaching this
+   *  by a different route, not the app deciding. */
+  function setCollapsed(on: boolean) {
     /* The width behind this class is animated, and behind the edge it moves is a
        grid of terminals. Refits are held off for the length of it and one lands at
        the end: without that, every visible terminal reflows its whole buffer once
@@ -935,13 +967,14 @@ export function startApp(role: WindowRole): Promise<void> {
         deck.refit();
       }, settleMs());
     }
-    sidebar.classList.toggle("is-collapsed", on);
-    if (byHand) collapsedByHand = on;
-    shutBtn.setAttribute("aria-label", on ? "Show the panel" : "Collapse the panel");
-    shutBtn.title = shutBtn.getAttribute("aria-label")!;
-    shutBtn.classList.toggle("icon--left", !on);
+    applyCollapsed(on);
+    /* Remembered, because there is now one kind of writer and it is a person. It
+       would have been dishonest to store this while a zoom could set it: what a
+       restart restored would have been the last zoom's doing, under the name of a
+       preference. */
+    saveUiState({ panelCollapsed: on })
+      .catch((e) => console.debug("panel state save failed", e));
   }
-  let collapsedByHand = false;
   /** The pending release of the refit hold, or undefined when none is owed. */
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -2373,17 +2406,24 @@ export function startApp(role: WindowRole): Promise<void> {
     btn.setAttribute("aria-label", name);
     btn.title = name;
   }
-  /* Zoom takes the panel's room, and gives it back. The tool panel inside a zoomed
-     tile is the thing that wants the width — and it has its own floor to keep, so
-     the fewer boxes competing for the same pixels the better. */
+  /* Zoom leaves the left panel exactly as it found it. It used to collapse it and
+     put it back, on the argument that the tool panel inside a zoomed tile wants
+     the same width — and the argument was about room, which is not the panel's to
+     answer: the panel is the person's, and #480 is the record of what it cost to
+     have the app hold that opinion twice.
+
+     The room argument still gets an answer, in the place that can measure it. A
+     zoomed tile with the panel open is simply a narrower tile, and the tool panel
+     checks the 80-column floor against the tile it actually has — see
+     `TileTools.refit`, which floats the panel over the terminal rather than
+     squeezing it under the floor, on every open and on every box change. */
   deck.setZoomListener((zoomed) => {
-    if (zoomed) setCollapsed(true, false);
-    else if (!collapsedByHand) setCollapsed(false, false);
-    /* And the workspace panel goes, because a zoomed tile's tool panel takes this
-       same edge inside the tile frame. Two panels on one edge is a person guessing
-       which one a drag will move. It is not brought back on un-zoom: it was opened
-       by hand and closed by the app, and restoring it would put a board over a deck
-       somebody just came back to. */
+    /* The workspace panel is the one that does go, and it is a different
+       conflict: a zoomed tile's tool panel takes this same edge INSIDE the tile
+       frame, and two panels on one edge is a person guessing which one a drag will
+       move. It is not brought back on un-zoom: it was opened by hand and closed by
+       the app, and restoring it would put a board over a deck somebody just came
+       back to. */
     if (zoomed) closeWorkspacePanel();
   });
   /* One width for the tool panel, remembered for the app: every session's tools
@@ -2966,6 +3006,19 @@ export function startApp(role: WindowRole): Promise<void> {
       if (ui.wspPx) wspEl.style.setProperty("--wsp-w", `${ui.wspPx}px`);
       if (ui.wspWidePx) wspEl.style.setProperty("--wsp-wide-w", `${ui.wspWidePx}px`);
       if (ui.toolPx) document.documentElement.style.setProperty("--tool-w", `${ui.toolPx}px`);
+      /* And whether the panel is showing at all, which is a preference rather
+         than a width and is restored the same way: as whatever the person last
+         chose. `applyCollapsed` rather than `setCollapsed`, for two reasons —
+         this is reading the answer and not giving one, so it must not write it
+         back; and `setCollapsed` holds every terminal's refit off for the length
+         of the collapse animation, which across `boot()` below would leave the
+         restored layout's terminals deaf to their own boxes. There is no
+         animation to protect here: nothing has been laid out yet.
+
+         Only the main window. A pinned workspace window has no rail and hides the
+         shut button, so the panel is its only navigation — see `shutBtn` — and a
+         stored `true` there would be a window with nothing to press. */
+      if (pinnedTo === null && ui.panelCollapsed) applyCollapsed(true);
     } catch (e) {
       console.debug("ui state read failed, using the defaults", e);
     }

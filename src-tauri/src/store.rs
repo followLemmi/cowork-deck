@@ -391,6 +391,13 @@ impl Store {
         if let Some(rows) = patch.terminal_rows {
             st.terminal_rows = rows;
         }
+        // Whether the left panel is showing — a preference rather than a width,
+        // and one that is in this file only because a person chose it. It used to
+        // be whatever the last zoom had made it (#480), which is not a thing to
+        // remember on anybody's behalf.
+        if let Some(on) = patch.panel_collapsed {
+            st.panel_collapsed = on;
+        }
         if let Some(on) = patch.usage_reported {
             st.usage_reported = on;
         }
@@ -997,6 +1004,8 @@ mod tests {
         assert_eq!(UiState::default().terminal_rows, 14);
         // Off: nobody has been asked yet, so nobody has declined.
         assert!(!UiState::default().sync_offer_dismissed);
+        // Open: a panel nobody has collapsed is a panel showing.
+        assert!(!UiState::default().panel_collapsed);
         // On. Asking spends no quota and reads no credential, and the
         // alternative default is a screen saying "unknown" to somebody who
         // never knew there was a switch.
@@ -1018,6 +1027,7 @@ mod tests {
             wsp_px: Some(720),
             wsp_wide_px: None,
             tool_px: Some(360),
+            panel_collapsed: Some(true),
         };
         s.save_ui_state(&patch).unwrap();
         let reloaded = Store::new(s.dir.clone()).ui_state();
@@ -1034,6 +1044,10 @@ mod tests {
         assert_eq!(reloaded.terminal_rows, 20);
         // An offer that comes back after being waved away is not an offer.
         assert!(reloaded.sync_offer_dismissed);
+        // And the panel stays where the person left it, which is the whole reason
+        // it is in this file: it used to come back as whatever the last zoom made
+        // it.
+        assert!(reloaded.panel_collapsed);
     }
 
     /// The drawer's own file, and the reason it is a struct rather than the bare

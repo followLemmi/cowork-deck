@@ -40,6 +40,9 @@ export const UI_STATE: UiState = {
   recordScenarioRuns: true,
   terminalRows: 24,
   usageReported: true,
+  // Open, which is what a fresh machine reports and what every boot-through test
+  // wants: a collapsed panel has no tree in it to assert on.
+  panelCollapsed: false,
 };
 
 /** `gh` present with no account connected. Not "gh missing": the app has a
