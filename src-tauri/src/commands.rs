@@ -2749,9 +2749,27 @@ pub fn emit_state(app: &AppHandle, session: String, state: crate::model::Session
     let _ = app.emit("session://state", StatePayload { session, state });
 }
 
-/// Where the live sessions say they are, as roots for the two sets below.
-fn session_dirs() -> Vec<String> {
-    crate::session_cwd::all().into_iter().map(|(_, dir)| dir).collect()
+/// Where the live sessions are working, as roots for the two sets below.
+///
+/// **Both of `session_cwds`' sources, and it has to be both.** A hook's reported
+/// directory is only half the answer: Claude Code pins its working directory, so
+/// that half always names the directory the session was launched in — which every
+/// workspace root already contains. The half that can name a folder outside every
+/// workspace is the other one, the leader's directory read from the OS, because
+/// that is the source for the sessions that genuinely move: a `command` tile, and
+/// a `codex`, `copilot` or `opencode` session, none of which emit a Claude Code
+/// hook. Deriving these roots from the reported half alone would therefore admit
+/// exactly the paths that needed no admitting and refuse the ones #508 is about —
+/// the display would follow its session and then be unable to read where it had
+/// followed it to.
+///
+/// Duplicates are not filtered: `Roots::contains` asks whether any root contains
+/// the path, so a repeated root costs one comparison and changes no answer.
+fn session_dirs(state: &AppState) -> Vec<String> {
+    let mut dirs: Vec<String> =
+        crate::session_cwd::all().into_iter().map(|(_, dir)| dir).collect();
+    dirs.extend(state.pty.cwds());
+    dirs
 }
 
 /// The directories a path from the frontend may name, derived from the store and
@@ -2767,15 +2785,16 @@ fn session_dirs() -> Vec<String> {
 /// #508 possible rather than merely visible: a display that follows its session
 /// has to be able to read the folder that session is in, and a session need not
 /// be in a workspace or in a worktree beside one. It stays derived — the paths
-/// come from `session_cwd`, fed by hooks and by the process table, so there is no
-/// list to keep in step and nothing the webview can add to it. The webview can
-/// *name* such a path; only a running process can make one exist, and it stops
-/// being a root when that session closes (`close_session`).
+/// come from `session_dirs`, which reads what the hooks reported and what the
+/// process table says, so there is no list to keep in step and nothing the
+/// webview can add to it. The webview can *name* such a path; only a running
+/// process can make one exist, and it stops being a root when that session
+/// closes (`close_session`).
 fn git_roots(state: &AppState) -> crate::reachable::Roots {
     let store = state.store();
     let workspaces = store.workspaces();
     let mut roots = crate::reachable::Roots::worktrees(workspaces.iter().map(|w| w.path.as_str()));
-    roots.add(session_dirs());
+    roots.add(session_dirs(state));
     roots
 }
 
@@ -2786,7 +2805,7 @@ fn revealable_roots(state: &AppState) -> crate::reachable::Roots {
         workspaces.iter().map(|w| w.path.as_str()),
         &store.dir,
     );
-    roots.add(session_dirs());
+    roots.add(session_dirs(state));
     roots
 }
 

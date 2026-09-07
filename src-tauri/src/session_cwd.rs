@@ -76,8 +76,10 @@ pub fn get(session: &str) -> Option<String> {
     dirs().lock().ok()?.get(session).cloned()
 }
 
-/// Every session that has reported one, as a list. For `git_roots`, which has to
-/// let through a path that no workspace root contains.
+/// Every session that has *reported* one, as a list. For `commands::session_dirs`,
+/// which has to let through a path that no workspace root contains — together with
+/// the directories read from the process table, since a session that reports one
+/// is a session that has not moved out of its workspace anyway.
 pub fn all() -> Vec<(String, String)> {
     match dirs().lock() {
         Ok(m) => m.iter().map(|(s, d)| (s.clone(), d.clone())).collect(),

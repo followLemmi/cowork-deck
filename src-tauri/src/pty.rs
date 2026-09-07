@@ -518,6 +518,29 @@ impl PtyManager {
         leader_cwd(pid as i32)
     }
 
+    /// Where every session this manager holds is working, as directories.
+    ///
+    /// [`Self::cwd`] for the whole deck, and it exists because a *caller* needs
+    /// the set rather than one answer: `commands::git_roots` has to let a path
+    /// through for being where some live session is, without being told which
+    /// session is being asked about (#508). The ids are dropped for that reason —
+    /// the question there is "is anything of ours in this folder", not "whose".
+    ///
+    /// The pids are collected under the lock and read after it is dropped, the
+    /// same discipline `kill` and `kill_all` state: a `readlink` per session is
+    /// cheap but it is still a syscall, and no caller of this should be able to
+    /// hold up a write to an unrelated session.
+    ///
+    /// A session whose leader has exited, or which never had a pid, contributes
+    /// nothing — as on any platform that cannot answer the question at all.
+    pub fn cwds(&self) -> Vec<String> {
+        let pids: Vec<i32> = {
+            let map = self.sessions.lock().unwrap();
+            map.values().filter_map(|s| s.pid.map(|p| p as i32)).collect()
+        };
+        pids.into_iter().filter_map(leader_cwd).collect()
+    }
+
     /// How many jobs one session is running — `live_work`, for a caller that
     /// already knows which session it is asking about. Zero for an id the
     /// manager does not hold.
@@ -955,6 +978,54 @@ mod tests {
     #[test]
     fn a_session_that_is_not_there_has_no_directory() {
         assert_eq!(PtyManager::new().cwd("nobody"), None);
+    }
+
+    /// The set the reachability roots are built from: a session that has moved is
+    /// listed at the folder it moved TO, not the one it was spawned in (#508).
+    ///
+    /// This is the half of `commands::session_dirs` that matters there. The other
+    /// half — the directory a Claude Code hook reports — always names the launch
+    /// directory, which every workspace root already contains; a session that
+    /// genuinely walks out of every workspace is one of these, so a root set
+    /// derived without them would refuse exactly the paths the displays had just
+    /// started following.
+    ///
+    /// Sequenced like the test above, and for the same reason: the script speaks
+    /// only after the `cd` has happened.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn every_live_sessions_directory_is_listed_and_follows_a_cd() {
+        let mgr = PtyManager::new();
+        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let (tx, rx) = mpsc::channel();
+        spawn_sh(
+            &mgr, "s-cwds",
+            "printf started; read _; cd /tmp && printf moved; read _",
+            false,
+            move |b| { let _ = tx.send(b); },
+            |_| {},
+        ).unwrap();
+
+        assert!(wait_for(&rx, "started").contains("started"));
+        let dirs: Vec<std::path::PathBuf> =
+            mgr.cwds().into_iter().map(std::path::PathBuf::from).collect();
+        assert!(dirs.contains(&here), "{dirs:?} should hold {here:?}");
+
+        mgr.write("s-cwds", b"\n").unwrap();
+        assert!(wait_for(&rx, "moved").contains("moved"));
+        let moved = std::path::Path::new("/tmp").canonicalize().unwrap();
+        let dirs: Vec<std::path::PathBuf> =
+            mgr.cwds().into_iter().map(std::path::PathBuf::from).collect();
+        assert!(dirs.contains(&moved), "{dirs:?} should hold {moved:?}");
+        mgr.kill("s-cwds");
+    }
+
+    /// A manager holding nothing contributes no roots. It has to be empty rather
+    /// than anything else: `Roots::add` is handed this, and one bogus entry there
+    /// would widen what a path from the webview is allowed to name.
+    #[test]
+    fn a_manager_with_no_sessions_lists_no_directories() {
+        assert_eq!(PtyManager::new().cwds(), Vec::<String>::new());
     }
 
     /// The parsing half of the macOS read, which no Linux runner can reach

@@ -25,9 +25,10 @@
 //! ([`Roots::add`]). A session's displays follow its directory rather than the
 //! one it was launched in (#508), so that directory has to be readable — and it
 //! need not be under any workspace. Still no bookkeeping: the paths come from
-//! `session_cwd`, fed by Claude Code's hooks and by the process table, and they
-//! go when the session does. The webview can *name* such a path; only a running
-//! process can make one exist.
+//! `commands::session_dirs` — Claude Code's hooks for the sessions that report,
+//! the process table for the ones that move — and they go when the session does.
+//! The webview can *name* such a path; only a running process can make one
+//! exist.
 //!
 //! **Lexical, not canonical.** A path is normalised by resolving `.` and `..`
 //! textually, and a relative path is refused outright. Canonicalising would be
@@ -89,12 +90,13 @@ impl Roots {
     /// derive: each is where a live session says it is working.
     ///
     /// The one thing here that is not derivable, and it is derivable from
-    /// somewhere else — `session_cwd`, which is fed by Claude Code's hooks and by
-    /// the process table. So this is still not a list anybody maintains, and it
-    /// is still not something the webview can extend: a session's directory
-    /// exists because a process is in it. What it buys is #508 — a per-session
-    /// display that follows its session has to be able to read the folder the
-    /// session is in, and a session need not be inside a workspace.
+    /// somewhere else — `commands::session_dirs`, which reads Claude Code's
+    /// hooks and the process table. So this is still not a list anybody
+    /// maintains, and it is still not something the webview can extend: a
+    /// session's directory exists because a process is in it. What it buys is
+    /// #508 — a per-session display that follows its session has to be able to
+    /// read the folder the session is in, and a session need not be inside a
+    /// workspace.
     ///
     /// A path that is not absolute contributes no root, the same way an empty
     /// workspace path does not: `normalise` would refuse it at comparison time
@@ -221,8 +223,8 @@ mod tests {
 
     /// #508: a session's displays follow the directory it is in, so that
     /// directory has to be readable even when it is nowhere near a workspace.
-    /// Added by `commands::git_roots` from `session_cwd`, not by anything the
-    /// webview can write to.
+    /// Added by `commands::git_roots` from `commands::session_dirs`, not by
+    /// anything the webview can write to.
     #[test]
     fn a_live_sessions_own_directory_is_reachable() {
         let mut roots = Roots::worktrees(WS);
