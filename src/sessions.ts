@@ -298,6 +298,16 @@ export class Deck {
   private polling = false;
   private usage = new Map<string, SessionTokens>();
   private activeWorkspaceId: string | null = null;
+  /** The session a workspace switch is on its way to, for the length of that
+   *  switch and no longer. Written by `focusSessionAnywhere` and read once by
+   *  `setActiveWorkspace`; see the note there for why the switch has to know.
+   *
+   *  A field rather than a parameter because the switch does not go through this
+   *  class. `focusSessionAnywhere` hands the workspace to `WorkspacesPanel`, which
+   *  persists it, tells the app, and only then comes back here — one notion of
+   *  "active", owned by the thing that also writes it down. Threading a session id
+   *  through the tree and the app would put a deck concern in both of them. */
+  private enteringFor: string | null = null;
   private collapsed = new Set<string>();
   /** Which session is zoomed, keyed by the workspace it is zoomed *in*.
    *
@@ -1015,6 +1025,26 @@ export class Deck {
         if (firstVisible === null) firstVisible = t.session;
       }
     }
+    /* One layout, and the arithmetic of that is the whole fix.
+       Restoring this workspace's zoom and THEN juggling it onto the session being
+       opened is two layouts, and the first of them was never on screen: the tiles
+       came out of `ws-hidden` a line ago. So `animateLayoutChange` measured a
+       "before" nobody saw and spent 220ms morphing away from it — a tile sliding
+       out of a filmstrip slot it had never occupied, over a deck whose own box was
+       still moving because the switch had just collapsed the panel. Told where the
+       switch is going, the layout below produces the final arrangement directly and
+       the `focusTile` that follows finds nothing left to move.
+
+       Only when this workspace was already zoomed. A workspace left as a grid stays
+       a grid — opening a session in one is not a request to zoom it — and
+       `zoomParticipants` still refuses a zoom that no longer has anything to zoom
+       past, so a remembered entry that cannot be honoured is dropped here as before. */
+    const heading = this.enteringFor;
+    this.enteringFor = null;
+    if (heading !== null && this.zoomedSession !== null && this.zoomedSession !== heading
+        && this.tiles.get(heading)?.el.classList.contains("ws-hidden") === false) {
+      this.zoomedSession = heading;
+    }
     this.applyLayout();
     const active = this.activeSession;
     const activeHidden = !active || !!this.tiles.get(active)?.el.classList.contains("ws-hidden");
@@ -1725,8 +1755,13 @@ export class Deck {
          another workspace left the panel's tint, the crumb, the board and the pull
          requests pointing at the workspace you had just left. One notion of
          "active", owned by the thing that also persists it. */
+      // Told where it is going, so it can arrive there in ONE layout. Cleared
+      // either way: `activate` refuses a workspace that has been deleted since,
+      // and a hint left behind would aim the next switch at this session.
+      this.enteringFor = session;
       if (this.tree) this.tree.activate(rid);
       else this.setActiveWorkspace(rid);
+      this.enteringFor = null;
     } else if (tile.el.classList.contains("ws-hidden")) {
       // Orphan (or otherwise stale-hidden) target: unhide so focus lands on a visible tile.
       tile.el.classList.remove("ws-hidden");
@@ -1744,7 +1779,24 @@ export class Deck {
       this.zoomTo(session);
     }
     for (const t of this.tiles.values()) t.el.classList.toggle("is-active", t === tile);
-    tile.el.scrollIntoView?.({ block: "nearest" });
+    /* Only in the grid, and the zoom is not an "it would do nothing there" case —
+       it is the one place this actively BREAKS the layout.
+
+       `#deck` scrolls in the grid, so bringing a tile below the fold into view is
+       what this line is for. `#deck.is-zoomed` is `overflow: hidden` with the
+       zoomed tile filling row 1, so there is nothing left to reveal — but the
+       scroll OFFSET is still live, and the `zoomTo` four lines up has just
+       installed the FLIP inversion: the incoming tile carries a
+       `translate(252px, 588px)` and the outgoing one a sixfold scale. A
+       transformed box counts toward scrollable overflow, so at that instant the
+       deck measures 1163px of scrollHeight against a 674px box, and this scrolled
+       it to (240, 489) to reveal a tile that is only out there because of the
+       invert. The transition then eases the transforms away, the overflow
+       collapses, and the browser CLAMPS the offset back to zero across the same
+       220ms — dragging the zoomed tile, the filmstrip and the tools rail up the
+       screen with it. Nobody wrote that motion, and it was the larger half of
+       what "the layout swims on a workspace switch" turned out to be. */
+    if (this.zoomedSession === null) tile.el.scrollIntoView?.({ block: "nearest" });
     tile.panel.focus();
     this.renderList();
   }

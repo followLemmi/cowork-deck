@@ -453,11 +453,17 @@ describe("Zoom is remembered per workspace", () => {
     // The launches above ran with WS active, so WS2's tiles have not been
     // through the filter yet; this switch is what applies it.
     deck.setActiveWorkspace(WS.id);
-    return { deck, deckEl };
+    return { deck, deckEl, listEl };
   }
 
   const tileEl = (deck: Deck, session: string) =>
     (deck as any).tiles.get(session).el as HTMLElement;
+
+  /** The sidebar row for a session. Re-queried on every use rather than held:
+   *  `focusTile` ends in `renderList`, which rebuilds the list, so a row kept
+   *  across a click is a detached node. */
+  const rowFor = (listEl: HTMLElement, session: string) =>
+    listEl.querySelector<HTMLElement>(`.sess-row[data-focus-key="session:${session}"]`)!;
 
   it("restores the zoomed session when the workspace comes back", async () => {
     const { deck, deckEl } = await twoWorkspaces();
@@ -591,6 +597,66 @@ describe("Zoom is remembered per workspace", () => {
 
     deck.exitZoom();
     expect(told).toEqual([false]);
+  });
+
+  /* Three cases for one defect: opening a session in another workspace made the
+     deck swim for a third of a second. Two unrelated animations were running over
+     each other, and both are asserted below rather than the symptom, which is a
+     pixel path no test can see. */
+
+  // Restoring the workspace's remembered zoom and THEN juggling it onto the
+  // session being opened is two layouts, and the first was never on screen — the
+  // tiles came out of `ws-hidden` the line before. So the FLIP measured a "before"
+  // nobody saw and spent 220ms travelling away from it, over a deck whose own box
+  // was still moving because the switch had just collapsed the panel.
+  it("opens a session in another workspace without morphing through that workspace's zoom", async () => {
+    const { deck, deckEl, listEl } = await twoWorkspaces();
+
+    deck.zoomTo("b");                  // WS is left zoomed on "b"
+    deck.setActiveWorkspace(WS2.id);   // and WS2 is what is on screen
+
+    const morph = vi.spyOn(deck as any, "animateLayoutChange");
+    rowFor(listEl, "a").click();       // a session in WS, which is not on screen
+
+    expect(morph).not.toHaveBeenCalled();
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(tileEl(deck, "a"));
+    expect(tileEl(deck, "b").classList.contains("minimized")).toBe(true);
+  });
+
+  // The one-layout shortcut above is for a workspace that was ALREADY zoomed.
+  // Opening a session in a workspace left as a grid is not a request to zoom it.
+  it("leaves a workspace that was a grid as a grid", async () => {
+    const { deck, deckEl, listEl } = await twoWorkspaces();
+
+    deck.setActiveWorkspace(WS2.id);
+    deck.zoomTo("d");                  // WS2 is zoomed; WS never was
+    rowFor(listEl, "a").click();
+
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+    expect(tileEl(deck, "a").classList.contains("is-active")).toBe(true);
+  });
+
+  // The other half, and the larger one. `focusTile` scrolls its tile into view,
+  // which is what the grid needs and what a zoom cannot survive: `zoomTo` has just
+  // installed the FLIP inversion, a transformed box counts toward scrollable
+  // overflow, and the deck was scrolled to (240, 489) to reveal a tile that is out
+  // there only because of the invert. Easing the transforms away then collapses
+  // that overflow and the browser clamps the offset back to zero over the same
+  // 220ms — dragging the zoomed tile, the filmstrip and the tools rail with it.
+  it("scrolls a tile into view in the grid, and never while zoomed", async () => {
+    const { deck, deckEl, listEl } = await twoWorkspaces();
+    const scrolled = vi.fn();
+    tileEl(deck, "a").scrollIntoView = scrolled;
+
+    rowFor(listEl, "a").click();
+    expect(scrolled).toHaveBeenCalled();
+
+    deck.zoomTo("b");
+    scrolled.mockClear();
+    rowFor(listEl, "a").click();       // juggles the zoom onto "a"
+
+    expect(deckEl.querySelector(".tile.zoomed")).toBe(tileEl(deck, "a"));
+    expect(scrolled).not.toHaveBeenCalled();
   });
 });
 
