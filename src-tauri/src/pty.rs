@@ -498,6 +498,49 @@ impl PtyManager {
         self.sessions.lock().unwrap().contains_key(session)
     }
 
+    /// Where this session's leader is working right now, read from the OS.
+    ///
+    /// **The leader, deliberately, and not its foreground descendant.** The
+    /// leader is the process this app started, and its directory is a fact about
+    /// the session; a descendant's is a fact about whatever the session is
+    /// running this second, so following it would swing a tile's badge to a
+    /// tool's directory for the length of a tool call and back. Being right
+    /// about the wrong question is worse than the answer this gives.
+    ///
+    /// For a shell that is exactly right: `cd` moves the leader. For an agent it
+    /// is the launch directory, because the agent does not move — see the header
+    /// of `crate::session_cwd`, where that is measured rather than assumed.
+    ///
+    /// `None` for an id the manager does not hold, for a leader that has already
+    /// exited, and on any platform with no cheap way to ask.
+    pub fn cwd(&self, session: &str) -> Option<String> {
+        let pid = self.sessions.lock().unwrap().get(session)?.pid?;
+        leader_cwd(pid as i32)
+    }
+
+    /// Where every session this manager holds is working, as directories.
+    ///
+    /// [`Self::cwd`] for the whole deck, and it exists because a *caller* needs
+    /// the set rather than one answer: `commands::git_roots` has to let a path
+    /// through for being where some live session is, without being told which
+    /// session is being asked about (#508). The ids are dropped for that reason —
+    /// the question there is "is anything of ours in this folder", not "whose".
+    ///
+    /// The pids are collected under the lock and read after it is dropped, the
+    /// same discipline `kill` and `kill_all` state: a `readlink` per session is
+    /// cheap but it is still a syscall, and no caller of this should be able to
+    /// hold up a write to an unrelated session.
+    ///
+    /// A session whose leader has exited, or which never had a pid, contributes
+    /// nothing — as on any platform that cannot answer the question at all.
+    pub fn cwds(&self) -> Vec<String> {
+        let pids: Vec<i32> = {
+            let map = self.sessions.lock().unwrap();
+            map.values().filter_map(|s| s.pid.map(|p| p as i32)).collect()
+        };
+        pids.into_iter().filter_map(leader_cwd).collect()
+    }
+
     /// How many jobs one session is running — `live_work`, for a caller that
     /// already knows which session it is asking about. Zero for an id the
     /// manager does not hold.
@@ -687,6 +730,90 @@ fn jobs_in_session(_leader: i32) -> usize {
     0
 }
 
+/// One process's working directory, by pid.
+///
+/// Three implementations and no portable one, which is the same shape as
+/// `all_pids` below and for the same reason: there is no syscall that asks this
+/// about another process.
+///
+/// Linux reads the symlink the kernel already keeps. macOS asks `proc_pidinfo`
+/// for the vnode path info, whose `pvi_cdir` is the answer — `libproc`'s own
+/// route, and the reason `libc` is a dependency of this file already. Windows
+/// has neither: reaching it needs a remote read of the process's PEB, which is
+/// the kind of thing this layer does not do (see the header — the process tree
+/// is unreachable there too).
+///
+/// Empty or unreadable answers `None`, never an empty string: a caller falls back
+/// to the launch directory on `None`, and `""` would reach `git -C`.
+#[cfg(target_os = "linux")]
+fn leader_cwd(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    // A directory the process has since had deleted under it reads back as
+    // "/some/where (deleted)", which is not a path and must not be handed on.
+    let text = path.to_str()?.to_string();
+    if text.is_empty() || text.ends_with(" (deleted)") {
+        return None;
+    }
+    Some(text)
+}
+
+#[cfg(target_os = "macos")]
+fn leader_cwd(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    // Zeroed rather than `MaybeUninit`: the call fills the whole struct on
+    // success and this is read only when it reports having written all of it,
+    // and a zeroed `vip_path` is an empty C string rather than garbage on the
+    // path where it does not.
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    // A short write is a struct only partly filled, which is not an answer.
+    if written < size {
+        return None;
+    }
+    // `vip_path` is `[[c_char; 32]; 32]` — libc spells `[c_char; MAXPATHLEN]`
+    // that way to keep supporting an old rustc, so it is flattened back here.
+    let flat = info.pvi_cdir.vip_path;
+    c_string(flat.iter().flatten().map(|&c| c as u8))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn leader_cwd(_pid: i32) -> Option<String> {
+    None
+}
+
+/// The path in a fixed-size C buffer: bytes up to the NUL, as a `String`.
+///
+/// Split out of the macOS branch above so that the half with rules in it is
+/// under test on every platform — `cfg(test)` beside `macos` is what puts it in
+/// a Linux runner's build. Only the syscall is macOS-only; where the path ends,
+/// and what an empty or non-UTF-8 buffer means, are decisions a Linux test can
+/// hold, and the whole of `libproc`'s answer is a buffer of this shape.
+///
+/// `None` rather than `""` for an empty buffer, because the caller falls back to
+/// the launch directory on `None` and would hand an empty string to `git -C`.
+#[cfg(any(target_os = "macos", test))]
+fn c_string(bytes: impl Iterator<Item = u8>) -> Option<String> {
+    let taken: Vec<u8> = bytes.take_while(|&b| b != 0).collect();
+    if taken.is_empty() {
+        return None;
+    }
+    String::from_utf8(taken).ok()
+}
+
 #[cfg(target_os = "linux")]
 fn all_pids() -> Vec<i32> {
     let dir = match std::fs::read_dir("/proc") {
@@ -803,6 +930,132 @@ mod tests {
             "output after the swap belongs to the window that claimed the session",
         );
         mgr.kill("s1");
+    }
+
+    /// The whole point of reading the leader rather than remembering the launch
+    /// argument: a shell that has `cd`-ed is somewhere else, and the manager can
+    /// say where (#508).
+    ///
+    /// The `cd` is provably done before the read, not probably: the script
+    /// announces itself only after it has moved and then blocks on `read`, so a
+    /// slow machine makes this test slower and never wrong. `canonicalize` on the
+    /// expectation because macOS resolves `/tmp` to `/private/tmp`, and the
+    /// kernel answers with the resolved path either way.
+    // Needs a POSIX shell's `read`, and a `/proc` or `libproc` to ask.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_sessions_directory_is_read_from_the_leader_and_follows_a_cd() {
+        let mgr = PtyManager::new();
+        let here = std::env::current_dir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        spawn_sh(
+            &mgr, "s-cwd",
+            "printf started; read _; cd /tmp && printf moved; read _",
+            false,
+            move |b| { let _ = tx.send(b); },
+            |_| {},
+        ).unwrap();
+
+        assert!(wait_for(&rx, "started").contains("started"));
+        assert_eq!(
+            mgr.cwd("s-cwd").map(std::path::PathBuf::from),
+            Some(here.canonicalize().unwrap()),
+            "before the cd, the leader is where it was spawned",
+        );
+
+        mgr.write("s-cwd", b"\n").unwrap();
+        assert!(wait_for(&rx, "moved").contains("moved"));
+        assert_eq!(
+            mgr.cwd("s-cwd").map(std::path::PathBuf::from),
+            Some(std::path::Path::new("/tmp").canonicalize().unwrap()),
+            "after the cd, the leader is where it went",
+        );
+        mgr.kill("s-cwd");
+    }
+
+    /// An id the manager does not hold has no directory — which is what a caller
+    /// falls back to the launch path on, so it must be `None` and not a guess.
+    #[test]
+    fn a_session_that_is_not_there_has_no_directory() {
+        assert_eq!(PtyManager::new().cwd("nobody"), None);
+    }
+
+    /// The set the reachability roots are built from: a session that has moved is
+    /// listed at the folder it moved TO, not the one it was spawned in (#508).
+    ///
+    /// This is the half of `commands::session_dirs` that matters there. The other
+    /// half — the directory a Claude Code hook reports — always names the launch
+    /// directory, which every workspace root already contains; a session that
+    /// genuinely walks out of every workspace is one of these, so a root set
+    /// derived without them would refuse exactly the paths the displays had just
+    /// started following.
+    ///
+    /// Sequenced like the test above, and for the same reason: the script speaks
+    /// only after the `cd` has happened.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn every_live_sessions_directory_is_listed_and_follows_a_cd() {
+        let mgr = PtyManager::new();
+        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let (tx, rx) = mpsc::channel();
+        spawn_sh(
+            &mgr, "s-cwds",
+            "printf started; read _; cd /tmp && printf moved; read _",
+            false,
+            move |b| { let _ = tx.send(b); },
+            |_| {},
+        ).unwrap();
+
+        assert!(wait_for(&rx, "started").contains("started"));
+        let dirs: Vec<std::path::PathBuf> =
+            mgr.cwds().into_iter().map(std::path::PathBuf::from).collect();
+        assert!(dirs.contains(&here), "{dirs:?} should hold {here:?}");
+
+        mgr.write("s-cwds", b"\n").unwrap();
+        assert!(wait_for(&rx, "moved").contains("moved"));
+        let moved = std::path::Path::new("/tmp").canonicalize().unwrap();
+        let dirs: Vec<std::path::PathBuf> =
+            mgr.cwds().into_iter().map(std::path::PathBuf::from).collect();
+        assert!(dirs.contains(&moved), "{dirs:?} should hold {moved:?}");
+        mgr.kill("s-cwds");
+    }
+
+    /// A manager holding nothing contributes no roots. It has to be empty rather
+    /// than anything else: `Roots::add` is handed this, and one bogus entry there
+    /// would widen what a path from the webview is allowed to name.
+    #[test]
+    fn a_manager_with_no_sessions_lists_no_directories() {
+        assert_eq!(PtyManager::new().cwds(), Vec::<String>::new());
+    }
+
+    /// The parsing half of the macOS read, which no Linux runner can reach
+    /// through `leader_cwd` itself. `libproc` hands back a fixed 1024-byte
+    /// buffer, so everything after the NUL is whatever was there before.
+    #[test]
+    fn a_path_in_a_fixed_buffer_ends_at_the_nul() {
+        let mut buf = [0u8; 32];
+        buf[..8].copy_from_slice(b"/p/deck\0");
+        // Junk past the NUL, which a length-based read would have included.
+        buf[9] = b'!';
+        buf[31] = b'?';
+        assert_eq!(c_string(buf.into_iter()).as_deref(), Some("/p/deck"));
+    }
+
+    /// An all-zero buffer is the call having written nothing useful, and a
+    /// non-UTF-8 path is one this app cannot name. Both are `None`, so the caller
+    /// falls back to the launch directory rather than passing `""` to `git -C`.
+    #[test]
+    fn an_empty_or_undecodable_buffer_is_no_answer() {
+        assert_eq!(c_string([0u8; 8].into_iter()), None);
+        assert_eq!(c_string(std::iter::empty()), None);
+        assert_eq!(c_string([0xff, 0xfe, 0].into_iter()), None);
+    }
+
+    /// A buffer full to its last byte with no NUL at all: the whole buffer is the
+    /// path, rather than a read that runs off the end.
+    #[test]
+    fn a_buffer_with_no_nul_is_read_to_its_end() {
+        assert_eq!(c_string(b"/p/deck".iter().copied()).as_deref(), Some("/p/deck"));
     }
 
     /// A claim for an id nothing is running under has to fail, or the window

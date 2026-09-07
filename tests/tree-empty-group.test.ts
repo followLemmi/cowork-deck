@@ -31,6 +31,7 @@ vi.mock("../src/ipc", () => ({
   saveUiState: vi.fn().mockResolvedValue(undefined),
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
+  sessionCwds: vi.fn().mockResolvedValue({}),
   sessionSnapshots: vi.fn().mockResolvedValue({}),
   updateTask: vi.fn(),
 }));

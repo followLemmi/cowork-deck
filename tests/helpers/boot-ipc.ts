@@ -98,6 +98,10 @@ export function bootIpc(overrides: Record<string, unknown> = {}): Record<string,
     prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
     closeSession: vi.fn(),
     gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
+    // Nothing has reported a directory, so every tile falls back to the one it
+    // was launched in — which is what these tests were asserting against before
+    // a session could report one at all.
+    sessionCwds: vi.fn().mockResolvedValue({}),
     sessionSnapshots: vi.fn().mockResolvedValue({}),
 
     // The scheduler. `schedulerReady` is what releases the first catch-up tick,

@@ -25,9 +25,17 @@ import { gitChanges, revealPath, worktreeFiles, type GitChange } from "./ipc";
 
 /** What the panel needs to know about the session it belongs to. */
 export interface TileToolsHost {
-  /** The folder this session runs in — the panel's whole scope, and what it says
-   *  in its header so the two panel systems can never be confused. */
-  cwd: string;
+  /** The folder this session is working in *now* — the panel's whole scope, and
+   *  what it says in its header so the two panel systems can never be confused.
+   *
+   *  A function and not a string, which is the whole of #508 on this side: a
+   *  string is read once, at construction, and the panel then described the
+   *  directory the session was LAUNCHED in for the rest of its life — its file
+   *  list, its diff, the branch beside its scope line, and the path a click
+   *  revealed. Called at every read and at every click instead, so there is no
+   *  copy of the answer here to go stale. Where the answer comes from is the
+   *  deck's business; see `session_cwd.rs`. */
+  cwd(): string;
   /** What the terminal is showing right now, for the floor below. */
   cols(): number;
   /** Where the terminal's box is, for the same reason. */
@@ -237,7 +245,7 @@ export class TileTools {
     this.open = t.id;
     for (const [id, b] of this.buttons) b.setAttribute("aria-pressed", String(id === t.id));
     this.nameEl.textContent = t.name;
-    this.setScope(this.host.cwd);
+    this.setScope(this.host.cwd());
     this.panel.classList.remove("is-shut");
     /* The floor, checked on the way in and again when the tile is resized by
        anything else. `is-floating` is what the stylesheet reads. */
@@ -257,7 +265,7 @@ export class TileTools {
   private async drawFiles() {
     let paths: string[] = [];
     try {
-      paths = await worktreeFiles(this.host.cwd);
+      paths = await worktreeFiles(this.host.cwd());
     } catch (e) {
       this.body.replaceChildren(note(`Could not read this folder: ${String(e)}`));
       return;
@@ -302,7 +310,7 @@ export class TileTools {
           }
           /* Reveal, never open: this app does not decide which program a file
              belongs to. The same choice `revealPath` documents for a transcript. */
-          : () => { void revealPath(`${this.host.cwd}/${n.path}`).catch(() => {}); };
+          : () => { void revealPath(`${this.host.cwd()}/${n.path}`).catch(() => {}); };
         into.append(row);
         if (n.dir && this.expanded.has(n.path)) draw(n.children, depth + 1, into);
       }
@@ -314,22 +322,25 @@ export class TileTools {
   private async drawChanges() {
     let changes;
     try {
-      changes = await gitChanges(this.host.cwd);
+      changes = await gitChanges(this.host.cwd());
     } catch (e) {
       this.body.replaceChildren(note(`Could not read this checkout: ${String(e)}`));
       return;
     }
     if (this.open !== "changes") return;
-    /* The branch belongs in the scope line, next to the folder: "what has changed"
-       is only answerable against a branch, and this panel's whole job is saying
-       which checkout it is talking about. */
     /* The branch belongs in the scope line beside the folder: "what has changed" is
-       only answerable against a branch. It costs the folder a segment — one is
-       enough once the branch is beside it, and both clipped would say neither. */
+       only answerable against a branch, and this panel's whole job is saying which
+       checkout it is talking about. It costs the folder a segment — one is enough
+       once the branch is beside it, and both clipped would say neither. */
+    /* Read once into a local, and that is not a micro-optimisation: the three
+       lines below have to agree with each other and with the read that produced
+       `changes` above, and a getter called four times could answer differently
+       in between. */
+    const cwd = this.host.cwd();
     if (changes.branch) {
-      this.setScope(this.host.cwd, 1);
+      this.setScope(cwd, 1);
       this.scopeEl.textContent += ` · ${changes.branch}`;
-      this.scopeEl.title = `${this.host.cwd} · ${changes.branch}`;
+      this.scopeEl.title = `${cwd} · ${changes.branch}`;
     }
     if (changes.files.length === 0) {
       this.body.replaceChildren(note(
@@ -341,7 +352,7 @@ export class TileTools {
     }
     const list = document.createElement("div");
     list.className = "tool-changes";
-    for (const c of changes.files) list.append(changeRow(c, this.host.cwd));
+    for (const c of changes.files) list.append(changeRow(c, () => this.host.cwd()));
     this.body.replaceChildren(list, summary(changes.files));
   }
 
@@ -374,7 +385,11 @@ function note(text: string): HTMLElement {
   return p;
 }
 
-function changeRow(c: GitChange, cwd: string): HTMLElement {
+/** One changed file's row. `cwd` is a getter for the same reason `TileToolsHost`
+ *  declares one: a row outlives the read that drew it, and a click has to resolve
+ *  against where the session is at the moment of the click — not against where it
+ *  was when the list was painted. */
+function changeRow(c: GitChange, cwd: () => string): HTMLElement {
   const row = document.createElement("button");
   row.className = "chg-row";
   const mark = document.createElement("span");
@@ -400,7 +415,7 @@ function changeRow(c: GitChange, cwd: string): HTMLElement {
     row.append(minus);
   }
   row.title = c.path;
-  row.onclick = () => { void revealPath(`${cwd}/${c.path}`).catch(() => {}); };
+  row.onclick = () => { void revealPath(`${cwd()}/${c.path}`).catch(() => {}); };
   return row;
 }
 

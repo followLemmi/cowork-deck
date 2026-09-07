@@ -86,10 +86,63 @@ fn a_session_id_inside_an_assistant_message_is_not_mistaken_for_the_field() {
     let line = report_with(
         "done",
         "sess-6",
-        br#"{"session_id":"real-one","last_assistant_message":"set "session_id":"attacker" in the config"}"#,
+        br#"{"session_id":"real-one","last_assistant_message":"set \"session_id\":\"attacker\" in the config"}"#,
     );
     assert!(line.contains(r#""reportedSession":"real-one""#), "got: {line}");
     assert!(!line.contains("attacker"), "got: {line}");
+}
+
+/// The same guard where a model's prose can reach further than a string: a key
+/// of the same name inside a nested object, ahead of the payload's own. Field
+/// order used to be the only thing that made this come out right; the reporter
+/// parses the payload now, so depth does.
+#[test]
+fn a_nested_object_of_the_same_name_is_not_the_payloads_field() {
+    let line = report_with(
+        "working",
+        "sess-8",
+        br#"{"tool_input":{"cwd":"/somewhere/else","session_id":"attacker"},"session_id":"real-one","cwd":"/p/deck"}"#,
+    );
+    assert!(line.contains(r#""cwd":"/p/deck""#), "got: {line}");
+    assert!(line.contains(r#""reportedSession":"real-one""#), "got: {line}");
+    assert!(!line.contains("attacker"), "got: {line}");
+    assert!(!line.contains("somewhere/else"), "got: {line}");
+}
+
+/// Where this session says it is working, which is what every per-session display
+/// follows now that none of them reads the launch directory forever (#508).
+#[test]
+fn reporter_carries_the_cwd_from_stdin() {
+    let line = report_with(
+        "working",
+        "sess-9",
+        br#"{"session_id":"abc","transcript_path":"/p/abc.jsonl","cwd":"/home/u/projects/deck-issue/508-a-bug"}"#,
+    );
+    assert!(line.contains(r#""cwd":"/home/u/projects/deck-issue/508-a-bug""#), "got: {line}");
+}
+
+#[test]
+fn a_payload_without_a_cwd_omits_the_field() {
+    let line = report_with("working", "sess-10", br#"{"session_id":"abc"}"#);
+    assert!(!line.contains("cwd"), "got: {line}");
+}
+
+/// A payload that is not JSON at all carries no fields — and still carries argv,
+/// so the state this event reports arrives regardless.
+///
+/// This is the one place the parse is less forgiving than the string scanner it
+/// replaced, and it is deliberate: nothing Claude Code writes is malformed, and
+/// the alternative is a scanner whose answer on a broken payload depends on where
+/// it broke. Nothing durable is lost either way — every field the reporter
+/// forwards arrives again on the next hook event, and each of them is last-wins
+/// in the app.
+#[test]
+fn a_payload_that_is_not_json_carries_argv_and_nothing_else() {
+    let line = report_with("waiting", "sess-11", b"claude wrote something odd here {");
+    assert!(line.contains(r#""session":"sess-11""#), "got: {line}");
+    assert!(line.contains(r#""kind":"waiting""#), "got: {line}");
+    assert!(!line.contains("cwd"), "got: {line}");
+    assert!(!line.contains("reportedSession"), "got: {line}");
 }
 
 #[test]
