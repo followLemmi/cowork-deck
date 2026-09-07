@@ -2423,6 +2423,10 @@ pub fn close_session(
     // tile that is gone, and the next session to be given this id is a different
     // conversation entirely.
     crate::resume_ids::forget(&session);
+    // And where it was working, which is the same reason once more — plus one of
+    // its own: a directory left behind here is a directory `git_roots` goes on
+    // letting through, and the reachable set should shrink when a session ends.
+    crate::session_cwd::forget(&session);
     // The trailing output buffer, for the same reason the transcript goes: a
     // tile that is gone should not contribute a half-drawn banner to whatever
     // reuses its id.
@@ -2745,26 +2749,76 @@ pub fn emit_state(app: &AppHandle, session: String, state: crate::model::Session
     let _ = app.emit("session://state", StatePayload { session, state });
 }
 
-/// The directories a path from the frontend may name, derived from the store.
+/// Where the live sessions say they are, as roots for the two sets below.
+fn session_dirs() -> Vec<String> {
+    crate::session_cwd::all().into_iter().map(|(_, dir)| dir).collect()
+}
+
+/// The directories a path from the frontend may name, derived from the store and
+/// from where the live sessions say they are.
 ///
 /// `worktrees` for the three `git -C` commands, whose argument is always a
 /// session's working directory; `revealable` for `reveal_path`, which is also
 /// asked about a note in the config directory and a transcript under Claude
 /// Code's own. See `reachable` for why this is derived rather than recorded, and
 /// for what it does and does not narrow.
+///
+/// **Every live session's own directory is a root too**, and that is what makes
+/// #508 possible rather than merely visible: a display that follows its session
+/// has to be able to read the folder that session is in, and a session need not
+/// be in a workspace or in a worktree beside one. It stays derived — the paths
+/// come from `session_cwd`, fed by hooks and by the process table, so there is no
+/// list to keep in step and nothing the webview can add to it. The webview can
+/// *name* such a path; only a running process can make one exist, and it stops
+/// being a root when that session closes (`close_session`).
 fn git_roots(state: &AppState) -> crate::reachable::Roots {
     let store = state.store();
     let workspaces = store.workspaces();
-    crate::reachable::Roots::worktrees(workspaces.iter().map(|w| w.path.as_str()))
+    let mut roots = crate::reachable::Roots::worktrees(workspaces.iter().map(|w| w.path.as_str()));
+    roots.add(session_dirs());
+    roots
 }
 
 fn revealable_roots(state: &AppState) -> crate::reachable::Roots {
     let store = state.store();
     let workspaces = store.workspaces();
-    crate::reachable::Roots::revealable(
+    let mut roots = crate::reachable::Roots::revealable(
         workspaces.iter().map(|w| w.path.as_str()),
         &store.dir,
-    )
+    );
+    roots.add(session_dirs());
+    roots
+}
+
+/// Where each of these sessions is working now, for the displays that used to
+/// read the launch directory forever (#508).
+///
+/// One command for the whole deck rather than one per tile, because the caller is
+/// the poll: a tick already asks one question about every session
+/// (`session_snapshots`) and one per unique directory (`git_status`), and this
+/// rides the same tick. Neither source costs a process — a hook's answer is a map
+/// lookup, and the OS read is a `readlink` — so the tick grows by a lookup per
+/// tile and not by a spawn.
+///
+/// **The order of the two sources is the answer to "whose directory".** A hook's
+/// `cwd` is the session's own statement and wins whenever there is one; the
+/// leader's directory read from the OS answers for a session with no hooks to
+/// report anything. A session that has neither is simply absent from the map,
+/// which is how the frontend is told to keep using the launch path rather than
+/// being handed a guess. See `crate::session_cwd` for what each source can and
+/// cannot see.
+#[tauri::command(async)]
+pub fn session_cwds(
+    state: State<'_, AppState>,
+    sessions: Vec<String>,
+) -> std::collections::HashMap<String, String> {
+    sessions
+        .into_iter()
+        .filter_map(|id| {
+            let dir = crate::session_cwd::get(&id).or_else(|| state.pty.cwd(&id))?;
+            Some((id, dir))
+        })
+        .collect()
 }
 
 #[tauri::command(async)]

@@ -1093,6 +1093,19 @@ export interface SessionSnapshot {
 }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
 
+/** Where each of these sessions is working now, keyed by session id.
+ *
+ *  A session that has not said — and whose process could not be asked — is
+ *  **absent from the answer** rather than present with its launch path. That is
+ *  the distinction the caller needs: absent means "keep using the directory this
+ *  tile was launched in", which is a real answer, and a backend that filled it in
+ *  would be guessing on the frontend's behalf.
+ *
+ *  One call for the whole deck, because the caller is the poll — see
+ *  `session_cwds` in `commands.rs` for what the two sources are and which wins. */
+export const sessionCwds = (sessions: string[]) =>
+  invoke<Record<string, string>>("session_cwds", { sessions });
+
 /** One changed file in a session's own checkout. `mark` is git's own letter — M,
  *  A, D, R, `?` for untracked, U for a conflict — because anyone with a worktree
  *  open has read those, and a second vocabulary for one fact is a second thing to

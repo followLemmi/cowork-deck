@@ -941,6 +941,17 @@ pub struct ReporterEvent {
     /// so a scope of "everything" is what it means rather than a fallback.
     #[serde(default, deserialize_with = "dash_is_none")]
     pub workspace: Option<String>,
+    /// Where Claude Code says this session is working *now* — its own `cwd`,
+    /// which it reports on every hook payload. Present on every hook payload;
+    /// absent from a line written by an older reporter, hence `default`.
+    ///
+    /// The session's own answer to a question the app otherwise answers from
+    /// memory: `workspacePath` on a tile is the directory the launch *asked*
+    /// for, and every per-session display used to read that forever (#508). See
+    /// `crate::session_cwd`, which is also where the measured limit of this
+    /// field is written down.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 fn dash_is_none<'de, D>(d: D) -> Result<Option<String>, D::Error>

@@ -177,6 +177,21 @@ where
                                 // no open record is a no-op there.
                                 crate::run_journal::note_transcript(&ev.session, path);
                             }
+                            // And where the session says it is working, recorded
+                            // for the same reason both of the above are: it
+                            // arrives on every event, and a caller that forgot
+                            // to wire it up would leave every one of a
+                            // session's displays describing the directory it
+                            // was launched in for the rest of its life, with
+                            // nothing failing (#508). Recorded on every kind
+                            // including `ended` — unlike the id below, "where
+                            // it was" and "where it is" are the same place for
+                            // a directory, and the tile is closing anyway. See
+                            // `session_cwd`, which refuses a relative path
+                            // rather than storing one.
+                            if let Some(cwd) = ev.cwd.as_deref() {
+                                crate::session_cwd::record(&ev.session, cwd);
+                            }
                             // The other half of the same line, recorded here for the
                             // same reason: it arrives on every event, and a `--resume`
                             // aimed at the launch id does not fail — it brings back
@@ -370,6 +385,52 @@ mod tests {
         assert_eq!(state, SessionState::Done);
         assert_eq!(crate::transcripts::get("sess-old"), None);
         assert_eq!(crate::resume_ids::get("sess-old"), None);
+        assert_eq!(crate::session_cwd::get("sess-old"), None);
+    }
+
+    /// Where the session says it is working, recorded against the launch id —
+    /// the answer every per-session display reads now that none of them is stuck
+    /// on the directory the tile was constructed with (#508).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reported_cwd_is_recorded_against_the_launch_id() {
+        let port = start_listener(|_, _| {}).await.unwrap();
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(
+                b"{\"session\":\"sess-moved\",\"kind\":\"working\",\
+                  \"cwd\":\"/home/u/projects/deck-issue/508-a-bug\"}\n",
+            )
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+
+        for _ in 0..50 {
+            if crate::session_cwd::get("sess-moved").is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            crate::session_cwd::get("sess-moved").as_deref(),
+            Some("/home/u/projects/deck-issue/508-a-bug"),
+        );
+        crate::session_cwd::forget("sess-moved");
+    }
+
+    /// A directory that is not a path names no place, and must not displace the
+    /// launch directory the frontend falls back to. The refusal is
+    /// `session_cwd`'s; this is the wiring saying it reaches it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_relative_reported_cwd_is_not_recorded() {
+        let port = start_listener(|_, _| {}).await.unwrap();
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(b"{\"session\":\"sess-relative\",\"kind\":\"working\",\"cwd\":\"deck\"}\n")
+            .await
+            .unwrap();
+        stream.flush().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(crate::session_cwd::get("sess-relative"), None);
     }
 
     /// The other half of the `/clear` line: the conversation the session is in

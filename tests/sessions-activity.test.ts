@@ -28,6 +28,7 @@ vi.mock("../src/ipc", () => ({
   closeSession: vi.fn(),
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
+  sessionCwds: vi.fn().mockResolvedValue({}),
   sessionSnapshots: vi.fn().mockResolvedValue({}),
   sessionActivity: vi.fn().mockResolvedValue({}),
 }));
@@ -89,9 +90,19 @@ function mount() {
   return { deckEl, listEl, deck: new Deck(deckEl, listEl, () => [WS as never]) };
 }
 
+/** A launched tile with nothing of its own in flight.
+ *
+ *  The settle is load-bearing for the counting tests below, and it is not a
+ *  sleep-until-it-passes: a launch starts the poll chain with an unawaited
+ *  `pollOnce`, so without draining it the tick the test *asks* for can overlap
+ *  the tick the launch started, and one panel refresh arrives twice. `await
+ *  launch` is not enough — it returns before that first tick comes back, which is
+ *  by design. A macrotask turn drains it, because every IPC on the path is mocked
+ *  to resolve. */
 async function tileWithPanelClosed() {
   const m = mount();
   await m.deck.launch(WS as never, null);
+  await new Promise((r) => setTimeout(r, 0));
   return m;
 }
 

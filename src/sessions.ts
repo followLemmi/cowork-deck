@@ -1,6 +1,6 @@
 import { TerminalPanel } from "./terminal";
 import { onState, onExit, closeSession, memoryCaptureOffer, saveUiState, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig, type CaptureOnClose } from "./ipc";
-import { gitStatus, sessionActivity, sessionSnapshots, type CliKind, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
+import { gitStatus, sessionActivity, sessionCwds, sessionSnapshots, type CliKind, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
 import { localRoll, openActivityPanel, setActivityCount, type ActivityPanel } from "./activity";
 import { buildTile } from "./tile-view";
 import { formatContext, tokenTooltip, uniqueCwds } from "./observability";
@@ -33,7 +33,23 @@ interface Tile {
    *  makes a commit idempotent: blur fires after Enter has already committed. */
   renameInput: HTMLInputElement | null;
   panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
-  workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
+  /** The directory this session was LAUNCHED in, and nothing else.
+   *
+   *  Its identity, not its whereabouts: it decides which workspace the tile is
+   *  grouped under, where a restart re-launches, and what `sessions.json` and a
+   *  hand-off carry. All four have to keep saying the launch directory, which is
+   *  why #508 did not change this field — it added the one beside it. */
+  workspacePath: string;
+  /** Where this session says it is working *now*, or `null` while nothing has
+   *  said. `tileCwd` is the one place the two are put in order, and every
+   *  per-session display goes through it.
+   *
+   *  `null` rather than a copy of `workspacePath`, so "nobody has answered yet"
+   *  and "the answer is the launch directory" stay different facts — which is
+   *  what lets the poll notice a *change* and re-read an open tools panel. Filled
+   *  by `session_cwds`; see `session_cwd.rs` for where its answers come from. */
+  liveCwd: string | null;
+  workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
   /** The button that opens the activity panel, carrying this session's call
    *  count. Always in the DOM; the stylesheet hides it until the tile is
@@ -104,6 +120,28 @@ export interface TileNames {
   auto: string | null;
   /** Hand-typed. Wins over everything, forever. */
   user: string | null;
+}
+
+/** Where a session's per-session displays read from: what the session says, and
+ *  the directory it was launched in until it has said anything.
+ *
+ *  **The one place the two are put in order**, which is the shape #508 was
+ *  missing. Before it, each display reached for `workspacePath` on its own — the
+ *  git badge, the tools panel's scope line, its file list, its diff and the path
+ *  a click revealed — and every one of them therefore described the launch
+ *  directory forever. There is nothing to keep in step now: a display reads this,
+ *  and this reads the tile.
+ *
+ *  The fallback is not a stopgap. A session that has reported nothing has told us
+ *  nothing to contradict the directory it was started in, and that directory is a
+ *  real place — which is worth more on screen than an empty badge. What it must
+ *  never be is a *stored* copy: see `Tile.liveCwd` for why the absence is kept as
+ *  `null`.
+ *
+ *  Takes the two fields rather than a `Tile` so a test can state the pair.
+ */
+export function tileCwd(t: { liveCwd: string | null; workspacePath: string }): string {
+  return t.liveCwd ?? t.workspacePath;
 }
 
 /** Longest name kept. The same string reaches `sessions.json`, a desktop
@@ -526,8 +564,31 @@ export class Deck {
     try {
       const tiles = [...this.tiles.values()];
       if (tiles.length === 0) { this.stopPolling(); return; }
+      // Where each session is NOW, before anything is read about it. One call for
+      // the whole deck, and it must come first: every reading below is a reading
+      // OF a directory, and asking about the launch directory is what #508 was.
+      //
+      // Isolated like the reads under it, and for a reason of its own: an id
+      // missing from the answer means "nothing has said", which `tileCwd` already
+      // renders as the launch path — so a failure here degrades to exactly the
+      // behaviour that preceded this call rather than to a blank tile.
+      let moved: Tile[] = [];
+      try {
+        const live = await sessionCwds(tiles.map((t) => t.session));
+        moved = tiles.filter((t) => {
+          // What a display WOULD read, before and after — not whether the field
+          // changed. A session reporting a directory for the first time usually
+          // reports the one it was launched in, and that is not a move: nothing
+          // on screen would read differently, so nothing should be re-read.
+          const before = tileCwd(t);
+          t.liveCwd = live[t.session] ?? null;
+          return tileCwd(t) !== before;
+        });
+      } catch (e) {
+        console.debug("sessionCwds failed", e);
+      }
       // git: one call per unique cwd; errors are isolated — a single failed IPC must not bring down the whole tick
-      const cwds = uniqueCwds(tiles.map((t) => ({ cwd: t.workspacePath })));
+      const cwds = uniqueCwds(tiles.map((t) => ({ cwd: tileCwd(t) })));
       const gitByCwd = new Map<string, { branch: string | null; dirty: boolean }>();
       await Promise.all(cwds.map(async (cwd) => {
         try {
@@ -538,7 +599,7 @@ export class Deck {
       }));
       for (const t of tiles) {
         if (!this.tiles.has(t.session)) continue;
-        const g = gitByCwd.get(t.workspacePath);
+        const g = gitByCwd.get(tileCwd(t));
         t.branch = g?.branch ?? null;
         if (g && g.branch) {
           t.gitBadge.replaceChildren(
@@ -547,8 +608,19 @@ export class Deck {
           );
           t.gitBadge.classList.remove("hidden");
         } else {
+          // Hidden, not left showing the last branch it knew. A folder that is
+          // not a checkout has no branch, and a session that has moved into one
+          // must not keep wearing the badge of where it came from — which is the
+          // same answer this already gave on launch.
           t.gitBadge.classList.add("hidden");
         }
+      }
+      // A session that moved takes its open tools panel with it. Only the ones
+      // that moved, and only if a panel is open — `refresh` is a no-op otherwise,
+      // and re-reading a checkout on every tick for every tile is exactly the
+      // cost #251 exists to keep off this path.
+      for (const t of moved) {
+        if (this.tiles.has(t.session)) t.tools.refresh();
       }
       // snapshots: one call for every session; errors isolated, plus a guard
       // against racing with tile removal.
@@ -1087,7 +1159,15 @@ export class Deck {
     sClose.onclick = () => { searchBar.classList.add("hidden"); tile.panel.focus(); };
 
     const tools = new TileTools({
-      cwd,
+      /* Read through the map rather than closed over, and read on every call:
+         `tools` is built before the `Tile` exists, and the point of #508 is that
+         there is no copy of this answer anywhere for a `cd` to leave behind. The
+         launch path is the fallback for the one tick before the tile is in the
+         map, where no panel can be open anyway. */
+      cwd: () => {
+        const t = this.tiles.get(session);
+        return t ? tileCwd(t) : cwd;
+      },
       cols: () => tile.panel.cols,
       termWidth: () => mount.getBoundingClientRect().width,
       source: () => this.sourceOfTile(tile),
@@ -1122,7 +1202,7 @@ export class Deck {
     };
     const tile: Tile = {
       session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label, tools,
-      workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
+      workspacePath: cwd, liveCwd: null, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
       gitBadge, authBadge, tokenBadge, activityBtn, activityPanel: null,
       branch: null, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,

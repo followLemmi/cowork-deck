@@ -18,6 +18,7 @@ mod runs;
 mod scheduler;
 mod tasks_cmd;
 mod resume_ids;
+mod session_cwd;
 mod transcripts;
 mod tray;
 mod usage;
@@ -441,6 +442,7 @@ fn main() {
             commands::worktree_files,
             commands::config_paths,
             commands::session_snapshots,
+            commands::session_cwds,
             commands::usage_snapshot,
             commands::usage_clear_observed,
             activity::session_activity,

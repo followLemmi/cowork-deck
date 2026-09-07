@@ -15,11 +15,19 @@
 //! window onto the same commands, so the surface is wider than one window's.
 //!
 //! **The roots need no bookkeeping**, which is why this is derivable rather than
-//! a list to keep in step. A session's working directory is a workspace's folder
-//! or a worktree beside it, and the worktree paths are deterministic siblings —
+//! a list to keep in step. A session is *launched* in a workspace's folder or in
+//! a worktree beside it, and the worktree paths are deterministic siblings —
 //! `<parent>/<name>-pr/…` and `<parent>/<name>-issue/…` (see
-//! `gh_pr::worktree_path` and `gh_issues::issue_worktree_path`). So the whole
-//! answer comes from the workspace paths already in the store.
+//! `gh_pr::worktree_path` and `gh_issues::issue_worktree_path`). So that much
+//! comes from the workspace paths already in the store.
+//!
+//! **And one root per live session, which is where it says it is working now**
+//! ([`Roots::add`]). A session's displays follow its directory rather than the
+//! one it was launched in (#508), so that directory has to be readable — and it
+//! need not be under any workspace. Still no bookkeeping: the paths come from
+//! `session_cwd`, fed by Claude Code's hooks and by the process table, and they
+//! go when the session does. The webview can *name* such a path; only a running
+//! process can make one exist.
 //!
 //! **Lexical, not canonical.** A path is normalised by resolving `.` and `..`
 //! textually, and a relative path is refused outright. Canonicalising would be
@@ -75,6 +83,34 @@ impl Roots {
             roots.0.push(PathBuf::from(home).join(".claude").join("projects"));
         }
         roots
+    }
+
+    /// Add directories that are roots for a reason the workspace paths cannot
+    /// derive: each is where a live session says it is working.
+    ///
+    /// The one thing here that is not derivable, and it is derivable from
+    /// somewhere else — `session_cwd`, which is fed by Claude Code's hooks and by
+    /// the process table. So this is still not a list anybody maintains, and it
+    /// is still not something the webview can extend: a session's directory
+    /// exists because a process is in it. What it buys is #508 — a per-session
+    /// display that follows its session has to be able to read the folder the
+    /// session is in, and a session need not be inside a workspace.
+    ///
+    /// A path that is not absolute contributes no root, the same way an empty
+    /// workspace path does not: `normalise` would refuse it at comparison time
+    /// anyway, and letting one in here would look like a root that matched
+    /// nothing.
+    pub fn add(&mut self, dirs: impl IntoIterator<Item = String>) {
+        for dir in dirs {
+            let dir = dir.trim();
+            if dir.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(dir);
+            if normalise(&path).is_some() {
+                self.0.push(path);
+            }
+        }
     }
 
     /// Whether `path` is one of the roots or sits under one.
@@ -181,6 +217,32 @@ mod tests {
         let roots = Roots::worktrees(["", "   "]);
         assert!(!roots.contains("/etc/passwd"));
         assert!(!roots.contains("/"));
+    }
+
+    /// #508: a session's displays follow the directory it is in, so that
+    /// directory has to be readable even when it is nowhere near a workspace.
+    /// Added by `commands::git_roots` from `session_cwd`, not by anything the
+    /// webview can write to.
+    #[test]
+    fn a_live_sessions_own_directory_is_reachable() {
+        let mut roots = Roots::worktrees(WS);
+        roots.add(["/srv/scratch/experiment".to_string()]);
+        assert!(roots.contains("/srv/scratch/experiment"));
+        assert!(roots.contains("/srv/scratch/experiment/src/main.rs"));
+        // And only that one — a sibling of it is no more reachable than before.
+        assert!(!roots.contains("/srv/scratch/other"));
+        assert!(!roots.contains("/srv/scratch"));
+    }
+
+    /// A relative or empty entry contributes no root rather than one that
+    /// silently matches nothing — the same rule as an empty workspace path.
+    #[test]
+    fn a_session_directory_that_is_not_a_path_adds_nothing() {
+        let mut roots = Roots::worktrees(Vec::<&str>::new());
+        roots.add(["".to_string(), "   ".to_string(), "relative/dir".to_string()]);
+        assert!(!roots.contains("/"));
+        assert!(!roots.contains("/etc/passwd"));
+        assert!(!roots.contains("relative/dir"));
     }
 
     #[test]
