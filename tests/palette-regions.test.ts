@@ -11,28 +11,13 @@
  *  test of `palette.ts` cannot see what was put into it. The mock block and the
  *  fixture body follow tests/main-hotkey-guard.test.ts. */
 import { describe, it, expect, vi } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
 
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  saveLayout: vi.fn().mockResolvedValue(undefined),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
-  taskCapabilities: vi.fn().mockResolvedValue(null),
-  listTasks: vi.fn().mockResolvedValue([]),
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
-  gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
-  sessionSnapshots: vi.fn().mockResolvedValue({}),
-  usageSnapshot: vi.fn().mockResolvedValue([]),
-  onUsageChanged: vi.fn().mockResolvedValue(() => {}),
+  ...bootIpc(),
 }));
 
 vi.mock("../src/workspaces", () => ({

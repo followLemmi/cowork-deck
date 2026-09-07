@@ -1,14 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-(globalThis as any).ResizeObserver = class {
-  observe() {} unobserve() {} disconnect() {}
-};
-(globalThis as any).window.__TAURI_INTERNALS__ = {
-  transformCallback: () => 1,
-  unregisterCallback: () => {},
-};
-
 /** A driveable IntersectionObserver: the panel's whole GPU policy hangs off
  *  visibility, so the tests have to be able to say when a tile is on screen. */
 const watchers: { cb: (e: { isIntersecting: boolean }[]) => void; el: Element }[] = [];
@@ -20,6 +12,11 @@ const watchers: { cb: (e: { isIntersecting: boolean }[]) => void; el: Element }[
 };
 const setOnScreen = (el: Element, isIntersecting: boolean) => {
   for (const w of [...watchers]) if (w.el === el) w.cb([{ isIntersecting }]);
+};
+/** Several records delivered in one callback — what a real observer does when two
+ *  update steps elapse before delivery. */
+const setOnScreenBatch = (el: Element, states: boolean[]) => {
+  for (const w of [...watchers]) if (w.el === el) w.cb(states.map((isIntersecting) => ({ isIntersecting })));
 };
 
 /** Counts contexts the way the webview does: created minus disposed. */
@@ -142,5 +139,26 @@ describe("the WebGL context budget", () => {
 
     expect(liveContexts).toBe(MAX_GPU_CONTEXTS);
     expect(blinks(waiter.p)).toBe(true);
+  });
+});
+
+/** An `IntersectionObserver` batch can hold more than one record for the same
+ *  element, and only one element is observed here — so a batch is that element's
+ *  history, and the last record is the state it is in now. Read as "intersecting
+ *  somewhere in the batch", a [shown, hidden] delivery would hand a context to a
+ *  tile that is hidden again — and latch `onScreen`, so no later return counts as
+ *  a transition and the tile never gets its slot back. */
+describe("a batch of intersection records", () => {
+  it("reads the newest record, not any intersecting one", () => {
+    const { el } = panel();
+
+    setOnScreenBatch(el, [true, false]);
+
+    expect(liveContexts).toBe(0);
+
+    // And the state did not latch: the next real return is still a transition.
+    setOnScreen(el, true);
+
+    expect(liveContexts).toBe(1);
   });
 });

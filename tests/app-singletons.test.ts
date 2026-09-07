@@ -14,6 +14,7 @@
  *  The mock surface is the one `tests/main-hotkey-guard.test.ts` established for
  *  standing the app up in jsdom. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
 
@@ -39,30 +40,7 @@ let loadRejects: Error | null = null;
 
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  saveLayout: vi.fn().mockResolvedValue(undefined),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onQuitBlocked: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  onRunsChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
-  taskCapabilities: vi.fn().mockResolvedValue(null),
-  listTasks: vi.fn().mockResolvedValue([]),
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
-  gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
-  sessionSnapshots: vi.fn().mockResolvedValue({}),
-  // The limits block reads at boot and listens for a limit signal. Both are
-  // mocked here for the reason every other `on*` above is: an unmocked listener
-  // returns a promise nothing resolves, and a boot step that never settles is a
-  // boot that never reaches `releaseScheduler` — which is precisely what this
-  // file asserts about.
-  usageSnapshot: vi.fn().mockResolvedValue([]),
-  onUsageChanged: vi.fn().mockResolvedValue(() => {}),
+  ...bootIpc(),
 }));
 
 vi.mock("../src/updater", () => ({ offerUpdateIfAvailable: vi.fn().mockResolvedValue(undefined) }));

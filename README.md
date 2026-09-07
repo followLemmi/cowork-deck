@@ -158,10 +158,14 @@ for a session the deck did not start. A CLI with no reader says so rather than s
 
 ## Limits: what each AI has left, and where that number came from
 
-A dozen sessions draw on **one** budget, and when it runs out they stall together. One line at the foot
-of the panel says whether you can keep working: the AI that is worst off, its reading, and a count of
-the others behind it. Press it and the rest unfold above it — a row apiece, a thin meter, and when it
-lifts — worst off first, so the list opens on the AI the line just named.
+A dozen sessions draw on **one** budget, and when it runs out they stall together. One line in the top
+bar says whether you can keep working: the AI that is worst off, its reading, and a count of the others
+behind it. Press it and the rest drop below — a row apiece, a thin meter, and when it lifts — worst off
+first, so the list opens on the AI the line just named.
+
+Beside the ledger rather than in the panel, because it is the same kind of fact: two readings of what
+wants a person, and a third that says whether they can act on either. It also means the reading is there
+when the panel is collapsed, which a limit is not a property of ([#461](https://github.com/followLemmi/cowork-deck/issues/461)).
 
 **The source of a number is part of the number**, and where that changes what you would do it is on
 the row beside it rather than in a tooltip. There are three ways this app can know such a number:

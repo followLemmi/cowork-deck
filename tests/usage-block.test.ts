@@ -207,16 +207,23 @@ describe("the limits strip: the one line that is always there", () => {
     expect(stripText(el, ".lim-foot")).toContain("resets");
   });
 
-  /** Open, the rows above say everything this line was saying, so it stops being
-   *  a copy of the row at the top of them and becomes the block's name. */
-  it("gives up the glance for the block's name while the rows are open", () => {
+  /** Kept, open or shut, and it used to be given up.
+   *
+   *  In the panel the rows opened ABOVE the strip, so an open strip was their
+   *  head: it swapped its reading for the word "Limits", because every row below
+   *  was already saying what it had been saying. In the bar (#461) the rows open
+   *  below in a popover with its own edge, and the reading is the reason the bar
+   *  carries the line at all — a bar that blanked its own number on a press would
+   *  answer less the more you asked it. */
+  it("keeps the glance while the rows are open", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] })], NOW);
-    expect(getComputedStyle(strip(el).querySelector(".lim-word")!).display).toBe("none");
+    const reading = () => strip(el).querySelector<HTMLElement>(".lim-reading")!;
+    expect(reading().textContent).toContain("20%");
     unfold(el);
     expect(strip(el).dataset.open).toBe("true");
-    expect(getComputedStyle(strip(el).querySelector(".lim-word")!).display).toBe("block");
-    expect(getComputedStyle(strip(el).querySelector(".lim-reading")!).display).toBe("none");
+    expect(getComputedStyle(reading()).display).not.toBe("none");
+    expect(strip(el).querySelector(".lim-word")).toBeNull();
   });
 
   it("puts an error where the second line would be, because that one is actionable", () => {
@@ -518,13 +525,18 @@ describe("the rows behind the strip", () => {
 
   /** A disclosure whose content comes before its own control reads, to anybody
    *  moving forward through the document, as content that button leads AWAY from.
-   *  So the DOM is strip-then-rows and the screen is the other way up. */
-  it("put the strip before the rows in the DOM and above them on screen", () => {
+   *  So the DOM is strip-then-rows — and since #461 the SCREEN is that way up too:
+   *  the bar is at the top of the window, so the rows open downward and the
+   *  `column-reverse` that used to reconcile the two orders is gone. */
+  it("put the strip before the rows, in the DOM and on screen alike", () => {
     const { el, block } = mount();
     block.render([snap({ windows: [win({ usedFraction: 0.25, state: "ok" })] })], NOW);
     expect([...el.children].map((c) => c.className.split(" ")[0]))
       .toEqual(["lim-strip", "lim-list"]);
-    expect(getComputedStyle(el).flexDirection).toBe("column-reverse");
+    expect(getComputedStyle(el).flexDirection).not.toBe("column-reverse");
+    // Out of the flow, so opening the rows costs the bar no height and the deck
+    // below it does not move — which is the whole of what #461 was about.
+    expect(getComputedStyle(list(el)).position).toBe("absolute");
   });
 
   /** The rows scroll, and a scroll container clips what leaves it. The global

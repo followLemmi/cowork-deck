@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  agoLabel,
   blockedCopy,
   faultCopy,
   questionCopy,
@@ -96,25 +95,8 @@ describe("whether a repository can be adopted", () => {
   });
 });
 
-describe("how long ago the last push was", () => {
-  it("says 'never' rather than pretending to a time", () => {
-    expect(agoLabel(null, 1000)).toBe("never");
-  });
-
-  it("stays legible across the range that matters", () => {
-    const now = 100_000_000;
-    expect(agoLabel(now - 10, now)).toBe("just now");
-    expect(agoLabel(now - 600, now)).toBe("10 min ago");
-    expect(agoLabel(now - 7200, now)).toBe("2 h ago");
-    // Three weeks is the number this exists for: a sync broken that long and a
-    // working one look identical until a disk dies.
-    expect(agoLabel(now - 21 * 86400, now)).toBe("21 days ago");
-  });
-
-  it("does not go backwards when a clock does", () => {
-    expect(agoLabel(1000, 500)).toBe("just now");
-  });
-});
+// `agoLabel` and its cases moved to `src/format.ts` — see there. This file's
+// copy took SECONDS where the journal's took milliseconds.
 
 describe("what a pull could not decide", () => {
   it("names the project rather than the ids nobody can read", () => {

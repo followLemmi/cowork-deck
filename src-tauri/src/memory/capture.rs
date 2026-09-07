@@ -504,6 +504,19 @@ pub fn run(job: &WrapupJob, corpus: &Corpus, rooms: &[Room]) -> Result<Captured,
     run_with(job, corpus, rooms, &ask)
 }
 
+/// The one model call this module makes, as a value.
+///
+/// Named rather than written out at the two places that take it: the real one
+/// spends money on somebody's Claude account and the test one is a closure that
+/// returns a fixed string, and both have to be the same shape or the suite is
+/// testing something else. The `Option<CaptureCost>` is what the call cost, which
+/// a fake does not have and reports as `None`.
+///
+/// The lifetime is not decoration: a bare `dyn Fn` in a type alias is
+/// `dyn Fn + 'static`, which the test closures — each borrowing a local — do not
+/// satisfy. In argument position `&dyn Fn(..)` elides to exactly this.
+pub type Ask<'a> = dyn Fn(&str) -> Result<(String, Option<CaptureCost>), String> + 'a;
+
 /// [`run`] with the model call as a parameter.
 ///
 /// The seam exists so the pipeline — read, digest, prompt, parse, write — can be
@@ -514,7 +527,7 @@ pub fn run_with(
     job: &WrapupJob,
     corpus: &Corpus,
     rooms: &[Room],
-    ask: &dyn Fn(&str) -> Result<(String, Option<CaptureCost>), String>,
+    ask: &Ask<'_>,
 ) -> Result<Captured, String> {
     // Through the registry, never by parsing here: which reader understands this
     // log is a property of the session's CLI, and an `Err` names a reason a

@@ -839,9 +839,8 @@ fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
         .unwrap_or_default();
     let tmp = dir.join(format!(".{name}.tmp"));
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    std::fs::rename(&tmp, path).inspect_err(|_e| {
         let _ = std::fs::remove_file(&tmp);
-        e
     })
 }
 
@@ -896,7 +895,10 @@ mod tests {
     #[test]
     fn a_job_missing_what_cannot_be_resolved_later_is_refused_at_the_door() {
         let q = Queue::new(tmp("enqueue-bad"));
-        let blank: [(&str, fn(&mut EnqueueRequest)); 3] = [
+        // Named, because clippy counts the tuple-of-fn-pointer as complex and it
+        // is: what each entry is, is "a field name and the way to blank it".
+        type Blank = (&'static str, fn(&mut EnqueueRequest));
+        let blank: [Blank; 3] = [
             ("transcript path", |r| r.transcript_path = "  ".into()),
             ("session id", |r| r.session_id = String::new()),
             ("workspace id", |r| r.workspace_id = "   ".into()),

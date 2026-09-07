@@ -110,6 +110,8 @@ describe("normaliseName", () => {
     expect(normaliseName("first line\nsecond\tline")).toBe("first line second line");
   });
   it("caps by code point, so a name is never cut mid-character", () => {
+    // A two-byte character on purpose: a cap counted in bytes would cut this
+    // name at 120 BYTES, which is 60 characters and lands mid-sequence.
     const capped = normaliseName("я".repeat(300));
     expect([...capped].length).toBe(120);
   });

@@ -342,7 +342,7 @@ pub fn seed_previous_location(mut ws: Workspace) -> Workspace {
 /// rather than in `Store` keeps storage free of tracker semantics — and the
 /// seed needs `ws.name`, which is not on `TrackerConfig` at all.
 fn tracker_workspaces(state: &State<AppState>) -> Result<Vec<Workspace>, String> {
-    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    let store = state.store();
     Ok(store.workspaces().into_iter().map(seed_previous_location).collect())
 }
 
@@ -587,9 +587,9 @@ pub fn tasks_list(
     // than fetched there, because `tasks_open_counts` runs across every
     // workspace after every mutation and must never spend a GraphQL point.
     if matches!(tracker_kind(&ws), Some(TrackerKind::GitHub)) {
-        if let Ok(mut cache) = state.issue_open_counts.lock() {
-            cache.insert(ws.id.clone(), open_count(&cards, &board_for(&ws).config));
-        }
+        state
+            .issue_open_counts()
+            .insert(ws.id.clone(), open_count(&cards, &board_for(&ws).config));
     }
     Ok(cards)
 }
@@ -669,7 +669,7 @@ pub fn tasks_open_counts(state: State<AppState>) -> Result<std::collections::Has
             // addition, not a rewrite, if that staleness turns out to matter.
             Some(TrackerKind::GitHub) => {
                 if let Some(n) =
-                    state.issue_open_counts.lock().ok().and_then(|c| c.get(&ws.id).copied())
+                    state.issue_open_counts().get(&ws.id).copied()
                 {
                     out.insert(ws.id.clone(), n);
                 }
@@ -836,7 +836,7 @@ fn may_forget_previous_location(ws: &Workspace) -> bool {
 /// Forget where the cards were. Stamps the version too, or the next read would
 /// re-seed a version 1 config and the banner would come back.
 fn clear_previous_location(state: &State<AppState>, workspace_id: &str) -> Result<(), String> {
-    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    let store = state.store();
     let mut all = store.workspaces();
     let Some(w) = all.iter_mut().find(|w| w.id == workspace_id) else {
         return Ok(());

@@ -1,7 +1,8 @@
 import { TerminalPanel } from "./terminal";
 import { onState, onExit, closeSession, memoryCaptureOffer, saveUiState, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig, type CaptureOnClose } from "./ipc";
 import { gitStatus, sessionActivity, sessionSnapshots, type CliKind, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
-import { activityButton, localRoll, openActivityPanel, setActivityCount, type ActivityPanel } from "./activity";
+import { localRoll, openActivityPanel, setActivityCount, type ActivityPanel } from "./activity";
+import { buildTile } from "./tile-view";
 import { formatContext, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
@@ -15,14 +16,14 @@ import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { TileTools } from "./tile-tools";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
-import { icon, iconButton, type IconName } from "./icons";
+import { icon, type IconName } from "./icons";
 import { linksInWorkspace, liveSessionForTask, taskPrompt, type TaskSessionLink } from "./tasks";
 import { workingStep } from "./board-config";
 import { syncDotPhase } from "./dot-phase";
 
-/** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
- *  команды (установка gh, `gh auth login`): без хуков состояния, без
- *  перезапуска и, главное, без автовосстановления. */
+/** An ordinary tile is a `claude` session. A command tile is one run of
+ *  something the person typed — installing `gh`, `gh auth login` — with no state
+ *  hooks, no restart, and above all no restore on the next launch. */
 export type TileKind = "claude" | "command";
 
 interface Tile {
@@ -50,10 +51,12 @@ interface Tile {
   authBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
-  /** Исход привязки GitHub-аккаунта на момент СТАРТА процесса. Живой сессии
-   *  окружение не поменять, поэтому значение не обновляется до перезапуска. */
+  /** How the GitHub binding resolved at the moment the process STARTED. A live
+   *  session's environment cannot be changed, so this is not updated until it
+   *  restarts. */
   auth?: SessionAuth;
-  /** Привязка воркспейса изменилась после старта — окружение устарело. */
+  /** The workspace's binding changed after the start, so the environment this
+   *  session is running on is stale. */
   authStale?: boolean;
   kind?: TileKind;
   /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
@@ -722,8 +725,9 @@ export class Deck {
     b.className = "tile-auth hidden";
   }
 
-  /** Привязка воркспейса изменилась: у живых сессий окружение уже зафиксировано
-   *  при fork, поменять его нельзя — честно помечаем как устаревшее. */
+  /** The workspace's binding changed. A live session's environment was fixed at
+   *  fork and cannot be changed, so it is marked stale rather than quietly left
+   *  looking current. */
   markAuthStale(workspaceId: string) {
     for (const t of this.tiles.values()) {
       if (t.workspaceId !== workspaceId || t.kind === "command") continue;
@@ -732,9 +736,9 @@ export class Deck {
     }
   }
 
-  /** Открывает тайл с разовой пользовательской командой (установка gh,
-   *  `gh auth login`). Такой тайл не сохраняется в layout: восстановление
-   *  молча перезапустило бы sudo-команду на следующем старте приложения. */
+  /** Open a tile running one command the person typed — installing `gh`,
+   *  `gh auth login`. It is not saved to the layout: a restore would silently
+   *  re-run a `sudo` command on the app's next launch. */
   async openCommandTile(titleText: string, command: string, cwd: string) {
     await this.spawnTile({
       session: crypto.randomUUID(),
@@ -981,7 +985,7 @@ export class Deck {
      *  False for unattended work: a scheduled run announces itself through a
      *  notification, not by yanking the caret out of whatever is being typed. */
     grabAttention?: boolean;
-    /** "command" — разовый запуск `command` вместо сессии claude. */
+    /** `"command"` runs `command` once instead of starting a `claude` session. */
     kind?: TileKind;
     /** Take over a session that is already running instead of starting one, and
      *  put this scrollback back on screen first.
@@ -1000,78 +1004,37 @@ export class Deck {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const grabAttention = opts.grabAttention ?? true;
     const isCommand = opts.kind === "command";
-    const el = document.createElement("div");
-    el.className = "tile";
-    // The state rail's carrier. A data attribute rather than a class for the reason
-    // the session row documents: `.state-*` already means "a chip with this fill",
-    // and one of those names on the tile would paint a chip across the whole thing.
-    el.dataset.state = "idle";
-    const head = document.createElement("div");
-    head.className = "tile-head";
-    const title = document.createElement("span");
-    // A class, because the selector this used to rely on could not work. The rule was
-    // `.tile-head span:first-child`, and `head.insertBefore(bcastCheck, title)` below
-    // puts an `<input>` in front of the title on every tile — so the title is never
-    // `:first-child` and never got the `flex: 1` or the ellipsis that rule grants. A
-    // long session name pushed the badges out of the head instead of truncating.
-    title.className = "tile-name";
-    // The text and the tooltip are written together by `applyName`, and only by
-    // `applyName` — the tooltip is for the sighted reader of a truncated name and
-    // the accessible name comes from the text itself, so the two must never
-    // drift. One writer is what keeps that true now that a name can change.
-    const schedMark = opts.scheduled ? icon("clock", 12) : null;
-    if (schedMark) {
-      schedMark.classList.add("tile-sched-mark");
-      schedMark.setAttribute("aria-hidden", "false");
-      schedMark.setAttribute("role", "img");
-      schedMark.setAttribute("aria-label", "started on a schedule");
-    }
-    const gitBadge = document.createElement("span");
-    gitBadge.className = "tile-git hidden";
-    const tokenBadge = document.createElement("span");
-    tokenBadge.className = "tile-tokens hidden";
-    // The badge already sits there and is already about this session's
-    // measurements, and its tooltip is currently the only home for the spend and
-    // the subagent count — a tooltip is where information goes to be missed. One
-    // surface, reached from either.
-    tokenBadge.setAttribute("role", "button");
-    tokenBadge.tabIndex = 0;
+    /* The DOM is `tile-view.ts`'s, and every handler below is this method's.
+       That is where the seam is, and it is not a matter of taste: almost every
+       handler here closes over the `Tile` record, which is built out of the
+       terminal panel and therefore after the elements. A builder that took
+       callbacks would need one parameter per button and would still be this
+       code; a builder that took the tile would be this method with a hop in it.
+       What moved is the structure and the reasons for it — the head's order, the
+       title being reached by class rather than by position, the state living on
+       `data-state`. See the note at the top of that file. */
+    const parts = buildTile({ scheduled: !!opts.scheduled, broadcasting: this.broadcasting });
+    const {
+      el, head, title, gitBadge, authBadge, tokenBadge, label, activityBtn,
+      renameBtn, clearBtn, restartBtn: restart, closeBtn: close, bcastCheck,
+      searchBar, searchInput: sInput, searchNext: sNext, searchPrev: sPrev,
+      searchClose: sClose, mount, work,
+    } = parts;
+    label.textContent = LABEL.idle;
+
     tokenBadge.onclick = () => this.openActivity(session);
     tokenBadge.onkeydown = (e: KeyboardEvent) => {
       if (e.key !== "Enter" && e.key !== " ") return;
       e.preventDefault();
       this.openActivity(session);
     };
-    const activityBtn = activityButton();
     activityBtn.onclick = () => this.openActivity(session);
-    const label = document.createElement("span");
-    label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
-    // The pencil leads the action cluster because it is the least destructive of
-    // the four, and it sits after the state chip so the flexible name keeps one
-    // contiguous run of width. It is always in the DOM — so it is in the tab
-    // order and reachable by touch — and the stylesheet is what hides it until
-    // the tile is hovered, active or holds focus.
-    const renameBtn = iconButton("pencil", "Rename session", "tile-close tile-rename");
     renameBtn.onclick = () => this.beginRename(session);
-    const clearBtn = iconButton("eraser", "Clear terminal", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
-    const close = iconButton("x", "Close session", "tile-close btn--icon--danger");
-    // Same question Cmd+W asks. Without it the mouse was the more dangerous
-    // of the two ways to do the same thing: one stray click killed a live
-    // session outright, while the keyboard asked first.
+    // Same question Cmd+W asks. Without it the mouse was the more dangerous of
+    // the two ways to do the same thing: one stray click killed a live session
+    // outright, while the keyboard asked first.
     close.onclick = () => { void this.requestClose(session); };
-    const authBadge = document.createElement("span");
-    authBadge.className = "tile-auth hidden";
-    head.append(
-      ...(schedMark ? [schedMark] : []),
-      title, gitBadge, authBadge, tokenBadge, label, activityBtn, renameBtn, clearBtn, close,
-    );
-    const bcastCheck = document.createElement("input");
-    bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
-    bcastCheck.classList.toggle("hidden", !this.broadcasting);
-    head.insertBefore(bcastCheck, title);
-    const restart = iconButton("rotate", "Restart session", "tile-close");
-    restart.style.display = "none";
     restart.onclick = async () => {
       restart.style.display = "none";
       tile.panel.write("\r\n[restarting session...]\r\n");
@@ -1106,8 +1069,7 @@ export class Deck {
         restart.style.display = "inline";
       }
     };
-    head.insertBefore(restart, close);
-    head.addEventListener("dblclick", (e) => {
+    head.addEventListener("dblclick", (e: MouseEvent) => {
       // Buttons and anything editable. Double-clicking a word inside a header
       // input is how a person selects it, and zooming the tile instead is a
       // defect the broadcast checkbox already suffered from.
@@ -1115,29 +1077,14 @@ export class Deck {
       if (t.closest("button, input, textarea, [contenteditable]")) return;
       this.toggleZoom(session);
     });
-    const mount = document.createElement("div");
-    mount.className = "tile-body";
-    const searchBar = document.createElement("div");
-    searchBar.className = "tile-search hidden";
-    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "search…";
-    const sNext = iconButton("chevron", "Next match", "tile-search-btn icon--down");
-    const sPrev = iconButton("chevron", "Previous match", "tile-search-btn icon--up");
-    const sClose = iconButton("x", "Close search", "tile-search-btn");
-    searchBar.append(sInput, sPrev, sNext, sClose);
-    sInput.addEventListener("keydown", (e) => {
+    sInput.addEventListener("keydown", (e: KeyboardEvent) => {
       if (e.key === "Enter") { e.preventDefault(); tile.panel.search(sInput.value); }
       else if (e.key === "Escape") { e.preventDefault(); searchBar.classList.add("hidden"); tile.panel.focus(); }
     });
     sNext.onclick = () => tile.panel.search(sInput.value);
     sPrev.onclick = () => tile.panel.searchPrev(sInput.value);
     sClose.onclick = () => { searchBar.classList.add("hidden"); tile.panel.focus(); };
-    /* The tile's work area is a ROW: the terminal, then the tools that belong to
-       this session, then the strip that opens them. The strip is on the right, the
-       opposite edge from the app's panel, and that distance is doing real work — it
-       is what stops "Files" in here being read as the project's files rather than
-       this checkout's. Both are `display: none` until the tile is zoomed. */
-    const work = document.createElement("div");
-    work.className = "tile-work";
+
     const tools = new TileTools({
       cwd,
       cols: () => tile.panel.cols,
@@ -1145,8 +1092,9 @@ export class Deck {
       source: () => this.sourceOfTile(tile),
       onWidth: (px) => this.onToolWidth?.(px),
     });
-    work.append(mount, tools.panel, tools.rail);
-    el.append(head, searchBar, work);
+    // Appended rather than built into the row, because the tools need `mount`'s
+    // measured width and so cannot exist before it.
+    work.append(tools.panel, tools.rail);
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
@@ -1210,7 +1158,7 @@ export class Deck {
         void this.persistLayout();
       } else if (isCommand) {
         await panel.startCommand(cwd, opts.command ?? "");
-        // Командный тайл в layout не попадает — persistLayout не зовём.
+        // A command tile is not in the layout, so `persistLayout` is not called.
       } else {
         tile.auth = await panel.start(
           cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume,
@@ -1767,8 +1715,8 @@ export class Deck {
     // Keeps the tile's rail in step with its chip. Two carriers, one source.
     tile.el.dataset.state = state;
     tile.label.textContent = LABEL[state];
-    // У командного тайла перезапуск не предлагаем: он поднял бы claude, а не
-    // повторил команду. Разовое действие повторяется из своего экрана.
+    // No restart is offered on a command tile: it would start `claude` rather
+    // than repeat the command. A one-off action is repeated from its own screen.
     const restartable = tile.kind !== "command" && (state === "ended" || state === "error");
     tile.restartBtn.style.display = restartable ? "inline" : "none";
     this.renderList();
@@ -2611,9 +2559,9 @@ export function serializeTiles(
   }[],
 ): SessionEntry[] {
   return tiles
-    // Командный тайл — разовое действие пользователя (установка пакета, вход в
-    // аккаунт). Восстанавливать его на следующем запуске нельзя: это молча
-    // выполнило бы sudo-команду без спроса.
+    // A command tile is one action the person took — installing a package,
+    // signing in. Restoring it on the next launch is not allowed: that would run
+    // a `sudo` command again without being asked.
     .filter((t) => t.kind !== "command")
     .map((t) => ({
       sessionId: t.session, cwd: t.workspacePath, name: t.name,

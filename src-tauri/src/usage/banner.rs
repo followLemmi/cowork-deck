@@ -137,10 +137,6 @@ pub fn find(normalised: &str) -> Option<Signal> {
     exhausted(normalised).or_else(|| approaching(normalised))
 }
 
-/// Convenience for the caller that has raw bytes: normalise, then find.
-pub fn find_raw(raw: &str) -> Option<Signal> {
-    find(&normalise(raw))
-}
 
 fn exhausted(t: &str) -> Option<Signal> {
     // Three phrasings, all observed in the shipped binary's own strings:
@@ -338,7 +334,7 @@ fn clock(t: &str) -> Option<NaiveTime> {
         None => (0, rest),
     };
     let rest = rest.trim_start();
-    if let Some(_) = rest.strip_prefix("pm") {
+    if rest.strip_prefix("pm").is_some() {
         if hour == 12 {
             // 12pm is noon.
         } else if hour < 12 {
@@ -363,6 +359,13 @@ fn clock(t: &str) -> Option<NaiveTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Normalise, then find. A test convenience rather than an API: every caller
+    /// in the app already holds normalised text (see `find`'s callers), and this
+    /// used to be `pub fn find_raw` with the app never reaching for it (#463).
+    fn find_raw(raw: &str) -> Option<Signal> {
+        find(&normalise(raw))
+    }
 
     /// The banner as it arrives, and the same banner broken by the redraw that
     /// drew it. Both must land on one signal — the second is the case matching

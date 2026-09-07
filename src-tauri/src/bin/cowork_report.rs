@@ -107,10 +107,7 @@ fn extract_field(json: &str, key: &str) -> Option<String> {
             continue;
         }
         let rest = &json[from..];
-        let colon = match rest.find(':') {
-            Some(c) => c,
-            None => return None,
-        };
+        let colon = rest.find(':')?;
         let after = rest[colon + 1..].trim_start();
         let after = match after.strip_prefix('"') {
             Some(a) => a,

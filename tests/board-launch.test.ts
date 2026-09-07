@@ -4,6 +4,7 @@
  *  test of `sessions.ts` can see it: `Deck.launchOnWorktree` is only reached once
  *  the worktree call has already succeeded. */
 import { describe, it, expect, vi } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const listTasksMock = vi.fn();
 const issueWorktreeAddMock = vi.fn();
@@ -35,26 +36,8 @@ const issue = (id: string) => ({
 
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
-  prList: vi.fn().mockResolvedValue([]),
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  saveLayout: vi.fn().mockResolvedValue(undefined),
-  closeSession: vi.fn(),
-  gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
-  sessionSnapshots: vi.fn().mockResolvedValue({}),
-  onState: vi.fn().mockResolvedValue(() => {}),
-  onExit: vi.fn().mockResolvedValue(() => {}),
-  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
-  describeExit: vi.fn().mockReturnValue(null),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
+  ...bootIpc(),
   taskCapabilities: vi.fn().mockResolvedValue(CAPS),
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
   listTasks: listTasksMock,
   issueWorktreeAdd: issueWorktreeAddMock,
 }));

@@ -5,9 +5,9 @@
 //! app, and #276 exists to undo that. Nothing here adds to it.
 
 use crate::commands::AppState;
-use crate::sync::activation::{self, Blocked, Preflight, RepoState};
+use crate::sync::activation::{self, Preflight, RepoState};
 use crate::sync::git::{self, Auth};
-use crate::sync::job::{self, Fault, SyncState};
+use crate::sync::job::{self, SyncState};
 use crate::sync::{machine, manifest};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ use tauri::{Emitter, Manager, State};
 /// The sync root is the config directory itself — repository root and memory
 /// root, one directory (ADR to follow in #319).
 fn root(state: &State<AppState>) -> Result<PathBuf, String> {
-    Ok(state.store.lock().map_err(|_| "store lock".to_string())?.dir.clone())
+    Ok(state.store().dir.clone())
 }
 
 /// Sync is on when the directory is a repository with a remote. There is no
@@ -179,7 +179,7 @@ pub fn sync_disconnect(state: State<AppState>) -> Result<(), String> {
 pub fn sync_now(app: tauri::AppHandle, state: State<AppState>) -> Result<SyncState, String> {
     let root = root(&state)?;
     let (workspaces, skills) = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let store = state.store();
         (store.workspaces(), store.skills())
     };
     let before = ids(&workspaces);
@@ -228,7 +228,7 @@ fn announce_if_changed(app: &tauri::AppHandle, before: &[String]) {
     // deleted every workspace" — which every pinned window answers by handing
     // its sessions back and closing. A fault must not be able to close windows.
     let after = app.try_state::<AppState>().and_then(|st| {
-        let store = st.store.lock().ok()?;
+        let store = st.store();
         match store.try_workspaces() {
             Ok(items) => Some(ids(&items)),
             Err(e) => {
@@ -423,8 +423,9 @@ pub fn spawn(app: tauri::AppHandle) {
             // The store lock is taken and released around the read, never held
             // across the git calls: those take up to ten minutes, and holding
             // the shared mutex that long would stall the whole app.
-            let read = app.try_state::<AppState>().and_then(|st| {
-                st.store.lock().ok().map(|s| (s.workspaces(), s.skills()))
+            let read = app.try_state::<AppState>().map(|st| {
+                let s = st.store();
+                (s.workspaces(), s.skills())
             });
             if let Some((workspaces, skills)) = read {
                 let before = ids(&workspaces);
@@ -445,7 +446,7 @@ pub fn spawn(app: tauri::AppHandle) {
 pub fn sync_questions(state: State<AppState>) -> Result<Vec<crate::sync::adopt::Question>, String> {
     let root = root(&state)?;
     let (workspaces, skills) = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let store = state.store();
         (store.workspaces(), store.skills())
     };
     // Resolved here too, not only on the sync cycle: this is what the settings
@@ -474,7 +475,7 @@ pub fn sync_merge_workspaces(
     into: String,
 ) -> Result<Vec<crate::model::Workspace>, String> {
     let merged = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let store = state.store();
         let root = store.dir.clone();
         merge_workspaces(&root, &store, &from, &into)?
     };
@@ -571,18 +572,6 @@ pub fn keep_distinct(root: &std::path::Path, a: &str, b: &str) -> Result<(), Str
     ledger.save(root).map_err(|e| format!("could not record the answer: {e}"))
 }
 
-/// Named so the frontend's three blocking states and these agree by
-/// construction rather than by anyone remembering to keep them in step.
-#[tauri::command(async)]
-pub fn sync_blocked_kinds() -> Vec<Blocked> {
-    vec![Blocked::NoGh, Blocked::NoAccount]
-}
-
-/// The fault currently standing, if any.
-#[tauri::command(async)]
-pub fn sync_fault(state: State<AppState>) -> Result<Option<Fault>, String> {
-    Ok(SyncState::load(&root(&state)?).fault)
-}
 
 #[cfg(test)]
 mod tests {

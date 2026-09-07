@@ -170,6 +170,16 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     case "scheduler_ready": return null;
     case "claude_available": return true;
     case "gh_status": return F.ghStatus;
+    /* Memory sync. Answered so Settings' "Config repository" section has content
+       — see the note on `syncSummary` in `fixtures.ts`. `sync_now` returns the
+       state unchanged: the harness has no remote to reach, and a push that
+       claimed to have happened would be the one thing this surface must not
+       invent. */
+    case "sync_summary": return F.syncSummary;
+    case "sync_questions": return [];
+    case "sync_now": return F.syncSummary.state;
+    case "sync_preflight":
+      return { blocked: null, accounts: F.ghStatus.accounts, error: null };
     /* `placesWindows` was missing, which reads as false — and false is the one
        value that switches the tear-out gesture OFF. So the harness ran the branch
        no desktop but Wayland runs, and could not see that the capture the gesture

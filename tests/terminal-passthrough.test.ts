@@ -1,18 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// jsdom has no ResizeObserver; TerminalPanel's constructor needs one.
-(globalThis as any).ResizeObserver ??= class {
-  observe() {} unobserve() {} disconnect() {}
-};
-// Nor an IntersectionObserver, and nor Tauri's injected internals — the panel builds
-// a real output `Channel`, whose constructor registers its handler through them.
+// The one shim this file installs for itself. `ResizeObserver` and Tauri's
+// injected internals come from `tests/setup/dom-shims.ts`; `IntersectionObserver`
+// deliberately does not, because `watchVisibility` treats its absence as "never
+// on screen" and that absence is what keeps a unit test from asking jsdom for a
+// WebGL context. Stubbed here so the branch that DOES exist is the one under
+// test, and so this file pins that its absence is survivable.
 (globalThis as any).IntersectionObserver ??= class {
   observe() {} unobserve() {} disconnect() {}
-};
-(globalThis as any).window.__TAURI_INTERNALS__ ??= {
-  transformCallback: () => 1,
-  unregisterCallback: () => {},
 };
 
 let captured: ((e: any) => boolean) | null = null;

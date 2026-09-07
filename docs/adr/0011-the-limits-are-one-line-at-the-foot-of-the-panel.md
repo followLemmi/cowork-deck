@@ -7,6 +7,12 @@ deciders:
 
 # ADR-0011 — The limits are one line at the foot of the panel, opened on demand
 
+> **Amended by the section at the foot of this record (#461).** The line is in the
+> TOP BAR now, not the panel's foot. Everything else here stands: it is still one
+> line for the whole deck, still the worst-off AI with its tier and its reading,
+> still rows behind a disclosure. Read decisions 1–6 as written and the amendment
+> for where the line lives.
+
 ## Context
 
 ADR-0009 put a limits block in the panel and argued for the placement rather than
@@ -183,3 +189,110 @@ a row. The strip answers "can I keep working" and nothing else.
   than a ledger reading. The panel foot is next to the work and has the width.
 - **A fifth page, or a section in Settings.** The failure ADR-0009 chose the block
   to avoid, restated. Rejected without a second look.
+
+---
+
+## Amendment, 2 September 2026 — the line moved to the top bar (#461)
+
+*Status: Accepted. Amends decision 1's placement and nothing else.*
+
+This record chose the panel's foot and rejected the top bar in as many words:
+
+> **Move the glance into the top bar's ledger.** The ledger is "what is blocked on
+> me" — sessions waiting for a decision and sessions that stopped — and it is
+> built from the deck's own counts. A quota reading is a different kind of fact
+> with a different lifetime, and the tier word makes it two to three times wider
+> than a ledger reading. The panel foot is next to the work and has the width.
+
+That rejection is being reversed, so it has to be answered rather than
+overwritten.
+
+### What the panel's foot got wrong, and it was not the height
+
+The height argument was sound and this record won it: one line for the whole deck
+is what the block should be, and #392 got it there. What was missed is that the
+strip did not only *take* space from the tree — it **moved** it.
+
+`#sidebar` is `grid-template-rows: auto minmax(0, 1fr) auto`. Row 3 is the strip;
+row 2 is the page stack, and `minmax(0, 1fr)`'s floor is zero. So opening the rows
+grew row 3 by up to `min(38vh, 15rem)` and row 2 gave that room up, while
+`#ws-page`'s `scrollTop` stayed exactly where it was. The rows a person was
+reading went below the fold, and the strip's hairline was drawn where the tree's
+last visible row had been a frame earlier.
+
+Nothing overlapped — the grid clips, and there is no `position: absolute` or
+`position: sticky` anywhere in that stack. **The tree moved**, which is worse than
+being covered: covered content comes back when the cover goes, and moved content
+has to be found again.
+
+Decision 4 promised the opposite of this in as many words — "the rows grow upward
+out of the panel's foot **so the thing under the pointer stays under it**". The
+thing under the pointer did stay. Everything above it did not.
+
+And a second fault, smaller and unrelated to the rows: `#sidebar.is-collapsed` is
+width 0, and it took the reading with it. A limit is not a property of the panel
+being open.
+
+### Why the top bar, against this record's own objection
+
+Three answers, in the order the objection made them.
+
+**"The ledger is what is blocked on me."** It is, and a quota belongs in that
+company. "1 waiting for a decision" and "1 stopped on an error" are readings that
+*want a person*; "Claude 87% used — nearly spent" is a third such reading, and the
+one whose consequence is that the other two stop appearing. What the bar holds is
+not a category, it is the set of facts a person needs without asking. A quota is
+one.
+
+**"A different kind of fact with a different lifetime."** True, and it is what
+makes the bar the right home rather than the wrong one: a fact with a *slow*
+lifetime is exactly what should sit next to a column that grows. The reading
+changes on a sixty-second timer; the tree changes every time a session starts.
+Stacking the slow thing under the fast one in a 280px column is what produced the
+displacement above.
+
+**"The tier word makes it two to three times wider than a ledger reading."** This
+is the real cost and it is paid rather than argued away. Two things absorb it. The
+state's words move INLINE after the reading instead of onto a second line, because
+a 44px bar has no second line to give — the second line was affordable in a panel
+foot, where "being larger is the point rather than the complaint", and is not
+here. And the bar sheds in a stated order as the window narrows: the state's words
+at 60rem, the count of the other AIs at 43.75rem, and the NAME truncates before
+either. The reading and its tier are ADR-0009's floor and are in neither list. A
+bare percentage is still not an acceptable compression.
+
+### What is unchanged
+
+Every one of #461's own requirements, which are this record's and ADR-0009's:
+
+- **Glanceable while working.** More so: the bar is visible when the panel is
+  collapsed, which the foot was not.
+- **The tier travels with the reading.** ADR-0009, and it is now the thing that
+  never gives way rather than one of several.
+- **State colour as it is.** Neutral when healthy, `--st-waiting` near the limit,
+  `--st-error` when spent. No green for "fine".
+- **A way out of an unreadable row.** The Probe button is still beside the strip
+  and not behind the fold — decision 5, unchanged.
+- **`openUsageDialog` is still the detail surface.** Decision 6, untouched.
+
+### What the move let go
+
+`column-reverse`, and its going is a simplification rather than a loss. It existed
+to reconcile two orders: the strip had to come FIRST in the DOM, so a screen
+reader moving forward off the control it just pressed arrives inside the rows that
+press revealed — and it had to appear LAST on screen, so the rows grew upward out
+of the panel's foot. A bar at the top of the window has the rows below it, so the
+DOM order and the reading order are the same order and nothing has to be reversed.
+
+And the strip keeps its reading while the rows are open. It used to give the line
+up for the word "Limits" (decision 4), which was right when the rows sat above it
+and it had become their head. The rows now open into a popover with its own edge,
+and the reading is the reason the bar carries the line at all: a bar that blanked
+its own number on a press would answer less the more it was asked.
+
+### Consequence worth stating
+
+The popover is `position: absolute` and out of the bar's flow, so opening the rows
+costs the bar no height and moves nothing below it. That is the same property the
+panel's foot was supposed to have and could not, because a grid row cannot both
+grow and take no space.

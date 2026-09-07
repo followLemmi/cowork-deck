@@ -25,6 +25,19 @@
              destination. Empty here on purpose: `app.ts` writes it from the deck's
              own counts, so no number in this markup can go stale. -->
         <div id="ledger" data-od-id="ledger"></div>
+        <!-- What every connected AI has left, and where each number came from.
+             Glanceable WHILE working, which is the half of ADR-0011 that has not
+             moved: a screen you have to navigate to would be consulted once, on
+             the day you first found it, and never at the moment it matters.
+             ONE LINE of it — the worst-off AI, its tier and its reading, with the
+             rest counted and the rows one press away.
+             In the top bar since #461, and it was the panel's foot. Two readings
+             of the deck's own state already live to the left of it; a quota is a
+             third number that wants a person, and unlike the tree it does not
+             grow. The amendment at the foot of ADR-0011 is the argument. Empty
+             here — `app.ts` fills it, and draws nothing at all when no AI is
+             detected. -->
+        <div id="limits"></div>
         <div id="topbar-actions"></div>
       </header>
       <div id="stage">
@@ -38,17 +51,6 @@
                belongs to one repository, so they live in `#wspanel` on the other
                side of the deck, where the thing they are about is named above them. -->
           <div id="panel-stack"></div>
-          <!-- What every connected AI has left, and where each number came from.
-               In the panel rather than as a page of it, and that is the whole
-               decision: a limit is something you glance at WHILE working, so a
-               screen you have to navigate to would be consulted once, on the day
-               you first found it, and never at the moment it matters.
-               ONE LINE of it, though — the worst-off AI, its tier and its reading,
-               with the rest counted and the rows one press away. A row per AI at
-               three lines each grew with the number of accounts and took the height
-               out of the page above (#392, ADR-0011). Empty here — `app.ts` fills
-               it, and draws nothing at all when no AI is detected. -->
-          <div id="limits"></div>
         </aside>
         <!-- The deck and the terminal drawer are one column: the drawer is a
              strip under the deck, not a fourth screen and not a floating panel.

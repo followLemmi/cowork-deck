@@ -1053,6 +1053,31 @@ export const ghStatus: GhStatus = {
   ],
 };
 
+/** Memory sync, switched on and working.
+ *
+ *  Answered at all because it was not (#463): the harness mocked no `sync_*`
+ *  command, so `syncSummary()` came back `null`, `mountSync` threw inside an
+ *  unawaited promise, and Settings' "Config repository" section showed its blurb
+ *  and nothing else. The audit saw that and could not tell whether it was the
+ *  harness or the app — it was both. The app's half is a failure path in
+ *  `mountSync`; this is the harness's, and a section that cannot render here is a
+ *  section nobody can review or shoot.
+ *
+ *  ON rather than off, because `renderOn` is the richer surface: the age of the
+ *  last push, the machine's own name, and the two controls. Seconds, not
+ *  milliseconds — which is the unit the Rust side keeps and the reason
+ *  `sync-dialog.ts` converts at its call site. */
+export const syncSummary = {
+  on: true,
+  remote: "https://github.com/acme-dev/cowork-memory.git",
+  state: {
+    lastPull: Math.floor(Date.parse("2026-09-02T09:41:00Z") / 1000),
+    lastPush: Math.floor(Date.parse("2026-09-02T09:12:00Z") / 1000),
+    fault: null,
+  },
+  machine: { id: "m-1", label: "this laptop" },
+};
+
 export const openCounts: Record<string, number> = {
   [WS_RELAY]: fileTasks.filter((t) => t.status !== "shipped").length,
   [WS_HARBOR]: openCount,

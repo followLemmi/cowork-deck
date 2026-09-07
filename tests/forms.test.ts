@@ -5,6 +5,26 @@ const { pickFolderMock } = vi.hoisted(() => ({ pickFolderMock: vi.fn() }));
 vi.mock("../src/dialog", () => ({ pickFolder: pickFolderMock }));
 vi.mock("@tauri-apps/api/core");
 
+/* The account list, and nothing else on this surface. `workspaceForm` fills it
+   from `gh_status` every time it opens, which is once per test here — and with
+   `invoke` auto-mocked to `undefined`, `accountChoices` threw on `.accounts`
+   thirty-three times a run, none of it about anything this file asserts (#463).
+
+   Mocked at `ghStatus` rather than through `invoke`, so the per-test `invoke`
+   implementations below — and the assertions ON `invoke` — are untouched.
+   Through `vi.hoisted` and with the shape written out, not imported from
+   `helpers/boot-ipc`: `vi.mock` is hoisted above the imports, so a factory
+   closing over an imported binding reads it before it is initialised. */
+const { ghStatusMock } = vi.hoisted(() => ({
+  ghStatusMock: vi.fn().mockResolvedValue({
+    path: "/usr/bin/gh", version: "2.60.0", accounts: [], error: null,
+  }),
+}));
+vi.mock("../src/ipc", async (orig) => ({
+  ...(await orig() as object),
+  ghStatus: ghStatusMock,
+}));
+
 import { workspaceForm, skillForm, placeholderForm, mergeForm, closeIssueModal } from "../src/forms";
 import { closeConfirmText } from "../src/issues";
 import type { TrackerConfig } from "../src/ipc";
@@ -140,8 +160,8 @@ describe("workspaceForm", () => {
     void workspaceForm();
     fillTracker("/vault", "");
     await settle();
-    // Не «ни одного вызова»: форма спрашивает `gh_status` при открытии, чтобы
-    // заполнить список аккаунтов. Молчать должен именно предпросмотр.
+    // Not "no calls at all": the form asks `gh_status` when it opens, to fill the
+    // account list. What has to stay silent is the preview.
     expect(invoke).not.toHaveBeenCalledWith("tracker_root_preview", expect.anything());
     expect(document.querySelector(".tk-f-preview-path")).toBeNull();
   });

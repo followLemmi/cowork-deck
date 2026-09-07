@@ -5,7 +5,8 @@ import {
 import { confirmModal } from "./modal";
 import { skillForm } from "./forms";
 import { scheduleRowText } from "./schedule";
-import { RUN_STATUS_LABEL, agoLabel, runStatusClass } from "./runs";
+import { RUN_STATUS_LABEL, runStatusClass } from "./runs";
+import { agoLabel } from "./format";
 import { syncDotPhase } from "./dot-phase";
 import { icon, iconButton, SCENARIO_ICONS, type IconName } from "./icons";
 

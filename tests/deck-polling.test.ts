@@ -11,6 +11,7 @@
  *  and parses every open transcript from disk, twelve times a minute, in every
  *  window — minimised ones included. See #251. */
 import { describe, it, expect, vi } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
 
@@ -27,31 +28,10 @@ const gitStatusMock = vi.fn().mockResolvedValue({ branch: "main", dirty: false }
 
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
-  prList: vi.fn().mockResolvedValue([]),
-  claudeAvailable: vi.fn().mockResolvedValue(true),
+  ...bootIpc(),
   loadLayout: vi.fn().mockResolvedValue(LAYOUT),
-  saveLayout: vi.fn().mockResolvedValue(undefined),
-  closeSession: vi.fn(),
   gitStatus: gitStatusMock,
   sessionSnapshots: snapshotsMock,
-  onState: vi.fn().mockResolvedValue(() => {}),
-  onExit: vi.fn().mockResolvedValue(() => {}),
-  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
-  describeExit: vi.fn().mockReturnValue(null),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
-  taskCapabilities: vi.fn().mockResolvedValue(null),
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
-  listTasks: vi.fn().mockResolvedValue([]),
-  // Not this test's subject, but both are on timers of their own and an
-  // unmocked one fills the run with stack traces from `invoke`.
-  usageSnapshot: vi.fn().mockResolvedValue([]),
-  loadTerminals: vi.fn().mockResolvedValue({ items: [], active: {}, open: [] }),
 }));
 
 vi.mock("../src/workspaces", () => ({

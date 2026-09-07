@@ -46,7 +46,7 @@ pub async fn session_activity(
     session_ids: Vec<String>,
 ) -> Result<std::collections::HashMap<String, ActivityRoll>, String> {
     let kinds = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let store = state.store();
         cli_kinds(&store.layout())
     };
 

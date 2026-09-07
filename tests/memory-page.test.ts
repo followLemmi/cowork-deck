@@ -239,10 +239,18 @@ describe("the excerpt", () => {
 
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 
-const mount = (workspace: { id: string; name: string } | null = { id: "ws-1", name: "deck" }) => {
+const mount = (
+  workspace: { id: string; name: string } | null = { id: "ws-1", name: "deck" },
+  /** The rest of the options, for the handful of tests that need one. Absent by
+   *  default and deliberately: `onCompose` is optional on the page, and the
+   *  empty state offering nothing when there is nowhere to compose is itself
+   *  asserted below. */
+  opts: { onCompose?: () => void } = {},
+) => {
   const view = mountMemory({
     workspace: () => workspace,
     names: () => new Map([["ws-1", "deck"], ["ws-2", "relay"]]),
+    ...opts,
   });
   document.body.replaceChildren(view.mount);
   return view;
@@ -347,6 +355,34 @@ describe("the page", () => {
     // And not a second sentence about there being nothing to search: the empty
     // state has already said it.
     expect(fk("memory-readiness")!.hidden).toBe(true);
+  });
+
+  /** And offers the first step rather than only describing one (#463). The
+   *  paragraph was the whole of this state, with `Write a note` in the block at
+   *  the foot of the page — past the readiness line and past the list that is the
+   *  reason the page is empty. */
+  it("offers the first note from the empty state, not only from the foot", async () => {
+    notes.mockResolvedValue([]);
+    const onCompose = vi.fn();
+    const view = mount(undefined, { onCompose });
+    await view.refresh();
+    await flush();
+
+    const first = fk("memory-empty-write");
+    expect(first).not.toBeNull();
+    first!.click();
+    expect(onCompose).toHaveBeenCalled();
+  });
+
+  /** A button that does nothing is worse than no button: the document surface is
+   *  what a note is composed on, and a page mounted without it has nowhere to
+   *  send one. */
+  it("offers nothing where there is nowhere to compose", async () => {
+    notes.mockResolvedValue([]);
+    const view = mount();
+    await view.refresh();
+    await flush();
+    expect(fk("memory-empty-write")).toBeNull();
   });
 
   /** The one sentence that stops the page reading as broken. A note can be listed

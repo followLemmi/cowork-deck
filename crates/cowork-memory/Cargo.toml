@@ -20,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 # "changed" and forces a spurious re-embed.
 serde_json = { version = "1", features = ["float_roundtrip"] }
 clap = { version = "4", features = ["derive"] }
-ureq = "2"
+ureq = "3"
 # Pinned exactly. A caret requirement on a pre-release still admits later
 # pre-releases of the same version, and rc.12 moved `Session::inputs` behind an
 # accessor, bumped ndarray to 0.17, and made `ort::Error` neither Send nor Sync

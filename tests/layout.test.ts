@@ -105,11 +105,11 @@ describe("serializeTiles", () => {
     ]);
     expect(Object.keys(result[0])).not.toContain("userName");
   });
-  it("никогда не сохраняет служебные тайлы команд", () => {
-    // Восстановление такого тайла молча перезапустило бы sudo-команду установки.
+  it("never saves a command tile", () => {
+    // Restoring one would silently re-run a `sudo` install on the next launch.
     const result = serializeTiles([
-      { session: "s1", workspacePath: "/w", name: "проект", workspaceId: "w1" },
-      { session: "cmd1", workspacePath: "/w", name: "установка gh", workspaceId: "w1", kind: "command" },
+      { session: "s1", workspacePath: "/w", name: "relay", workspaceId: "w1" },
+      { session: "cmd1", workspacePath: "/w", name: "install gh", workspaceId: "w1", kind: "command" },
     ]);
     expect(result.map((e) => e.sessionId)).toEqual(["s1"]);
   });

@@ -4,11 +4,17 @@ import { it, expect, vi, beforeEach } from "vitest";
 const { saveSkill, skillForm, listSkills } = vi.hoisted(() => ({
   saveSkill: vi.fn(), skillForm: vi.fn(), listSkills: vi.fn().mockResolvedValue([]),
 }));
+// A whole-module mock, so every export the panel reaches for has to be here.
+// `listRuns` was not, and `SkillsPanel` reads it for each row's state dot — so
+// three tests in this file ran the "the journal is unreadable" path while
+// asserting about something else, and said so seven times a run (#463). An empty
+// journal is the right default: no scenario in these fixtures has ever run.
 vi.mock("../src/ipc", () => ({
   listSkills,
   saveSkill,
   removeSkill: vi.fn(),
   loadScheduleState: vi.fn().mockResolvedValue({}),
+  listRuns: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../src/forms", () => ({ skillForm }));
 vi.mock("../src/modal", () => ({ confirmModal: vi.fn() }));

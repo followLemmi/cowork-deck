@@ -427,15 +427,33 @@ export function mountMemory(opts: MemoryPageOptions): MemoryView {
     list.replaceChildren();
 
     if (notes.length === 0) {
-      // The state every new install is in, and the one place the page has to say
-      // what fills it: a corpus that only ever fills itself is a feature nobody
-      // can find the switch for.
-      list.append(el(
+      /* The state every new install is in, and the one place the page has to say
+         what fills it: a corpus that only ever fills itself is a feature nobody
+         can find the switch for.
+
+         And it offers the first step rather than only describing one (#463). The
+         paragraph was the whole of this state, with `Write a note` in the block
+         at the foot of the page — past the readiness line and the list that is
+         the reason the page is empty. An empty state that names an action and
+         does not carry it is asking the reader to go and look for it. */
+      const box = el("div", "mem-empty");
+      box.append(el(
         "p",
-        "mem-empty",
+        "mem-empty-body",
         "Closing a session and saying yes to the question is what writes a note. "
         + "Lessons are filed into diary rooms, and travel with you between projects.",
       ));
+      /* Only where there is somewhere for it to go. `onCompose` is optional on
+         the options, and a button that does nothing is worse than no button —
+         see `#383`, which is what made the document surface exist. */
+      if (opts.onCompose) {
+        const first = el("button", "mem-empty-do", "Write a note");
+        first.type = "button";
+        first.dataset.fk = "memory-empty-write";
+        first.onclick = () => opts.onCompose!();
+        box.append(first);
+      }
+      list.append(box);
       return;
     }
 
