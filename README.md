@@ -459,6 +459,23 @@ npm run tauri dev      # hot reload
 npm run tauri build    # a release bundle for this platform
 ```
 
+**A second copy, side by side.** `npm run dev:instance` runs one more dev build beside the one already
+open — the usual shape being a change under review in a worktree while trunk keeps running. It moves
+the dev server off 1420 and, more importantly, gives that copy a config directory of its own: the
+single-instance claim is a lock on *that directory* (`src-tauri/src/instance.rs`), and two copies
+sharing one would share a store, a run journal and the repository the sync cycle commits. So the second
+copy starts with no workspaces and syncs nowhere, and its window title says which slot it is.
+
+```bash
+npm run dev:instance -- --dir .claude/worktrees/limit-dials   # port 1421, slot from that branch
+npm run dev:instance -- --port 1422 --slot review             # a second one, beside the first
+```
+
+`--dir` is the checkout to launch, and it is an argument rather than "wherever the script lives"
+because the branch being checked would not carry the script itself. `--slot` names the config
+directory, defaulting to that checkout's branch, so a line of work keeps its state across runs. All of
+it is a `--config` merge for that one run: `tauri.conf.json` is untouched.
+
 ```bash
 npm test                                            # frontend (vitest)
 npm run contrast                                    # every colour pair the design claims
