@@ -253,6 +253,41 @@ describe("WorkspacesPanel pinned to one workspace", () => {
     expect(el.querySelectorAll(".ws-row")).toHaveLength(2);
   });
 
+  /* The row and its sessions are one box now, and the box is what the workspace's
+     colour is painted on (#511) — a gradient spanning both had nothing to paint on
+     while the two went into the mount side by side. Two things have to hold: the
+     pair is inside the wrapper, and everything that reaches into this panel by
+     `data-ws` still finds what it is looking for, since `Deck.setTree` fills the
+     session list through `sessionHost`. */
+  it("wraps each workspace and its sessions in one tinted group", async () => {
+    const el = mount();
+    const panel = new WorkspacesPanel(el, () => {});
+    await panel.load();
+    const groups = el.querySelectorAll<HTMLElement>(".ws-group");
+    expect(groups).toHaveLength(2);
+    for (const g of groups) {
+      expect(g.querySelector(".ws-row")).not.toBeNull();
+      expect(g.querySelector(".ws-kids")?.getAttribute("data-ws")).toBe(g.dataset.ws);
+    }
+    expect(panel.sessionHost("a")).toBe(el.querySelector('.ws-kids[data-ws="a"]'));
+    // `#111` is the fixture's colour, and the alpha is what `workspaceTint` solved
+    // for it: the group carries the channels, the stylesheet composes the band.
+    expect(groups[0].style.getPropertyValue("--ws-tint")).toBe("17 17 17");
+    expect(Number(groups[0].style.getPropertyValue("--ws-tint-a"))).toBeGreaterThan(0);
+  });
+
+  /* A colour the record can hold and this cannot read. The group renders untinted
+     rather than guessing, which is exactly what every group did before the tint. */
+  it("leaves a group untinted when the colour cannot be read", async () => {
+    listWorkspacesMock.mockResolvedValue([{ id: "a", name: "A", path: "/a", color: "papayawhip" }]);
+    const el = mount();
+    const panel = new WorkspacesPanel(el, () => {});
+    await panel.load();
+    const group = el.querySelector<HTMLElement>(".ws-group")!;
+    expect(group.style.getPropertyValue("--ws-tint")).toBe("");
+    expect(group.style.getPropertyValue("--ws-tint-a")).toBe("");
+  });
+
   /* The store can lose the workspace a window is pinned to: a pull deletes the
      record, or carries the answer somebody gave to a duplicate question on the
      other machine. The panel says so by having nothing rather than by falling

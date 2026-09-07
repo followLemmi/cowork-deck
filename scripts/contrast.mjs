@@ -201,6 +201,58 @@ const termColor = (name) => {
   return m[1];
 };
 
+// --- the workspace tint ---------------------------------------------------
+
+/** The band a workspace's colour paints under its row and its sessions (#511).
+ *
+ *  Its alpha is not in the stylesheet and cannot be: the six swatches are three
+ *  hues and three greys, and at one fixed alpha chalk lifts the sidebar's island
+ *  1.6× as far as slate does — one workspace glaring and another invisible — so
+ *  the alpha is solved per colour in `src/tint.ts`. Both ends of that solve are
+ *  read from source here, the way the terminal's palette above is, so a change to
+ *  either moves these numbers instead of silently disagreeing with them.
+ *
+ *  The one line of arithmetic is mirrored rather than imported, because this file
+ *  is plain Node with nothing to install and `src/tint.ts` is TypeScript.
+ *  `tests/tint.test.ts` is what pins the formula; this is what measures what the
+ *  formula costs.
+ */
+const tintSrc = readFileSync(join(root, "src/tint.ts"), "utf8");
+const TINT_LUMA = Number(tintSrc.match(/export const TINT_LUMA = ([\d.]+);/)?.[1]);
+if (!Number.isFinite(TINT_LUMA)) throw new Error("no TINT_LUMA in src/tint.ts");
+
+/** The workspace form's palette, from the form. Six today; the loop below does not
+ *  care how many there are, which is the point of reading them rather than listing
+ *  them — a seventh swatch arrives with its own measured band. */
+const SWATCHES = [...readFileSync(join(root, "src/forms.ts"), "utf8")
+  .matchAll(/\{\s*value:\s*"(#[0-9a-fA-F]{3,6})"\s*,\s*name:\s*"(\w+)"\s*\}/g)]
+  .map((m) => ({ value: m[1], name: m[2] }));
+if (SWATCHES.length === 0) throw new Error("no COLORS table in src/forms.ts");
+
+for (const sw of SWATCHES) {
+  const { r, g, b } = parseColor(sw.value, tokens);
+  const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const a = Math.round(Math.min(0.25, TINT_LUMA / luma) * 1e4) / 1e4;
+  tokens.set(`--ws-tint-${sw.name}`, `rgba(${r}, ${g}, ${b}, ${a})`);
+}
+
+/** The heaviest of the six once painted on the island. "Comparable in weight" is
+ *  not "identical in luminance" — a hue and a grey of the same luma differ a
+ *  little — so the text cases below are measured against the worst one rather than
+ *  against a favourite, and against whichever colour that is after the next
+ *  palette edit. */
+const TINT_WORST = SWATCHES
+  .map((sw) => ({ name: sw.name, y: luminance(stack(["--bg-island", `--ws-tint-${sw.name}`], tokens)) }))
+  .sort((a, b) => b.y - a.y)[0].name;
+/** The three grounds a row inside a tinted group can be read on: at rest, hovered
+ *  and selected. Hover has its own stack rather than borrowing `--bg-hover`,
+ *  because inside a group it is `--bg-hover-soft` — translucent, so it composites
+ *  over the band instead of painting it out. The opaque pair is still what a skill
+ *  row and a flat session list hover, and the cases above still measure those. */
+const TINTED = ["--bg-island", `--ws-tint-${TINT_WORST}`];
+const TINTED_ACTIVE = [...TINTED, "--sel"];
+const TINTED_HOVER = [...TINTED, "--bg-hover-soft"];
+
 const TEXT = 4.5;   // 1.4.3
 const UI = 3.0;     // 1.4.11
 const EXEMPT = 0;   // measured and reported, but disabled controls are exempt
@@ -951,6 +1003,121 @@ const CASES = [
     what: "added band against removed band", rejected: true,
     where: "rejected — tint alone cannot tell the two apart, which is why the marker is a character",
     fg: "--diff-add-weak", backdrop: ["--bg-code"], group: ["--diff-del-weak"],
+    threshold: UI, sc: "1.4.11",
+  },
+  /* The workspace tint, six bands and what sits on them (#511).
+     The six come first, and they are rejected on purpose: a band is ground, not a
+     graphic that carries meaning, and 3:1 is the line it must stay UNDER. The rail
+     down a row's left edge is what says working / waiting / stopped, and a tint
+     that reached a graphic's threshold would be a second colour channel behind the
+     one channel that means something.
+     Rejected also makes them a guard rather than a note, which is the reason they
+     are cases at all: this file fails the run when a rejected case starts passing,
+     so `TINT_LUMA` cannot be raised past a quiet band without somebody being told.
+     And read down the column, the six numbers ARE the claim that the palette reads
+     as comparable in weight — one measurement per swatch, reproducible. */
+  {
+    what: "the green workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-green", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the amber workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-amber", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the red workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-red", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the chalk workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-chalk", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the stone workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-stone", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the slate workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-slate", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "a session's branch on a tinted band",
+    where: "the quietest text in the tree, on the strongest end of the strongest band — the floor",
+    fg: "--fg-dim", backdrop: TINTED,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "a branch on a selected row in a tinted group",
+    where: "`--sel` over the band, with the raised ink the selection rule already owed it",
+    fg: "--fg-mid", backdrop: TINTED_ACTIVE,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-error on a tinted band",
+    where: "a stopped session inside a tinted group, at rest",
+    fg: "--st-error", backdrop: TINTED, group: [ERROR_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-error on a tinted selected row",
+    where: "the worst ground in the tree: the band, the selection and the chip's own fill, in that order",
+    fg: "--st-error", backdrop: TINTED_ACTIVE, group: [ERROR_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-ended on a tinted selected row",
+    where: "the hueless label on the same stack — the other end of the chip set",
+    fg: "--st-ended", backdrop: TINTED_ACTIVE, group: [ENDED_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the state rail on a tinted band",
+    where: "red is the darkest of the four rails, so it is the set's floor against the band behind it",
+    fg: "--st-error", backdrop: TINTED,
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: ".btn--icon at rest on a tinted band",
+    where: "the row's own controls, on the ground the tint puts under them",
+    fg: ICON_REST_COLOR, backdrop: TINTED,
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "a branch on a hovered row in a tinted group",
+    where: "`--bg-hover-soft` over the band — the lightest ground a row at `--fg-dim` reaches in the tree",
+    fg: "--fg-dim", backdrop: TINTED_HOVER,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-error on a hovered row in a tinted group",
+    where: "the same stack under the chip that has the least room on it",
+    fg: "--st-error", backdrop: TINTED_HOVER, group: [ERROR_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the soft hover step, against a plain island", rejected: true,
+    where: "rejected — not a contrast requirement: it is here so the two hovers are on record as "
+      + "one step. `--bg-hover-soft` on `--bg-island` must land on `--bg-hover`, or a row inside a "
+      + "group and a row outside one stop hovering alike",
+    fg: "--bg-hover-soft", backdrop: ["--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
 ];
