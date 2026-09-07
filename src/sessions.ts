@@ -20,6 +20,7 @@ import { icon, type IconName } from "./icons";
 import { linksInWorkspace, liveSessionForTask, taskPrompt, type TaskSessionLink } from "./tasks";
 import { workingStep } from "./board-config";
 import { syncDotPhase } from "./dot-phase";
+import { settleMs } from "./motion";
 
 /** An ordinary tile is a `claude` session. A command tile is one run of
  *  something the person typed — installing `gh`, `gh auth login` — with no state
@@ -1846,10 +1847,16 @@ export class Deck {
     this.notifyZoom(true);
   }
 
-  // FLIP: measure visible tiles (First), run the layout mutation (Last),
-  // set the inverse transform, then animate it away. transform-only, so the
-  // ResizeObserver (which fits terminals to the already-final layout box) is
-  // not retriggered — no resize feedback loop.
+  /** FLIP: measure visible tiles (First), run the layout mutation (Last), set the
+   *  inverse transform, then animate it away. Nothing here touches a property that
+   *  lays out, so the ResizeObserver (which fits terminals to the already-final
+   *  layout box) is not retriggered — no resize feedback loop.
+   *
+   *  Two inversions rather than one, and which a tile gets depends on whether it
+   *  is growing: a growing tile is clipped back to its old size and REVEALED, a
+   *  shrinking one is scaled. The loop below argues that choice where it is made;
+   *  the short of it is that scaling a box holding a terminal stretches the type,
+   *  and only the growing tile has a terminal to stretch. */
   private animateLayoutChange(mutate: () => void) {
     const before = [...this.tiles.values()].filter((t) => !t.el.classList.contains("ws-hidden"));
     const first = new Map(before.map((t) => [t.session, t.el.getBoundingClientRect()]));
@@ -1864,24 +1871,74 @@ export class Deck {
       if (dx === 0 && dy === 0 && sx === 1 && sy === 1) continue;
       t.el.style.transformOrigin = "top left";
       t.el.style.transition = "none";
-      t.el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+      /* A tile that GROWS is REVEALED, not scaled, and the difference is the
+         terminal inside it. `scale` on a box holding a WebGL canvas stretches the
+         type for the length of the morph — non-uniformly, because `sx` and `sy`
+         are independent here — which is the one artefact that reads as "this is a
+         web page" rather than an app. Clipping instead leaves the content at its
+         final layout the whole way: the type is never anything but crisp, and what
+         animates is how much of the tile is uncovered.
+         `round` keeps the corner the tile already has; without it the clip is a
+         rectangle and the radius pops back at the end.
+
+         Only growth, because a clip cannot show what is outside the box: a tile
+         SHRINKING into the strip has less room than it needs, so it keeps the
+         scale. Nothing is lost there — `.deck-strip .tile.minimized .tile-body` is
+         `display: none`, so a minimized tile has no terminal to distort.
+
+         `will-change` names whichever pair the branch actually animates, and is
+         promoted for the length of the morph and no longer. A tile holds a WebGL
+         canvas, so its layer is expensive to keep, and a hint left behind is one
+         such layer per tile held for the life of the app — the cost this exists to
+         spend deliberately rather than permanently. Cleared in the cleanup, with
+         the properties it was promoted for. */
+      const grows = sx <= 1 && sy <= 1;
+      if (grows) {
+        t.el.style.willChange = "transform, clip-path";
+        t.el.style.clipPath =
+          `inset(0px ${last.width - f.width}px ${last.height - f.height}px 0px round var(--r-island))`;
+        t.el.style.transform = `translate(${dx}px, ${dy}px)`;
+      } else {
+        t.el.style.willChange = "transform";
+        t.el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+      }
       animating.push(t);
     }
     requestAnimationFrame(() => {
       for (const t of animating) {
-        t.el.style.transition = "transform 180ms var(--ease)";
+        /* The clipped ones animate to a zero inset rather than to `none`: `none`
+           is not a length and does not interpolate, so clearing the property here
+           would land the final frame instantly instead of travelling to it. It is
+           cleared for real in the cleanup below, once there is no motion left to
+           interrupt. */
+        const clipped = t.el.style.clipPath !== "";
+        t.el.style.transition = clipped
+          ? "transform var(--dur-3) var(--ease-out), clip-path var(--dur-3) var(--ease-out)"
+          : "transform var(--dur-3) var(--ease-out)";
         t.el.style.transform = "";
+        if (clipped) t.el.style.clipPath = "inset(0px 0px 0px 0px round var(--r-island))";
       }
     });
-    // Authoritative cleanup + refit after the morph (covers no-transition cases).
+    /* Authoritative cleanup + refit after the morph (covers no-transition cases).
+       The delay is READ off the token the transition runs on rather than written
+       here, because a cleanup that lands mid-flight wipes the transform the tile
+       is still travelling on — which is what the pair of literals this replaces
+       had come to do. See `motion.ts` for the rule and for what it cost.
+
+       Under `prefers-reduced-motion` the transition collapses to 1ms while this
+       still waits out the full token. That is harmless rather than overlooked —
+       the ResizeObserver has already fitted every tile to its final box, so what
+       arrives late is the second, belt-and-braces `fit`. */
     setTimeout(() => {
       for (const t of after) {
         t.el.style.transition = "";
         t.el.style.transform = "";
         t.el.style.transformOrigin = "";
+        t.el.style.willChange = "";
+        t.el.style.clipPath = "";
         t.panel.fit();
       }
-    }, 220);
+    }, settleMs());
   }
 
   /** Forget a session's zoom in every workspace that remembers it.

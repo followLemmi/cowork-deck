@@ -54,6 +54,7 @@ import { pollIntervalMs } from "./pr";
 import { Poller } from "./poll";
 import { BoardController } from "./board-controller";
 import { PrController } from "./pr-controller";
+import { holdRefits, settleMs } from "./motion";
 import {
   boardPollMs, needsCloseConfirmation,
   fsRootOf, repoFromIssueUrl, sourceOf,
@@ -908,6 +909,32 @@ export function startApp(role: WindowRole): Promise<void> {
    *  collapses the panel, and leaving zoom brings it back — unless the person had
    *  collapsed it themselves, in which case it was not the zoom's to restore. */
   function setCollapsed(on: boolean, byHand = true) {
+    /* The width behind this class is animated, and behind the edge it moves is a
+       grid of terminals. Refits are held off for the length of it and one lands at
+       the end: without that, every visible terminal reflows its whole buffer once
+       a frame for `--dur-3`, which is the cost `drag.ts` was written to keep out of
+       the GRIP and which the collapse button had kept for itself.
+
+       Three conditions on that, and each is a bug it would otherwise be:
+       — Only when the class actually CHANGES. This function is called to assert a
+         state as often as to change one (`setPanel` opens the panel whether or not
+         it was shut), and a hold with no transition behind it is 460ms of every
+         terminal ignoring a window resize for nothing.
+       — One timer, restarted. Collapse then expand inside `--dur-3` would leave
+         the first timer to release the hold partway through the second animation,
+         which is the jank back for the remainder of it.
+       — `holdRefits(false)` and the refit in the same callback. Releasing without
+         refitting leaves every terminal at the size it had when the hold began,
+         waiting for a box change that has already happened. */
+    if (sidebar.classList.contains("is-collapsed") !== on) {
+      holdRefits(true);
+      if (settleTimer !== undefined) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settleTimer = undefined;
+        holdRefits(false);
+        deck.refit();
+      }, settleMs());
+    }
     sidebar.classList.toggle("is-collapsed", on);
     if (byHand) collapsedByHand = on;
     shutBtn.setAttribute("aria-label", on ? "Show the panel" : "Collapse the panel");
@@ -915,6 +942,8 @@ export function startApp(role: WindowRole): Promise<void> {
     shutBtn.classList.toggle("icon--left", !on);
   }
   let collapsedByHand = false;
+  /** The pending release of the refit hold, or undefined when none is owed. */
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
   function setPanel(page: PanelPage) {
     /* The journal and the scenarios are the app's pages, and this window is one
