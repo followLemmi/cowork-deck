@@ -15,6 +15,7 @@
     "contrast": "node scripts/contrast.mjs",
     "adr:check": "node scripts/adr-check.mjs",
     "tauri": "tauri",
+    "dev:instance": "bash scripts/dev-instance.sh",
     "stage:reporter": "bash scripts/stage-reporter.sh",
     "stage:task": "bash scripts/stage-sidecar.sh cowork_task",
     "stage:memory": "bash scripts/stage-memory.sh",
