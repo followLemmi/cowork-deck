@@ -41,18 +41,26 @@ beforeEach(() => {
 const box = () => document.querySelector<HTMLElement>(".lim-screen")!;
 
 describe("the dialog behind a row", () => {
-  /** The clause the whole feature is designed around: every window says which
-   *  tier its number is on, in the same typeface as the number. */
-  it("names the source of every window it shows", () => {
+  /** The clause the whole feature is designed around, as narrowed twice: a
+   *  window whose number could mislead says which tier it is on, by name, and
+   *  the account's own accounting says nothing — ADR-0009's second amendment.
+   *  `REPORTED` labelled the one case that cannot mislead, directly above the
+   *  sentence that already said so. */
+  it("names the source of a window that could mislead, and only that one", () => {
     openUsageDialog(snap({ windows: [
       win({ id: "session", usedFraction: 0.23, state: "ok", source: "reported" }),
       win({ id: "week", label: "Current week", amount: { used: 900, limit: null, unit: "tokens" }, source: "observed" }),
     ] }), host, () => {}, NOW);
     const blocks = [...box().querySelectorAll(".lim-win")];
     expect(blocks.length).toBe(2);
-    expect(blocks.map((b) => b.querySelector(".lim-src")!.textContent))
-      .toEqual(["Reported", "Observed"]);
-    // And what each tier MEANS, which is the sentence a row has no room for.
+    expect(blocks[0].querySelector(".lim-src")).toBeNull();
+    expect(blocks[1].querySelector(".lim-src")!.textContent).toBe("Observed");
+    expect(box().textContent).not.toContain("Reported");
+    // What the strong tier says instead, and it is the sentence rather than the
+    // name: the tier is still stated, in the words that define it.
+    expect(blocks[0].querySelector(".lim-win-tier")!.textContent)
+      .toContain("account's own accounting");
+    // And what each weaker tier MEANS, which is the sentence a row has no room for.
     expect(blocks[1].querySelector(".lim-win-tier")!.textContent)
       .toContain("sessions it runs");
   });

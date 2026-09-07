@@ -8,7 +8,7 @@
  *  (#394 removed it, and the copy with it).
  */
 
-import type { AiUsage, LimitState, LimitWindow, UsageSource } from "./ipc";
+import type { AiUsage, LimitWindow, UsageSource } from "./ipc";
 import { formatTokens } from "./format";
 
 /** Which window a one-line row should draw.
@@ -79,6 +79,123 @@ export interface RankedAi {
   window: LimitWindow | null;
 }
 
+/* --- The lineup of dials -------------------------------------------------
+   One dial per AI, in a FIXED order, which is the half of this that is not
+   about data. `rankedAis` below orders by urgency and that is right for a list
+   you read top to bottom; it is wrong for a row of three marks you learn the
+   position of. A dial that moved when a quota moved would cost a person the one
+   thing a row of marks buys them — knowing where to look before they look. */
+
+/** An AI this deck draws a dial for, whether or not it can say anything yet.
+ *
+ *  `soon` is the deliberate part. Two of these are on the strip before they
+ *  work: a locked dial says the shape of what is coming, and an app that simply
+ *  omitted them would be indistinguishable from one that never intends to have
+ *  them. It is a claim about the roadmap and not about the machine — so it does
+ *  NOT move when a provider is installed, and a `soon` brand is never asked for
+ *  a reading even when the backend has one. See `dialLineup`. */
+export interface Brand {
+  provider: string;
+  label: string;
+  soon: boolean;
+}
+
+/** The three, left to right. Claude answers; the other two are held. */
+export const BRANDS: readonly Brand[] = [
+  { provider: "claude", label: "Claude", soon: false },
+  { provider: "codex", label: "Codex", soon: true },
+  { provider: "gemini", label: "Gemini", soon: true },
+];
+
+/** One dial, with everything drawn on it already decided. */
+export interface Dial {
+  provider: string;
+  label: string;
+  /** `null` for a held brand, and for one this machine has nothing for. */
+  snap: AiUsage | null;
+  /** What the ring around the mark fills to. `null` draws a bare track — see
+   *  `glanceWindow` and `meterFraction`. */
+  ring: LimitWindow | null;
+  /** The worst window the RING is not already showing, when it is in a band
+   *  worth a mark of its own. `null` the rest of the time. */
+  alert: LimitAlarm | null;
+  soon: boolean;
+}
+
+/** The window every glance draws: the five hours.
+ *
+ *  The ring, the figure under it and the row in the status-area menu all show
+ *  this one, and it is the SHORT window rather than the week. The week is what
+ *  a person plans against; the five hours is what decides whether the next
+ *  prompt is answered, and a glance is read while working rather than while
+ *  planning. A ring drawing a comfortable 12% of the week while the session was
+ *  about to be refused was answering the question nobody asked — the dot beside
+ *  it said so, in a mark eight pixels across, and the ring itself now does.
+ *
+ *  The week is not lost. It is the second block in the card, and a week in
+ *  trouble behind a comfortable session puts the alert mark on the dial
+ *  (`dialAlert`) — the same mechanism as before with the two windows the other
+ *  way round.
+ *
+ *  Chosen by id where a provider declares a `session`, and otherwise the FIRST
+ *  window it declared. Both providers in the tree today list their windows
+ *  shortest first — session then week, requests-per-minute then
+ *  requests-per-day — so the first is the narrowest, and this file has no table
+ *  of provider names to consult instead. `null` where a provider declared none
+ *  at all. */
+export function glanceWindow(u: AiUsage): LimitWindow | null {
+  return u.windows.find((w) => w.id === "session") ?? u.windows[0] ?? null;
+}
+
+/** What is wrong that the glance is not saying, or `null`.
+ *
+ *  The ring shows the five hours. A weekly window nearly spent behind a fresh
+ *  session is a fact about the next two days that the ring cannot carry, and a
+ *  dial drawing 8% while the week's budget is nearly gone would be answering
+ *  half the question. So the worst of the OTHER windows gets a mark of its own,
+ *  and only when it is bad enough to act on. */
+export function dialAlert(u: AiUsage, ring: LimitWindow | null): LimitAlarm | null {
+  return alarmOf(u.windows.filter((w) => w !== ring));
+}
+
+/** The row of dials, in the order they are drawn.
+ *
+ *  The three brands always, held ones included, and then anything the backend
+ *  reported that is not among them. That tail is not decoration: the registry
+ *  is provider-agnostic on purpose (#308), so a provider added in Rust must
+ *  reach the screen without this file learning its name — and a lineup that
+ *  only ever drew its own three would silently swallow it. */
+export function dialLineup(snaps: AiUsage[]): Dial[] {
+  const found = new Map(snaps.map((s) => [s.provider, s]));
+  const named = new Set(BRANDS.map((b) => b.provider));
+  const held = BRANDS.map((b) =>
+    // A held brand is drawn from the roadmap and not from the machine, so its
+    // snapshot is dropped on the floor even when there is one. Gemini has a
+    // provider in Rust that can answer nothing without a credential this app
+    // will not take; drawing its permanent row of unknowns as though it were a
+    // live reading is worse than saying plainly that it is not ready.
+    dialOf(b.provider, b.label, b.soon ? null : found.get(b.provider) ?? null, b.soon),
+  );
+  const rest = snaps
+    .filter((s) => !named.has(s.provider))
+    .map((s) => dialOf(s.provider, s.label, s, false));
+  return [...held, ...rest];
+}
+
+function dialOf(provider: string, label: string, snap: AiUsage | null, soon: boolean): Dial {
+  const ring = snap ? glanceWindow(snap) : null;
+  return {
+    provider,
+    // The provider's own words for itself where there is a snapshot, so a
+    // relabelled account is not overruled by this file's table.
+    label: snap?.label ?? label,
+    snap,
+    ring,
+    alert: snap ? dialAlert(snap, ring) : null,
+    soon,
+  };
+}
+
 /** Every connected AI, worst off first.
  *
  *  The one ordering both surfaces take, and that is the point of it being a
@@ -140,22 +257,119 @@ export function deckLimit(snaps: AiUsage[]): DeckLimit {
   return { ...out, resetsAt: latest };
 }
 
-/** The class a state paints with.
+/* --- The three bands -----------------------------------------------------
+   Every hue on every limit surface comes from here, and it comes from the
+   READING rather than from the provider's own word for its state.
+
+   That is the change #498's review asked for, and it reverses a rule this file,
+   ADR-0009 and ADR-0011 all stated: there was deliberately no green, because
+   green means "working" on every session rail in the window and a deck of
+   healthy meters would have read as activity. What the rule cost is the thing a
+   gauge is for. A provider's state is a step function — `ok` until it is `near`
+   — so a ring three quarters of the way through the five hours was drawn in
+   exactly the hue of a ring at four percent, and the only way to tell them apart
+   was to read the figure. Somebody watching a quota does not want to be told it
+   is fine; they want to know how close it is, and hue is the one channel that
+   answers that without being read.
+
+   Green does not collide with the rails in practice, because the two never share
+   a surface: a rail is a bar down the side of a session row or a tile, and these
+   bands are inside a dial or a meter. What is kept is the rule underneath the old
+   one — hue belongs to MEANING, and the meaning here is how much is left.
+
+   The bands are said in characters wherever they are drawn, too: the figure
+   under the dial, the reading in the card, `limitFoot`'s sentence. A band
+   carried by hue alone is a band a person who cannot see the hue does not get. */
+
+/** Where a reading falls on the three bands. */
+export type LimitZone = "fine" | "near" | "out";
+
+/** Amber from three quarters spent, red from nine tenths.
  *
- *  Three, and healthy is deliberately not one of them: green already means
- *  "working" on every rail in this window, so spending it on "your quota is
- *  fine" would make a deck of healthy meters read as activity. A healthy window
- *  is neutral, and that is the design system's rule about hue belonging to state
- *  applied rather than bent — see `docs/design/slate-ember`. */
-export function stateClass(state: LimitState): string {
-  switch (state) {
-    case "exhausted":
+ *  Round numbers on purpose: they are a person's own arithmetic, so a ring
+ *  turning amber is a fact that can be checked against the figure printed under
+ *  it. Exported because the words describing an alarm quote them
+ *  (`alarmPhrase`), and a threshold stated twice is a threshold that drifts. */
+export const NEAR_FROM = 0.75;
+export const OUT_FROM = 0.9;
+
+/** The band a window is in, or `null` for one with nothing to colour.
+ *
+ *  Two rules beyond the arithmetic:
+ *
+ *  - **A refusal is red whatever the figure says.** `exhausted` with no share at
+ *    all is still the end of the road — the same case `meterFraction` fills a bar
+ *    for without a number.
+ *  - **The provider is never overruled downward.** A window it calls `near` is at
+ *    least amber even where the share is below the band, because it knows things
+ *    this app does not: a limit counted in requests, a ceiling that moved. The
+ *    bands only add urgency that was not declared.
+ *
+ *  `null` is a window with no share and nothing wrong — an absolute with no
+ *  ceiling, or a reading nobody has. It gets no hue, because a hue would be this
+ *  app inventing the denominator it has just said it does not have, which is the
+ *  same rule and the same reason as `meterFraction` drawing no meter. */
+export function zoneOf(w: LimitWindow): LimitZone | null {
+  if (w.state === "exhausted") return "out";
+  const f = w.usedFraction;
+  if (f === null) return w.state === "near" ? "near" : null;
+  if (f >= OUT_FROM) return "out";
+  if (f >= NEAR_FROM || w.state === "near") return "near";
+  return "fine";
+}
+
+/** The class a band paints with. `""` for a band that is not one: a surface adds
+ *  no class at all rather than one meaning "neutral", so a reading nobody has
+ *  falls back to the stylesheet's own default. */
+export function zoneClass(zone: LimitZone | null): string {
+  switch (zone) {
+    case "out":
       return "lim-out";
     case "near":
       return "lim-near";
-    default:
+    case "fine":
       return "lim-fine";
+    default:
+      return "";
   }
+}
+
+/** An alarm about windows a surface is NOT drawing: which band the worst of them
+ *  is in, and whether any of them has actually stopped.
+ *
+ *  Two fields, because they answer two questions. The hue is the band's and does
+ *  not care about the difference; the WORDS do — "spent" and "over 90% spent" are
+ *  a refusal and a warning, and printing the first where the second is true would
+ *  be this app claiming work had stopped when it had not. */
+export interface LimitAlarm {
+  zone: "near" | "out";
+  spent: boolean;
+}
+
+/** The alarm a set of windows deserves, or `null` when none of them wants
+ *  anything. The worst band wins, and `spent` is true if any one of them is
+ *  refusing work. */
+export function alarmOf(windows: LimitWindow[]): LimitAlarm | null {
+  let zone: "near" | "out" | null = null;
+  let spent = false;
+  for (const w of windows) {
+    const z = zoneOf(w);
+    if (z === "out") zone = "out";
+    else if (z === "near" && zone === null) zone = "near";
+    if (w.state === "exhausted") spent = true;
+  }
+  return zone === null ? null : { zone, spent };
+}
+
+/** An alarm in words, for a sentence that has to carry it — the word in the top
+ *  bar, a dial's accessible name, a row in the status-area menu.
+ *
+ *  The thresholds are quoted rather than restated, so the sentence and the hue
+ *  cannot come to disagree about where amber starts. */
+export function alarmPhrase(a: LimitAlarm): string {
+  if (a.spent) return "spent";
+  const at = a.zone === "out" ? OUT_FROM : NEAR_FROM;
+  return `over ${Math.round(at * 100)}% spent`;
 }
 
 /** What a ROW says about where its number came from, or `null` when it needs to
@@ -178,9 +392,10 @@ export function stateClass(state: LimitState): string {
  *     on a word that changes nothing.
  *  2. **The weaker tiers say what they mean, not what they are called.**
  *     "Observed" is the tier's name; "this app only" is the fact a person can
- *     act on. The names live on in the dialog, next to the sentence that
+ *     act on. Those two names live on in the dialog, next to the sentence that
  *     defines them (`sourceExplanation`) — that is where a vocabulary is taught,
- *     and a row is not.
+ *     and a row is not. `Reported` is not among them any more: see
+ *     `sourceBadge`, which is the same argument applied to the dialog.
  *
  *  `unknown` also says nothing, because `readingOf` has already said "no
  *  reading" and two ways of saying nothing read as two facts — the same rule
@@ -202,9 +417,28 @@ export function tierNote(w: LimitWindow): string | null {
   }
 }
 
-/** What to call a tier by name, for the dialog. One word, and there it is always
- *  shown — the dialog is where the vocabulary is defined, beside
- *  `sourceExplanation`. A ROW uses `tierNote` instead; see the note there. */
+/** What the DIALOG prints above a window's reading, or `null` for the tier that
+ *  prints nothing.
+ *
+ *  ADR-0009's first amendment took the word `REPORTED` out of every row and kept
+ *  it in the dialog, on the grounds that a dialog is where a vocabulary is
+ *  taught. Its second amendment takes it out of there too, and it is the same
+ *  argument one surface further on: the word labels the case that cannot mislead,
+ *  and directly under it the dialog already prints the sentence that says so —
+ *  *"the account's own accounting, the same figure its own usage command
+ *  draws"*. A name over a definition teaches nothing that the definition does not.
+ *
+ *  The two weaker tiers keep their names, because those names ARE the vocabulary
+ *  worth teaching: a row says "this app only" and the dialog is where a person
+ *  finds out that the tier is called `Observed` and what that means. */
+export function sourceBadge(source: UsageSource): string | null {
+  return source === "reported" ? null : sourceLabel(source);
+}
+
+/** What to call a tier by name. One word, for the dialog — the surface where the
+ *  vocabulary is defined, beside `sourceExplanation`. Which tiers actually print
+ *  it is `sourceBadge`'s decision, and a ROW uses `tierNote` instead; see the
+ *  notes on both. */
 export function sourceLabel(source: UsageSource): string {
   switch (source) {
     case "reported":
@@ -283,7 +517,7 @@ export function meterFraction(w: LimitWindow): number | null {
  *  tray and anything after them must not each have their own opinion about what
  *  "exhausted with no known reset" reads as. A row saying one thing in the panel
  *  and another in the menu bar is the bug the pure helpers in this file exist to
- *  prevent. `usage-block.ts` adds the tone and drops the sentence where its
+ *  prevent. `usage-dial.ts` adds the tone and drops the sentence where its
  *  surface has no room for it; the words are all decided here.
  *
  *  Three states worth a sentence and one that is not:

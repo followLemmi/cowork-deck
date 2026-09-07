@@ -7,8 +7,8 @@
  * different program's before #394 removed it.
  *
  * This window cannot afford that, and does not have to. What it draws is the
- * deck's limits block — `.lim-row`, `.lim-meter`, `.lim-src`, the state classes
- * — rendered by `LimitsBlock` itself (see `tray-panel.ts`). Copying those rules
+ * deck's limits row — `.dial`, `.lim-meter`, `.lim-src`, the state classes —
+ * rendered by `LimitDials` itself (see `tray-panel.ts`). Copying those rules
  * here would be copying the thing the whole surface exists to reuse, and a meter
  * that is a different colour in the menu bar than in the panel is worse than no
  * meter. So `styles.css` comes in whole, tokens and all, and the panel adds only
@@ -40,6 +40,14 @@ html, body {
 #tray {
   display: flex;
   flex-direction: column;
+  /* The containing block for the limits card, which floats over the sections
+     rather than pushing them down (`cardMount` in `tray-panel.ts`). It has to
+     be this box and not the scrolling list inside it: an absolutely positioned
+     card in a scroll container is clipped by it and adds to its scroll height,
+     so the content moves anyway. Here the card is clipped to the same rounded
+     edge as everything else the panel draws, which is what `overflow: hidden`
+     below already does for every other child. */
+  position: relative;
   margin: var(--tray-margin);
   max-height: calc(100vh - var(--tray-margin) * 2);
   background: var(--bg-island);
@@ -67,10 +75,9 @@ html, body {
 
 .tray-sec + .tray-sec { margin-top: var(--sp-3); }
 
-/* The heading is the section's, and it is why `LimitsBlock` is drawn here with
-   `strip: false`: the strip it would fold the rows behind carries the word
-   "Limits" itself, and two of those in a 340px window is a mistake nobody has
-   to make twice. */
+/* The heading is the section's, and it is why `LimitDials` is drawn here with
+   its dials on show rather than behind a word: this window IS the glance, and a
+   glance behind a hover is two gestures deep. */
 .tray-sec > h2 {
   margin: 0 0 var(--sp-1) var(--sp-1);
   font-size: var(--fs-xs);

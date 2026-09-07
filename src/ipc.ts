@@ -1505,7 +1505,7 @@ export const trayUpdate = (panel: TrayPanel) => invoke<void>("tray_update", { pa
 /** What the panel window draws from.
  *
  *  The facts rather than the rendered rows, because a meter is not a string: the
- *  panel runs the same `usage.ts` helpers and the same `LimitsBlock` the deck's
+ *  panel runs the same `usage.ts` helpers and the same `LimitDials` the deck's
  *  own block does. `now` is deliberately absent — the panel reads its own clock,
  *  so a reset time is relative to when it is looked at rather than to when the
  *  deck last reported.

@@ -2,7 +2,7 @@
  *
  *  A window rather than a native menu, so a limit can be a meter and a waiting
  *  session can be a row you click — see ADR-0013. It draws with the deck's own
- *  stylesheet and, for the limits, with the deck's own `LimitsBlock`; what goes
+ *  stylesheet and, for the limits, with the deck's own `LimitDials`; what goes
  *  in it is `tray-panel.ts`'s `PANEL`, the one list both this and the Linux menu
  *  are built from.
  *
@@ -52,11 +52,11 @@ function act(action: string): void {
   void emit("tray://action", { action });
 }
 
-/** Draw the sections, keeping the two things a repaint must not take.
+/** Draw the sections, keeping the three things a repaint must not take.
  *
  *  Every element in the panel is replaced on each draw — `fillPanel` starts by
- *  emptying the root, and each section builds a fresh `LimitsBlock` on a fresh
- *  body. `LimitsBlock`'s own focus and scroll bookkeeping therefore cannot help
+ *  emptying the root, and each section builds a fresh `LimitDials` on a fresh
+ *  body. `LimitDials`'s own focus and card bookkeeping therefore cannot help
  *  here: it reads the DOM it is about to replace, and the DOM it is handed is
  *  new every time. So the same rule is kept one level up, over the whole panel,
  *  keyed by what a control IS rather than by node — not one of these nodes lives
@@ -72,9 +72,17 @@ function draw(): void {
     ? active.dataset.focusKey ?? null
     : null;
   const scrollTop = sections.scrollTop;
+  // Which limit dial's detail was open. Nothing inside the panel can remember
+  // it — see `TrayFacts.dial` — so it is read off the DOM that is about to go,
+  // beside the two things that were already being carried across.
+  const dial = sections.querySelector<HTMLElement>(".dial-card")?.dataset.provider || null;
 
   applyScale(facts.scale, document.documentElement);
-  fillPanel(sections, { usage: facts.usage, sessions: facts.sessions, now: Date.now() }, act);
+  fillPanel(
+    sections,
+    { usage: facts.usage, sessions: facts.sessions, now: Date.now(), dial },
+    act,
+  );
 
   sections.scrollTop = scrollTop;
   if (focusKey) refocus(focusKey);
@@ -82,7 +90,7 @@ function draw(): void {
 }
 
 /** Put the keyboard back on the control it was on. Matched by walking rather
- *  than by an attribute selector, for the reason `LimitsBlock.refocus` gives: a
+ *  than by an attribute selector, for the reason `LimitDials.refocus` gives: a
  *  provider key and a session id are not escaped, and a selector built out of
  *  one would be the only place in this file that cared. `preventScroll`, because
  *  restoring focus is not a request to move the view. */

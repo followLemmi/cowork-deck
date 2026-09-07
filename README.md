@@ -158,36 +158,69 @@ for a session the deck did not start. A CLI with no reader says so rather than s
 
 ## Limits: what each AI has left, and where that number came from
 
-A dozen sessions draw on **one** budget, and when it runs out they stall together. One line in the top
-bar says whether you can keep working: the AI that is worst off, its reading, and a count of the others
-behind it. Press it and the rest drop below — a row apiece, a thin meter, and when it lifts — worst off
-first, so the list opens on the AI the line just named.
+A dozen sessions draw on **one** budget, and when it runs out they stall together. The top bar says
+**Limits**, and behind that word is a dial per AI: its own logo, **the five-hour window drawn as a ring
+around it**, and the reading in figures underneath. Point at the word and the row opens with a card: the
+five hours and the week in full, each with its reading, its meter, when it lifts and where the number came
+from, and the plan and account above them. Press a dial for the caveats and what to do about them.
+
+One word rather than the dials themselves, because the bar is otherwise about the deck's own sessions and
+three logos parked in it would read as three more buttons. What does *not* go behind the point is the
+part you need without asking: **the word itself turns amber when anything is nearly spent and red when
+anything is spent**, out of every window of every AI ([#498](https://github.com/followLemmi/cowork-deck/issues/498)).
+
+The dials do not move. Claude is where Claude was yesterday whether it is at 0% or refusing work, because
+a glance you have to read to find out what it is about is not a glance. **Codex** and **Gemini** sit
+beside it as *coming soon* — this deck does not read their limits yet, and a lineup that is stable across
+the day one of them starts working is worth more than one that shows only today.
+
+The ring is the five hours because that is the window that decides whether the next prompt is answered —
+planning against the week is what the card and the dialog are for. The figure under it is there because a
+ring at 0% and a ring that is broken look identical. When the *week* is the one in trouble behind a fresh
+five hours, the dial carries a coloured dot — amber for "about to", red for "already".
+
+**The hue around it is how much is left**: green up to three quarters spent, amber to nine tenths, red past
+it. It carries the ring, the figure under it, the dot and the word in the bar, and the same three bands
+colour every meter in the card and the dialog. A window with no ceiling to divide by gets no hue at all
+rather than a green one, because that would be a denominator this app has just said it does not have. The
+colours are said in words too: *nearly spent*, *over 90% spent*, *nothing moves until 19:00* — a band
+carried by hue alone is a band a person who cannot see the hue does not get.
+
+**The logo in the middle is the exception, and it is the brand's own colour** — Claude's coral, `#D97757`.
+Identity in the middle, level around it: the mark says *which AI* before anything has been read and says
+it the same way at 3% and at 97%, so tinting it by the quota would move the one fixed thing on the dial.
+Codex and Gemini stay dim while they are *coming soon*, because that is how "not ready" is said.
 
 Beside the ledger rather than in the panel, because it is the same kind of fact: two readings of what
 wants a person, and a third that says whether they can act on either. It also means the reading is there
 when the panel is collapsed, which a limit is not a property of ([#461](https://github.com/followLemmi/cowork-deck/issues/461)).
+The same dials are behind the status-area icon, on show rather than behind a word — that window is
+nothing but the glance — with the card floating over the sessions instead of pushing them down.
 
-**The source of a number is part of the number**, and where that changes what you would do it is on
-the row beside it rather than in a tooltip. There are three ways this app can know such a number:
+**The source of a number is part of the number**, and it is written beside it rather than hidden in a
+tooltip. There are three ways this app can know such a number:
 
 - **The account's own accounting**, the figure `/usage` draws. Obtained by asking `claude` itself, the
   way this app asks `gh` about GitHub: it costs nothing from your budget and no password passes through
   the app. Switch it off in Settings if you would rather nothing started a short-lived process every
-  few minutes to ask. A row shows this one **plain** — an unqualified number is the account's.
+  few minutes to ask. The card prints it **plain** — an unqualified number is the account's.
 - **What the app saw for itself**, from the sessions it runs. Real, and *narrower than your account*:
-  other terminals, other machines and anything outside this app are not in it. A row says **"this app
-  only"** after the number, because that is the one direction that can mislead you into thinking you
-  have more runway than you do. No meter is drawn for it either — the app knows what it spent, not what
-  was allowed, and it will not divide by a ceiling it invented.
-- **Nothing at all** — the row says "no reading" and offers the one command that would answer it, in a
-  tile.
+  other terminals, other machines and anything outside this app are not in it. The card says **"this app
+  only"** after the number, because that is the one direction that can mislead you into thinking you have
+  more runway than you do. No meter and no ring is drawn for it either — the app knows what it spent, not
+  what was allowed, and it will not divide by a ceiling it invented.
+- **Nothing at all** — the card says "no reading", the dial's figure is a dash rather than a number it
+  would have to invent, the ring is a bare dashed track rather than an empty one, and the dialog offers
+  the one command that would answer it, in a tile.
 
-The dialog behind a row names all three by their tier — Reported, Observed, Estimated — with a sentence
-saying what each means. That is where the vocabulary is taught; a row carries only the caveat.
+The dialog behind a dial explains each tier in a sentence, and names the two whose names are worth
+knowing — Observed and Estimated. That is where the vocabulary is taught; the account's own figure is
+labelled nowhere, in a card or a dialog, because an unqualified number is the account's and the sentence
+under it says so in plain words.
 
 The reading that matters most needs no percentage at all. When a session is refused, the app reads the
-limit banner on its way to the screen and says **nothing moves until 19:00** — in the limits block on
-screen, and in a notification while you are looking at something else. That survives a restart, and
+limit banner on its way to the screen and says **nothing moves until 19:00** — in the card on screen, and
+in a notification while you are looking at something else. That survives a restart, and
 you are told again when it lifts.
 
 ## A GitHub account per workspace
@@ -459,6 +492,23 @@ npm run tauri dev      # hot reload
 npm run tauri build    # a release bundle for this platform
 ```
 
+**A second copy, side by side.** `npm run dev:instance` runs one more dev build beside the one already
+open — the usual shape being a change under review in a worktree while trunk keeps running. It moves
+the dev server off 1420 and, more importantly, gives that copy a config directory of its own: the
+single-instance claim is a lock on *that directory* (`src-tauri/src/instance.rs`), and two copies
+sharing one would share a store, a run journal and the repository the sync cycle commits. So the second
+copy starts with no workspaces and syncs nowhere, and its window title says which slot it is.
+
+```bash
+npm run dev:instance -- --dir .claude/worktrees/limit-dials   # port 1421, slot from that branch
+npm run dev:instance -- --port 1422 --slot review             # a second one, beside the first
+```
+
+`--dir` is the checkout to launch, and it is an argument rather than "wherever the script lives"
+because the branch being checked would not carry the script itself. `--slot` names the config
+directory, defaulting to that checkout's branch, so a line of work keeps its state across runs. All of
+it is a `--config` merge for that one run: `tauri.conf.json` is untouched.
+
 ```bash
 npm test                                            # frontend (vitest)
 npm run contrast                                    # every colour pair the design claims
@@ -484,8 +534,8 @@ are `#[ignore]`d.
 ## The design
 
 The interface is a design system of its own — **True Ink**: a near-black, faintly cool ground where
-**hue belongs to state**, so green, amber and red mean working, waiting on you and broken, and are
-never spent on decoration. The accent is light itself, elevation is lightness rather than shadow (on
+**hue belongs to meaning**, so green, amber and red mean working, waiting on you and broken on a session
+— and, on a limit, plenty left, getting close and nearly gone. They are never spent on decoration. The accent is light itself, elevation is lightness rather than shadow (on
 this ground a cast shadow has nowhere to go), and the terminal deliberately does not follow the
 palette — it is a window onto another program, and those six ANSI hues are Claude Code's.
 
@@ -500,9 +550,9 @@ State tracking depends on Claude Code's hooks reporting back. On an older `claud
 to fire, the terminal is unaffected — you can type, scroll and work normally. The only symptom is a tile
 whose state label stays on `idle`.
 
-The limits block degrades the same way, and says which rung it is on. The reported figure is read out of
+The limits degrade the same way, and say which rung they are on. The reported figure is read out of
 `claude`'s own output, so a version that words it differently costs the *percentage* and nothing else:
-the block stays where it is, falls back to **Observed**, and labels itself. It never blanks, and it
+the dial stays where it is, falls back to **Observed**, and labels itself. It never blanks, and it
 never passes the app's own counting off as your account's. See
 [ADR-0009](docs/adr/0009-the-source-of-a-usage-number-is-part-of-the-number.md).
 

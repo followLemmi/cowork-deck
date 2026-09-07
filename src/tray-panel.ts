@@ -23,8 +23,8 @@
 
 import type { AiUsage, SessionState, TrayPanel, TrayRow } from "./ipc";
 import type { RemoteSession } from "./cross-window";
-import { LimitsBlock } from "./usage-block";
-import { limitFoot, primaryWindow, readingOf, tierNote } from "./usage";
+import { LimitDials } from "./usage-dial";
+import { alarmPhrase, dialAlert, glanceWindow, limitFoot, readingOf, tierNote } from "./usage";
 import { plural } from "./format";
 
 /** Everything a section is allowed to look at. */
@@ -33,24 +33,36 @@ export interface TrayFacts {
   /** Every window's sessions, as `allSessions` orders them. */
   sessions: RemoteSession[];
   now: number;
+  /** Which limit dial's detail the panel was showing, carried across a repaint.
+   *
+   *  The panel rebuilds its whole document on every report from the deck, so
+   *  nothing inside it can remember anything by itself. `tray-window.ts` reads
+   *  this off the old DOM before it goes and hands it back — the same thing it
+   *  already does for the scroll position and the focused control. Absent on the
+   *  first draw and in the menu, which has no card. */
+  dial?: string | null;
 }
 
-/** What a row's click asks for. Three verbs, and all three already have an
- *  answer in the deck — the tray adds no behaviour of its own, it reaches the
- *  behaviour that is there. */
+/** What a row's click asks for. Two verbs, and both already have an answer in
+ *  the deck — the tray adds no behaviour of its own, it reaches the behaviour
+ *  that is there.
+ *
+ *  There were three. `probe` ran the command that would answer an unreadable
+ *  row, straight from a button beside that row; the row is a 26px dial now and
+ *  has no room for a control beside it, so the offer moved into the dialog a
+ *  press opens — where it already was, for the deck's own surface. A verb
+ *  nothing mints is a path nothing tests. */
 export const ACTIONS = {
   /** Open the usage dialog for one provider. The argument is `AiUsage.provider`,
    *  the registry key, never the label. */
   usage: (provider: string) => `usage:${provider}`,
-  /** Run the command that would answer an unreadable row, in a tile. */
-  probe: (provider: string) => `probe:${provider}`,
   /** Focus one session, wherever it lives. The main window is what routes it,
    *  because it is the only one that knows which window holds a session — see
    *  `onTrayAction` in `app.ts`. */
   session: (id: string) => `session:${id}`,
 } as const;
 
-export type ActionVerb = "usage" | "probe" | "session";
+export type ActionVerb = "usage" | "session";
 
 /** Read a row's action back. `null` for anything this file did not mint.
  *
@@ -64,7 +76,7 @@ export function parseAction(action: string): { verb: ActionVerb; id: string } | 
   const verb = action.slice(0, at);
   const id = action.slice(at + 1);
   if (!id) return null;
-  if (verb === "usage" || verb === "probe" || verb === "session") return { verb, id };
+  if (verb === "usage" || verb === "session") return { verb, id };
   return null;
 }
 
@@ -161,11 +173,22 @@ const PANEL: PanelSection[] = [
      *  deck's rows were built to keep. So the row is the label, the tier, the
      *  reading, and — when there is one — the sentence about the state, which is
      *  `limitFoot`'s and shared with the block rather than written again.
+     *
+     *  **The window is `glanceWindow`'s**, which is the five hours, and it is
+     *  the same window the ring on the dial draws. This menu is the Linux
+     *  fallback for the panel (ADR-0013), so a menu naming one window while the
+     *  panel's dial drew another would be two answers to one question from one
+     *  report. It used to be `primaryWindow` — whichever window was worst off —
+     *  and that also meant which window a row was about moved with the readings.
+     *
+     *  What the fixed window would drop is picked up by `dialAlert`: a week in
+     *  trouble behind a comfortable session is said at the end of the row, in
+     *  the same words the dial's own description uses.
      */
     rows: ({ usage, now }) => {
       if (!usage.length) return [reading("No AI detected on this machine.")];
       return usage.map((snap) => {
-        const win = primaryWindow(snap);
+        const win = glanceWindow(snap);
         if (!win) {
           return {
             text: `${snap.label} · ${snap.error ?? "no limits reported"}`,
@@ -179,43 +202,47 @@ const PANEL: PanelSection[] = [
         if (tier) parts.push(tier);
         const foot = limitFoot(win, snap.error, now);
         if (foot) parts.push(foot);
+        const alert = dialAlert(snap, win);
+        if (alert) parts.push(`another window is ${alarmPhrase(alert)}`);
         return { text: parts.join(" · "), action: ACTIONS.usage(snap.provider) };
       });
     },
-    /** `LimitsBlock` itself, not a copy of it.
+    /** `LimitDials` itself, not a copy of it.
      *
      *  This is the whole reason the panel is a window: the block already draws
-     *  the meter, the tier chip, the state colour and the accessible name, and
-     *  #393 asked for that rendering to be reused rather than reimplemented. The
-     *  three hooks below are all that differs — the surface is already a glance
-     *  and needs no strip to fold behind, has no room for a dialog, and has no
-     *  tiles to open.
+     *  the ring, the tier, the state colour and the accessible name, and #393
+     *  asked for that rendering to be reused rather than reimplemented. Two
+     *  hooks are all that differs — the panel has no room for a dialog, and its
+     *  dials are on show rather than behind a word, so the detail floats over
+     *  what is under them instead of opening in a box of its own.
      */
     fill: (body, f, act) => {
-      const block = new LimitsBlock(body, {
-        strip: false,
+      const block = new LimitDials(body, {
+        detail: "float",
+        // The panel's own box, and not this section's body: an absolutely
+        // positioned card inside `#tray-sections` is clipped by that scrolling
+        // list and adds to its scroll height, which is the content-shifting this
+        // mode exists to stop, one level down. `#tray` is the box the window
+        // draws, it is `position: relative` for exactly this, and its
+        // `overflow: hidden` clips the card to the same rounded edge everything
+        // else in the panel is clipped to.
+        cardMount: () => document.querySelector<HTMLElement>("#tray"),
         openDetail: (snap) => act(ACTIONS.usage(snap.provider)),
-        openProbe: (snap) => act(ACTIONS.probe(snap.provider)),
-        // Neither is reachable — `openDetail` and `openProbe` take every path
-        // that would have used them — and both are required by the interface the
-        // deck's own host satisfies. They throw rather than doing nothing, so a
-        // fourth path added later says so instead of silently going nowhere.
+        // Not reachable — `openDetail` takes every path that would have used
+        // it — and both are required by the interface the deck's own host
+        // satisfies. They throw rather than doing nothing, so a path added later
+        // says so instead of silently going nowhere.
         openCommandTile: () => {
-          throw new Error("the tray panel has no tiles; use openProbe");
+          throw new Error("the tray panel has no tiles; use openDetail");
         },
         cwd: () => {
           throw new Error("the tray panel has no workspace");
         },
       });
+      // Before the paint, because the paint is what picks a dial when nothing
+      // is selected — see `TrayFacts.dial`.
+      block.selected = f.dial ?? null;
       block.render(f.usage, f.now);
-      // The block hides itself when nothing is detected — right in the deck's
-      // panel, where a heading over a blank would be noise, and wrong here,
-      // where this section's heading is already drawn and would stand over
-      // nothing. So the sentence is put back.
-      if (!f.usage.length) {
-        body.hidden = false;
-        body.replaceChildren(note("No AI detected on this machine."));
-      }
     },
   },
   {
@@ -274,7 +301,7 @@ const PANEL: PanelSection[] = [
         // What survives a repaint, in `tray-window.ts`'s hands rather than this
         // file's: every row here is replaced whenever the deck reports, and a
         // person tabbed onto the ninth one has to come back to the ninth one.
-        // The same attribute and the same convention `LimitsBlock` uses for its
+        // The same attribute and the same convention `LimitDials` uses for its
         // own rows, so one walk finds either.
         row.dataset.focusKey = `sess:${s.session}`;
         const word = stateWord(s.state);

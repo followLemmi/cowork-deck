@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from "vitest";
-import { icon, iconButton, installSprite, ICON_NAMES } from "../src/icons";
+import { brandIcon, icon, iconButton, installSprite, BRAND_NAMES, ICON_NAMES } from "../src/icons";
 
 beforeEach(() => { document.body.innerHTML = ""; });
 
@@ -9,7 +9,25 @@ describe("installSprite", () => {
     installSprite();
     installSprite();
     const symbols = document.querySelectorAll("svg symbol");
-    expect(symbols).toHaveLength(ICON_NAMES.length);
+    // Two families in one sprite: the house icons on a 16-unit grid and the
+    // AIs' own logos on their owners' 24 — see `BRAND_PATHS`.
+    expect(symbols).toHaveLength(ICON_NAMES.length + BRAND_NAMES.length);
+  });
+
+  /** A logo is filled on a 24-unit grid, which is the opposite of everything in
+   *  `PATHS`: `.icon` sets `fill: none; stroke: currentColor` and would render
+   *  one as nothing at all. So they are their own symbols, their own class and
+   *  their own function. */
+  it("keeps the logos on their own grid, apart from the house icons", () => {
+    installSprite();
+    for (const name of BRAND_NAMES) {
+      const sym = document.querySelector(`#b-${name}`)!;
+      expect(sym.getAttribute("viewBox")).toBe("0 0 24 24");
+      expect(sym.querySelector("path")!.getAttribute("d")).not.toBe("");
+    }
+    const svg = brandIcon(BRAND_NAMES[0]);
+    expect(svg.getAttribute("class")).toBe("brand");
+    expect(svg.querySelector("use")!.getAttribute("href")).toBe(`#b-${BRAND_NAMES[0]}`);
   });
 
   it("gives every symbol an id the instances can reference", () => {
