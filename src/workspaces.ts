@@ -2,6 +2,7 @@ import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiStat
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
 import { icon, iconButton, type IconName } from "./icons";
+import { workspaceTint } from "./tint";
 
 /** How many live sessions get named rather than counted. Three names still read
  *  as a sentence; a fourth turns the question into an inventory, and by then the
@@ -348,6 +349,14 @@ export class WorkspacesPanel {
       caret.className = "ws-caret";
       caret.setAttribute("aria-hidden", "true");
       caret.append(icon("chevron", 12));
+      /* KEPT, now that the group behind it carries the same colour, and the reason
+         is that the two say different things. The band is wayfinding — which of
+         these rows belong together — and it is deliberately weak ground, so at its
+         strength chalk, stone and slate land on the same neutral (see the note in
+         `src/tint.ts`). The dot is the only place in the app where the CHOICE is
+         legible at full saturation, and it is the only colour a detached workspace
+         has left once its sessions are in another window. Nine pixels for the
+         precise reading, a band for the glance. */
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = w.color;
       const label = document.createElement("button");
@@ -478,14 +487,34 @@ export class WorkspacesPanel {
         sub.append(scope);
       }
       if (sub.childElementCount > 0) row.append(sub);
-      this.mount.appendChild(row);
       /* The workspace's sessions go here, and the deck is what fills them: one
          tree, one row per workspace, its sessions as its children. See
          `Deck.setTree`. */
       const kids = document.createElement("div");
       kids.className = "ws-kids";
       kids.dataset.ws = w.id;
-      this.mount.appendChild(kids);
+      /* The row and its sessions, in one box, and the box is what the workspace's
+         colour is painted on. The two used to go into the mount flat, side by
+         side, and a gradient spanning both had nothing to paint on — which is the
+         whole reason this element exists. It changes no query: everything that
+         reaches into this panel does so by `data-ws` from the mount
+         (`sessionHost`, `showExpanded`, `focusActive`), and those are descendant
+         selectors that do not care how deep the row is.
+
+         The tint is two halves of one continuous band and neither of them is a
+         `background` on a row: `.ws-row.active` and `.sess-row.active` own that
+         property, and a tint written there would either overwrite selection or be
+         overwritten by it. See `.ws-group` in `src/styles.css`. */
+      const group = document.createElement("div");
+      group.className = "ws-group";
+      group.dataset.ws = w.id;
+      const tint = workspaceTint(w.color);
+      if (tint) {
+        group.style.setProperty("--ws-tint", tint.rgb);
+        group.style.setProperty("--ws-tint-a", String(tint.alpha));
+      }
+      group.append(row, kids);
+      this.mount.appendChild(group);
     }
     /* Adding a workspace is the app's act, not this workspace's: the new one
        would appear in the main window's tree and in no list this window keeps. */

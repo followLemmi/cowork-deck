@@ -27,7 +27,11 @@ import { icon, SCENARIO_ICONS, type IconName } from "./icons";
  * set of colours instead of two. The other three are the ink steps and they move with
  * the palette: `ice` was the old accent's icy blue, True Ink has no blue to give it,
  * and a name is worth less than nothing over a colour that is no longer icy. */
-const COLORS = [
+/** Exported for `tests/tint.test.ts`, which is where the claim that all six read
+ *  as comparable weight is measured: a test carrying its own copy of this table
+ *  would go on passing about a palette that had moved. `scripts/contrast.mjs`
+ *  reads the same six straight out of this file, for the same reason. */
+export const COLORS = [
   { value: "#7bd77f", name: "green" },
   { value: "#efc845", name: "amber" },
   { value: "#fb817a", name: "red" },
