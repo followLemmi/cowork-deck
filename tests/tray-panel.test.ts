@@ -291,8 +291,16 @@ describe("the action vocabulary", () => {
     expect(parseAction("session:a:b")).toEqual({ verb: "session", id: "a:b" });
   });
 
-  it("round-trips the probe verb the panel needs and the deck answers", () => {
-    expect(parseAction(ACTIONS.probe("claude"))).toEqual({ verb: "probe", id: "claude" });
+  it("round-trips the usage verb the panel needs and the deck answers", () => {
+    expect(parseAction(ACTIONS.usage("claude"))).toEqual({ verb: "usage", id: "claude" });
+  });
+
+  /** The verb the dials retired. A 26px mark has no room for a control beside
+   *  it, so "run the command that would answer this" moved into the dialog a
+   *  press opens — and a verb nothing mints must not still be parseable, or the
+   *  deck keeps a branch nothing can reach. */
+  it("refuses the probe verb the row of dials no longer mints", () => {
+    expect(parseAction("probe:claude")).toBeNull();
   });
 
   it("refuses anything it did not mint", () => {
@@ -333,24 +341,26 @@ describe("the panel, drawn", () => {
   });
 
   /** ADR-0009 survives the change of surface: the qualifier is beside the
-   *  number here exactly as it is in the deck's own block, because it is drawn
-   *  by the deck's own block. */
-  it("prints the qualifier beside the reading", () => {
+   *  number here exactly as it is in the deck's own row, because it is drawn by
+   *  the deck's own row.
+   *
+   *  By NAME, and every tier including the strongest — which is the card's
+   *  reading of ADR-0009's amendment rather than a break with it. The amendment
+   *  shortened the qualifier and dropped "Reported" because a 340px ROW had no
+   *  room for a word that changed nothing; a card has the room, and it is where
+   *  the vocabulary is taught (`sourceExplanation` in the dialog behind it). */
+  it("names the tier beside every reading, the strongest one included", () => {
     const f = facts({ usage: [snap({
       windows: [win({ usedFraction: 0.5, state: "ok", source: "observed" })],
     })] });
-    const row = draw(f).root.querySelector(".lim-row")!;
-    expect(row.querySelector(".lim-src")!.textContent).toBe("this app only");
-    expect(row.querySelector(".lim-reading")!.textContent).toBe("50% used");
-  });
+    const box = draw(f).root.querySelector(".dial-win")!;
+    expect(box.querySelector(".lim-src")!.textContent).toBe("Observed");
+    expect(box.querySelector(".lim-reading")!.textContent).toBe("50% used");
 
-  it("leaves the account's own figure unqualified", () => {
-    const f = facts({ usage: [snap({
+    const g = facts({ usage: [snap({
       windows: [win({ usedFraction: 0.5, state: "ok", source: "reported" })],
     })] });
-    const row = draw(f).root.querySelector(".lim-row")!;
-    expect(row.querySelector(".lim-src")).toBeNull();
-    expect(row.querySelector(".lim-reading")!.textContent).toBe("50% used");
+    expect(draw(g).root.querySelector(".dial-win .lim-src")!.textContent).toBe("Reported");
   });
 
   /** No share, no meter — the same rule, drawn by the same code. */
@@ -361,28 +371,31 @@ describe("the panel, drawn", () => {
     expect(draw(f).root.querySelector(".lim-meter")).toBeNull();
   });
 
-  /** The block hides itself when nothing is detected, which is right in the
-   *  deck's panel and wrong under a heading this surface has already drawn. */
-  it("says so under its own heading when there is no AI on the machine", () => {
+  /** The lineup is drawn whether or not the machine has anything on it: two of
+   *  the three dials are a claim about the roadmap, so there is always something
+   *  to draw, and the brand that IS meant to answer says plainly that it did not
+   *  rather than vanishing. */
+  it("says which AI is missing rather than drawing nothing", () => {
     const body = draw(facts()).root.querySelector('[data-section="limits"] .tray-body')!;
-    expect(body.textContent).toContain("No AI detected on this machine.");
+    expect([...body.querySelectorAll(".dial")].map((d) => (d as HTMLElement).dataset.provider))
+      .toEqual(["claude", "codex", "gemini"]);
+    expect(body.textContent).toContain("Not found on this machine.");
     expect((body as HTMLElement).hidden).toBe(false);
   });
 
-  it("sends a limit row's click to the deck as the provider it is about", () => {
-    const f = facts({ usage: [snap({ provider: "gemini", label: "Gemini CLI" })] });
+  it("sends a limit dial's press to the deck as the provider it is about", () => {
+    const f = facts({ usage: [snap({ provider: "claude", label: "Claude" })] });
     const { root, acts } = draw(f);
-    root.querySelector<HTMLElement>(".lim-open")!.click();
-    expect(acts).toEqual([ACTIONS.usage("gemini")]);
+    root.querySelector<HTMLElement>('.dial[data-provider="claude"]')!.click();
+    expect(acts).toEqual([ACTIONS.usage("claude")]);
   });
 
-  /** The tray has no tiles, so the "Ask" button asks the deck for one rather
-   *  than throwing itself against a host that cannot open one. */
-  it("sends an unreadable row's Ask to the deck instead of opening a tile", () => {
-    const f = facts({ usage: [snap({ probeCommand: "claude /usage" })] });
-    const { root, acts } = draw(f);
-    root.querySelector<HTMLElement>(".lim-probe")!.click();
-    expect(acts).toEqual([ACTIONS.probe("claude")]);
+  /** A held brand is a claim about the roadmap, so pressing it asks the deck for
+   *  nothing — there is no snapshot behind it to open. */
+  it("sends nothing when a held dial is pressed", () => {
+    const { root, acts } = draw(facts({ usage: [snap()] }));
+    root.querySelector<HTMLElement>('.dial[data-provider="codex"]')!.click();
+    expect(acts).toEqual([]);
   });
 
   /** The window lists the deck, where the menu lists only what is blocked. That
@@ -406,7 +419,7 @@ describe("the panel, drawn", () => {
    *  afterwards by matching `data-focus-key`, and that only works if a row
    *  carries one — a person tabbed onto the ninth row has to come back to the
    *  ninth row rather than to the top of the panel. The same attribute and the
-   *  same convention `LimitsBlock` already uses, so one walk finds either. */
+   *  same convention `LimitDials` already uses, so one walk finds either. */
   it("gives every session row a key a repaint can find it by", () => {
     const f = facts({ sessions: [
       session({ session: "a", name: "relay", state: "waitingInput" }),
@@ -417,12 +430,26 @@ describe("the panel, drawn", () => {
     expect(keys).toEqual(["sess:a", "sess:b"]);
   });
 
-  /** And a limits row keeps the key the block gives it, because the walk that
-   *  restores focus does not know which section it is crossing. */
-  it("keeps the block's own focus keys on the limits rows", () => {
+  /** And a dial keeps the key the block gives it, because the walk that restores
+   *  focus does not know which section it is crossing. */
+  it("keeps the block's own focus keys on the limit dials", () => {
     const f = facts({ usage: [snap({ windows: [win({ usedFraction: 0.4, state: "ok" })] })] });
-    const row = draw(f).root.querySelector<HTMLElement>(".lim-open");
-    expect(row!.dataset.focusKey).toBe("row:claude");
+    const dial = draw(f).root.querySelector<HTMLElement>(".dial");
+    expect(dial!.dataset.focusKey).toBe("dial:claude");
+  });
+
+  /** The card is the one thing in this window that cannot remember itself: the
+   *  panel replaces its whole document on every report from the deck. So the
+   *  provider it was describing is carried in and honoured, or a person reading
+   *  Codex is returned to Claude every five seconds. */
+  it("re-opens the card on the dial the panel was showing before the repaint", () => {
+    const f = facts({
+      usage: [snap({ windows: [win({ usedFraction: 0.4, state: "ok" })] })],
+      dial: "gemini",
+    });
+    const card = draw(f).root.querySelector<HTMLElement>(".dial-card");
+    expect(card!.dataset.provider).toBe("gemini");
+    expect(card!.textContent).toContain("Coming soon");
   });
 
   it("sends a session row's click to the deck", () => {
@@ -433,7 +460,7 @@ describe("the panel, drawn", () => {
   });
 
   /** A session's name comes from a transcript this app did not write, so it
-   *  goes in as text. The same rule as `usage-block.ts` and `github-screen.ts`. */
+   *  goes in as text. The same rule as `usage-dial.ts` and `github-screen.ts`. */
   it("puts a session's own name in as text", () => {
     const nasty = '<img src=x onerror="alert(1)">';
     const f = facts({ sessions: [session({ name: nasty, state: "waitingInput" })] });

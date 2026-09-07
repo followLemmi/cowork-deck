@@ -4581,196 +4581,162 @@ h6.md-head { font-size: var(--fs-sm); }
 /* --- Limits: what each connected AI has left ------------------------------
    Three hues and no more, and one of them is deliberately absent: there is no
    green here. Green already means "working" on every rail in this window, and
-   spending it on "your quota is fine" would make a panel of healthy meters read
-   as twelve sessions doing something. A healthy window is NEUTRAL — the design
-   system's rule that hue belongs to state, applied rather than bent.
+   spending it on "your quota is fine" would make a row of healthy dials read as
+   sessions doing something. A healthy ring is NEUTRAL — the design system's rule
+   that hue belongs to state, applied rather than bent.
 
    `--st-error` for a spent budget and `--st-waiting` for one nearly spent, which
    is the same pair the ledger and the session rows use for the same two
    meanings: something has stopped, and something is about to want you. A person
    who has learned those two colours anywhere in this app has learned them here.
-   `npm run contrast` measures every pair below. */
-/* In the TOP BAR since #461, and it was a strip at the foot of the panel (#392,
-   ADR-0011, and the amendment at the foot of that record).
-   Two things about the panel made the foot the wrong home, and only one of them
-   was height. The strip and the tree were the same kind of surface stacked in one
-   280px column, separated by a hairline — and because `#sidebar`'s third row is
-   `auto` against a `minmax(0, 1fr)` stack, opening the rows took up to 15rem out
-   of the tree while its `scrollTop` stayed put. The rows a person was reading
-   went below the fold and the strip's hairline landed where the tree's last
-   visible row had been. Nothing overlapped; the tree moved, which is worse.
-   The other is that a collapsed panel took the reading with it, and a limit is
-   not a property of the panel being open.
-   The top bar has neither problem: it does not grow, it does not scroll, and it
-   is there when the panel is not.
+   `npm run contrast` measures every pair below.
 
-   No border and no ground of its own here — it is IN the chrome now rather than
-   bounded by it, and a hairline inside a 44px bar would read as a divider between
-   two things that are one row of readings.
+   A ROW OF DIALS since #498, and it was one folded line naming the worst-off AI
+   (#392, ADR-0011), which was a slab of rows before that. What the line could not
+   fix by shrinking further is that it named ONE AI and which one it named moved:
+   a reading you find by reading is not a glance. Three marks in a fixed order are
+   found by POSITION, and the answer to "how is Claude doing" is in the same place
+   every time.
 
-   `column-reverse` is gone with the move, and its whole purpose survives: the
-   strip stays FIRST in the DOM, so a screen reader moving forward off the control
-   it just pressed arrives inside the rows that press revealed. The rows now open
-   DOWNWARD, which they should — the bar is at the top of the window — so the DOM
-   order and the visual order finally agree and no reversal is needed to reconcile
-   them. */
+   Still in the top bar (#461) and for the reasons that record gives: the bar does
+   not grow, does not scroll, and is there when the panel is not. No border and no
+   ground of its own — it is IN the chrome rather than bounded by it. */
 #limits {
   /* `align-self: stretch` so the box is the bar's full 44px and `top: 100%` on
-     the popover below is exactly the bar's bottom edge. Sized to its content it
-     was 29px, and the popover then hung four pixels INTO the bar. */
+     the card below is exactly the bar's bottom edge. Sized to its content it was
+     29px, and the card then hung four pixels INTO the bar. */
   flex: none; align-self: stretch; position: relative;
   display: flex; align-items: center; min-width: 0;
 }
 #limits[hidden] { display: none; }
-/* Out of the flow, so the rows cost the bar no height and the deck below does not
-   move when they open — which is the fault this whole move is about, one surface
-   up. An island, because unlike the panel's foot this one floats over the work:
-   it needs its own ground, its own edge and a shadow to sit above the deck.
-   Bounded and scrolling as before: a deck with eight accounts connected must not
-   be able to open a list taller than the window. `right: 0`, so it grows leftward
-   from the reading rather than out past the window's edge. */
-.lim-list {
+
+.dial-row { display: flex; align-items: center; gap: var(--sp-1); }
+
+/* 26px in a 44px bar: the largest circle that leaves the bar's own breathing
+   room, and the smallest that can carry a 14px mark inside a 2.5px ring without
+   the two touching. */
+.dial {
+  position: relative; flex: none; display: grid; place-items: center;
+  width: 26px; height: 26px; padding: 0;
+  border: 0; border-radius: 50%;
+  background: transparent; color: var(--fg-mid); cursor: pointer;
+}
+.dial:hover { background: var(--bg-hover); color: var(--fg); }
+.dial:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* Held and undetected dials are quiet and do nothing, and they still take focus
+   — "why is this one grey" is the question their description answers, and
+   `disabled` would put that description out of reach of a keyboard. */
+.dial[aria-disabled="true"] { cursor: default; color: var(--fg-dim); }
+.dial[aria-disabled="true"]:hover { background: transparent; color: var(--fg-dim); }
+
+.dial-ring { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; }
+.dial-track { stroke: var(--bg-inset); stroke-width: 2.5; }
+/* A dashed track is what "there is no reading here" looks like, and it is not
+   the same drawing as a full ring at zero. An app that drew an empty solid ring
+   for an AI it cannot read would be claiming nothing had been spent. */
+.dial[data-soon] .dial-track,
+.dial[data-state="none"] .dial-track,
+.dial[data-state="unknown"] .dial-track { stroke: var(--line); stroke-dasharray: 2 3; }
+/* Round caps, so a week at 2% is a mark rather than a hairline nobody sees. */
+.dial-arc { stroke: var(--fg-dim); stroke-width: 2.5; stroke-linecap: round; }
+.dial:hover .dial-arc { stroke: var(--fg-mid); }
+.dial-ring.lim-near .dial-arc,
+.dial:hover .dial-ring.lim-near .dial-arc { stroke: var(--st-waiting); }
+.dial-ring.lim-out .dial-arc,
+.dial:hover .dial-ring.lim-out .dial-arc { stroke: var(--st-error); }
+
+.dial-mark { display: grid; place-items: center; }
+.dial-mark .icon { width: 14px; height: 14px; }
+
+/* What the ring is NOT saying: the five-hour window in trouble while the week
+   is comfortable. Ringed in the ground it sits on so it reads as a badge on the
+   dial rather than as a fleck in the bar — which is why the ground is a variable:
+   this row is drawn on the chrome here and on the island in the status panel. */
+.dial-dot {
+  /* Clear of the ring rather than over it: at `top: 0` the badge ate the arc it
+     is a footnote to, which is the one thing it must not obscure. */
+  position: absolute; top: -1px; right: -1px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--st-waiting);
+  box-shadow: 0 0 0 2px var(--dial-ground, var(--bg-chrome));
+}
+.dial[data-alert="exhausted"] .dial-dot { background: var(--st-error); }
+
+/* The detail, floating under the row. Out of the flow, so it costs the bar no
+   height and the deck below does not move when it opens. An island, because
+   unlike the panel's foot this one floats over the work: it needs its own ground,
+   its own edge and a shadow to sit above the deck. `right: 0`, so it grows
+   leftward from the row rather than out past the window's edge. */
+.dial-card {
   position: absolute; top: 100%; right: 0; z-index: 20;
-  min-width: 22rem; max-width: min(28rem, 90vw);
+  min-width: 20rem; max-width: min(26rem, 90vw);
   max-height: min(60vh, 26rem); overflow-y: auto;
-  padding: var(--sp-1); border-radius: var(--r-island);
+  padding: var(--sp-3); border-radius: var(--r-island);
   background: var(--bg-island); border: 1px solid var(--line-strong);
   box-shadow: var(--sh-float);
+  display: flex; flex-direction: column; gap: var(--sp-2);
+}
+.dial-card[hidden] { display: none; }
+.dial-card p { margin: 0; }
+.dial-card-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.dial-card-name { flex: 1; min-width: 0; font-weight: var(--fw-medium); }
+/* The same caps as a tier chip, because it is the same kind of thing: a word
+   about the reading rather than part of it. */
+.dial-soon {
+  flex: none; font-size: var(--fs-xs); text-transform: uppercase;
+  letter-spacing: var(--ls-caps); color: var(--fg-dim);
+}
+.dial-card-note, .dial-card-hint {
+  font-size: var(--fs-xs); color: var(--fg-dim); line-height: var(--lh-body);
+}
+/* One window: what it is and what it reads, the meter, and the sentence about
+   its state. On its own ground, so two windows are two things rather than six
+   lines. */
+.dial-win {
   display: flex; flex-direction: column; gap: var(--sp-1);
+  padding: var(--sp-2); background: var(--bg-inset); border-radius: var(--r-ctl);
 }
-.lim-list[hidden] { display: none; }
-/* A row is a button and, when there is nothing to read, a second one beside it.
-   Not one button containing another — that is invalid, and a screen reader
-   handed a nested control announces neither properly. */
-.lim-row { display: flex; align-items: stretch; gap: var(--sp-1); }
-/* The strip is the same shape as a row, and for the same reason: the summary is a
-   control and the way out of an unreadable reading is a second one beside it. */
-/* In the bar, so `align-items: center` and no vertical padding of its own: the
-   44px row sets the height and this sits in it. */
-.lim-strip { display: flex; align-items: center; gap: var(--sp-1); min-width: 0; }
-/* ONE line, and that is the constraint the bar imposes. In the panel's foot this
-   was a column — the reading on the first line and the state's words on a second
-   that appeared when something was nearly spent, where "being larger is the
-   point rather than the complaint". A 44px bar has no second line to give, so
-   the words go inline after the reading and the cost is width instead. Which is
-   what ADR-0011's amendment argues about: the reading and the tier are
-   ADR-0009's floor, and the NAME is what gives way. */
-.lim-summary {
-  min-width: 0; display: flex; flex-direction: row; align-items: baseline; gap: var(--sp-2);
-  padding: 4px var(--sp-2); border: 0; border-radius: var(--r-ctl);
-  background: transparent; color: var(--fg); text-align: left; cursor: pointer;
-  font: inherit; font-size: var(--fs-xs);
+.dial-win .lim-meter { background: var(--bg-hover-2); }
+.dial-foot { font-size: var(--fs-xs); }
+/* The card in the status-area panel, which has nowhere to float: `#tray` clips
+   what leaves it, so a popover there would be a card with its bottom sheared
+   off. In the flow instead, and with no ground or edge of its own — the window
+   around it is already an island, and an island inside an island reads as a
+   dialog that failed to open. */
+.dial-card--inline {
+  position: static; z-index: auto;
+  min-width: 0; max-width: none; max-height: none; overflow: visible;
+  margin-top: var(--sp-2); padding: 0;
+  background: none; border: 0; box-shadow: none;
 }
-.lim-summary:hover { background: var(--bg-hover); }
-.lim-summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-/* Gaps at `--sp-1` rather than `--sp-2`, which is not a preference: name, tier,
-   reading and count are four things on one line, and at 8px apart there was not
-   room for all four in the 280px column this used to live in. The bar has more
-   room and keeps the tighter gap anyway — beside `#ledger`'s own `--sp-1` these
-   are one row of readings rather than two clusters. */
-.lim-strip .lim-line { gap: var(--sp-1); display: inline-flex; align-items: baseline; min-width: 0; }
-/* The words about the state, inline. `flex: 0 1 auto` so they are the second
-   thing to give way after the name — and at the narrowest window they go
-   entirely, which the media query at the foot of this block does, leaving the
-   reading and its tier: ADR-0009's floor. */
-.lim-strip .lim-foot { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-/* And the reading is the item that must NOT give way. `.lim-reading` is `flex: 1`
-   in a row, where the row has a line to itself and nothing to compete with; on
-   the strip that made it the first thing to shrink, and "23% us…" is the one word
-   this line exists to say. So the NAME flexes and truncates here instead — a
-   clipped label still identifies an AI, a clipped number identifies nothing.
 
-   Which is also why there is no meter on this line and why the count is a bare
-   `+3` with the words about the others on the line below: four things fit here,
-   five did not, and the reading and the tier are two of the four by ADR-0009. */
-/* `0 1 auto`, not `1`: basis `auto` means the name keeps its own width and gives
-   ground only when the line genuinely will not fit, which at 246px it now does. */
-.lim-strip .lim-name {
-  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.lim-strip .lim-reading { flex: none; text-align: left; }
-/* `.lim-word` and the whole `[data-open]` display swap are gone with the move to
-   the bar (#461). In the panel the rows opened ABOVE the strip, so an open strip
-   was their head and gave its line up for the word "Limits" — every reading below
-   was already saying what it had been saying. In the bar the rows open below in
-   a popover with its own edge, and the reading is the reason the bar carries the
-   line at all: a bar that blanked its own number on a press would answer less the
-   more you asked it. The strip keeps its glance open or shut. */
-/* How many AIs are not the one being named, and what is wrong with them when
-   something is. Never a bare count in that case — see `restOf`. */
-/* The padding is the whole reason this is not butted against the reading: "62%
-   used +3" reads as one figure, and they are two facts about two different
-   things. */
-.lim-rest { flex: none; padding-left: var(--sp-1); font-size: var(--fs-xs); color: var(--fg-dim); }
-/* Pushed to the end whether or not there is a reading before it, so the line
-   ends the same way when a provider has nothing to say. */
-.lim-caret { display: inline-flex; align-items: center; flex: none; margin-left: auto; color: var(--fg-dim); }
-/* DOWN while folded and up while open, and the pair swapped with the move to the
-   bar: a disclosure's caret points at where its content is, and the rows are now
-   below this line rather than above it. */
-.lim-caret .icon { transition: transform var(--dur-2) var(--ease-out); transform: rotate(90deg); }
-.lim-summary[aria-expanded="true"] .lim-caret .icon { transform: rotate(-90deg); }
-
-/* What the bar gives up first, and in what order, as the window narrows. The
-   reading and its tier are ADR-0009's floor and are in neither list: a bare
-   percentage is not an acceptable compression, and a reading with no tier is the
-   failure that record exists to prevent.
-   At 60rem the state's words go — they are a repeat of what the reading's own
-   colour already says at a glance, and the popover carries them in full. At
-   43.75rem the count of the other AIs goes too, and the name is already
-   truncating by then. Below that the window has bigger problems: `minWidth` is
-   900px (56.25rem), so the second step is only reachable at a text scale, which
-   is exactly the case a `px` breakpoint would have missed. */
-@media (max-width: 60rem) {
-  .lim-strip .lim-foot { display: none; }
-}
-@media (max-width: 43.75rem) {
-  .lim-strip .lim-rest { display: none; }
-}
-.lim-summary:hover .lim-caret { color: var(--fg-mid); }
-.lim-open {
-  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;
-  padding: var(--sp-2); border: 0; border-radius: var(--r-ctl);
-  background: transparent; color: var(--fg); text-align: left; cursor: pointer;
-  font: inherit;
-}
-.lim-open:hover { background: var(--bg-hover); }
-/* Drawn inside the button, which the rest of the app has no need to do. The
-   global ring is an `outline` at a 2px offset — 4px painted OUTSIDE the element —
-   and these rows live in a scroll container, which clips what leaves it and does
-   not count an outline as something to scroll to. The last row in an unfolded
-   list had the bottom of its ring shaved off against the container's edge. An
-   inset ring cannot be clipped by the box it is inside. */
-.lim-list .lim-open:focus-visible,
-.lim-list .lim-probe:focus-visible {
-  outline: none; box-shadow: inset 0 0 0 2px var(--accent);
-}
+/* --- and what the card shares with the dialog behind it ------------------
+   One vocabulary for a reading, drawn the same way wherever it is drawn. A meter
+   that is a different colour in the status panel than in the deck is worse than
+   no meter — which is the whole argument of ADR-0013, in CSS. */
 .lim-line { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
 .lim-name { flex: none; font-size: var(--fs-sm); font-weight: var(--fw-medium); }
 /* What qualifies a number, at the same size as the number. A tooltip would be a
    footnote, and a footnote is what ADR-0009 exists to refuse: the source of a
    number is part of the number.
-   In a ROW this is now a caveat rather than a tier name, and the strongest tier
-   prints nothing at all — see `tierNote` and ADR-0009's amendment. The dialog
-   still prints every tier by name, which is what the caps are for: there it is
-   a label, and here it is the tail of a sentence. */
+   The caps are what make it a label rather than the tail of a sentence, and both
+   surfaces that print this chip — the card and the dialog — have the room to
+   name the tier outright. `tierNote`'s shortened caveat is for the surface that
+   does not: the Linux menu, which is a string per AI and no chip at all. */
 .lim-src {
   flex: none; font-size: var(--fs-xs); text-transform: uppercase;
   letter-spacing: var(--ls-caps); color: var(--fg-dim);
 }
-/* Nothing per-tier any more. The rule here used to colour `--reported` a step
-   brighter, under a comment claiming it coloured the WEAKEST tier — the comment
-   and the selector had disagreed since the palette port. The strongest tier no
-   longer reaches the DOM in a row, and in the dialog every tier is equal
-   furniture, so there is nothing left for the modifier to say. The class is
-   still written onto the element: it is a hook worth having, and `[class]` is
-   how the dialog's tests find a tier. */
+/* Nothing per-tier. The rule here used to colour `--reported` a step brighter,
+   under a comment claiming it coloured the WEAKEST tier — the comment and the
+   selector had disagreed since the palette port. Every tier is equal furniture
+   now. The class is still written onto the element: it is a hook worth having,
+   and `[class]` is how the dialog's tests find a tier. */
 .lim-reading {
   flex: 1; min-width: 0; font-size: var(--fs-xs); color: var(--fg-mid);
   text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* Thin, because it is a glance and not a chart. 4px reads as a level at every
-   text size the app offers without becoming a element in its own right. */
+   text size the app offers without becoming an element in its own right. */
 .lim-meter {
   display: block; height: 4px; border-radius: var(--r-pill);
   background: var(--bg-inset); overflow: hidden;
@@ -4778,32 +4744,12 @@ h6.md-head { font-size: var(--fs-sm); }
 .lim-fill { display: block; height: 100%; background: var(--fg-dim); }
 .lim-meter.lim-near .lim-fill { background: var(--st-waiting); }
 .lim-meter.lim-out .lim-fill { background: var(--st-error); }
-/* Wraps as a LINE rather than inside its words: with the state's sentence and the
-   count about the other AIs both on it, the two together can outrun 246px, and a
-   flex item that shrinks breaks "nothing moves until\A07:00 PM" across two lines
-   with the count beside the first of them. Nothing here shrinks, so the count
-   drops to a line of its own instead — which only happens when a second AI is
-   also spent, and a person in that state is being told the truth in three lines
-   rather than a mangled version of it in two. The error text is the exception: it
-   is prose from a provider and wrapping is what prose does. */
-.lim-foot { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--fs-xs); color: var(--fg-dim); }
-.lim-out-text, .lim-near-text { white-space: nowrap; }
 .lim-out-text { color: var(--st-error); }
 /* Amber in words, and both halves matter: the hue is how this is read without
    being read, and "nearly spent" is how it is read by somebody the hue does not
-   reach. The strip has no meter to put the hue on, so this line carries it. */
+   reach. */
 .lim-near-text { color: var(--st-waiting); }
-/* What is wrong with the AIs this line is not about. The quiet ink, because it is
-   the count and not the reading — and never the only thing on the line. */
-.lim-others { flex: none; white-space: nowrap; color: var(--fg-dim); }
-/* The action a row nobody can read offers instead of a blank meter. */
-.lim-probe {
-  flex: none; align-self: center; padding: var(--sp-1) var(--sp-2);
-  font-size: var(--fs-xs); color: var(--fg-mid);
-  background: var(--bg-inset); border: 1px solid var(--line);
-  border-radius: var(--r-ctl); cursor: pointer;
-}
-.lim-probe:hover { background: var(--bg-hover-2); color: var(--fg); }
+.lim-reset { color: var(--fg-dim); }
 
 /* --- and the dialog behind a row ---------------------------------------- */
 .modal-box.lim-screen { width: min(520px, 94vw); }

@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
 import type { AiUsage, LimitState, LimitWindow, UsageSource } from "../src/ipc";
 import {
+  BRANDS,
   deckLimit,
+  dialAlert,
+  dialLineup,
+  ringWindow,
   formatReset,
   limitFoot,
   LimitNotifier,
@@ -410,5 +414,76 @@ describe("what a row says under its reading", () => {
   it("prefers a reset time to an error when it has both", () => {
     expect(limitFoot(win({ usedFraction: 0.5, resetsAt: at }), "stale", now))
       .toBe(`resets ${formatReset(at, now)}`);
+  });
+});
+
+describe("the lineup of dials", () => {
+  const week = (over: Partial<LimitWindow> = {}) =>
+    win({ id: "week", label: "Current week", ...over });
+
+  /** A ring is a period coming round again, and the period worth planning
+   *  against is the week — not the five hours, which is the more urgent number
+   *  and gets the dot and the first line of the card instead. */
+  it("draws the weekly window where a provider declares one", () => {
+    const u = snap({ windows: [win({ usedFraction: 0.9 }), week({ usedFraction: 0.2 })] });
+    expect(ringWindow(u)?.id).toBe("week");
+  });
+
+  /** No table of provider names in this file: a provider with no window called
+   *  "week" gets its LAST declared one, and both providers in the tree declare
+   *  theirs shortest first. */
+  it("falls back to the widest window a provider declared", () => {
+    const gemini = snap({ windows: [win({ id: "rpm" }), win({ id: "rpd" })] });
+    expect(ringWindow(gemini)?.id).toBe("rpd");
+    expect(ringWindow(snap())).toBeNull();
+  });
+
+  it("marks the worst window the ring is not already showing", () => {
+    const u = snap({ windows: [win({ state: "exhausted" }), week({ state: "ok" })] });
+    expect(dialAlert(u, ringWindow(u))).toBe("exhausted");
+  });
+
+  /** Nothing to add where the ring is already the worst of them, and nothing to
+   *  add for a healthy window — a mark that appeared for every reading would
+   *  stop meaning "act on this". */
+  it("marks nothing the ring already says, and nothing that is fine", () => {
+    const worst = snap({ windows: [win({ state: "ok" }), week({ state: "exhausted" })] });
+    expect(dialAlert(worst, ringWindow(worst))).toBeNull();
+    const fine = snap({ windows: [win({ state: "ok" }), week({ state: "ok" })] });
+    expect(dialAlert(fine, ringWindow(fine))).toBeNull();
+  });
+
+  it("draws every brand in a fixed order whatever answered", () => {
+    expect(dialLineup([]).map((d) => d.provider)).toEqual(BRANDS.map((b) => b.provider));
+    expect(dialLineup([snap({ provider: "claude" })]).map((d) => d.provider))
+      .toEqual(BRANDS.map((b) => b.provider));
+  });
+
+  /** A held brand is a claim about the roadmap and not about the machine, so a
+   *  snapshot for one is dropped on the floor: Gemini's provider can answer
+   *  nothing without a credential this app will not take, and a permanent row of
+   *  unknowns dressed as a live reading is worse than saying it is not ready. */
+  it("keeps a held brand held even when the backend reported it", () => {
+    const held = dialLineup([snap({ provider: "gemini", windows: [week({ usedFraction: 0.5 })] })])
+      .find((d) => d.provider === "gemini")!;
+    expect(held.soon).toBe(true);
+    expect(held.snap).toBeNull();
+    expect(held.ring).toBeNull();
+  });
+
+  /** The registry is provider-agnostic on purpose (#308), so a provider added in
+   *  Rust must reach the screen without this file learning its name. */
+  it("adds anything that answered and is not among the brands", () => {
+    const out = dialLineup([snap({ provider: "copilot", label: "Copilot" })]);
+    expect(out.map((d) => d.provider)).toEqual([...BRANDS.map((b) => b.provider), "copilot"]);
+    expect(out[out.length - 1].soon).toBe(false);
+  });
+
+  /** The provider's own words for itself, so a relabelled account is not
+   *  overruled by this file's table. */
+  it("prefers the label the snapshot came with", () => {
+    const out = dialLineup([snap({ provider: "claude", label: "Claude (work)" })]);
+    expect(out[0].label).toBe("Claude (work)");
+    expect(dialLineup([])[0].label).toBe("Claude");
   });
 });

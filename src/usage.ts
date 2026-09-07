@@ -79,6 +79,117 @@ export interface RankedAi {
   window: LimitWindow | null;
 }
 
+/* --- The lineup of dials -------------------------------------------------
+   One dial per AI, in a FIXED order, which is the half of this that is not
+   about data. `rankedAis` below orders by urgency and that is right for a list
+   you read top to bottom; it is wrong for a row of three marks you learn the
+   position of. A dial that moved when a quota moved would cost a person the one
+   thing a row of marks buys them — knowing where to look before they look. */
+
+/** An AI this deck draws a dial for, whether or not it can say anything yet.
+ *
+ *  `soon` is the deliberate part. Two of these are on the strip before they
+ *  work: a locked dial says the shape of what is coming, and an app that simply
+ *  omitted them would be indistinguishable from one that never intends to have
+ *  them. It is a claim about the roadmap and not about the machine — so it does
+ *  NOT move when a provider is installed, and a `soon` brand is never asked for
+ *  a reading even when the backend has one. See `dialLineup`. */
+export interface Brand {
+  provider: string;
+  label: string;
+  soon: boolean;
+}
+
+/** The three, left to right. Claude answers; the other two are held. */
+export const BRANDS: readonly Brand[] = [
+  { provider: "claude", label: "Claude", soon: false },
+  { provider: "codex", label: "Codex", soon: true },
+  { provider: "gemini", label: "Gemini", soon: true },
+];
+
+/** One dial, with everything drawn on it already decided. */
+export interface Dial {
+  provider: string;
+  label: string;
+  /** `null` for a held brand, and for one this machine has nothing for. */
+  snap: AiUsage | null;
+  /** What the ring around the mark fills to. `null` draws a bare track — see
+   *  `ringWindow` and `meterFraction`. */
+  ring: LimitWindow | null;
+  /** The state of the worst window the RING is not already showing, when that
+   *  state is worth a mark of its own. `null` the rest of the time. */
+  alert: LimitState | null;
+  soon: boolean;
+}
+
+/** The window the ring draws: the long one.
+ *
+ *  A ring is the shape of a period coming round again, and the period worth
+ *  drawing is the one a person plans against — the week, not the five hours.
+ *  The five hours is the more urgent number and it is not lost: it is the first
+ *  thing in the popover, and a five-hour window in trouble puts the alert mark
+ *  on the dial (`dialAlert`).
+ *
+ *  Chosen by id where a provider declares a `week`, and otherwise the LAST
+ *  window it declared. Both providers in the tree today list their windows
+ *  shortest first — session then week, requests-per-minute then requests-per-day
+ *  — so the last is the widest, and this file has no table of provider names to
+ *  consult instead. `null` where a provider declared none at all. */
+export function ringWindow(u: AiUsage): LimitWindow | null {
+  return u.windows.find((w) => w.id === "week") ?? u.windows[u.windows.length - 1] ?? null;
+}
+
+/** What is wrong that the ring is not saying, or `null`.
+ *
+ *  The ring shows the week. A session window that is nearly spent is the fact
+ *  that stops work in the next ten minutes, and a dial that drew a comfortable
+ *  62% while the deck was about to be refused would be answering the question
+ *  nobody asked. So the worst of the OTHER windows gets a mark of its own, and
+ *  only when it is bad enough to act on. */
+export function dialAlert(u: AiUsage, ring: LimitWindow | null): LimitState | null {
+  const worst = u.windows.filter((w) => w !== ring).sort(byUrgency)[0];
+  if (!worst) return null;
+  return worst.state === "exhausted" || worst.state === "near" ? worst.state : null;
+}
+
+/** The row of dials, in the order they are drawn.
+ *
+ *  The three brands always, held ones included, and then anything the backend
+ *  reported that is not among them. That tail is not decoration: the registry
+ *  is provider-agnostic on purpose (#308), so a provider added in Rust must
+ *  reach the screen without this file learning its name — and a lineup that
+ *  only ever drew its own three would silently swallow it. */
+export function dialLineup(snaps: AiUsage[]): Dial[] {
+  const found = new Map(snaps.map((s) => [s.provider, s]));
+  const named = new Set(BRANDS.map((b) => b.provider));
+  const held = BRANDS.map((b) =>
+    // A held brand is drawn from the roadmap and not from the machine, so its
+    // snapshot is dropped on the floor even when there is one. Gemini has a
+    // provider in Rust that can answer nothing without a credential this app
+    // will not take; drawing its permanent row of unknowns as though it were a
+    // live reading is worse than saying plainly that it is not ready.
+    dialOf(b.provider, b.label, b.soon ? null : found.get(b.provider) ?? null, b.soon),
+  );
+  const rest = snaps
+    .filter((s) => !named.has(s.provider))
+    .map((s) => dialOf(s.provider, s.label, s, false));
+  return [...held, ...rest];
+}
+
+function dialOf(provider: string, label: string, snap: AiUsage | null, soon: boolean): Dial {
+  const ring = snap ? ringWindow(snap) : null;
+  return {
+    provider,
+    // The provider's own words for itself where there is a snapshot, so a
+    // relabelled account is not overruled by this file's table.
+    label: snap?.label ?? label,
+    snap,
+    ring,
+    alert: snap ? dialAlert(snap, ring) : null,
+    soon,
+  };
+}
+
 /** Every connected AI, worst off first.
  *
  *  The one ordering both surfaces take, and that is the point of it being a
@@ -283,7 +394,7 @@ export function meterFraction(w: LimitWindow): number | null {
  *  tray and anything after them must not each have their own opinion about what
  *  "exhausted with no known reset" reads as. A row saying one thing in the panel
  *  and another in the menu bar is the bug the pure helpers in this file exist to
- *  prevent. `usage-block.ts` adds the tone and drops the sentence where its
+ *  prevent. `usage-dial.ts` adds the tone and drops the sentence where its
  *  surface has no room for it; the words are all decided here.
  *
  *  Three states worth a sentence and one that is not:

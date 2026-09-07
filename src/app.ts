@@ -31,7 +31,7 @@ import {
   type HandOffTile,
   type SessionState,
 } from "./ipc";
-import { LimitsBlock } from "./usage-block";
+import { LimitDials } from "./usage-dial";
 import { deckLimit, LimitNotifier } from "./usage";
 import { parseAction, trayPanel } from "./tray-panel";
 import { openUsageDialog } from "./usage-dialog";
@@ -1862,16 +1862,10 @@ export function startApp(role: WindowRole): Promise<void> {
     const snap = lastUsage.find((u) => u.provider === chosen.id);
     if (!snap) return;
     await raiseThisWindow();
-    if (chosen.verb === "probe") {
-      // The one thing a person can do about a row nobody can read, reached from
-      // the other surface. The tray has no tiles, so it asks for one here.
-      if (snap.probeCommand) {
-        void deck.openCommandTile(`${snap.label}: limits`, snap.probeCommand, limitsHost.cwd());
-      }
-      return;
-    }
-    // A limit row opens the same dialog its row in the deck's own block opens —
-    // one screen, two ways in.
+    // A limit dial opens the same dialog its dial in the deck's own top bar
+    // opens — one screen, two ways in. Which is also where "Ask in a tile" is
+    // offered: the panel used to carry that button beside an unreadable row, and
+    // the dials have no room for a control beside a 26px mark.
     openUsageDialog(snap, limitsHost, () => limits.redraw(Date.now()));
   });
 
@@ -1913,7 +1907,7 @@ export function startApp(role: WindowRole): Promise<void> {
      workspace: a shared ceiling above twelve sessions is not a property of a
      repository, and a person in a detached window needs it as much as anybody.
      What that line holds, and why it is a line rather than a row per AI, is
-     `usage-block.ts` and ADR-0011; nothing here changed when it shrank, and
+     `usage-dial.ts` and ADR-0011; nothing here changed when it shrank, and
      nothing here changed when it moved out of the panel's foot (#461) — this
      code finds `#limits` by id and the id did not move.
 
@@ -1930,7 +1924,7 @@ export function startApp(role: WindowRole): Promise<void> {
     openCommandTile: (t: string, c: string, cwd: string) => deck.openCommandTile(t, c, cwd),
     cwd: () => workspaces.active?.path ?? ".",
   };
-  const limits = new LimitsBlock(limitsEl, limitsHost);
+  const limits = new LimitDials(limitsEl, limitsHost);
   /** The last snapshot, so the block on screen, the notification and the tray
    *  report agree on one reading rather than each asking for its own. */
   let lastUsage: AiUsage[] = [];
@@ -1983,7 +1977,7 @@ export function startApp(role: WindowRole): Promise<void> {
     // Twice, and they are not the same message. Rust gets the composed report —
     // the tooltip, the badge count, and the sentences the Linux menu is built
     // from. The panel window gets the FACTS, because it runs the same helpers
-    // and the same `LimitsBlock` the deck's own block does, and a meter is not a
+    // and the same `LimitDials` the deck's own row does, and a meter is not a
     // string. One `PANEL` list decides both (`tray-panel.ts`).
     const panel = trayPanel({ usage: lastUsage, sessions, now: Date.now() });
     // A surface that stopped updating looks exactly like a deck with nothing to

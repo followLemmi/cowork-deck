@@ -737,90 +737,117 @@ const CASES = [
   },
   /* The limits (#301). Three states and one absence: there is deliberately no
      green case here, because there is deliberately no green. A healthy window is
-     `--fg-dim` on the meter's own ground — hue belongs to state, and "your quota is
-     fine" is not a state worth a hue that already means "working".
+     `--fg-dim` on its own track — hue belongs to state, and "your quota is fine" is
+     not a state worth a hue that already means "working".
 
-     The ground is `--bg-void` rather than `--bg-island` since #392: the limits are a
-     strip at the panel's foot and no longer a card in it, so every pair here is
-     measured against the panel's own darkest ground. Each one got better, which is
-     the uninteresting direction and is why the numbers below moved without any of
-     these cases changing its verdict. */
+     TWO GROUNDS since #498, and neither of them is the one measured here before.
+     The limits were a card in the panel (#301), then a strip at the panel's foot
+     against `--bg-void` (#392), then a line in the top bar (#461) — and that last
+     move changed the ground under every pair below without any of these cases
+     saying so. They are a ROW OF DIALS now: the dials themselves sit on
+     `--bg-chrome` in the deck's bar and on `--bg-island` in the status-area panel,
+     and everything they open sits on the card's `--bg-island` or on the
+     `--bg-inset` a window block inside it is drawn on. Each pair is measured
+     against every ground it is actually drawn on, which is why several carry
+     three. */
   {
-    what: "a healthy limit meter",
-    where: "the neutral fill on the meter's track, in the strip and in a row — a graphic, not text",
-    fg: "--fg-dim", backdrop: ["--bg-void", "--bg-inset"],
+    what: "a healthy limit ring",
+    where: "the neutral arc around a mark, and the fill on a meter inside the card — "
+      + "a graphic, not text, on the ground it sits on and on its own track",
+    fg: "--fg-dim", backdrop: ["--bg-chrome", "--bg-island", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },
   {
-    what: "a nearly-spent limit meter",
-    where: "amber on the same track: the one that means something is about to want you",
-    fg: "--st-waiting", backdrop: ["--bg-void", "--bg-inset"],
+    what: "a nearly-spent limit ring",
+    where: "amber on the same arc: the one that means something is about to want you",
+    fg: "--st-waiting", backdrop: ["--bg-chrome", "--bg-island", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },
   {
-    what: "a spent limit meter",
-    where: "red on the same track, which is the reading a whole deck stalls on",
-    fg: "--st-error", backdrop: ["--bg-void", "--bg-inset"],
+    what: "a spent limit ring",
+    where: "red on the same arc, which is the reading a whole deck stalls on",
+    fg: "--st-error", backdrop: ["--bg-chrome", "--bg-island", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },
   {
-    what: "the meter's own track", rejected: true,
-    where: "rejected — the FILL carries the level and is measured above; a 3:1 track would "
-      + "read as a full meter, and the reading is printed in words beside it either way",
-    fg: "--bg-inset", backdrop: ["--bg-void"],
+    what: "the ring's own track", rejected: true,
+    where: "rejected — the ARC carries the level and is measured above; a 3:1 track would "
+      + "read as a full ring, and the reading is printed in words in the card and in the "
+      + "dial's own accessible name either way",
+    fg: "--bg-inset", backdrop: ["--bg-chrome", "--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the dashed track on a held or unreadable dial", rejected: true,
+    where: "rejected — same reasoning, one step quieter: the dashes are what an ABSENT "
+      + "reading looks like, and a 3:1 dashed circle would read as a ring that had been "
+      + "filled. What carries the fact is the mark's own dimming (measured below), the "
+      + "word COMING SOON in the card, and the accessible name",
+    fg: "--line", backdrop: ["--bg-chrome", "--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the mark inside a live dial",
+    where: "the AI's own glyph in the middle of its ring — a graphic, and the thing that "
+      + "says WHICH AI a dial is about",
+    fg: "--fg-mid", backdrop: ["--bg-chrome", "--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the mark inside a held dial",
+    where: "one step quieter, which is how a dial that is not ready is told from one that "
+      + "is without reading anything",
+    fg: "--fg-dim", backdrop: ["--bg-chrome", "--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the mark on a hovered dial",
+    where: "the hover raises the ground under it and the glyph brightens to meet it, so "
+      + "this pair is measured too",
+    fg: "--fg", backdrop: ["--bg-hover"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the dot for a window the ring is not showing",
+    where: "a five-hour window nearly spent behind a comfortable week. Ringed in the "
+      + "ground it sits on, so both grounds are measured",
+    fg: "--st-waiting", backdrop: ["--bg-chrome", "--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the same dot once that window is spent",
+    where: "red rather than amber, which is the pair everything else in this app uses "
+      + "for the same two meanings",
+    fg: "--st-error", backdrop: ["--bg-chrome", "--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
   {
     what: "\"nothing moves until 19:00\"",
-    where: "the sentence under a spent reading, on the strip and in its row — text, not a graphic",
-    fg: "--st-error", backdrop: ["--bg-void"],
+    where: "the sentence under a spent reading, inside the card's window block — text, "
+      + "not a graphic",
+    fg: "--st-error", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  /* Amber in words, from #392 and kept: the ring carries the state's hue, and a
+     hue is not a reading for somebody who cannot see it. So "nearly spent" is
+     said, and a hue on TEXT is measured at 4.5 rather than at 3. */
+  {
+    what: "“nearly spent — resets 19:00”",
+    where: "amber in words under a nearly-spent reading, in the card and in the dialog",
+    fg: "--st-waiting", backdrop: ["--bg-island", "--bg-inset"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
-    what: "the same sentence on a hovered row",
-    where: "the row's hover moves the ground under it, so the reading is measured twice",
-    fg: "--st-error", backdrop: ["--bg-hover"],
-    threshold: TEXT, sc: "1.4.3",
-  },
-  /* Amber in words, new with #392. The strip has no meter to put the state's hue
-     on — name, tier and reading take the line — so "nearly spent" carries both the
-     word and the hue, and a hue on TEXT is measured at 4.5 rather than at 3. */
-  {
-    what: "\u201cnearly spent \u2014 resets 19:00\u201d",
-    where: "amber in words under a nearly-spent reading, on the strip and in its row",
-    fg: "--st-waiting", backdrop: ["--bg-void"],
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "the same words on a hovered row",
-    where: "the hover raises the ground under them, so this pair is measured too",
-    fg: "--st-waiting", backdrop: ["--bg-hover"],
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "the caveat on a reading",
-    where: "THIS APP ONLY / ESTIMATE after the number — the qualifier ADR-0009's amendment "
-      + "refuses to make a tooltip. The same pair carries the `+3` count, the words about the "
-      + "other AIs and the chevron",
-    fg: "--fg-dim", backdrop: ["--bg-void"],
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "the caveat on a hovered row",
-    where: "the same words once the row's own hover has raised the ground",
-    fg: "--fg-dim", backdrop: ["--bg-hover"],
-    threshold: TEXT, sc: "1.4.3",
-  },
-  {
-    what: "the Ask button on an unknown row",
-    where: "the action a reading nobody can read offers instead of a blank meter — beside its row, "
-      + "and beside the strip when the AI the strip names is the unreadable one",
-    fg: "--fg-mid", backdrop: ["--bg-void", "--bg-inset"],
+    what: "the tier beside a reading",
+    where: "REPORTED / OBSERVED after the number — the qualifier ADR-0009 refuses to make "
+      + "a tooltip. The same pair carries the reading itself, COMING SOON, and every "
+      + "quiet line in the card",
+    fg: "--fg-dim", backdrop: ["--bg-island", "--bg-inset"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "a window's caveat in the dialog",
-    where: "\u201cother terminals and other machines are not in this\u201d, on the inset a window block sits on",
+    where: "“other terminals and other machines are not in this”, on the inset a window block sits on",
     fg: "--fg-dim", backdrop: ["--bg-island", "--bg-inset"],
     threshold: TEXT, sc: "1.4.3",
   },
@@ -833,7 +860,7 @@ const CASES = [
   {
     what: "the meter's track inside the dialog", rejected: true,
     where: "rejected — the same reasoning one ground up: measured so the step is on record, "
-      + "and it is a step (1.27 here, 1.39 out on the strip) rather than an accident",
+      + "and it is a step (1.27 here, 1.39 out on the chrome) rather than an accident",
     fg: "--bg-hover-2", backdrop: ["--bg-island", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },

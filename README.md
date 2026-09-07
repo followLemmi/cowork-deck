@@ -158,36 +158,47 @@ for a session the deck did not start. A CLI with no reader says so rather than s
 
 ## Limits: what each AI has left, and where that number came from
 
-A dozen sessions draw on **one** budget, and when it runs out they stall together. One line in the top
-bar says whether you can keep working: the AI that is worst off, its reading, and a count of the others
-behind it. Press it and the rest drop below — a row apiece, a thin meter, and when it lifts — worst off
-first, so the list opens on the AI the line just named.
+A dozen sessions draw on **one** budget, and when it runs out they stall together. A row of dials in the
+top bar says whether you can keep working — one mark per AI, with **the week drawn around it**. Point at
+one and a card opens with the rest: the five-hour window and the week in full, each with its reading, its
+meter, when it lifts and where the number came from, and the plan and account above them. Press it for
+the caveats and what to do about them.
+
+The dials do not move. Claude is where Claude was yesterday whether it is at 0% or refusing work, because
+a glance you have to read to find out what it is about is not a glance. **Codex** and **Gemini** sit
+beside it as *coming soon* — this deck does not read their limits yet, and a lineup that is stable across
+the day one of them starts working is worth more than one that shows only today.
+
+The ring is the week because a week is what you plan against. The five hours is the number that stops you
+in the next ten minutes, so when it is nearly or wholly spent behind a comfortable week, the dial carries
+a coloured dot — amber for "about to", red for "already"
+([#498](https://github.com/followLemmi/cowork-deck/issues/498)).
 
 Beside the ledger rather than in the panel, because it is the same kind of fact: two readings of what
 wants a person, and a third that says whether they can act on either. It also means the reading is there
 when the panel is collapsed, which a limit is not a property of ([#461](https://github.com/followLemmi/cowork-deck/issues/461)).
 
-**The source of a number is part of the number**, and where that changes what you would do it is on
-the row beside it rather than in a tooltip. There are three ways this app can know such a number:
+**The source of a number is part of the number**, and it is written beside it rather than hidden in a
+tooltip. There are three ways this app can know such a number:
 
 - **The account's own accounting**, the figure `/usage` draws. Obtained by asking `claude` itself, the
   way this app asks `gh` about GitHub: it costs nothing from your budget and no password passes through
   the app. Switch it off in Settings if you would rather nothing started a short-lived process every
-  few minutes to ask. A row shows this one **plain** — an unqualified number is the account's.
+  few minutes to ask. The card names it **Reported**.
 - **What the app saw for itself**, from the sessions it runs. Real, and *narrower than your account*:
-  other terminals, other machines and anything outside this app are not in it. A row says **"this app
-  only"** after the number, because that is the one direction that can mislead you into thinking you
-  have more runway than you do. No meter is drawn for it either — the app knows what it spent, not what
-  was allowed, and it will not divide by a ceiling it invented.
-- **Nothing at all** — the row says "no reading" and offers the one command that would answer it, in a
-  tile.
+  other terminals, other machines and anything outside this app are not in it. It is named **Observed**,
+  because that is the one direction that can mislead you into thinking you have more runway than you do.
+  No meter and no ring is drawn for it either — the app knows what it spent, not what was allowed, and it
+  will not divide by a ceiling it invented.
+- **Nothing at all** — the card says "no reading", the ring is a bare dashed track rather than an empty
+  one, and the dialog offers the one command that would answer it, in a tile.
 
-The dialog behind a row names all three by their tier — Reported, Observed, Estimated — with a sentence
-saying what each means. That is where the vocabulary is taught; a row carries only the caveat.
+The dialog behind a dial names all three by their tier — Reported, Observed, Estimated — with a sentence
+saying what each means. That is where the vocabulary is taught.
 
 The reading that matters most needs no percentage at all. When a session is refused, the app reads the
-limit banner on its way to the screen and says **nothing moves until 19:00** — in the limits block on
-screen, and in a notification while you are looking at something else. That survives a restart, and
+limit banner on its way to the screen and says **nothing moves until 19:00** — in the card on screen, and
+in a notification while you are looking at something else. That survives a restart, and
 you are told again when it lifts.
 
 ## A GitHub account per workspace
@@ -500,9 +511,9 @@ State tracking depends on Claude Code's hooks reporting back. On an older `claud
 to fire, the terminal is unaffected — you can type, scroll and work normally. The only symptom is a tile
 whose state label stays on `idle`.
 
-The limits block degrades the same way, and says which rung it is on. The reported figure is read out of
+The limits degrade the same way, and say which rung they are on. The reported figure is read out of
 `claude`'s own output, so a version that words it differently costs the *percentage* and nothing else:
-the block stays where it is, falls back to **Observed**, and labels itself. It never blanks, and it
+the dial stays where it is, falls back to **Observed**, and labels itself. It never blanks, and it
 never passes the app's own counting off as your account's. See
 [ADR-0009](docs/adr/0009-the-source-of-a-usage-number-is-part-of-the-number.md).
 

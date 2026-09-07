@@ -117,6 +117,35 @@ const PATHS: Record<string, string> = {
   columns: '<rect x="2.5" y="3.5" width="3.2" height="9" rx="1"/>'
     + '<rect x="6.4" y="3.5" width="3.2" height="9" rx="1"/>'
     + '<rect x="10.3" y="3.5" width="3.2" height="9" rx="1"/>',
+
+  /* --- The marks in the middle of a limit dial ---------------------------
+     Three AIs, told apart at 14px inside a 26px ring. Drawn in this app's own
+     hand — 16-unit grid, 1.5 stroke, round caps — and not traced from anybody's
+     brand artwork: what a dial needs is for three shapes to be distinguishable
+     from each other at a glance, which is a drawing problem, and a logo lifted
+     into a stroke set at a different weight is neither the logo nor this set.
+     The label beside them in the popover is what NAMES them; these only have to
+     be memorable enough that the second glance is faster than the first. */
+
+  /** Eight rays about a centre. A burst, because the two beside it are a solid
+   *  shape and an outline — three silhouettes rather than three drawings. */
+  "mark-claude": '<path d="M10.22 8.92 L13.82 10.41"/>'
+    + '<path d="M8.92 10.22 L10.41 13.82"/>'
+    + '<path d="M7.08 10.22 L5.59 13.82"/>'
+    + '<path d="M5.78 8.92 L2.18 10.41"/>'
+    + '<path d="M5.78 7.08 L2.18 5.59"/>'
+    + '<path d="M7.08 5.78 L5.59 2.18"/>'
+    + '<path d="M8.92 5.78 L10.41 2.18"/>'
+    + '<path d="M10.22 7.08 L13.82 5.59"/>',
+  /** An outline: a hexagon about a centre. The one angular silhouette of the
+   *  three, which is the whole job — a knot drawn at 14px is a smudge. */
+  "mark-codex": '<polygon points="13.28,11.05 8,14.1 2.72,11.05 2.72,4.95 8,1.9 13.28,4.95"/>'
+    + '<circle cx="8" cy="8" r="1.6"/>',
+  /** A four-pointed star with concave sides, filled — the one solid of the
+   *  three, so it reads as a shape rather than as a line drawing. */
+  "mark-gemini": '<path d="M8 1.5 C8.7 5.1 10.9 7.3 14.5 8 '
+    + 'C10.9 8.7 8.7 10.9 8 14.5 C7.3 10.9 5.1 8.7 1.5 8 '
+    + 'C5.1 7.3 7.3 5.1 8 1.5 z" fill="currentColor" stroke="none"/>',
 };
 
 /** Icons offered as a scenario's mark. `play` is the default and comes from

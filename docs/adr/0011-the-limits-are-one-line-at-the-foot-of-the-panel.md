@@ -7,11 +7,12 @@ deciders:
 
 # ADR-0011 — The limits are one line at the foot of the panel, opened on demand
 
-> **Amended by the section at the foot of this record (#461).** The line is in the
-> TOP BAR now, not the panel's foot. Everything else here stands: it is still one
-> line for the whole deck, still the worst-off AI with its tier and its reading,
-> still rows behind a disclosure. Read decisions 1–6 as written and the amendment
-> for where the line lives.
+> **Amended twice at the foot of this record.** #461 moved the glance out of the
+> panel's foot and into the TOP BAR. #498 then changed its shape: it is a row of
+> DIALS — one mark per AI, its week drawn around it — rather than one line naming
+> the worst-off AI with the rest behind a fold. Decisions 2, 3, 5 and 6 stand as
+> written; decision 1 is superseded on which AIs are shown, and decision 4's
+> disclosure is a hover card. Read the two amendments for what the glance is now.
 
 ## Context
 
@@ -296,3 +297,129 @@ The popover is `position: absolute` and out of the bar's flow, so opening the ro
 costs the bar no height and moves nothing below it. That is the same property the
 panel's foot was supposed to have and could not, because a grid row cannot both
 grow and take no space.
+
+---
+
+## Amendment, 7 September 2026 — the line became a row of dials (#498)
+
+*Status: Accepted. Supersedes decision 1 and the fold in decision 4. Decisions 2,
+3, 5 and 6 stand.*
+
+### What one line got wrong, and it was not the width
+
+The width argument was won: a name, a tier, a reading and a count do fit, and the
+amendment above states the order in which they give way. What one line cannot fix
+by getting shorter is that **it names one AI, and which one it names moves**.
+
+Decision 1 defended that: "the others cannot make the answer better". As an
+answer to "can I keep working" that is exactly right, and it is still right. But a
+glance is not only an answer, it is a PLACE — and this one had none. The word a
+person had learned to look for was `Claude` on Monday and `Gemini` on Tuesday,
+because a quota crossed a threshold overnight. Reading the line was the only way
+to find out which AI the line was about, and a reading you have to read is not a
+glance; it is a very short sentence in the chrome.
+
+The rest existed as `+3`. Decision 1 called that count "what stops the line
+reading as the whole picture", which it does, and it is also the whole of what the
+surface said about two thirds of the accounts on the machine.
+
+### The decision
+
+**One dial per AI, in a fixed order, always all of them.**
+
+- **The order does not move.** Claude, Codex, Gemini, then anything the registry
+  grew that this app has no drawing for. Not by urgency — urgency is what changes,
+  and a control that moves when its own reading moves cannot be found by
+  position. Where a person looks for Claude is where Claude is, at 100% and at
+  0%.
+- **The ring is the week.** A ring is a period coming round again, and the period
+  worth planning against is the week rather than the five hours. Chosen by window
+  id where a provider declares a `week` and otherwise the last window it declared
+  — both providers in the tree list theirs shortest first, and no file in `src/`
+  keeps a table of provider names.
+- **The five hours is not lost.** It is the first thing in the card, and when it
+  is near or spent behind a comfortable week it puts a coloured dot on the dial.
+  That case is the whole reason the dot exists: a dial drawing 12% while the deck
+  is about to be refused would be answering a question nobody asked.
+- **A hover opens a card**, not a list of rows. Both windows in full, each with
+  its tier by name, its meter and its reset, and the plan and account above them.
+  A press still opens `openUsageDialog` (decision 6).
+
+**Two of the three dials are held at "coming soon", and that is a claim about the
+roadmap rather than about the machine.** A held brand is not asked for a reading
+even where the backend has one — Gemini's provider exists and can answer nothing
+without a credential this app will not take (see the head of `gemini.rs`), and a
+permanent row of unknowns dressed as a live reading is worse than saying plainly
+that it is not ready. The alternative was to draw two brands and let the row
+change shape on the day a third arrives; a lineup that is stable across that day
+is worth more than one that is honest only about today.
+
+### What ADR-0009 costs here, and what it does not
+
+Decision 2 said the tier survives the shrink, and this shape shrinks the glance
+further than any before it: a 26px mark has room for **no** text at all. That
+would be the failure ADR-0009 exists to refuse — a number with nothing beside it
+to say which of three kinds of number it is — if the dial drew a number. It draws
+an ARC, which is not a figure a person can misread as their account's own
+accounting, and every surface that does draw the figure carries the tier beside
+it: the card, the dialog, the Linux menu row, and the dial's own accessible name.
+
+The card names every tier in FULL, the strongest included — `Reported`, not
+nothing. ADR-0009's amendment dropped "Reported" from a 340px row because the word
+cost a quarter of the line and changed nothing; a card has the room, and it is
+where the vocabulary is taught next to `sourceExplanation`. The shortened caveat
+(`this app only`) is kept for the one surface that is still a line: the Linux
+menu.
+
+### What the shape let go
+
+- **The fold, and everything it needed.** No `aria-expanded`, no caret, no state
+  to keep out of a repaint's way. The card is opened by pointing at a dial and is
+  gone when the pointer leaves.
+- **The Ask button beside the strip** (decision 5). Nothing interactive lives in
+  the card: it is a description, `aria-describedby` says so, and a control that
+  appears under the pointer and vanishes when it leaves is a control nobody can
+  reach. The offer moved into the dialog a press opens — where it already was.
+  With it goes the tray's `probe` action verb, since nothing mints it any more.
+- **`No AI detected on this machine` as a whole-surface state.** Two dials are
+  always drawn, so the row is always there, and the brand that was meant to
+  answer says for itself that it did not.
+
+### Consequences
+
+- The bar gives up 26px of height and about 90px of width, fixed, for any number
+  of accounts. The line it replaces was up to 246px and grew a second line when
+  something was spent.
+- **The status-area panel cannot use the popover.** `#tray` clips what leaves it,
+  so the card is drawn in the flow there instead, always open, on the most urgent
+  dial by default. That is one more difference between the two surfaces than
+  ADR-0013 had, and it is a placement rather than a rendering: the dial, the ring,
+  the meter and the words are the same code (`LimitDials`).
+- **The panel has to carry the open card across its own repaint.** It rebuilds its
+  entire document on every report from the deck, so nothing inside it can remember
+  anything — the provider being described is read off the old DOM and handed back
+  in, beside the scroll position and the focused control it already carried.
+- Three marks have to be told apart at 14px. They are drawn in this app's own hand
+  on the icon set's 16-unit grid rather than traced from anybody's brand artwork:
+  what a dial needs is three distinguishable silhouettes, and a logo lifted into a
+  stroke set at a different weight is neither the logo nor this set.
+- Every measured contrast pair for the limits moved again, and this time to two
+  grounds: `--bg-chrome` under the dials in the deck's bar and `--bg-island` under
+  them in the panel. The cases in `scripts/contrast.mjs` had still been recorded
+  against `--bg-void` from #392, which #461 had already made wrong.
+
+### Alternatives considered
+
+- **Keep the line and add a second one per AI.** The slab this record replaced,
+  with extra steps.
+- **Order the dials by urgency.** Everything this amendment is against, in one
+  sentence: it makes the worst one easy to find and the specific one impossible.
+  The urgency ordering survives where it belongs — in the panel's card, which
+  opens on the AI that is worst off rather than on the first one drawn.
+- **Draw only the AIs that are installed.** Rejected for the same reason "show
+  only what is not healthy" was rejected in this record: a surface that appears
+  and disappears under a person cannot be learned. A held dial is also the only
+  honest way to say a thing is planned.
+- **Show the five-hour window in a second, inner ring.** Two arcs at 26px is two
+  hairlines, and the reading that would have justified it — the session window in
+  trouble — is carried by the dot at a size a person can actually see.

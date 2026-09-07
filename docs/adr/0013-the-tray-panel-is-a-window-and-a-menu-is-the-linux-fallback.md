@@ -44,7 +44,7 @@ Sessions
 
 Every fact is there and it is the wrong surface for them. "17% used" as a
 sentence has to be read; a bar is seen. The whole reason the deck's limits block
-is a block and not a fifth page (`usage-block.ts`) is that a limit is something
+is a glance and not a fifth page (`usage-dial.ts`) is that a limit is something
 you glance at — and a menu is the one form of UI that cannot be glanced at,
 because it does not exist until you have already committed to opening it. Having
 paid the click, the person deserves more than a sentence.
@@ -91,25 +91,34 @@ The main window already holds both inputs: `lastUsage` from `usageSnapshot`, and
 every window's sessions in `sessionsByWindow`. It sends the composed report to
 `tray_update` (the tooltip, the badge count, the menu's sentences) and the raw
 facts to the panel window (`tray://facts`), which runs the same helpers and the
-same `LimitsBlock` the deck's block does.
+same `LimitDials` the deck's top bar does.
 
 `src-tauri/src/tray.rs` positions a window, turns any list of sections into a
 menu, routes a click back and tells the dock a number. It contains no provider
 name, no window name, no reading and no reset time.
 
-**`LimitsBlock` is reused, not copied.** Three optional hooks on `LimitsHost` —
-`strip`, `openDetail`, `openProbe` — are the whole difference between the two
-surfaces, and each defaults to what the deck already does. A second
-implementation of a row is how the two would come to disagree about a number,
-which is what `usage.ts` exists to prevent.
+**The limits block is reused, not copied.** Two optional hooks on its host —
+`detail` and `openDetail` — are the whole difference between the two surfaces,
+and each defaults to what the deck already does. A second implementation of a
+reading is how the two would come to disagree about a number, which is what
+`usage.ts` exists to prevent.
 
-`strip: false` is the one that is about this surface rather than about what it
-lacks. In the deck the block is a folded line with the rows behind it (ADR-0011 —
-at the foot of the panel when this was written, in the top bar since #461),
-because the deck is a surface being worked in and the rows would take room from
-it. This window is nothing but the glance: it draws
-its own "Limits" heading, it was opened deliberately, and folding the rows inside
-it would put them two presses deep in a surface that exists to show them in one.
+`detail: "inline"` is the one that is about this surface rather than about what
+it lacks. In the deck the detail floats under the row in a popover, which needs
+somewhere to float; `#tray` clips what leaves it, so the same card here would
+have its bottom sheared off. It is drawn in the flow instead, always open, on the
+most urgent dial — a window opened deliberately can afford to have the answer
+already on it, and a surface that is nothing but the glance should not put the
+glance one hover deep.
+
+> **Amended by #498**, which replaced the folded line with a row of dials (see
+> the second amendment to ADR-0011). The paragraphs above are as amended. Two
+> things went with the old shape: `strip: false`, which turned off a fold that no
+> longer exists, and `openProbe` with the `probe` action verb behind it — a 26px
+> dial has no room for a control beside it, so the offer lives in the dialog
+> `openDetail` opens. What did not change is the claim this decision rests on:
+> `src-tauri/src/tray.rs` still contains no provider name, no window name, no
+> reading and no reset time.
 
 ### 3. The tray icon never carries the count. The dock badge does.
 
