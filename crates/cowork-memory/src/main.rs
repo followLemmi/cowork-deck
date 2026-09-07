@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use cowork_memory::embed::{Embedder, FakeEmbedder};
+use cowork_memory::dates::Window;
 use cowork_memory::index::{search, update, SearchScope};
 use cowork_memory::SNIPPET;
 use std::path::PathBuf;
@@ -38,6 +39,14 @@ enum Cmd {
         // disable the threshold entirely.
         #[arg(long, default_value_t = 0.25, allow_hyphen_values = true)]
         min_score: f32,
+        /// Only notes written on or after this date, as `YYYY-MM-DD` or
+        /// `YYYY-MM`. A bare month means the first of it.
+        #[arg(long)]
+        since: Option<String>,
+        /// Only notes written on or before this date. A bare month means the
+        /// end of it.
+        #[arg(long)]
+        until: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -207,7 +216,7 @@ fn main() -> Result<()> {
                 );
             }
         }
-        Cmd::Search { query, scope, top, min_score, json } => {
+        Cmd::Search { query, scope, top, min_score, since, until, json } => {
             let e = embedder(&cli.root)?;
             refuse_to_clobber(&cache, e.as_ref())?;
             let (ix, _) = update(&cli.root, &cache, e.as_ref())?;
@@ -216,13 +225,16 @@ fn main() -> Result<()> {
                 "lessons" => SearchScope::Lessons,
                 other => SearchScope::Project(other.to_string()),
             };
-            let hits = search(&ix, e.as_ref(), &query, &scope, top, min_score)?;
+            let window = Window::parse(since.as_deref(), until.as_deref())
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let hits = search(&ix, e.as_ref(), &query, &scope, top, min_score, &window)?;
             if json {
                 println!("{}", serde_json::to_string(&hits)?);
             } else {
                 for h in &hits {
                     let room = h.room.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
-                    println!("[{:.2}] {}{}", h.score, h.file, room);
+                    let when = h.date.as_deref().map(|d| format!(" {d}")).unwrap_or_default();
+                    println!("[{:.2}]{} {}{}", h.score, when, h.file, room);
                     let flat: String = h.text.split_whitespace().collect::<Vec<_>>().join(" ");
                     println!("    {}", flat.chars().take(SNIPPET).collect::<String>());
                 }

@@ -49,7 +49,7 @@
 //! request that goes unanswered past [`REQUEST_DEADLINE`]: the caller gets the
 //! old path and a slow answer rather than no answer.
 
-use super::sidecar::{Hit, Scope, Sidecar};
+use super::sidecar::{Hit, Scope, Sidecar, Window};
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -260,12 +260,29 @@ pub fn warm(sidecar: &Sidecar) -> bool {
 }
 
 /// Search through the resident process, or `None` to fall back.
-pub fn search(sidecar: &Sidecar, query: &str, scope: &Scope, top: usize) -> Option<Vec<Hit>> {
+pub fn search(
+    sidecar: &Sidecar,
+    query: &str,
+    scope: &Scope,
+    top: usize,
+    window: &Window,
+) -> Option<Vec<Hit>> {
     let arg = scope.as_arg();
     let reply = ask(sidecar, |id| {
-        serde_json::json!({
+        /* `since` and `until` are omitted rather than sent as null when there is
+           no window: `serve::Request` defaults them, and a key that is present
+           and null is a shape the other side never has to think about. */
+        let mut req = serde_json::json!({
             "id": id, "op": "search", "query": query, "scope": arg, "top": top,
-        })
+        });
+        let obj = req.as_object_mut().expect("a JSON object");
+        if let Some(since) = &window.since {
+            obj.insert("since".into(), since.clone().into());
+        }
+        if let Some(until) = &window.until {
+            obj.insert("until".into(), until.clone().into());
+        }
+        req
     })?;
     if !reply.ok {
         /* A refusal is the sidecar's answer, not a fault in the transport — an
@@ -291,7 +308,7 @@ mod tests {
         let s = Sidecar::new(std::path::PathBuf::from("/no/such/root"));
         // No binary staged in a test build, so this is the "not installed" path.
         assert!(!s.is_staged());
-        assert_eq!(search(&s, "anything", &Scope::Everything, 5), None);
+        assert_eq!(search(&s, "anything", &Scope::Everything, 5, &Window::any()), None);
         assert!(!warm(&s));
     }
 

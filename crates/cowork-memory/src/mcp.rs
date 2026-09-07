@@ -40,6 +40,7 @@
 //! scope a suggestion — so both tools apply it, and the read applies it to the
 //! resolved path rather than to the string it was given.
 
+use crate::dates::Window;
 use crate::embed::Lazy;
 use crate::index::{self, Hit, SearchScope};
 use crate::DIARY_SCOPE;
@@ -232,9 +233,14 @@ fn tools() -> Value {
                 "description":
                     "Search this project's own memory of earlier sessions, and the \
                      cross-project lessons from all of them, by meaning rather than by \
-                     keyword. Worth asking before changing unfamiliar code, before \
-                     repeating an approach that may have been tried, and whenever a \
-                     decision looks like one somebody has already made. Returns short \
+                     keyword. This is where recent work is recorded, so ask it first \
+                     whenever somebody wants to know what was done — what did we do \
+                     yesterday, where did we leave off, what happened last week, what \
+                     came out of a named phase — and use `since`/`until` when the \
+                     question names a period. Also worth asking before changing \
+                     unfamiliar code, before repeating an approach that may have been \
+                     tried, and whenever a decision looks like one somebody has already \
+                     made. Every result says when its note was written. Returns short \
                      passages; use read_note for the whole note.",
                 "inputSchema": {
                     "type": "object",
@@ -250,6 +256,20 @@ fn tools() -> Value {
                             "description":
                                 "Search only the cross-project lessons, leaving this \
                                  project's session notes out.",
+                        },
+                        "since": {
+                            "type": "string",
+                            "description":
+                                "Only notes written on or after this date, as \
+                                 YYYY-MM-DD or YYYY-MM. Use it when the question is \
+                                 about a period rather than a topic — the wording of \
+                                 such a question matches nothing on its own.",
+                        },
+                        "until": {
+                            "type": "string",
+                            "description":
+                                "Only notes written on or before this date, as \
+                                 YYYY-MM-DD or YYYY-MM.",
                         },
                     },
                     "required": ["query"],
@@ -340,7 +360,26 @@ fn search_memory(
     } else {
         served.scope()
     };
-    match index::search(&ix, emb, query, &scope, TOP, served.min_score) {
+    let window = match Window::parse(
+        args.get("since").and_then(Value::as_str),
+        args.get("until").and_then(Value::as_str),
+    ) {
+        Ok(w) => w,
+        // An unreadable bound is told to the agent, which can fix it. Ignoring
+        // it would answer a question about last week with a note from May and
+        // give no sign that the period was dropped.
+        Err(e) => return text(e, true),
+    };
+    match index::search(&ix, emb, query, &scope, TOP, served.min_score, &window) {
+        Ok(hits) if hits.is_empty() && !window.is_any() => text(
+            format!(
+                "Memory has nothing written down from {}. Nothing was recorded in that \
+                 period, which is not the same as nothing having happened — a wider \
+                 period, or the same question without one, may find it.",
+                window.describe()
+            ),
+            false,
+        ),
         Ok(hits) if hits.is_empty() => text(
             "Nothing in memory matches that. It is searched by meaning, so rephrasing \
              as a different question sometimes helps.",
@@ -357,6 +396,10 @@ fn search_memory(
 /// field names it does not need. The path is included because `read_note` takes
 /// it, and the scope is named because a lesson arriving from another project is
 /// the feature working and should not look like a leak.
+///
+/// **The date is named too** (#462). A note has an age and a passage handed over
+/// without one reads as current, which is how an August note came back as an
+/// account of what was happening now.
 fn render(hits: &[Hit]) -> String {
     let mut out = String::new();
     for h in hits {
@@ -368,7 +411,11 @@ fn render(hits: &[Hit]) -> String {
         } else {
             "this project".to_string()
         };
-        out.push_str(&format!("## {} ({where_from})\n\n{}\n\n", h.file, h.text.trim()));
+        let when = match &h.date {
+            Some(d) => format!("written {d}, "),
+            None => String::new(),
+        };
+        out.push_str(&format!("## {} ({when}{where_from})\n\n{}\n\n", h.file, h.text.trim()));
     }
     out
 }
@@ -447,6 +494,7 @@ mod tests {
             N.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         ));
         let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ws-1/Sessions/2026-05")).unwrap();
         std::fs::create_dir_all(root.join("ws-1/Sessions/2026-08")).unwrap();
         std::fs::create_dir_all(root.join("ws-2/Sessions/2026-08")).unwrap();
         std::fs::create_dir_all(root.join("Diaries/reviewer")).unwrap();
@@ -461,6 +509,14 @@ mod tests {
             root.join("ws-2/Sessions/2026-08/31-other.md"),
             "# 2026-08-31 — another project entirely\n\n## TL;DR\nSomething happened in a \
              project this session has nothing to do with, and it is written down here.\n",
+        )
+        .unwrap();
+        // Three months before the rest, so a window has something to leave out.
+        std::fs::write(
+            root.join("ws-1/Sessions/2026-05/12-early.md"),
+            "# 2026-05-12 — the early one\n\n## TL;DR\nThe first pass at the staging script \
+             copied whatever the build directory happened to hold, which worked on one \
+             machine and on no other, and was replaced later that week.\n",
         )
         .unwrap();
         std::fs::write(
@@ -608,6 +664,14 @@ mod tests {
         let d = tools[0]["description"].as_str().unwrap();
         assert!(d.contains("before changing unfamiliar code"), "{d}");
         assert!(d.contains("cross-project"), "{d}");
+        // #462: recalling recent work is the most obvious thing anybody asks a
+        // memory, and a description that names only decisions tells an agent,
+        // fairly precisely, that this tool is for something else.
+        assert!(d.contains("what did we do yesterday"), "{d}");
+        assert!(d.contains("where did we leave off"), "{d}");
+        assert!(d.contains("`since`/`until`"), "{d}");
+        let props = &tools[0]["inputSchema"]["properties"];
+        assert!(props.get("since").is_some() && props.get("until").is_some(), "{props}");
         assert!(tools[0]["inputSchema"]["required"].as_array().unwrap().contains(&json!("query")));
     }
 
@@ -665,6 +729,60 @@ mod tests {
         assert!(body.contains("Diaries/reviewer"), "something came back: {body}");
         assert!(!body.contains("ws-1/"), "{body}");
         assert!(!body.contains("ws-2/"), "{body}");
+    }
+
+    /// #462: the question whose selector is *when*. Without a window the nearest
+    /// neighbours are whatever notes talk about doing things, from any month.
+    #[test]
+    fn a_search_can_be_confined_to_a_period() {
+        let s = served("window", Some("ws-1"));
+        let august = tool_text(&search(
+            &s,
+            json!({ "query": "what did we do", "since": "2026-08-01", "until": "2026-08-31" }),
+        ));
+        assert!(august.contains("ws-1/Sessions/2026-08/31-staging.md"), "{august}");
+        assert!(!august.contains("2026-05/12-early.md"), "{august}");
+
+        let may = tool_text(&search(
+            &s,
+            json!({ "query": "what did we do", "since": "2026-05", "until": "2026-05" }),
+        ));
+        assert!(may.contains("ws-1/Sessions/2026-05/12-early.md"), "{may}");
+        assert!(!may.contains("2026-08/31-staging.md"), "{may}");
+    }
+
+    /// A passage handed over without its age reads as current.
+    #[test]
+    fn every_hit_says_when_its_note_was_written() {
+        let s = served("dated", Some("ws-1"));
+        let body = tool_text(&search(&s, json!({ "query": "cross build architecture triple" })));
+        assert!(body.contains("written 2026-08-31, this project"), "{body}");
+        assert!(body.contains("written 2026-08, a cross-project lesson"), "{body}");
+    }
+
+    /// "Nothing matches" and "nothing was written down then" are different
+    /// answers, and only the second is true of a period nobody worked in.
+    #[test]
+    fn a_period_with_nothing_in_it_names_the_period() {
+        let s = served("empty-window", Some("ws-1"));
+        let v = search(
+            &s,
+            json!({ "query": "what did we do", "since": "2026-01-01", "until": "2026-01-31" }),
+        );
+        assert_eq!(v["result"]["isError"], false);
+        let body = tool_text(&v);
+        assert!(body.contains("2026-01-01 to 2026-01-31"), "{body}");
+        assert!(body.contains("not the same as nothing having happened"), "{body}");
+    }
+
+    /// A bound nobody could read is told to the agent. Dropped silently, it
+    /// would answer a question about last week with a note from May.
+    #[test]
+    fn an_unreadable_date_is_an_error_the_agent_can_fix() {
+        let s = served("bad-date", Some("ws-1"));
+        let v = search(&s, json!({ "query": "what did we do", "since": "yesterday" }));
+        assert_eq!(v["result"]["isError"], true);
+        assert!(tool_text(&v).contains("YYYY-MM-DD"), "{}", tool_text(&v));
     }
 
     #[test]

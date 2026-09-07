@@ -37,17 +37,41 @@
 //! than no result, because it reads as a closed question — so this block never
 //! carries a directive, and says plainly when it found nothing.
 
-use super::sidecar::Scope;
+use super::sidecar::{Scope, Window};
+use chrono::NaiveDate;
 
-/// The shortest a prompt can be and still be worth a search, in characters.
+/// The fewest words a prompt can have and still be worth a search.
 ///
-/// Measured against the case the gate exists for: "fix this indent" is fifteen.
-/// A question that memory could answer is a sentence, and a sentence in any
-/// language this app expects is longer than this.
-const MIN_CHARS: usize = 24;
-
-/// And in words, because a long pasted path is not a question.
+/// The whole of the length gate, and the only part of it that ever was
+/// language-neutral. Measured against the case the gate exists for: "fix this
+/// indent" is three words, and stays refused.
+///
+/// # There was a character floor here, and it was calibrated on English
+///
+/// `MIN_CHARS = 24`, under a comment claiming that "a sentence in any language
+/// this app expects is longer than this". #462 showed that it is not: Russian
+/// says the same thing in fewer characters, and «что мы делали по фазе 4» —
+/// six words, a perfectly ordinary question about this project's own history —
+/// is twenty-three characters and was refused on the count alone. An English
+/// interface does not imply an English question — the same assumption
+/// `src/commands.ts` already refuses to make about the keyboard, where hotkeys
+/// match on `e.code` because a Cyrillic layout delivers `Cmd+K` as `л`.
+///
+/// What replaced it is [`MIN_LETTERS`], which counts letters rather than the
+/// whole string. That is not a cosmetic difference: it is a floor on how much
+/// of the prompt is *words*, which is the property the gate wanted, rather than
+/// on how long the prompt is, which is the property a language decides.
 const MIN_WORDS: usize = 4;
+
+/// The fewest letters a prompt can hold and still be a question.
+///
+/// A path, a hash and a URL are all long and all unanswerable from a corpus of
+/// prose. Four words of three letters is the floor, which is the smallest thing
+/// [`MIN_WORDS`] admits that is made of words at all — the number is derived
+/// from the word count rather than from any language's idea of a sentence, and
+/// carries over the value the old character floor happened to enforce so the
+/// gate loosens in exactly one direction: the one #462 asked for.
+const MIN_LETTERS: usize = 12;
 
 /// How many passages are worth putting in front of a prompt.
 ///
@@ -77,15 +101,11 @@ pub fn worth_searching(prompt: &str) -> bool {
     if p.starts_with("```") {
         return false;
     }
-    if p.chars().count() < MIN_CHARS {
-        return false;
-    }
     if p.split_whitespace().count() < MIN_WORDS {
         return false;
     }
-    // Something has to be a word. A path, a hash and a URL are all long and all
-    // unanswerable from a corpus of prose.
-    p.chars().filter(|c| c.is_alphabetic()).count() >= MIN_CHARS / 2
+    // Something has to be a word. See [`MIN_LETTERS`].
+    p.chars().filter(|c| c.is_alphabetic()).count() >= MIN_LETTERS
 }
 
 /// The prompt out of a Claude Code `UserPromptSubmit` payload.
@@ -108,10 +128,37 @@ pub fn prompt_of(payload: &str) -> Option<String> {
 /// above every message is the noise this feature is one bad decision away from
 /// becoming. The surfaces that CAN act on it — the memory page, the settings
 /// block — already say it where somebody is looking.
-pub fn context_block(scope: &Scope, hits: &[super::sidecar::Hit]) -> String {
+///
+/// # Every passage carries its age
+///
+/// #462: a note handed over without a date reads as current, and an agent given
+/// four August passages in September will describe August as what is happening
+/// now. The date is on the hit already — see `cowork_memory::dates` — and this
+/// is where a reader sees it, as the date and as how long ago that was, because
+/// "2026-08-31" is a fact and "a week ago" is the one that changes an answer.
+///
+/// `window` is the period the question asked about, if it asked about one. It
+/// changes nothing about the hits, which the search has already confined; it
+/// changes what an empty result says, because "nothing matches that" and
+/// "nothing was written down that week" are different answers and only the
+/// second is true.
+pub fn context_block(
+    scope: &Scope,
+    hits: &[super::sidecar::Hit],
+    window: &Window,
+    today: NaiveDate,
+) -> String {
     if hits.is_empty() {
         // No directive, and no hits that did not match. The one sentence that
         // stops an empty result reading as a closed question.
+        if !window.is_any() {
+            return format!(
+                "Memory: nothing was written down in this project between {}. That period \
+                 has no notes — which is not the same as nothing having happened in it, \
+                 and `git log` covers what the commits say.",
+                window.describe(),
+            );
+        }
         return match scope {
             Scope::Workspace(_) => {
                 "Memory: this project's notes have nothing on that, and neither do the \
@@ -122,19 +169,56 @@ pub fn context_block(scope: &Scope, hits: &[super::sidecar::Hit]) -> String {
             _ => "Memory: nothing written down matches that.".to_string(),
         };
     }
-    let mut out = String::from(
+    let mut out = String::from(if window.is_any() {
         "Memory — what earlier sessions wrote down about this, closest first. These are \
          notes, not a record of truth: they may be out of date, and they are not an \
-         answer to the question above.\n",
-    );
+         answer to the question above.\n"
+    } else {
+        "Memory — what earlier sessions wrote down in the period this question is about. \
+         These are notes, not a record of truth: they may be incomplete, and they are not \
+         an answer to the question above.\n"
+    });
     for hit in hits {
-        out.push_str(&format!("\n- {} — {}\n", hit.file, passage(&hit.text)));
+        out.push_str(&format!(
+            "\n- {}{} — {}\n",
+            hit.file,
+            age(hit.date.as_deref(), today),
+            passage(&hit.text),
+        ));
     }
     out.push_str(
-        "\nThe `search_memory` tool searches the same corpus with a question of your own, \
-         and `read_memory_note` reads any of the files above whole.",
+        "\nThe `search_memory` tool searches the same corpus with a question of your own — \
+         it takes `since` and `until` for a question about a period — and \
+         `read_memory_note` reads any of the files above whole.",
     );
     out
+}
+
+/// When a note was written, and how long ago that is.
+///
+/// Both, because they answer different questions: the date is what an agent
+/// quotes back, and the distance is what tells it whether the passage is a
+/// description of the work in hand or of a thing that was true in the spring.
+///
+/// A note the layout does not date — `Facts.md` — says nothing rather than
+/// guessing, and reads as it did before this existed.
+fn age(date: Option<&str>, today: NaiveDate) -> String {
+    let Some(date) = date else { return String::new() };
+    // `2026-08-31`, or `2026-08` for a diary, which is a month and gets no day
+    // count: "a month whose distance is 6 to 37 days" is not worth a phrase.
+    let Ok(when) = NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
+        return format!(" ({date})");
+    };
+    let days = (today - when).num_days();
+    let ago = match days {
+        d if d < 0 => "dated ahead of today".to_string(),
+        0 => "today".to_string(),
+        1 => "yesterday".to_string(),
+        d if d < 14 => format!("{d} days ago"),
+        d if d < 60 => format!("{} weeks ago", d / 7),
+        d => format!("{} months ago", d / 30),
+    };
+    format!(" ({date}, {ago})")
 }
 
 /// A passage, flattened and bounded.
@@ -172,17 +256,40 @@ mod tests {
             scope: "ws-1".to_string(),
             room: None,
             text: text.to_string(),
+            date: None,
         }
     }
 
+    /// The same, with the date the sidecar derives from the path.
+    fn dated(file: &str, date: &str, text: &str) -> Hit {
+        Hit { date: Some(date.to_string()), ..hit(file, text) }
+    }
+
+    /// Every date below is arithmetic from this day.
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 9, 6).unwrap()
+    }
+
     /// The case the gate exists for, named in #388: "Fix this indent" should not
-    /// pay for a process and a model load.
+    /// pay for a process and a model load. It is refused on its word count, which
+    /// is what #462 established the character floor was never needed for.
     #[test]
     fn a_short_instruction_is_not_worth_a_search() {
         assert!(!worth_searching("fix this indent"));
         assert!(!worth_searching("ok"));
         assert!(!worth_searching("продолжай"));
         assert!(!worth_searching("   "));
+    }
+
+    /// #462. Twenty-three characters, six words, and a question about this
+    /// project's own history — refused by the old character floor on the count
+    /// alone, which is how the hook came to be silent on the question that
+    /// worked and loud on the one that did not.
+    #[test]
+    fn a_short_russian_question_is_worth_a_search() {
+        assert!(worth_searching("что мы делали по фазе 4"));
+        assert!(worth_searching("что мы вчера делали по проекту"));
+        assert!(worth_searching("где мы остановились вчера"));
     }
 
     #[test]
@@ -223,10 +330,25 @@ mod tests {
     /// than no result, because it reads as a closed question.
     #[test]
     fn an_empty_result_says_so_and_carries_no_directive() {
-        let out = context_block(&Scope::Workspace("ws-1".into()), &[]);
+        let out = context_block(&Scope::Workspace("ws-1".into()), &[], &Window::any(), today());
         assert!(out.contains("nothing on that"), "{out}");
         assert!(!out.to_lowercase().contains("use these"), "{out}");
         assert!(out.contains("not the same as it not being so"), "{out}");
+    }
+
+    /// A period with no notes in it is a different answer from a question with
+    /// no match, and saying the first as the second closes a question that is
+    /// open (#462).
+    #[test]
+    fn an_empty_period_names_the_period_and_leaves_git_log_standing() {
+        let window =
+            Window { since: Some("2026-09-05".into()), until: Some("2026-09-05".into()) };
+        let out = context_block(&Scope::Workspace("ws-1".into()), &[], &window, today());
+        assert!(out.contains("2026-09-05"), "{out}");
+        assert!(out.contains("not the same as nothing having happened"), "{out}");
+        // The fallback stays available: this is about memory being consulted
+        // first, not about forbidding the commits.
+        assert!(out.contains("git log"), "{out}");
     }
 
     #[test]
@@ -235,6 +357,8 @@ mod tests {
         let out = context_block(
             &Scope::Workspace("ws-1".into()),
             &[hit("ws-1/Sessions/2026-08/31-a.md", &long)],
+            &Window::any(),
+            today(),
         );
         assert!(out.contains("ws-1/Sessions/2026-08/31-a.md"));
         assert!(out.contains('…'), "a long passage is trimmed: {out}");
@@ -243,6 +367,82 @@ mod tests {
         // agent from treating this block as the question being closed.
         assert!(out.contains("may be out of date"));
         assert!(out.contains("not an answer"));
+    }
+
+    /// #462: a passage handed over without its age reads as current, which is
+    /// how an August note came back as an account of what is happening now.
+    #[test]
+    fn every_passage_carries_its_date_and_how_old_that_is() {
+        let out = context_block(
+            &Scope::Workspace("ws-1".into()),
+            &[
+                dated("ws-1/Sessions/2026-09/05-a.md", "2026-09-05", "вчерашняя работа"),
+                dated("ws-1/Sessions/2026-08/31-b.md", "2026-08-31", "прошлая неделя"),
+                dated("Diaries/reviewer/2026-05.md", "2026-05", "давний урок"),
+                hit("ws-1/Facts.md", "факт без даты"),
+            ],
+            &Window::any(),
+            today(),
+        );
+        assert!(out.contains("(2026-09-05, yesterday)"), "{out}");
+        assert!(out.contains("(2026-08-31, 6 days ago)"), "{out}");
+        // A diary is a month; its distance is not worth a phrase.
+        assert!(out.contains("(2026-05)"), "{out}");
+        // And a note the layout does not date says nothing rather than guessing.
+        assert!(out.contains("ws-1/Facts.md — факт"), "{out}");
+    }
+
+    #[test]
+    fn how_old_a_note_is_reads_in_the_units_that_matter() {
+        assert_eq!(age(Some("2026-09-06"), today()), " (2026-09-06, today)");
+        assert_eq!(age(Some("2026-09-05"), today()), " (2026-09-05, yesterday)");
+        assert_eq!(age(Some("2026-08-30"), today()), " (2026-08-30, 7 days ago)");
+        assert_eq!(age(Some("2026-08-01"), today()), " (2026-08-01, 5 weeks ago)");
+        assert_eq!(age(Some("2026-03-01"), today()), " (2026-03-01, 6 months ago)");
+        assert_eq!(age(None, today()), "");
+    }
+
+    /// A block answering a question about a period says so, and points at the
+    /// arguments an agent can use to ask its own.
+    #[test]
+    fn a_windowed_block_says_it_is_about_the_period() {
+        let window =
+            Window { since: Some("2026-09-05".into()), until: Some("2026-09-05".into()) };
+        let out = context_block(
+            &Scope::Workspace("ws-1".into()),
+            &[dated("ws-1/Sessions/2026-09/05-a.md", "2026-09-05", "что делали")],
+            &window,
+            today(),
+        );
+        assert!(out.contains("in the period this question is about"), "{out}");
+        assert!(out.contains("`since` and `until`"), "{out}");
+    }
+
+    /// The two prompts #462 was reported with, taken through the decisions the
+    /// hook makes about them — the gate, then the period.
+    ///
+    /// The report's finding was that these two came out backwards: the hook fired
+    /// on the *yesterday* question and returned passages nobody could use, and
+    /// was refused outright on the *phase 4* one, where the useful answer came
+    /// from the agent calling `search_memory` itself. Both are searched now, and
+    /// only the one that names a period gets one.
+    #[test]
+    fn the_two_prompts_from_the_report_are_decided_the_right_way_round() {
+        let yesterday = "что мы вчера делали по проекту";
+        assert!(worth_searching(yesterday));
+        assert_eq!(
+            crate::memory::when::window_of(yesterday, today()),
+            Some(Window { since: Some("2026-09-05".into()), until: Some("2026-09-05".into()) }),
+            "the selector is *when*, and it is read off the question",
+        );
+
+        let phase = "что мы делали по фазе 4";
+        assert!(worth_searching(phase), "twenty-three characters, and a real question");
+        assert_eq!(
+            crate::memory::when::window_of(phase, today()),
+            None,
+            "a lexical handle is not a period, and must be searched as before",
+        );
     }
 
     /// Markdown in a chunk is flattened: what goes in front of a prompt is prose,
