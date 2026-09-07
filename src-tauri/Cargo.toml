@@ -35,7 +35,7 @@ tauri-build = { version = "2", features = [] }
 # both off in the same commit.
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-notification = "2"
-portable-pty = "0.8"
+portable-pty = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
