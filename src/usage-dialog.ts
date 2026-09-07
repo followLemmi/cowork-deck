@@ -17,10 +17,11 @@ import { usageClearObserved } from "./ipc";
 import {
   formatReset,
   readingOf,
+  sourceBadge,
   sourceExplanation,
-  sourceLabel,
-  stateClass,
   meterFraction,
+  zoneClass,
+  zoneOf,
 } from "./usage";
 
 export interface UsageDialogHost {
@@ -46,13 +47,20 @@ function windowBlock(w: LimitWindow, now: number): HTMLElement {
   const name = document.createElement("span");
   name.className = "lim-win-name";
   name.textContent = w.label;
-  const tier = document.createElement("span");
-  // The tier, on every window, always. This is the clause the feature was
-  // designed around: printing a reported number and an observed one in the same
-  // typeface with no label is the failure mode.
-  tier.className = `lim-src lim-src--${w.source}`;
-  tier.textContent = sourceLabel(w.source);
-  head.append(name, tier);
+  head.append(name);
+  // The tier by name where the name says something — `sourceBadge`, which is
+  // ADR-0009's second amendment. `REPORTED` is gone from here as it went from the
+  // rows: it labelled the one case that cannot mislead, and the sentence two
+  // lines below it (`sourceExplanation`) already says what it meant. The weaker
+  // tiers keep their names, and this is still the surface where a person finds
+  // out that "this app only" is a tier called Observed.
+  const badge = sourceBadge(w.source);
+  if (badge) {
+    const tier = document.createElement("span");
+    tier.className = `lim-src lim-src--${w.source}`;
+    tier.textContent = badge;
+    head.append(tier);
+  }
   box.append(head);
 
   const reading = document.createElement("p");
@@ -63,7 +71,10 @@ function windowBlock(w: LimitWindow, now: number): HTMLElement {
   const fill = meterFraction(w);
   if (fill !== null) {
     const meter = document.createElement("div");
-    meter.className = `lim-meter ${stateClass(w.state)}`;
+    // The band, not the state: the same three hues and the same thresholds the
+    // dials draw, so a meter here and the ring that opened this dialog cannot
+    // read as two different answers (`zoneOf`).
+    meter.className = `lim-meter ${zoneClass(zoneOf(w))}`.trimEnd();
     const bar = document.createElement("span");
     bar.className = "lim-fill";
     bar.style.width = `${Math.round(fill * 100)}%`;
