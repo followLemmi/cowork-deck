@@ -146,6 +146,17 @@
      same reason `--sel` is — a filter bar sits on the screen's ground here and on an
      island in the specimen sheet, and both composites are measured. */
   --sel-hover: rgba(246, 247, 249, 0.126);
+  /* The same hover step, translucent, for a row that sits on a ground of its own.
+     `--bg-hover` and `--bg-inset` are opaque, which is fine on a flat island and
+     wrong on a workspace's tint band (#511): an opaque hover REPLACES the band
+     instead of stepping off it, so the hovered row falls out of its group and the
+     step it makes shrinks to whatever is left between the band and 40. 0.077 is
+     not a new step — it is the old one solved back into alpha: on `--bg-island` it
+     composites to #27282a against `--bg-hover`'s #28282a, so a row outside a group
+     and a row inside one hover identically, and a row on a band steps the same
+     distance every other row does. Used only where a band can be underneath; see
+     `.ws-group` below. */
+  --bg-hover-soft: rgba(246, 247, 249, 0.077);
 
   /* Hue, therefore, means exactly one thing: what a session is doing — and, on a
      limit, how much of it is left (`zoneOf`). */
@@ -1802,6 +1813,79 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    of workspaces and one of sessions grouped by workspace, could never say. */
 .ws-kids { display: flex; flex-direction: column; padding-left: 14px; }
 .ws-kids[hidden] { display: none; }
+
+/* --- The workspace tint --------------------------------------------------
+   A workspace's colour was a choice made in a form and then spent entirely on an
+   8px dot. Here it becomes ground: one band per workspace, at full strength on
+   the workspace row and gone by the last of its sessions, so that a tree of a
+   dozen sessions across four workspaces reads as four objects rather than as one
+   column whose only grouping signal is an indent.
+
+   HOW STRONG is decided in `src/tint.ts`, not here, and for a reason worth
+   knowing: the six swatches are three hues and three greys, and at one fixed
+   alpha chalk lifts this ground 1.6× as far as slate — one workspace glaring and
+   another invisible. `workspaceTint` solves the alpha per colour so every band
+   weighs the same, and writes the two properties below onto the group. Untinted
+   is the fallback, declared here so that `rgb(var(--ws-tint) / …)` is a valid
+   colour even on a group JS never reached.
+
+   WHY A BAND AND NOT A FILL. The rail down a row's left edge carries working /
+   waiting / error / ended in saturated colour, and the accent is near-achromatic
+   precisely so that nothing competes with it (see the note over `--accent`). The
+   tint is therefore the quietest ground step in the panel — below `--sel` and
+   below `--bg-hover`, both of which are painted by the rows *on top of* it, which
+   is the other half of why this element exists: selection and hover keep the
+   `background` property to themselves and simply composite over the band. */
+.ws-group {
+  --ws-tint: 0 0 0;
+  --ws-tint-a: 0;
+  border-radius: var(--r-ctl);
+  background-color: rgb(var(--ws-tint) / var(--ws-tint-a));
+}
+/* Groups are objects now, so they get the gap that says so. Between groups only:
+   the heading above the first and the `+ workspace` under the last already have
+   their own spacing, and a margin on every group would double it. */
+.ws-group + .ws-group { margin-top: var(--sp-1); }
+/* The fade, and it is subtraction rather than addition: the group is painted one
+   flat tint, and this lays the panel's own ground back over the sessions, from
+   nothing at the top of the list to all of it at the bottom. The workspace row
+   above is left at full strength.
+
+   That is what makes the band FIT the group instead of guessing at it. A gradient
+   with its stops in pixels would have to know how tall a workspace row is — and
+   it is one line or two depending on whether the workspace has a bound account
+   and whether it is the active one — and would leave a stub of colour under a
+   folded workspace, whose `.ws-kids` is `display: none` and whose group is
+   therefore exactly the row. Here a folded group, a detached one, and one with no
+   sessions yet are all the same case and all correct: no list, no fade, and the
+   band is a flat tint across the row that is all the group has.
+
+   `transparent` for the top stop rather than the ground at zero alpha: gradients
+   interpolate premultiplied, so it fades in the ground's own hue rather than
+   through grey. */
+.ws-group > .ws-kids {
+  background-image: linear-gradient(to bottom, transparent, var(--bg-island));
+}
+/* Hover, re-stated translucent, and this is the other half of constraint 2: a row
+   inside a group has the band under it, and `--bg-hover` / `--bg-inset` are opaque
+   — they would paint the band out and leave a hovered row reading as a hole in its
+   own group, stepping only the distance the band had not already used up. At
+   `--bg-hover-soft` the step is the same size wherever the row sits, and the group
+   stays continuous under the pointer.
+   `.active` is restated for one reason and it is specificity, not appearance: these
+   selectors outrank the plain `.ws-row.active` / `.sess-row.active` above, so
+   without this pair a selected row would show its HOVER ground while the pointer
+   was on it — which is the order this app has always had the other way round. */
+.ws-group .ws-row:hover, .ws-group .sess-row:hover { background: var(--bg-hover-soft); }
+.ws-group .ws-row.active, .ws-group .sess-row.active { background: var(--sel); }
+/* Neither half survives forced colours, and neither should: the band is decorative
+   ground that the system palette has no name for, and the fade paints an explicit
+   dark over whatever the system chose for a surface. `background-color` is forced
+   on our behalf; `background-image` is not, so it is taken out by hand. */
+@media (forced-colors: active) {
+  .ws-group { background-color: transparent; }
+  .ws-group > .ws-kids { background-image: none; }
+}
 
 /* How many of this workspace's sessions are waiting, on the workspace's own row.
    Written by the deck between this panel's renders, so it is always in the DOM and
