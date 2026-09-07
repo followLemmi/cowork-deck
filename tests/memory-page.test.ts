@@ -31,6 +31,7 @@ const hit = (over: Partial<MemoryHit> = {}): MemoryHit => ({
   scope: "ws-1",
   room: null,
   text: "# a note\n\n## TL;DR\nit read the host triple instead of the tauri one",
+  date: "2026-08-31",
   ...over,
 });
 

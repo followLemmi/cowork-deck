@@ -81,6 +81,15 @@ pub struct Hit {
     /// The diary room, when this is a diary.
     pub room: Option<String>,
     pub text: String,
+    /// When the note was written — `2026-08-31`, or `2026-08` for a diary.
+    ///
+    /// `None` for a note the layout does not date, and **also** `None` from a
+    /// sidecar older than #462, which is why this is `serde(default)` rather
+    /// than required. The duplicated contract this file warns about cuts both
+    /// ways: a staged binary from a previous build must degrade to a hit without
+    /// an age, not to a parse failure that takes memory out entirely.
+    #[serde(default)]
+    pub date: Option<String>,
 }
 
 /// What the model directory holds, mirroring `model::ModelStatus`.
@@ -142,6 +151,42 @@ pub struct Indexed {
     pub files: usize,
     pub chunks: usize,
     pub changed: usize,
+}
+
+/// The period a search is confined to, or none at all.
+///
+/// #462. Strings rather than a date type because this crosses a process
+/// boundary as command-line arguments and as JSON, and the sidecar is where a
+/// date is parsed and compared — `cowork_memory::dates` owns that, and
+/// `src-tauri` cannot depend on the crate (ADR-0003). Each end is `YYYY-MM-DD`
+/// or `YYYY-MM`, and the sidecar refuses anything else rather than searching
+/// the whole corpus as though no period had been named.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Window {
+    pub since: Option<String>,
+    pub until: Option<String>,
+}
+
+impl Window {
+    /// Every note there is — what a search that named no period asks for.
+    pub fn any() -> Window {
+        Window::default()
+    }
+
+    pub fn is_any(&self) -> bool {
+        self.since.is_none() && self.until.is_none()
+    }
+
+    /// The period in the words the empty-result sentence needs.
+    pub fn describe(&self) -> String {
+        match (self.since.as_deref(), self.until.as_deref()) {
+            (Some(a), Some(b)) if a == b => a.to_string(),
+            (Some(a), Some(b)) => format!("{a} to {b}"),
+            (Some(a), None) => format!("{a} onwards"),
+            (None, Some(b)) => format!("up to {b}"),
+            (None, None) => "any time".to_string(),
+        }
+    }
 }
 
 /// Which notes a search may see.
@@ -238,17 +283,35 @@ impl Sidecar {
     /// `min_score` is left at the CLI's default on purpose: it carries the
     /// reference implementation's threshold, and the golden parity test is what
     /// keeps retrieval where it was measured. Tuning it from up here would be
-    /// tuning it on a hunch.
-    pub fn search(&self, query: &str, scope: &Scope, top: usize) -> Result<Vec<Hit>, String> {
+    /// tuning it on a hunch. (The sidecar lifts it by itself when `window` is
+    /// set, because a period question scores nowhere near the notes that answer
+    /// it — that reasoning belongs next to the ranking, in `index::search`.)
+    ///
+    /// `window` confines the answer to a period. Empty for every caller that is
+    /// not asking a question about *when*.
+    pub fn search(
+        &self,
+        query: &str,
+        scope: &Scope,
+        top: usize,
+        window: &Window,
+    ) -> Result<Vec<Hit>, String> {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
         let scope_arg = scope.as_arg();
         let top = top.to_string();
-        let out = self.run(
-            &["search", query, "--scope", &scope_arg, "--top", &top, "--json"],
-            SEARCH_DEADLINE,
-        )?;
+        let mut args: Vec<&str> =
+            vec!["search", query, "--scope", &scope_arg, "--top", &top, "--json"];
+        if let Some(since) = &window.since {
+            args.push("--since");
+            args.push(since);
+        }
+        if let Some(until) = &window.until {
+            args.push("--until");
+            args.push(until);
+        }
+        let out = self.run(&args, SEARCH_DEADLINE)?;
         // An empty result is a legitimate answer and the CLI says so on stderr
         // while keeping stdout machine-readable, so this parses either way.
         serde_json::from_str(out.trim()).map_err(|e| {
@@ -724,7 +787,7 @@ exit 1"#,
     #[test]
     fn an_empty_query_never_reaches_the_sidecar() {
         let s = Sidecar { program: "/no/such/binary".into(), root: "/r".into() };
-        assert_eq!(s.search("   ", &Scope::Everything, 10), Ok(Vec::new()));
+        assert_eq!(s.search("   ", &Scope::Everything, 10, &Window::any()), Ok(Vec::new()));
     }
 
     /// A build that did not stage the sidecar is a different fault from a

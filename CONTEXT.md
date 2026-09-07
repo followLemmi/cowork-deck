@@ -113,6 +113,9 @@ in the next.
 
 **Corpus** — every note, fact and lesson on this machine, rooted at the config directory.
 The markdown is the memory; the **index** is a cache that may be thrown away (ADR-0004).
+A note's **date is its path** — `ws-1/Sessions/2026-08/31-topic.md` is the thirty-first, a
+diary is a month — which is what lets a search ask for a period without the index keeping a
+second copy of a fact the corpus already states.
 
 **Sidecar** — a helper binary bundled beside the app: `cowork_report` (the hooks' reporter),
 `cowork_task` (the CLI a session files a card with), `cowork_memory` (the indexer). The

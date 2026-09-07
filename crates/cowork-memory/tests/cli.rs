@@ -81,12 +81,70 @@ fn search_scoped_to_a_workspace_also_returns_diaries() {
     assert_eq!(diary["scope"], "__diaries__");
     assert_eq!(diary["room"], "reviewer");
     assert!(diary["text"].as_str().is_some_and(|s| !s.is_empty()));
+    // #462 added `date`, and it is part of the same published interface: the
+    // app's `sidecar::Hit` mirrors this object field for field.
+    assert_eq!(diary["date"], "2026-07", "a diary is dated to its month");
 
     let ws = hits
         .iter()
         .find(|h| h["file"].as_str().unwrap().starts_with("ws-1/"))
         .expect("workspace hit");
     assert!(ws["room"].is_null(), "a workspace hit has no room");
+    assert_eq!(ws["date"], "2026-07-27", "a session note is dated to its day");
+
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// #462: the app's prompt hook sends a period when the question names one, and
+/// this is the boundary it sends it across.
+#[test]
+fn a_search_can_be_confined_to_a_period() {
+    let root = fixture_root("window");
+    fs::create_dir_all(root.join("ws-1/Sessions/2026-09")).unwrap();
+    let body = "Планировщик получил окно поиска по датам, чтобы вопрос про вчерашний                 день не отвечался заметкой из другого месяца. ";
+    fs::write(
+        root.join("ws-1/Sessions/2026-09/06-window.md"),
+        format!("# Окно поиска\n\n## TL;DR\n{}\n", body.repeat(2)),
+    )
+    .unwrap();
+
+    let files = |args: &[&str]| -> Vec<String> {
+        let (stdout, stderr, ok) = run(&root, args);
+        assert!(ok, "search failed: {stderr}");
+        let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["file"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let base = ["search", "что мы делали", "--scope", "ws-1", "--min-score", "-1", "--json"];
+
+    let all = files(&base);
+    assert!(all.len() >= 3, "everything, unwindowed: {all:?}");
+
+    let mut september =
+        files(&[&base[..], &["--since", "2026-09-01", "--until", "2026-09-30"]].concat());
+    september.sort();
+    assert_eq!(september, vec!["ws-1/Sessions/2026-09/06-window.md"], "one day's work");
+
+    let mut july = files(&[&base[..], &["--since", "2026-07", "--until", "2026-07"]].concat());
+    july.sort();
+    assert_eq!(
+        july,
+        vec!["Diaries/reviewer/2026-07.md", "ws-1/Sessions/2026-07/27-scheduler.md"],
+        "a bare month means the whole of it, and the diary overlaps it"
+    );
+
+    let nothing = files(&[&base[..], &["--since", "2026-01", "--until", "2026-01"]].concat());
+    assert!(nothing.is_empty(), "a period with no notes in it: {nothing:?}");
+
+    // A bound nobody could read is a failure, not a window quietly dropped —
+    // which would answer a question about last week with a note from July.
+    let (_, stderr, ok) = run(&root, &[&base[..], &["--since", "yesterday"]].concat());
+    assert!(!ok, "an unreadable bound must fail");
+    assert!(stderr.contains("YYYY-MM-DD"), "and say what a date looks like: {stderr}");
 
     fs::remove_dir_all(&root).unwrap();
 }
