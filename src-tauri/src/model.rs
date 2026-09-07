@@ -685,6 +685,21 @@ pub struct UiState {
     /// rather than here — a stored number cannot know what the terminal is doing.
     #[serde(rename = "toolPx", default)]
     pub tool_px: Option<u32>,
+    /// Whether the left panel is collapsed to the rail.
+    ///
+    /// **The person's answer, and nobody else's.** It is stored at all because it
+    /// used not to be: zooming a session collapsed the panel and un-zooming
+    /// brought it back, so the state a restart found was whatever the last zoom
+    /// had made it rather than anything anyone chose (#480). With the automatic
+    /// collapse gone, the only writer is the shut button, the palette entry and
+    /// the hotkey — and a preference with one writer is a preference worth
+    /// keeping.
+    ///
+    /// `#[serde(default)]` for the reason spelled out above `ui_scale`, and the
+    /// default it lands on is the right one: a panel nobody has collapsed is
+    /// open.
+    #[serde(rename = "panelCollapsed", default)]
+    pub panel_collapsed: bool,
 }
 
 /// On. A journal nobody switched on records nothing, and the first thing anyone
@@ -748,6 +763,9 @@ impl Default for UiState {
             wsp_px: None,
             wsp_wide_px: None,
             tool_px: None,
+            // Open. A person who has never pressed the shut button has not asked
+            // for a rail.
+            panel_collapsed: false,
         }
     }
 }
@@ -791,6 +809,8 @@ pub struct UiStatePatch {
     pub wsp_wide_px: Option<u32>,
     #[serde(rename = "toolPx")]
     pub tool_px: Option<u32>,
+    #[serde(rename = "panelCollapsed")]
+    pub panel_collapsed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

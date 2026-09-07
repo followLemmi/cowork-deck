@@ -141,6 +141,14 @@ export interface UiState {
    *  tool. Its floor is the 80-column rule, which is enforced where the panel is
    *  drawn — a stored number cannot know what the terminal is doing. */
   toolPx?: number;
+  /** Whether the left panel is collapsed to the rail — the person's own answer.
+   *
+   *  Required rather than optional, for the same reason as `uiScale`: the Rust
+   *  side fills it from a `serde` default, and the default is the right one — a
+   *  panel nobody has collapsed is open. Stored at all because it used not to be:
+   *  a zoom collapsed the panel and an un-zoom brought it back, so what a restart
+   *  found was whatever the last zoom had made it (#480). */
+  panelCollapsed: boolean;
 }
 
 /** A change to the stored state, which is what `save_ui_state` takes.
@@ -164,6 +172,7 @@ export interface UiStatePatch {
   wspPx?: number;
   wspWidePx?: number;
   toolPx?: number;
+  panelCollapsed?: boolean;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when

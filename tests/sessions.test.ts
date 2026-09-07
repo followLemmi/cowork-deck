@@ -580,9 +580,9 @@ describe("Zoom is remembered per workspace", () => {
     expect(deckEl.querySelector(".tile.zoomed")).toBe(null);
   });
 
-  // Entering and leaving zoom is what the listener is for. It collapses a panel
-  // and closes a page, and `applyLayout` runs on every launch, close and switch —
-  // so being told again on each of those closed a panel the person had reopened.
+  // Entering and leaving zoom is what the listener is for. It closes the workspace
+  // panel, and `applyLayout` runs on every launch, close and switch — so being
+  // told again on each of those closed a panel the person had reopened.
   it("tells the zoom listener on the edge, not on every layout", async () => {
     const { deck } = await twoWorkspaces();
 
@@ -608,7 +608,8 @@ describe("Zoom is remembered per workspace", () => {
   // session being opened is two layouts, and the first was never on screen — the
   // tiles came out of `ws-hidden` the line before. So the FLIP measured a "before"
   // nobody saw and spent 220ms travelling away from it, over a deck whose own box
-  // was still moving because the switch had just collapsed the panel.
+  // was still moving because a workspace switch collapsed the panel at the time.
+  // It no longer does (#480); the "before" nobody saw is the half that remains.
   it("opens a session in another workspace without morphing through that workspace's zoom", async () => {
     const { deck, deckEl, listEl } = await twoWorkspaces();
 

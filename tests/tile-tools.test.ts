@@ -45,6 +45,70 @@ describe("the 80-column floor", () => {
   });
 });
 
+/** The room argument the zoom's auto-collapse used to answer.
+ *
+ *  Zooming a session collapsed the left panel, and the reason given was that the
+ *  tool panel inside a zoomed tile wants the same width. #480 took the collapse
+ *  away — the panel is the person's — so a zoomed tile with the panel open is
+ *  simply a narrower tile, and the floor has to hold there rather than being kept
+ *  by the panel getting out of the way.
+ *
+ *  Which it does, because the floor is measured and not assumed: the panel FLOATS
+ *  over the terminal instead of squeezing it under 80 columns, decided against the
+ *  box the tile actually has. Two moments matter, and both are asserted — the open,
+ *  and every later change to the tile's box. */
+describe("a zoomed tile with the left panel open still honours the floor", () => {
+  /** A tile whose terminal can be narrowed the way an open left panel narrows it,
+   *  keeping the cell width fixed at 10px so the arithmetic stays readable. */
+  function host(): TileToolsHost & { width: number } {
+    return {
+      width: 1200,
+      cwd: () => "/p",
+      cols() { return Math.round(this.width / 10); },
+      termWidth() { return this.width; },
+      source: () => ({ kind: "person", detail: null, prompt: null }),
+      onWidth: () => {},
+    };
+  }
+
+  const open = (t: TileTools) =>
+    (t as unknown as { show(tool: unknown): Promise<void> })
+      .show({ id: "source", icon: "list", name: "Source" });
+
+  it("squeezes on a wide window, where 80 columns are left over", async () => {
+    // 1200px is 120 columns; the panel's 304px leaves 89.
+    const tools = new TileTools(host());
+    await open(tools);
+    expect(tools.panel.classList.contains("is-floating")).toBe(false);
+  });
+
+  it("floats on a narrow one, which is what the collapse used to hide", async () => {
+    // 1000px with the panel open beside it: 69 columns left, under the floor.
+    const h = host();
+    h.width = 1000;
+    const tools = new TileTools(h);
+    await open(tools);
+    expect(tools.panel.classList.contains("is-floating")).toBe(true);
+  });
+
+  it("re-decides when the tile's box changes under an open tool", async () => {
+    /* The case the panel's grip and a window resize both produce, and the reason
+       the floor is not a one-time answer: nothing about the open tool changed. */
+    const h = host();
+    const tools = new TileTools(h);
+    await open(tools);
+    expect(tools.panel.classList.contains("is-floating")).toBe(false);
+
+    h.width = 1000;
+    tools.refit();
+    expect(tools.panel.classList.contains("is-floating")).toBe(true);
+
+    h.width = 1200;
+    tools.refit();
+    expect(tools.panel.classList.contains("is-floating")).toBe(false);
+  });
+});
+
 describe("the file tree", () => {
   it("nests paths into folders", () => {
     const tree = fileTree(["src/app.ts", "src/ui/view.ts", "README.md"]);

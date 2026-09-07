@@ -1031,9 +1031,11 @@ export class Deck {
        came out of `ws-hidden` a line ago. So `animateLayoutChange` measured a
        "before" nobody saw and spent 220ms morphing away from it — a tile sliding
        out of a filmstrip slot it had never occupied, over a deck whose own box was
-       still moving because the switch had just collapsed the panel. Told where the
-       switch is going, the layout below produces the final arrangement directly and
-       the `focusTile` that follows finds nothing left to move.
+       still moving because a workspace switch collapsed the panel at the time —
+       which it no longer does (#480), and the FLIP is no less wrong for it: the
+       "before" it measures is still one nobody saw. Told where the switch is
+       going, the layout below produces the final arrangement directly and the
+       `focusTile` that follows finds nothing left to move.
 
        Only when this workspace was already zoomed. A workspace left as a grid stays
        a grid — opening a session in one is not a request to zoom it — and
@@ -2131,11 +2133,13 @@ export class Deck {
 
   /** Told whenever the deck enters or leaves zoom.
    *
-   *  For the panel beside it, which collapses to the rail while one session is
-   *  filling the stage: inside a session, the queue is not what a person is
-   *  looking at, and the tile's own tools want the width more. One listener
-   *  rather than a call at every site that can zoom — there are five, and a
-   *  behaviour wired at five call sites is a behaviour with four bugs in it. */
+   *  For the workspace panel on the far edge, which closes: a zoomed tile's tool
+   *  panel takes that same edge inside the tile frame. It told the LEFT panel to
+   *  collapse as well until #480, on the argument that the tools want the width —
+   *  and that made the panel's visibility the zoom's rather than the person's,
+   *  which is not a trade a listener gets to make. One listener rather than a call
+   *  at every site that can zoom — there are five, and a behaviour wired at five
+   *  call sites is a behaviour with four bugs in it. */
   setZoomListener(fn: (zoomed: boolean) => void) { this.onZoom = fn; }
   private onZoom: ((zoomed: boolean) => void) | null = null;
   /** What the listener was last told, and the reason it is told anything at all
@@ -2150,9 +2154,8 @@ export class Deck {
    *    the layout is whole, a re-entrant call is just the next layout.
    *  - **Told on the edge.** `applyLayout` runs on every launch, close and
    *    workspace switch, and it used to announce a zoom on each of them — closing
-   *    a panel and collapsing a sidebar the person may have opened since. What
-   *    the listener is for is the deck entering and leaving zoom, not repeating
-   *    that it is still in one.
+   *    a panel the person may have opened since. What the listener is for is the
+   *    deck entering and leaving zoom, not repeating that it is still in one.
    *
    *  Starts at `false` and is not replayed on registration, which is honest
    *  because the listener is wired once at boot — before there is a tile to

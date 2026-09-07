@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 /** The crumb's door to the workspace's two pages, driven through `startApp`.
  *
- *  It exists because the other door does not survive a zoom: the
- *  `board · PRs · journal` chip is on a row in the tree, a zoomed tile collapses
- *  the panel that tree lives in, and that left the palette as the only route to
- *  the board from the state a person spends most of their day in. The crumb is
- *  what stays, so the second door is on it.
+ *  It exists because the other door does not survive a collapse: the
+ *  `board · PRs · journal` chip is on a row in the tree, collapsing takes the
+ *  panel that tree lives in to zero width, and that left the palette as the only
+ *  route to the board from a collapsed panel. The crumb is what stays, so the
+ *  second door is on it. (Written when the app collapsed the panel itself on every
+ *  zoom; it is the person's own doing now — see #480 — and the door is needed
+ *  just the same.)
  *
  *  Driven through the app rather than through a unit, because every part of this
  *  is wiring: which element it is beside, whether it toggles, and whether
