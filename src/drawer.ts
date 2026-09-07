@@ -7,13 +7,21 @@ import {
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { confirmModal, promptModal } from "./modal";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
+import { icon } from "./icons";
+import { wireResizer } from "./resize";
 
 /** Must agree with `default_terminal_rows` in `src-tauri/src/model.rs`, which is
  *  what a `ui_state.json` written before the drawer existed reports. */
 export const DEFAULT_TERMINAL_ROWS = 14;
 /** Below four rows a terminal shows a prompt and nothing else, which is not a
  *  terminal; above thirty the drawer has taken the deck's place, and the deck is
- *  what the window is for. */
+ *  what the window is for.
+ *
+ *  Full-window mode does take the deck's place, and this cap is why it is a mode
+ *  rather than a larger number here: no row count is "the whole window" — thirty
+ *  overshoots a small one and undershoots a large one — and a person who slid
+ *  into the deck's space with a drag would have to drag their way back out.
+ *  `setFull` is the explicit, reversible version, with a control that undoes it. */
 const MIN_ROWS = 4;
 const MAX_ROWS = 30;
 /** xterm's `lineHeight` in `terminal.ts`. A row's height in pixels is the font
@@ -73,10 +81,17 @@ export function drawerHeightPx(rows: number, scale: number, barPx: number): numb
   return Math.round(rows * terminalFontPx(scale) * LINE_HEIGHT) + barPx;
 }
 
-/** The inverse, for a drag: which row count a dragged height means. */
-export function rowsForHeight(px: number, scale: number, barPx: number): number {
-  const rows = Math.round((px - barPx) / (terminalFontPx(scale) * LINE_HEIGHT));
-  return Math.min(MAX_ROWS, Math.max(MIN_ROWS, rows));
+/** The pixels one terminal row is worth at a given text scale. What the grip
+ *  divides pointer travel by, so a drag of one line box is a drag of one row —
+ *  see `wireGrip`.
+ *
+ *  This replaced a `rowsForHeight(px, scale, barPx)` that converted an absolute
+ *  dragged height into a row count (#424). Anchoring the gesture on the row count
+ *  it started at rather than on a measured pixel height is both simpler and more
+ *  exact: the tab bar, the grip and the island's border no longer have to be
+ *  subtracted out, and `barPx`'s own comment admits it is four pixels wrong. */
+export function rowPx(scale: number): number {
+  return terminalFontPx(scale) * LINE_HEIGHT;
 }
 
 /** The terminal drawer: a strip under the deck holding interactive shells.
@@ -105,8 +120,22 @@ export class TerminalDrawer {
    *  `setWorkspace`, which the app calls wherever the deck is switched. */
   private workspaceId: string | null = null;
   private rows = DEFAULT_TERMINAL_ROWS;
+  /** Whether the drawer is covering the deck.
+   *
+   *  **Per window, and nowhere else.** Not persisted, not per workspace, and
+   *  dropped by a workspace switch — which is the whole decision, so it is worth
+   *  saying what it rules out. Open/shut is a fact about a project and is filed
+   *  under a workspace id; this is a fact about the next few minutes. A drawer
+   *  that came back full-window after a restart would have hidden the deck
+   *  because of something a person did yesterday, and a workspace switch that
+   *  carried it over would hide a deck they have not looked at yet.
+   *
+   *  It is deliberately NOT `rows`: see `MAX_ROWS`. `terminalRows` is untouched
+   *  by the round trip, so collapsing returns the height the person chose. */
+  private full = false;
   private tabsEl!: HTMLElement;
   private bodiesEl!: HTMLElement;
+  private fullBtn!: HTMLButtonElement;
   private unlisten: UnlistenFn[] = [];
   private onScale = () => this.applyHeight();
 
@@ -148,6 +177,8 @@ export class TerminalDrawer {
    *  with the tab that was in front still in front. */
   setWorkspace(id: string | null): void {
     this.workspaceId = id;
+    // A momentary thing does not follow you between projects: see `full`.
+    this.full = false;
     const mine = this.visible();
     const remembered = this.activeByWorkspace.get(this.key());
     const front = mine.find((t) => t.session === remembered) ?? mine[0];
@@ -161,10 +192,6 @@ export class TerminalDrawer {
 
     const grip = document.createElement("div");
     grip.className = "term-grip";
-    grip.setAttribute("role", "separator");
-    grip.setAttribute("aria-orientation", "horizontal");
-    grip.setAttribute("aria-label", "Resize the terminal drawer");
-    grip.tabIndex = 0;
     this.wireGrip(grip);
 
     const bar = document.createElement("div");
@@ -181,6 +208,14 @@ export class TerminalDrawer {
     add.onclick = () => { void this.newTerminal(); };
     const spacer = document.createElement("span");
     spacer.className = "term-spacer";
+    // Its two faces are written by `renderFull`, which is also what puts the
+    // class on the drawer — one writer, so the control cannot offer to expand a
+    // drawer that is already expanded.
+    this.fullBtn = document.createElement("button");
+    this.fullBtn.className = "btn--icon term-full-btn";
+    this.fullBtn.type = "button";
+    this.fullBtn.append(icon("chevron"));
+    this.fullBtn.onclick = () => { void this.toggleFull(); };
     const hide = document.createElement("button");
     hide.className = "term-hide";
     hide.type = "button";
@@ -188,7 +223,10 @@ export class TerminalDrawer {
     hide.setAttribute("aria-label", "Hide terminals");
     hide.textContent = "✕";
     hide.onclick = () => { void this.setOpen(false); };
-    bar.append(this.tabsEl, add, spacer, hide);
+    // Before `✕`, which stays the last thing in the bar: it is the one control
+    // here that puts the whole surface away.
+    bar.append(this.tabsEl, add, spacer, this.fullBtn, hide);
+    this.renderFull();
 
     this.bodiesEl = document.createElement("div");
     this.bodiesEl.className = "term-bodies";
@@ -197,53 +235,129 @@ export class TerminalDrawer {
     window.addEventListener(UI_SCALE_EVENT, this.onScale);
   }
 
-  /** Drag, and arrow keys for the same thing — the grip is the only control
-   *  here that would otherwise be mouse-only. */
+  /** On `wireResizer` since #424, and it was a third hand-rolled copy of the same
+   *  gesture. Two things it did not have and now does: `aria-valuenow` and its
+   *  range — it announced itself as a window splitter and then said nothing about
+   *  where it was — and one write per frame rather than one per event.
+   *
+   *  The unit is ROWS, not pixels, which is the whole reason this grip could not
+   *  simply call the shared one before it grew `unitPx`: a row is however tall the
+   *  terminal's line box is at the current text scale, and the drawer's height is
+   *  a row count so that the text-size control moves it. */
   private wireGrip(grip: HTMLElement) {
-    grip.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      grip.setPointerCapture(e.pointerId);
-      const startY = e.clientY;
-      const startPx = this.el.getBoundingClientRect().height;
-      const move = (m: PointerEvent) => {
-        // Dragging up makes it taller, which is why the delta is inverted.
-        this.setRows(rowsForHeight(startPx + (startY - m.clientY), currentScale(), this.barPx()));
-      };
-      const up = () => {
-        grip.removeEventListener("pointermove", move);
-        grip.removeEventListener("pointerup", up);
+    wireResizer({
+      grip,
+      // Dragging UP makes it taller: the drawer hangs below the deck.
+      grow: "up",
+      label: "Resize the terminal drawer",
+      min: MIN_ROWS,
+      max: () => MAX_ROWS,
+      step: 1,
+      unitPx: () => rowPx(currentScale()),
+      read: () => this.rows,
+      write: (rows) => this.setRows(Math.round(rows)),
+      commit: () => {
         void saveUiState({ terminalRows: this.rows }).catch((err) =>
           console.debug("saveUiState failed", err));
-      };
-      grip.addEventListener("pointermove", move);
-      grip.addEventListener("pointerup", up);
-    });
-    grip.addEventListener("keydown", (e) => {
-      const step = e.key === "ArrowUp" ? 1 : e.key === "ArrowDown" ? -1 : 0;
-      if (!step) return;
-      e.preventDefault();
-      this.setRows(Math.min(MAX_ROWS, Math.max(MIN_ROWS, this.rows + step)));
-      void saveUiState({ terminalRows: this.rows }).catch((err) =>
-        console.debug("saveUiState failed", err));
+      },
+      valueText: (rows) => `${Math.round(rows)} rows`,
     });
   }
 
-  /** The chrome above the terminal: the tab bar plus the grip. Measured rather
-   *  than assumed, so a stylesheet change cannot silently cost the drawer rows. */
+  /** Everything the drawer's height buys that is not terminal: the tab bar, the
+   *  grip, and the island's own top and bottom border. Measured rather than
+   *  assumed, so a stylesheet change cannot silently cost the drawer rows — which
+   *  is exactly what the border did when the drawer became an island, because
+   *  `box-sizing: border-box` spends it out of the height written here.
+   *
+   *  `offsetHeight - clientHeight` is that border, and it is read from the
+   *  element rather than from the stylesheet for the same reason as the two
+   *  above. Zero while the drawer is hidden, along with the rest of this sum.
+   *
+   *  Over by four pixels on the grip, and named here rather than corrected:
+   *  `.term-grip` is an 8px box hung on `margin-top: -4px`, so `offsetHeight`
+   *  reports the eight while the column only spends four of them. Left alone
+   *  deliberately — `.term-body`'s own 8px of padding is not in this sum either,
+   *  the two errors point opposite ways, and what the pair is worth is the row
+   *  count xterm reports, which is a browser measurement. Correcting one half of
+   *  a balance inside a function that reads 0 in jsdom is a change no test here
+   *  can catch. */
   private barPx(): number {
     const bar = this.el.querySelector<HTMLElement>(".term-bar");
     const grip = this.el.querySelector<HTMLElement>(".term-grip");
-    return (bar?.offsetHeight ?? 0) + (grip?.offsetHeight ?? 0);
+    const border = Math.max(0, this.el.offsetHeight - this.el.clientHeight);
+    return (bar?.offsetHeight ?? 0) + (grip?.offsetHeight ?? 0) + border;
   }
 
   private setRows(rows: number) {
     this.rows = rows;
+    // A drag or an arrow key names a height, which is the question full-window
+    // mode was one answer to — so the gesture wins and the drawer comes back
+    // into flow under the pointer. Leaving both on would be a grip that moves
+    // nothing, because the stylesheet owns the height while `is-full` is set.
+    if (this.full) { this.setFull(false); return; }
     this.applyHeight();
   }
 
+  /** The height, in pixels, from the row count — and nothing at all while the
+   *  drawer is full, where the stylesheet owns it. Two numbers fighting over one
+   *  property is the failure this shape exists to avoid: `is-full` is a class,
+   *  and `styles.css` is the whole of what it means. */
   private applyHeight() {
-    this.el.style.height = `${drawerHeightPx(this.rows, currentScale(), this.barPx())}px`;
+    this.el.style.height = this.full
+      ? ""
+      : `${drawerHeightPx(this.rows, currentScale(), this.barPx())}px`;
+    // The refit is the load-bearing half, for the reason `setFontSize` gives:
+    // it is what recomputes the grid and pushes the new size to the PTY. Reading
+    // the box here sees the height just written — and the panel's own
+    // `ResizeObserver` is the backstop for the frame after.
     this.active()?.panel.fit();
+  }
+
+  /** The control's two faces, and the class the stylesheet answers.
+   *
+   *  No `aria-pressed`: the label already says which of the two it will do, and a
+   *  button announcing "Restore the terminals to their height, pressed" states
+   *  the mode twice and contradicts itself the second time. This is a
+   *  maximise/restore pair, which changes what it is rather than reporting
+   *  whether it is on. */
+  private renderFull() {
+    this.el.classList.toggle("is-full", this.full);
+    const label = this.full
+      ? "Restore the terminals to their height"
+      : "Fill the window with the terminals";
+    // The glyph is `chevron`, rotated by the stylesheet — up to fill, down to
+    // come back — which is the rule `icons.ts` states for every arrow in the app:
+    // one shape, direction from a CSS rotation. A dedicated pair was drawn and
+    // thrown away: two chevrons apart close into a diamond at 16px and two
+    // chevrons together close into an ✕, which is the button next to this one.
+    this.fullBtn.classList.toggle("is-full", this.full);
+    this.fullBtn.dataset.action = this.full ? "collapse" : "expand";
+    this.fullBtn.title = label;
+    this.fullBtn.setAttribute("aria-label", label);
+  }
+
+  /** Whether the drawer is covering the deck. Read by the app, which drops the
+   *  deck from the F6 cycle while it is: a region you cannot see is a stop that
+   *  appears to do nothing. */
+  isFull(): boolean { return this.full && this.isOpen(); }
+
+  /** Fill the window with the drawer, or give the deck back.
+   *
+   *  Asked of a drawer that is not up, it opens one first: the alternative is a
+   *  palette entry that does nothing, and "give me a full-window terminal" is
+   *  one intent whether or not a strip happens to be on screen. */
+  async toggleFull(): Promise<void> {
+    if (this.full) { this.setFull(false); return; }
+    if (!this.isOpen()) await this.toggle();
+    if (!this.isOpen()) return;
+    this.setFull(true);
+  }
+
+  private setFull(on: boolean) {
+    if (this.full === on) return;
+    this.full = on;
+    this.render();
   }
 
   /** Listeners of its own: the deck routes output by tile, and a drawer terminal
@@ -312,7 +426,10 @@ export class TerminalDrawer {
   /** Up or down for the workspace on screen, and only for it. */
   private setOpen(open: boolean) {
     if (open) this.openWorkspaces.add(this.key());
-    else this.openWorkspaces.delete(this.key());
+    // Putting the drawer away drops the mode with it: a drawer that came back
+    // full-window on the next `Cmd+J` would answer "show me the terminals" by
+    // hiding the deck.
+    else { this.openWorkspaces.delete(this.key()); this.full = false; }
     this.render();
   }
 
@@ -439,6 +556,7 @@ export class TerminalDrawer {
     }
     const up = this.isOpen();
     this.el.hidden = !up;
+    this.renderFull();
     if (up) this.applyHeight();
     else this.el.style.height = "";
   }
@@ -481,6 +599,12 @@ export class TerminalDrawer {
       );
       if (!ok) return;
     }
+    /* No note, and no question about one. #366 named this path alongside the
+       deck's because both end at `closeSession`, which was true and not the whole
+       story: a drawer tab is a *shell* (`startShell`), so Claude Code's hooks
+       never run for it and `transcripts::record` is never called. The offer would
+       therefore come back unavailable every single time, and asking would be an
+       IPC round trip per tab close to reach a foregone conclusion. */
     void closeSession(session).catch((e) => console.debug("closeSession failed", e));
     tab.panel.dispose();
     tab.el.remove();

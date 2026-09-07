@@ -1,8 +1,9 @@
-//! Единственное место в коде, знающее о существовании GitHub CLI (`gh`).
+//! The only place in the code that knows the GitHub CLI exists.
 //!
-//! Дизайн-инвариант: приложение НИКОГДА не хранит токен и НИКОГДА не меняет
-//! глобальное состояние gh (`gh auth switch`, `~/.config/gh/hosts.yml`).
-//! Токен резолвится на старте сессии и живёт только в памяти процесса.
+//! The invariant, and it is ADR-0001's: this app NEVER stores a token and NEVER
+//! changes `gh`'s global state — no `gh auth switch`, nothing written to
+//! `~/.config/gh/hosts.yml`. A token is resolved when a session starts and lives
+//! in that process's memory and nowhere else.
 
 use crate::model::WorkspaceGithub;
 use serde::Serialize;
@@ -13,7 +14,8 @@ pub struct GhAccount {
     pub login: String,
     pub active: bool,
     pub scopes: Vec<String>,
-    /// "success" у рабочего аккаунта; иное значение отдаём в UI как есть.
+    /// `"success"` on a working account. Anything else reaches the UI verbatim:
+    /// `gh`'s own word for what is wrong is better than a word of ours.
     pub state: String,
 }
 
@@ -28,8 +30,10 @@ pub struct GhStatus {
     pub error: Option<String>,
 }
 
-/// Разбирает вывод `gh auth status --json hosts`. Любой неожиданный ввод —
-/// это "аккаунтов нет", а не паника: gh может смениться версией под нами.
+/// Parse `gh auth status --json hosts`. Anything unexpected is "no accounts"
+/// rather than a panic: `gh` can change version underneath us, and a deck that
+/// will not start because a CLI grew a field is worse than one with no accounts
+/// listed.
 pub fn parse_auth_status(json: &str) -> Vec<GhAccount> {
     let root: serde_json::Value = match serde_json::from_str(json) {
         Ok(v) => v,
@@ -164,12 +168,13 @@ pub fn status() -> GhStatus {
 
 const TOKEN_PREFIXES: [&str; 6] = ["gho_", "ghp_", "ghu_", "ghs_", "ghr_", "github_pat_"];
 
-/// Вырезает всё, что похоже на токен GitHub, из текста перед логированием или
-/// отдачей во фронт.
+/// Cut anything that looks like a GitHub token out of text, before it is logged
+/// or handed to the front end.
 ///
-/// Работаем по префиксам, а не по known-значению: токен мог прийти из stderr
-/// самого gh, и тогда мы его не знаем. Совпадение засчитывается только на
-/// границе слова, чтобы «github.com» и подобное не пострадало.
+/// By prefix rather than by known value, and that is the point: the token may
+/// have come out of `gh`'s own stderr, in which case this code has never seen it.
+/// A match counts only at a word boundary, so `github.com` and its like are left
+/// alone.
 pub fn redact(msg: &str) -> String {
     let bytes = msg.as_bytes();
     let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
@@ -185,7 +190,7 @@ pub fn redact(msg: &str) -> String {
             out.push_str("<redacted>");
             i = j;
         } else {
-            let ch = msg[i..].chars().next().expect("i всегда на границе символа");
+            let ch = msg[i..].chars().next().expect("i is always on a char boundary");
             out.push(ch);
             i += ch.len_utf8();
         }
@@ -193,9 +198,12 @@ pub fn redact(msg: &str) -> String {
     out
 }
 
-/// Читает токен указанного аккаунта из keyring gh, НЕ переключая активный
-/// аккаунт. Таймаут обязателен: залоченный keyring на Linux умеет подвесить
-/// процесс диалогом, а старт сессии блокировать нельзя.
+/// Read one named account's token out of `gh`'s keyring, WITHOUT switching the
+/// active account.
+///
+/// The timeout is not optional. A locked keyring on Linux will hang the process
+/// behind a dialog, and a session launch is the one thing that must not block —
+/// see the note at the top of `commands.rs` about what runs on the main thread.
 pub fn token(host: &str, login: &str, timeout: std::time::Duration) -> Result<String, String> {
     let (host, login) = (host.to_string(), login.to_string());
     let (tx, rx) = std::sync::mpsc::channel();
@@ -219,26 +227,27 @@ pub fn token(host: &str, login: &str, timeout: std::time::Duration) -> Result<St
         Ok(Ok(o)) if o.status.success() => {
             let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
             if t.is_empty() {
-                Err("gh вернул пустой токен".into())
+                Err("gh returned an empty token".into())
             } else {
                 Ok(t)
             }
         }
         Ok(Ok(o)) => Err(redact(String::from_utf8_lossy(&o.stderr).trim())),
         Ok(Err(e)) => Err(e),
-        // Поток остаётся висеть на заблокированном keyring — он отвалится сам,
-        // когда диалог закроют. Мы его не ждём.
-        Err(_) => Err("gh не ответил вовремя (возможно, залочен keyring)".into()),
+        // The thread is left hanging on the locked keyring. It comes back on its
+        // own when the dialog is answered; nothing here waits for it.
+        Err(_) => Err("gh did not answer in time — the keyring may be locked".into()),
     }
 }
 
-/// Собирает окружение дочерней сессии из привязки воркспейса.
+/// Build a child session's environment from the workspace's binding.
 ///
-/// `token = Some(_)` — обычный путь. `token = None` — деградация: сессия всё
-/// равно стартует, но `GH_CONFIG_DIR` уводится в заведомо пустой каталог,
-/// чтобы gh сказал "ты не залогинен" вместо тихой работы под чужим активным
-/// аккаунтом. git-идентичность инжектится в обоих случаях — она известна и
-/// без токена.
+/// `token = Some(_)` is the ordinary path. `token = None` is the degradation, and
+/// it is deliberate rather than a failure: the session still starts, but
+/// `GH_CONFIG_DIR` is pointed at a directory known to be empty, so `gh` says "you
+/// are not signed in" instead of quietly working as whoever the active account
+/// happens to be. The git identity is injected either way — it is known without a
+/// token.
 pub fn session_env(
     cfg: &WorkspaceGithub,
     token: Option<&str>,
@@ -250,10 +259,10 @@ pub fn session_env(
     match token {
         Some(t) => {
             put("GH_TOKEN", t);
-            // github MCP-сервер, если сессия его поднимает, читает эту переменную.
+            // The GitHub MCP server, where a session starts one, reads this.
             put("GITHUB_PERSONAL_ACCESS_TOKEN", t);
-            // GH_TOKEN действует на github.com; для прочих хостов gh смотрит
-            // GH_ENTERPRISE_TOKEN, поэтому хост нужно назвать явно.
+            // `GH_TOKEN` applies to github.com; for any other host `gh` reads
+            // `GH_ENTERPRISE_TOKEN`, so the host has to be named explicitly.
             if cfg.host != "github.com" {
                 put("GH_HOST", &cfg.host);
             }
@@ -343,7 +352,7 @@ mod tests {
         let accs = parse_auth_status(json);
         assert_eq!(accs.len(), 1);
         assert_eq!(accs[0].state, "timeout");
-        assert!(accs[0].scopes.is_empty(), "пустая строка скоупов не должна давать [\"\"]");
+        assert!(accs[0].scopes.is_empty(), "an empty scope string must not become [\"\"]");
     }
 
     #[test]
@@ -389,7 +398,7 @@ mod tests {
         assert_eq!(redact("token=github_pat_11ABC_longtail"), "token=<redacted>");
         for prefix in ["ghu_", "ghs_", "ghr_"] {
             let msg = format!("oops {prefix}secretvalue");
-            assert_eq!(redact(&msg), "oops <redacted>", "не отредактирован префикс {prefix}");
+            assert_eq!(redact(&msg), "oops <redacted>", "the {prefix} prefix was not redacted");
         }
     }
 
@@ -407,7 +416,10 @@ mod tests {
 
     #[test]
     fn redact_does_not_fire_mid_word_or_break_utf8() {
-        // «не-токен» внутри слова не трогаем: граница слова обязательна.
+        // Something token-shaped inside a word is left alone: the boundary is
+        // required. The Cyrillic case is here because a word boundary is not a
+        // byte test — `char_indices` and `is_alphanumeric` have to agree about
+        // where a word starts in text this app did not write.
         assert_eq!(redact("xgho_abc"), "xgho_abc");
         let cyrillic = "ошибка: gho_abc не подошёл";
         assert_eq!(redact(cyrillic), "ошибка: <redacted> не подошёл");
@@ -447,8 +459,8 @@ mod tests {
         assert_eq!(get(&env, "GIT_AUTHOR_EMAIL"), Some("e@example.com"));
         assert_eq!(get(&env, "GIT_COMMITTER_EMAIL"), Some("e@example.com"));
         assert_eq!(get(&env, "GIT_SSH_COMMAND"), Some("ssh -i '/home/u/.ssh/id_work'"));
-        assert_eq!(get(&env, "GH_CONFIG_DIR"), None, "успешный резолв не трогает GH_CONFIG_DIR");
-        assert_eq!(get(&env, "GH_HOST"), None, "для github.com GH_HOST не нужен");
+        assert_eq!(get(&env, "GH_CONFIG_DIR"), None, "a successful resolve leaves GH_CONFIG_DIR alone");
+        assert_eq!(get(&env, "GH_HOST"), None, "github.com needs no GH_HOST");
     }
 
     #[test]
@@ -462,7 +474,7 @@ mod tests {
             "GIT_COMMITTER_EMAIL",
             "GIT_SSH_COMMAND",
         ] {
-            assert_eq!(get(&env, k), None, "{k} не должна появляться — наследование из ~/.gitconfig");
+            assert_eq!(get(&env, k), None, "{k} must not appear — it is inherited from ~/.gitconfig");
         }
     }
 
@@ -484,9 +496,9 @@ mod tests {
     fn degraded_pins_an_empty_config_dir_and_never_sets_a_token() {
         let env = session_env(&cfg_full(), None, "/tmp/noauth");
         assert_eq!(get(&env, "GH_CONFIG_DIR"), Some("/tmp/noauth"));
-        assert_eq!(get(&env, "GH_TOKEN"), None, "молчаливый уход на чужой активный аккаунт недопустим");
+        assert_eq!(get(&env, "GH_TOKEN"), None, "falling back to somebody else's active account must never be silent");
         assert_eq!(get(&env, "GITHUB_PERSONAL_ACCESS_TOKEN"), None);
-        assert_eq!(get(&env, "GIT_AUTHOR_NAME"), Some("Evgeny"), "идентичность известна и без токена");
+        assert_eq!(get(&env, "GIT_AUTHOR_NAME"), Some("Evgeny"), "the identity is known without a token");
     }
 
     /// A degraded session has no credential helper, and git's fallback is to ask
@@ -547,6 +559,6 @@ mod tests {
         keys.sort();
         let before = keys.len();
         keys.dedup();
-        assert_eq!(before, keys.len(), "дубликаты ключей env: {keys:?}");
+        assert_eq!(before, keys.len(), "duplicate env keys: {keys:?}");
     }
 }

@@ -25,8 +25,14 @@ vi.mock("../src/ipc", () => ({
   prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
   describeExit: vi.fn().mockReturnValue(null),
   closeSession: vi.fn(),
+  // The close path asks whether a note is even possible before it asks
+  // anybody anything; unavailable is the quiet answer, so these tests see
+  // no dialog and no note.
+  memoryCaptureOffer: vi.fn().mockResolvedValue({ available: false }),
+  saveUiState: vi.fn().mockResolvedValue(undefined),
   saveLayout: vi.fn().mockResolvedValue(undefined),
   gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
+  sessionCwds: vi.fn().mockResolvedValue({}),
   sessionSnapshots: vi.fn().mockResolvedValue({}),
 }));
 
@@ -88,7 +94,10 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     emitState(first, "done");
     await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
 
-    expect(vi.mocked(closeSession)).toHaveBeenCalledWith(first);
+    // `null`, and the second argument is the point: replacing a finished run is
+    // not somebody deciding to end a session, so it never writes a note and never
+    // asks about one.
+    expect(vi.mocked(closeSession)).toHaveBeenCalledWith(first, null);
     expect(deckEl.querySelectorAll(".tile")).toHaveLength(1);
   });
 
@@ -108,8 +117,9 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     });
   });
 
-  // The pill answers "how many sessions are blocked on me", so a finished run
-  // must not inflate it. The notification above is what reports completion.
+  // "How many sessions are blocked on me" is what the ledger's reading and
+  // `focusNextWaiting` both answer, so a finished run must not inflate it. The
+  // notification above is what reports completion.
   it("does not count a finished run as waiting for input", async () => {
     const { deck, emitState } = await makeDeck();
     await deck.launchScheduled(WS as never, SKILL as never, "review", "schedule");
@@ -117,8 +127,8 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
     emitState(panelSessions[0], "done");
 
     // The deck reports its own sessions and their states; the main window is
-    // what turns that into the pill's number (#243). A finished run is not
-    // waiting for input, and this is where that is checked.
+    // what adds them up, because it is the only one that hears everybody (#243).
+    // A finished run is not waiting for input, and this is where that is checked.
     expect(vi.mocked(emit)).toHaveBeenCalledWith("session://waiting", expect.objectContaining({
       sessions: expect.not.arrayContaining([expect.objectContaining({ state: "waitingInput" })]),
     }));
@@ -139,7 +149,8 @@ describe("Deck.launchScheduled — overlap with a finished run", () => {
   });
 
   // Unattended work must not yank the user out of what they are typing. The
-  // notification and the pill are how a scheduled run announces itself.
+  // notification and the deck's own rows are how a scheduled run announces
+  // itself.
   it("does not take keyboard focus when a schedule fires", async () => {
     const { deck, deckEl } = await makeDeck();
     await deck.launch(WS as never, null);

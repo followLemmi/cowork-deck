@@ -146,17 +146,61 @@
      same reason `--sel` is — a filter bar sits on the screen's ground here and on an
      island in the specimen sheet, and both composites are measured. */
   --sel-hover: rgba(246, 247, 249, 0.126);
+  /* The same hover step, translucent, for a row that sits on a ground of its own.
+     `--bg-hover` and `--bg-inset` are opaque, which is fine on a flat island and
+     wrong on a workspace's tint band (#511): an opaque hover REPLACES the band
+     instead of stepping off it, so the hovered row falls out of its group and the
+     step it makes shrinks to whatever is left between the band and 40. 0.077 is
+     not a new step — it is the old one solved back into alpha: on `--bg-island` it
+     composites to #27282a against `--bg-hover`'s #28282a, so a row outside a group
+     and a row inside one hover identically, and a row on a band steps the same
+     distance every other row does. Used only where a band can be underneath; see
+     `.ws-group` below. */
+  --bg-hover-soft: rgba(246, 247, 249, 0.077);
 
-  /* Hue, therefore, means exactly one thing: what a session is doing. */
+  /* Hue, therefore, means exactly one thing: what a session is doing — and, on a
+     limit, how much of it is left (`zoneOf`). */
   --st-working: #7bd77f;
   --st-waiting: #efc845;
   --st-error: #fb817a;
+
+  /* --- somebody else's hue -----------------------------------------------
+     The ONE exception to everything above, and it is an exception because it is
+     not this app's colour to choose. A brand mark is drawn in the brand's own
+     colour or it is drawn wrong, the same argument that made these logos come in
+     whole on their owners' 24-unit grid rather than redrawn to match this icon
+     set (#498): a mark a person has to learn a second time is not a logo.
+
+     Claude's is `#D97757` — the coral of the Anthropic palette's accent and of
+     the mark itself, and the `hex` of `claude` in Simple Icons, which is where
+     the path in `icons.ts` was traced from.
+
+     There is no token here for Codex or Gemini, and that is not an omission.
+     OpenAI's own hex is `#000000`, which on this ground is not a mark at all,
+     and Gemini's logo is a four-stop gradient with no single official hex; both
+     brands are also HELD (`soon` in `usage.ts`) and drawn deliberately dim,
+     which is how "not ready" is said. A brand with no token keeps the dial's own
+     neutral — see `.dial-mark`. */
+  --brand-claude: #d97757;
   /* A soft error ground for a BANNER — a box with body text on it, not a chip.
      Deliberately not `.state-error`'s fill: that one is 0.06 because a chip's own fill
      shares the hue of its text and every point of alpha there costs contrast, whereas
      a banner carries `--fg` and can afford twice as much tint. Two different jobs, two
      values; `npm run contrast` measures this one on its own. */
   --bg-error-soft: rgba(251, 129, 122, 0.12);
+  /* The banner's own edge, and deliberately not `--chip-error-line` even though
+     the two resolve to the same rgba today: a chip's border is what makes a 0.06
+     fill read as a chip at all, and a banner's is an edge around body text. Two
+     jobs, two names, so a change to one cannot silently move the other. */
+  --line-error-soft: rgba(251, 129, 122, 0.42);
+  /* The same job in amber, for a banner that is a QUESTION rather than a
+     failure: what a pull could not decide, which only a person can settle. Added
+     when the sync dialog's own blocks were rewritten in this vocabulary — they
+     were built on `color-mix(in srgb, var(--st-waiting) 8%, transparent)`, which
+     `scripts/contrast.mjs` cannot parse, so the one surface in the app that puts
+     body text on amber was the one surface nobody had measured (#463). Same
+     0.12 as the red, for the same reason: the text on it is `--fg`. */
+  --bg-waiting-soft: rgba(239, 200, 69, 0.12);
   /* No hue, deliberately. The old palette spent a cyan on `ended`; ended is the
      absence of a signal rather than a signal, and a fifth hue on screen made the
      three that matter harder to separate.
@@ -168,6 +212,37 @@
      border rather than by being darker; states differ by shape, not by colour
      alone, which is the rule the rest of this set already follows. */
   --st-ended: #b9babd;
+
+  /* --- The state chips' fills -------------------------------------------
+     One name per fill, because each of these was written twice: `.state-*` on a
+     tile and a session row, and `.run-*` on a scenario's history — the same
+     rgba, byte for byte, in two places 2400 lines apart (#463). A palette move
+     that reached one and missed the other would leave a chip tinted towards a
+     green its text no longer is, and nothing would say so.
+
+     They are NOT one alpha, and that is the part worth reading before changing
+     one. A translucent fill pulls the chip's ground towards its own hue — which
+     is also the text's hue — so every step of alpha COSTS contrast rather than
+     adding it, and a lighter hue washes the ground further per step. The number
+     that clears 4.5:1 therefore differs by hue: error is 0.06 because 0.12
+     measured 4.31 on a selected row, waiting affords 0.16, working 0.14.
+     `npm run contrast` measures all of them, because one chip passing says
+     nothing about the next.
+
+     `--chip-*-line` is the border, and only three chips have one: it is what
+     tells a chip apart when its fill is this quiet, and what carries the
+     distinction in `forced-colors`. */
+  --chip-idle:    rgba(154, 156, 159, 0.12);
+  --chip-working: rgba(123, 215, 127, 0.14);
+  /* The same green as working, without the breathing: the work is done and
+     nothing is happening. Quieter, because nothing is asked of anybody. */
+  --chip-done:    rgba(123, 215, 127, 0.09);
+  --chip-waiting: rgba(239, 200, 69, 0.16);
+  --chip-error:   rgba(251, 129, 122, 0.06);
+  --chip-ended:   rgba(185, 186, 189, 0.10);
+  --chip-waiting-line: rgba(239, 200, 69, 0.42);
+  --chip-error-line:   rgba(251, 129, 122, 0.42);
+  --chip-ended-line:   rgba(185, 186, 189, 0.32);
 
   /* The diff drawer's two bands. Same hues as `.pr-detail-plus` / `.pr-detail-minus`
      in the same screen, so added is not one green in the file list and another in
@@ -241,11 +316,12 @@
   --fs-lg: 1.1875rem;     /* 19px — row and card titles */
   --fs-xl: 1.375rem;      /* 22px — one screen title per view */
   /* No 30px step. One was declared during the redesign for "a count, a stat" and
-     then nothing in the app needed it: the only candidate is the floating pill's
-     number, and the pill is a second window with its own stylesheet and no access to
-     these tokens. A declared token nothing uses is a claim nobody checks, so it is
-     better absent than aspirational — add it back in the commit that first renders at
-     30px, with the `contrast.mjs` case for the large-text threshold it crosses.
+     then nothing in the app needed it: the only candidate was the floating pill's
+     number, in a second window with its own stylesheet and no access to these
+     tokens, and #394 removed that window. A declared token nothing uses is a claim
+     nobody checks, so it is better absent than aspirational — add it back in the
+     commit that first renders at 30px, with the `contrast.mjs` case for the
+     large-text threshold it crosses.
      `--r-md` and `--shadow-tile` went the same way: superseded by `--r-island` and by
      the two shadows above, and left declared for a while after nothing used them. */
 
@@ -313,9 +389,54 @@
      replaces was `--ease: cubic-bezier(0.2, 0, 0, 1)` — a curve that starts slow
      and ends abruptly, so a ground change under the cursor arrived late and
      stopped dead. One curve, one name, and the name says which of three the
-     system has. */
+     system has.
+
+     `--ease-in-out` is the second of the three, symmetric, for something that
+     LEAVES AND COMES BACK: the two ambient breaths below, whose whole shape is
+     out and back again. Both ran on the UA's own `ease-in-out` keyword until
+     #423 — near enough to look right, and a literal all the same, which is how
+     twelve durations in this file came to be literals too. */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.62, 0, 0.28, 1);
   --dur-1: 120ms; --dur-2: 220ms; --dur-3: 340ms;
+  /* The entrance budget, and it arrives with the rule that needs it rather than
+     as a claim nothing checks — which is exactly what the paragraph above said
+     it was waiting for. `--dur-4` is the whole of an entrance HOWEVER MANY ROWS
+     it staggers over, so it is a ceiling on a sum rather than a duration
+     anything is set to: the skeleton's six rows spend `5 × --stagger` on delay
+     plus `--dur-3` on the last row's own animation, which is 470ms, and the
+     ceiling is what says a seventh row would need a shorter stagger rather than
+     a longer wait. */
+  --dur-4: 520ms;
+  --stagger: 26ms;
+
+  /* The two ambient periods, and they are a different kind of number from the
+     three above. A `--dur-*` is something a person waits out once; these repeat
+     for as long as the state does, which for `waitingInput` is until a human
+     acts. What is watched for minutes on end is chosen by how little it costs
+     the eye, not by how far the dot travels.
+
+     Both used to be roughly twice as fast — 1.4s and 1.8s — and at 0.55-0.7 Hz a
+     dot does not read as breathing. It reads as an indicator lamp, which is a
+     thing that has GONE WRONG rather than a thing that is happening, and a deck
+     of tiles waiting for a decision was a wall of them. These are near a resting
+     breath instead: 0.28 Hz and 0.42 Hz.
+
+     Two numbers rather than one because the rate is half of what tells the two
+     states apart (see `@keyframes pulse-dot` for the other half). Waiting is the
+     faster, and that is the entire argument for which way round they go: it is
+     the one with a person at the end of it. */
+  --breath-working: 3.6s;
+  --breath-waiting: 2.4s;
+  /* A third ambient period, for the one loop that is neither state nor breath:
+     the band of light crossing a skeleton row. Slower than a highlight and
+     faster than a breath, because it is a surface catching light rather than
+     something indicating anything. `--sweep-step` is a PHASE offset per row, not
+     a stagger — it is what makes six rows read as one surface being lit instead
+     of six boxes blinking together, and at 110ms against a 2.1s period six rows
+     spread over a quarter of the cycle. */
+  --breath-sweep: 2.1s;
+  --sweep-step: 110ms;
 }
 
 /* One switch, honoured everywhere. The durations collapse and so do the DELAYS —
@@ -341,6 +462,16 @@
    saw, and every step of the scale had to be reasoned about twice.
    `BASE_PX` in `ui-scale.ts` must equal this, or the settings screen reports pixel
    sizes that are not the ones on screen. There is a test on it. */
+/* The base every `rem` in this file is a multiple of, and `ui-scale.ts` is what
+   multiplies it — see `BASE_PX` there, which must agree with this number.
+   EVERY BREAKPOINT IN THIS FILE IS IN `rem`, and that is the consequence rather
+   than a convention: five of the eight were in `px` until #463, so at 145% text
+   they did not move with the text they were protecting. A layout that reflows at
+   60rem reflows when sixty characters no longer fit, whatever the person has set
+   the size to; one that reflows at 960px reflows when the window is 960px wide
+   and the text has already overflowed. Converted at 16px to the rem — 960, 1100,
+   700, 620 and 1180 became 60, 68.75, 43.75, 38.75 and 73.75 — so nothing about
+   the default rendering changed. */
 :root { font-size: 16px; }
 html, body, #app { height: 100%; margin: 0; }
 /* The type, the ink and the leading are on the BODY and not on `#app`, and that is a
@@ -404,7 +535,7 @@ body {
 .mark-text span { color: var(--fg-dim); font-weight: var(--fw-medium); }
 /* The wordmark is the first thing dropped when the bar runs out of room, because
    the glyph beside it still says which app this is. Nothing here hides a control. */
-@media (max-width: 960px) {
+@media (max-width: 60rem) {
   /* Clipped rather than `display: none`. The glyph beside it is the product's logo and is
      `aria-hidden` — a logo is not a label — so dropping the wordmark out of the tree here
      left the top bar with no accessible name for the application at all. It stays out of
@@ -454,7 +585,7 @@ body {
 /* At the width where the crumb already drops the account, the door keeps its place
    and loses its words — the same trade the row's chip makes, and for the same
    reason: it is the only pointer route to these two pages from a zoomed session. */
-@media (max-width: 1100px) {
+@media (max-width: 68.75rem) {
   .crumb-pages { font-size: 0; padding: 3px 7px; }
   .crumb-pages::after { content: "···"; font-size: var(--fs-xs); }
 }
@@ -466,7 +597,7 @@ body {
 .crumb-login--none { font-family: var(--font-ui); font-style: italic; }
 /* The account goes before the workspace does: the name is which project this is,
    and at 1100px the bar has the ledger and three controls to fit as well. */
-@media (max-width: 1100px) { .crumb-sep, .crumb-login { display: none; } }
+@media (max-width: 68.75rem) { .crumb-sep, .crumb-login { display: none; } }
 
 /* --- The ledger ----------------------------------------------------------
    What replaced four tab labels, and it answers a different question. The tabs
@@ -495,7 +626,12 @@ body {
 /* The one ambient loop in the bar, and it is on the reading that means somebody is
    being kept waiting. `--st-error` deliberately does not pulse: a stopped session
    is not going to become un-stopped while the eye is elsewhere. */
-.led--wait::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
+.led--wait::before {
+  animation: pulse-dot var(--breath-waiting) var(--ease-in-out) infinite;
+  /* Rebuilt from scratch every time the ledger is redrawn, so without this it
+     restarts its swell on every poll. See `src/dot-phase.ts`. */
+  animation-delay: var(--dot-phase, 0ms);
+}
 
 /* --- Settings, and the sections of it ------------------------------------
    A modal rather than a screen or a second window: the panel's pages are things
@@ -506,6 +642,17 @@ body {
    which is what makes it read as part of the window rather than as a list inside
    it. The height is fixed so switching sections does not resize the window under
    the pointer — the pane scrolls instead. */
+/* Both constants are sized off the CONTENT and not off a round number, because the
+   window was smaller than the settings it held. 560px of height left a section about
+   390px of pane once the head and the foot had taken theirs, and Scenarios wanted
+   most of that for two switches and their explanations — a section reached the
+   scrollbar before it had said much, and the rail is built to grow. 860px of width
+   was the same story from the other side: `.set-kv-value` ellipsises rather than
+   wraps, so the paths the width existed for were the thing being cut off mid-string.
+   The pane still scrolls — a section that genuinely does not fit must — but that is
+   now the exception rather than the state the window opens in.
+   `90vw` and not `94vw`: `.modal-box` carries `max-width: 90vw` and one class beats
+   none, so 94 has never been the number that rendered. Written as what happens. */
 /* Two classes, and the second one is load-bearing: `.modal-box` is declared a
    thousand lines below this and carries `padding: var(--sp-5)` and `gap: var(--sp-4)`.
    One class each, later wins — so `padding: 0` here lost, and the window this file
@@ -516,8 +663,8 @@ body {
    Raised specificity rather than moving the rule, because this block belongs beside
    the `.set-*` rules it governs and not beside a base it only overrides. */
 .modal-box.modal-box--settings {
-  width: min(860px, 94vw); padding: 0; gap: 0;
-  height: min(560px, 88vh); overflow: hidden;
+  width: min(1120px, 90vw); padding: 0; gap: 0;
+  height: min(820px, 88vh); overflow: hidden;
 }
 /* Rail of sections and one pane. A SECTION IS ONE ROW HERE AND ONE PANE THERE —
    that is the whole extensibility claim, and it is why this is a rail instead of
@@ -564,19 +711,29 @@ body {
   display: flex; flex-direction: column; gap: var(--sp-3);
 }
 .set-body[hidden] { display: none; }
+/* The window is wide for the paths, and prose does not want the width the paths
+   asked for: a hint set across the whole pane runs past 110 characters a line,
+   which is a hint nobody finishes. So the extra width goes to the paths and the
+   prose keeps a measure — the same bargain `.set-pane-sub` above already struck.
+   Released again below 700px, where the rail folds and there is no extra width to
+   give back. */
+.set-body .form-hint,
+.set-body .form-check-hint { max-width: 70ch; }
 /* One quiet way out, and no OK. Every section here applies as it is touched —
    connecting a repository cannot be un-done by a Cancel, and a button that
    promised it would be lying. */
 /* The row is `.modal-actions` — see `settingsDialog` — so this adds the window's own
    padding and nothing else. */
 .set-foot { padding: var(--sp-3) var(--sp-5); }
-@media (max-width: 700px) {
+@media (max-width: 43.75rem) {
   .modal-box.modal-box--settings { height: min(620px, 92vh); }
   .set-win { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
   .set-rail { grid-row: 1; }
   .set-nav { flex-direction: row; flex-wrap: wrap; }
   .set-nav-item { width: auto; }
   .set-dot { margin-left: 0; }
+  .set-body .form-hint,
+  .set-body .form-check-hint { max-width: none; }
 }
 /* A section heading with a rule that reaches the box's edges, which is what makes
    two groups read as two rather than as one list with a bold row in it. */
@@ -616,7 +773,7 @@ body {
 }
 /* Absent is a fact, not an absence of one: the list is what this app WILL write. */
 .set-file--absent { background: none; color: var(--fg-dim); box-shadow: inset 0 0 0 1px var(--line); }
-@media (max-width: 620px) {
+@media (max-width: 38.75rem) {
   .set-kv { flex-direction: column; gap: 2px; }
   .set-kv-label { width: auto; }
   .set-files { margin-left: 0; }
@@ -676,7 +833,16 @@ body {
      the widest thing a page could not shrink (a workspace row's controls) and the
      panel, at `overflow: hidden`, clipped the difference. At 1180px that was 31px
      of every row's right-hand end, including the button that deletes it. */
-  display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr);
+  /* Three rows now: the head, the stack of pages, and the limits strip under
+     them. The third is declared rather than left implicit, so it is visible here
+     that the strip is `auto` and the STACK is the one that takes the slack — an
+     implicit row would have worked and would have said nothing. `.panel-grip` is
+     absolutely positioned and stays out of this.
+
+     `auto` is doing more work since #392: the strip is one line, so what this row
+     takes no longer grows with the number of connected AIs, and the rows it opens
+     are capped and scroll rather than pushing the stack. */
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr);
   transition: width var(--dur-3) var(--ease-out);
   /* In `rem` rather than px, because this column exists to hold text and the text
      size is the person's to choose: at a fixed pixel width, raising the scale made
@@ -770,11 +936,11 @@ body {
   font-size: var(--fs-xs); line-height: var(--lh-body);
 }
 
-#ws-page, #sk-page {
+#ws-page, #sk-page, #mem-page {
   display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3);
   overflow: auto;
 }
-#ws-page.hidden, #sk-page.hidden { display: none; }
+#ws-page.hidden, #sk-page.hidden, #mem-page.hidden { display: none; }
 
 /* --- The workspace's own panel -------------------------------------------
    The board and the pull requests, on the right of the deck.
@@ -837,8 +1003,14 @@ body {
    time would be the full-width screens back under another name. */
 /* Not animated, and that is deliberate: behind this edge is a grid of terminals,
    each with its own `ResizeObserver`, and animating the width makes every one of
-   them recompute for the length of the transition. `#sidebar` does not animate its
-   width either — one rule rather than two. */
+   them recompute for the length of the transition.
+   `#sidebar` is the other half of this argument and it went the other way — it
+   DOES animate its width (see the rule itself), and pays for it by holding those
+   observers off with `holdRefits` while the transition runs. Either answer is
+   sound; what was not was the claim that used to stand here, that neither panel
+   animated, while one of them had been doing so all along. The two differ because
+   the sidebar's collapse is a gesture a person makes many times an hour and the
+   diff's width is a consequence of opening a patch. */
 #wspanel.is-wide { width: var(--wsp-wide-w, min(64rem, 62vw)); }
 
 #wsp-head {
@@ -935,8 +1107,10 @@ body {
 }
 /* The deck and the terminal drawer stack; `#stage` is still the row beside the
    sidebar. `min-height: 0` on both is what lets the drawer's fixed height win
-   against the deck's `flex: 1` instead of the column overflowing the window. */
-#workarea { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+   against the deck's `flex: 1` instead of the column overflowing the window.
+   `position: relative` makes this the containing block for a full-window terminal
+   drawer — see `.term-drawer.is-full`. Nothing else in here is positioned. */
+#workarea { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; position: relative; }
 #deck { flex: 1; min-height: 0; display: grid; gap: var(--sp-3); padding: var(--sp-3); background: var(--bg-void); position: relative; }
 
 /* --- The deck with nothing on it -----------------------------------------------
@@ -1085,7 +1259,7 @@ body {
    control now rather than a caption: hiding the only pointer route to the board
    would leave the palette and the keys as the only ones. It loses its words
    instead — the chip keeps the height, the title says the rest. */
-@media (max-width: 1180px) {
+@media (max-width: 73.75rem) {
   .ws-scope { font-size: 0; padding: 1px 6px; }
   .ws-scope::after { content: "···"; font-size: var(--fs-xs); }
 }
@@ -1249,7 +1423,12 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
   background: var(--bg-inset); border: 1px solid var(--line-strong); border-radius: var(--r-ctl);
   color: var(--fg); font: inherit; padding: 1px var(--sp-2); outline: none;
 }
-.tile-name-input:focus { border-color: var(--accent); }
+/* `--focus-ring` as well as the accent border, and it was the border alone
+   (#463). Every other field in this app gets the ring; a border colour on a field
+   already bordered `--line-strong` is the weakest focus indicator in the
+   stylesheet, and this field appears under a rename that a person reaches with
+   `F2` from the keyboard — which is the case a focus ring exists for. */
+.tile-name-input:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
 /* Always in the DOM — so it is in the tab order and reachable by touch — and
    invisible until the tile is one someone is working with. `:focus-within` is
    what gives it a focus ring everywhere else, and `.is-active` is what leaves it
@@ -1283,7 +1462,7 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
 .tile-search { display: flex; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3); }
 .tile-search.hidden { display: none; }
 .tile-search-input { flex: 1; min-width: 0; background: var(--bg-inset); border: 1px solid var(--line-strong); border-radius: var(--r-ctl); color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 5px var(--sp-2); outline: none; }
-.tile-search-input:focus { border-color: var(--accent); }
+.tile-search-input:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
 .tile-search-btn { background: none; border: none; color: var(--fg-dim); cursor: pointer; padding: 0 var(--sp-1); border-radius: var(--r-sm); }
 .tile-search-btn:hover { color: var(--fg); background: var(--bg-hover); }
 
@@ -1507,7 +1686,16 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
   color: var(--fg-dim); font-family: var(--font-ui); font-size: var(--fs-base); line-height: var(--lh-body);
 }
 
-.tile-state {
+/* One chip, two families. `.tile-state` is a session's and `.run-state` is a
+   scenario run's, and these seven declarations were written out twice — byte for
+   byte, 2400 lines apart, along with the `::before` dot (#463). They are one
+   shape by design rather than by coincidence: a state on a tile and a state in
+   the history mean the same thing to a reader, and a chip that drifted in one
+   place would be saying they do not.
+   What still differs is the SET of states each family has, which is why the
+   fills below stay two lists. */
+.tile-state,
+.run-state {
   display: inline-flex; align-items: center; gap: 5px;
   font-family: var(--font-ui); font-size: var(--fs-xs); font-weight: var(--fw-medium);
   padding: 2px 8px 2px 6px; border-radius: var(--r-pill);
@@ -1515,7 +1703,8 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
      functional rather than typographic and must survive a line-height sweep. */
   border: 1px solid transparent; line-height: 1.4; white-space: nowrap;
 }
-.tile-state::before {
+.tile-state::before,
+.run-state::before {
   content: ""; width: 7px; height: 7px; border-radius: 50%;
   background: currentColor; flex: none;
 }
@@ -1525,12 +1714,12 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    the palette: a fill left on the old hue would tint the chip towards a green the
    text no longer is. `npm run contrast` reads these declarations rather than a copy
    of them, so the two cannot drift. */
-.state-idle         { color: var(--fg-mid);   background: rgba(154, 156, 159, 0.12); }
-.state-working      { color: var(--st-working); background: rgba(123, 215, 127, 0.14); }
-.state-waitingInput { color: var(--st-waiting); background: rgba(239, 200, 69, 0.16); border-color: rgba(239, 200, 69, 0.42); }
+.state-idle         { color: var(--fg-mid);   background: var(--chip-idle); }
+.state-working      { color: var(--st-working); background: var(--chip-working); }
+.state-waitingInput { color: var(--st-waiting); background: var(--chip-waiting); border-color: var(--chip-waiting-line); }
 /* The same green as working, but without the breathing: the work is done and
    nothing is happening. States differ by shape, not by colour alone — wave 4. */
-.state-done         { color: var(--st-working); background: rgba(123, 215, 127, 0.09); }
+.state-done         { color: var(--st-working); background: var(--chip-done); }
 .sk-orphan .sk-run { opacity: 0.55; cursor: not-allowed; text-decoration: line-through; }
 .sk-orphan-note { font-size: var(--fs-xs); color: var(--st-error); margin: -2px 0 6px 2px; }
 .form-sched-unit { font-size: var(--fs-xs); color: var(--fg-mid); align-self: center; }
@@ -1561,26 +1750,57 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    gave up its cyan: ended is the absence of a signal, not a signal. It stays a
    separate rule rather than being merged with idle — the two mean different things
    and a future palette may want to say so again. */
-.state-ended        { color: var(--st-ended);   background: rgba(185, 186, 189, 0.10); border-color: rgba(185, 186, 189, 0.32); }
+.state-ended        { color: var(--st-ended);   background: var(--chip-ended); border-color: var(--chip-ended-line); }
 /* 0.06 and not the 0.12 this was first ported at, which measured 4.31 on the
    selected row — the same failure, in the same place, that moved `--st-error` in the
    first place. The fill's hue IS the text's hue here, so alpha is contrast spent
    rather than earned: 0.12 gives 4.31, 0.08 gives 4.60, 0.06 gives 4.73. The border
    below is what makes this read as a chip, which is why the fill can afford to be
    this quiet. */
-.state-error        { color: var(--st-error);   background: rgba(251, 129, 122, 0.06); border-color: rgba(251, 129, 122, 0.42); }
+.state-error        { color: var(--st-error);   background: var(--chip-error); border-color: var(--chip-error-line); }
 
-.state-waitingInput::before { animation: pulse-dot 1.4s var(--ease-out) infinite; }
+.state-waitingInput::before {
+  animation: pulse-dot var(--breath-waiting) var(--ease-in-out) infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
 /* transform + opacity only — GPU-composited, no per-frame repaint. Animating
    box-shadow here forced WebKit to repaint every frame for the whole
    animation's lifetime (a waitingInput session never leaves that state until
-   the user acts), pegging WindowServer and lagging the entire system. */
+   the user acts), pegging WindowServer and lagging the entire system.
+
+   `animation-delay` is a SEEK, not a stagger, and is written by `syncDotPhase`
+   — the note in `src/dot-phase.ts` is the long version. It is set once when the
+   element is made and never touched again, so it costs the compositor nothing
+   and the paragraph above still holds.
+
+   The curve is `ease-in-out` and not `--ease-out`, which is what this was, and
+   the swap matters more than the period does. `--ease-out` is "fast out, long
+   settle": right for a thing that travels once and stops, wrong for a two-stop
+   loop, where it means the dot jumps most of the way in the first fraction of
+   every half-cycle and then crawls. That is a snap and a hold — a blink at any
+   period you care to choose. A loop wants a symmetric curve.
+
+   1.7 was most of a doubling in size, on a dot 7px across, twice a second. At
+   1.35 the swell is still the channel that separates this state from `working`
+   below — which changes size not at all — without being the thing in the corner
+   of the eye that stops anything else being read. */
 @keyframes pulse-dot {
-  0%, 100% { transform: scale(1);   opacity: 1; }
-  50%      { transform: scale(1.7); opacity: 0.45; }
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(1.35); opacity: 0.55; }
 }
-.state-working::before { animation: breathe 1.8s ease-in-out infinite; }
-@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+/* Opacity alone, and slower than waiting: work in progress is not addressed to
+   anybody. The trough was 0.4, which on a small saturated dot is close enough to
+   gone that the eye reads the return as an arrival rather than as a swell. */
+/* `.run-running` is here rather than beside its own fills, for the reason the
+   chip body above is one rule: something is actually happening, in both places,
+   and it is the same shape channel saying so — the reason a finished run's chip
+   does not breathe. */
+.state-working::before,
+.run-running::before {
+  animation: breathe var(--breath-working) var(--ease-in-out) infinite;
+  animation-delay: var(--dot-phase, 0ms);
+}
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 /* Layout, hover and the rail come from the shared row rule far above; what is left
    here is what only a session row needs. `padding`, `border-radius` and `display`
    used to be re-declared at this point and silently outranked the shared rule by
@@ -1593,6 +1813,79 @@ button:focus-visible, .ws-label:focus-visible { outline: 2px solid var(--accent)
    of workspaces and one of sessions grouped by workspace, could never say. */
 .ws-kids { display: flex; flex-direction: column; padding-left: 14px; }
 .ws-kids[hidden] { display: none; }
+
+/* --- The workspace tint --------------------------------------------------
+   A workspace's colour was a choice made in a form and then spent entirely on an
+   8px dot. Here it becomes ground: one band per workspace, at full strength on
+   the workspace row and gone by the last of its sessions, so that a tree of a
+   dozen sessions across four workspaces reads as four objects rather than as one
+   column whose only grouping signal is an indent.
+
+   HOW STRONG is decided in `src/tint.ts`, not here, and for a reason worth
+   knowing: the six swatches are three hues and three greys, and at one fixed
+   alpha chalk lifts this ground 1.6× as far as slate — one workspace glaring and
+   another invisible. `workspaceTint` solves the alpha per colour so every band
+   weighs the same, and writes the two properties below onto the group. Untinted
+   is the fallback, declared here so that `rgb(var(--ws-tint) / …)` is a valid
+   colour even on a group JS never reached.
+
+   WHY A BAND AND NOT A FILL. The rail down a row's left edge carries working /
+   waiting / error / ended in saturated colour, and the accent is near-achromatic
+   precisely so that nothing competes with it (see the note over `--accent`). The
+   tint is therefore the quietest ground step in the panel — below `--sel` and
+   below `--bg-hover`, both of which are painted by the rows *on top of* it, which
+   is the other half of why this element exists: selection and hover keep the
+   `background` property to themselves and simply composite over the band. */
+.ws-group {
+  --ws-tint: 0 0 0;
+  --ws-tint-a: 0;
+  border-radius: var(--r-ctl);
+  background-color: rgb(var(--ws-tint) / var(--ws-tint-a));
+}
+/* Groups are objects now, so they get the gap that says so. Between groups only:
+   the heading above the first and the `+ workspace` under the last already have
+   their own spacing, and a margin on every group would double it. */
+.ws-group + .ws-group { margin-top: var(--sp-1); }
+/* The fade, and it is subtraction rather than addition: the group is painted one
+   flat tint, and this lays the panel's own ground back over the sessions, from
+   nothing at the top of the list to all of it at the bottom. The workspace row
+   above is left at full strength.
+
+   That is what makes the band FIT the group instead of guessing at it. A gradient
+   with its stops in pixels would have to know how tall a workspace row is — and
+   it is one line or two depending on whether the workspace has a bound account
+   and whether it is the active one — and would leave a stub of colour under a
+   folded workspace, whose `.ws-kids` is `display: none` and whose group is
+   therefore exactly the row. Here a folded group, a detached one, and one with no
+   sessions yet are all the same case and all correct: no list, no fade, and the
+   band is a flat tint across the row that is all the group has.
+
+   `transparent` for the top stop rather than the ground at zero alpha: gradients
+   interpolate premultiplied, so it fades in the ground's own hue rather than
+   through grey. */
+.ws-group > .ws-kids {
+  background-image: linear-gradient(to bottom, transparent, var(--bg-island));
+}
+/* Hover, re-stated translucent, and this is the other half of constraint 2: a row
+   inside a group has the band under it, and `--bg-hover` / `--bg-inset` are opaque
+   — they would paint the band out and leave a hovered row reading as a hole in its
+   own group, stepping only the distance the band had not already used up. At
+   `--bg-hover-soft` the step is the same size wherever the row sits, and the group
+   stays continuous under the pointer.
+   `.active` is restated for one reason and it is specificity, not appearance: these
+   selectors outrank the plain `.ws-row.active` / `.sess-row.active` above, so
+   without this pair a selected row would show its HOVER ground while the pointer
+   was on it — which is the order this app has always had the other way round. */
+.ws-group .ws-row:hover, .ws-group .sess-row:hover { background: var(--bg-hover-soft); }
+.ws-group .ws-row.active, .ws-group .sess-row.active { background: var(--sel); }
+/* Neither half survives forced colours, and neither should: the band is decorative
+   ground that the system palette has no name for, and the fade paints an explicit
+   dark over whatever the system chose for a surface. `background-color` is forced
+   on our behalf; `background-image` is not, so it is taken out by hand. */
+@media (forced-colors: active) {
+  .ws-group { background-color: transparent; }
+  .ws-group > .ws-kids { background-image: none; }
+}
 
 /* How many of this workspace's sessions are waiting, on the workspace's own row.
    Written by the deck between this panel's renders, so it is always in the DOM and
@@ -1979,6 +2272,270 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .settings-size:hover { background: var(--bg-hover-2); color: var(--fg); border-color: var(--line-strong); }
 .settings-size.selected { border-color: var(--accent); color: var(--fg); background: var(--sel); }
 .settings-size:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* `.notes-row*` and nothing above it. Searching your notes was a dialog once —
+   a list of hits over a preview of the one selected — and `.notes-list` plus four
+   `.notes-preview*` rules were its container and its preview pane. The search
+   moved onto the memory page, where the note's body is read on the document
+   surface rather than in a pane beside the list (see the note under this block),
+   so those five rules stopped being reachable and stayed in the file (#463). The
+   rows themselves are live: `memory-page.ts` and `memory-jobs.ts` both build
+   `.notes-row`, which is why the family kept its name after losing its dialog. */
+.notes-row {
+  padding: var(--sp-2); border: 1px solid transparent; border-radius: var(--r-ctl);
+  cursor: pointer; background: var(--bg-inset);
+}
+.notes-row:hover { background: var(--bg-hover-2); }
+.notes-row.selected { border-color: var(--accent); background: var(--sel); }
+.notes-row-head { display: flex; gap: var(--sp-2); align-items: baseline; flex-wrap: wrap; }
+.notes-row-title { color: var(--fg); font-size: var(--fs-base); font-weight: var(--fw-medium); }
+.notes-row-when { color: var(--fg-dim); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.notes-row-scope { color: var(--fg-mid); font-size: var(--fs-sm); }
+.notes-row-text { color: var(--fg-mid); font-size: var(--fs-sm); margin-top: 2px; }
+
+/* --- The memory page ------------------------------------------------------
+   The rail's fourth page: the whole corpus in a column measured at
+   `clamp(17.5rem, 19vw, 24rem)` — 280 to 384px. That measurement is why a row
+   carries a title, a date and at most one more word, and why a note's body is
+   read on the document surface instead of in a preview pane here. */
+.mem { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+/* The search, which was a dialog until there was a page to put it on. It
+   switches the list below between two sources rather than opening anything, so
+   it sits at the top of the page and not in a bar of its own. */
+.mem-search {
+  width: 100%; box-sizing: border-box; padding: var(--sp-2);
+  background: var(--bg-inset); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font: inherit; font-size: var(--fs-sm);
+}
+.mem-search::placeholder { color: var(--fg-dim); }
+.mem-search:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+/* Disabled only where there is no search at all — a build with no sidecar
+   staged. Not ready is a sentence, not a dead control: an index finishes and a
+   download completes under an open page. */
+.mem-search:disabled { color: var(--fg-dim); cursor: not-allowed; }
+.mem-head { margin: 0; color: var(--fg-mid); font-size: var(--fs-sm); }
+/* What searching would additionally need. Dimmer than the head above it: the
+   page works without it, and a warning-coloured line would say otherwise. */
+.mem-readiness {
+  margin: 0; color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body);
+}
+/* An empty state with its first action in it, and it was a paragraph alone
+   (#463): `Write a note` lived in the block at the foot of the page, past the
+   readiness line and past the list that is the reason the page is empty. A box
+   rather than a `<p>` so the two can stack; the paragraph keeps the type it had.
+   `align-items: start` so the button is its own width and not the column's. */
+.mem-empty {
+  display: flex; flex-direction: column; align-items: start; gap: var(--sp-3);
+}
+.mem-empty-body { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-body); }
+/* The `.rooms-add` shape, which is this page's own button: the same control the
+   write block at the foot offers, so the two do not read as two different
+   things. Named separately rather than reusing the class so that a change to
+   either can be made without moving the other. */
+.mem-empty-do {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg); background: var(--bg-inset);
+  border: 1px solid var(--line-strong); border-radius: var(--r-ctl); padding: 6px var(--sp-3);
+  min-height: 30px; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.mem-empty-do:hover { background: var(--bg-hover-2); border-color: var(--fg-dim); }
+.mem-empty-do:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.mem-list { display: flex; flex-direction: column; gap: var(--sp-3); min-width: 0; }
+.mem-group { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mem-group-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2);
+  padding: var(--sp-1) 0; background: none; border: 0; cursor: pointer;
+  color: var(--fg-mid); font-size: var(--fs-xs); text-align: left;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.mem-group-head:hover { color: var(--fg); }
+.mem-group-head:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--r-ctl); }
+.mem-group-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The count stays on the header rather than inside the group, so a collapsed
+   group still says how much is behind it. */
+.mem-group-count { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.mem-rows { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* A row is a button, so the keyboard reaches every note the mouse does. It
+   borrows `.notes-row` from the search dialog on purpose: the same list of the
+   same things, and two appearances would be two answers to "what is a note". */
+.mem-row {
+  display: block; width: 100%; text-align: left; font: inherit; min-width: 0;
+}
+.mem-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The column is 280–384px, and a title is the part worth reading: it wraps, and
+   everything beside it does not. */
+.mem-row .notes-row-title { overflow-wrap: anywhere; }
+.mem-row .notes-row-when { margin-left: auto; white-space: nowrap; }
+/* Two lines of the passage and no more. It is the only thing on a result saying
+   why the note came back, and a row that grew with the chunk would push the next
+   result off the page. */
+.mem-row .notes-row-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.mem-row .notes-row-scope {
+  margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Writing by hand, under the list. Under, because what a person opens this page
+   for is what is already written — controls above the notes would put the act in
+   front of the point. */
+.mem-write {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  padding-top: var(--sp-3); border-top: 1px solid var(--line);
+}
+.mem-write-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+/* Why these are forms and the note editor is not, said where somebody looks for
+   the button that is missing. */
+.mem-write-note {
+  margin: 0; color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body);
+}
+
+/* The capture record, folded at the foot of the page. Its header is the group
+   header the note groups use — the same control, because it is the same act. */
+.mem-jobs {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding-top: var(--sp-3); border-top: 1px solid var(--line);
+}
+.mem-jobs-body { display: flex; flex-direction: column; gap: var(--sp-2); }
+.mem-group-head.has-fault .mem-group-count { color: var(--st-error); }
+/* A job in a 280–384px column carries a name, a state, a token count and up to
+   two buttons. The honest answer to that is fewer facts per LINE — stacked —
+   rather than a smaller type size. */
+.mem-job { display: flex; flex-direction: column; gap: 2px; }
+.mem-job .notes-row-title { display: block; overflow-wrap: anywhere; }
+.mem-job-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-1); }
+
+/* --- A note read where the deck was --------------------------------------
+   #346's precedent, applied to a document: "the terminals take the deck's place,
+   from a control that gives it back". A note's body is markdown with headings and
+   sections, and the panel it is listed in is 280–384px wide — so reading happens
+   on the only surface in this window with the width a document wants.
+
+   Out of flow over the deck, exactly as `.term-drawer.is-full` is, and for the
+   same measured reason: a deck squeezed to nothing draws its zoomed filmstrip out
+   of a box with no room for it, and its padding floors it at a band of empty
+   ground. Covering also makes giving the deck back exact — nothing was taken, so
+   there is no layout to restore, no zoom to remember and no PTY resized in either
+   direction.
+
+   `z-index: 6` is the drawer's, and this comes after `#terminals` in the DOM, so
+   whichever of the two was asked for last is the one on top. The topbar and the
+   panel stay: `#ledger` is where a session that starts waiting while the deck is
+   covered says so. */
+.note-reader {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-void);
+}
+.note-reader[hidden] { display: none; }
+.note-reader-head {
+  flex: 0 0 auto; display: flex; align-items: flex-start; gap: var(--sp-3);
+  justify-content: space-between;
+  padding: var(--sp-3); border-bottom: 1px solid var(--line);
+  background: var(--bg-island);
+}
+.note-reader-named { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.note-reader-title {
+  color: var(--fg); font-size: var(--fs-lg); font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+.note-reader-where {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: baseline;
+  color: var(--fg-mid); font-size: var(--fs-sm);
+}
+.note-reader-when { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.note-reader-path { color: var(--fg-dim); font-size: var(--fs-xs); word-break: break-all; }
+.note-reader-acts { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-2); }
+.note-reader-back {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 26px; min-height: 26px; padding: 0;
+  background: none; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  color: var(--fg-dim); cursor: pointer;
+}
+.note-reader-back:hover { color: var(--fg); border-color: var(--line-strong); background: var(--bg-hover-2); }
+.note-reader-back:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* The measure is the point of the surface. A note is prose, and prose set to the
+   full width of a wide window is prose nobody reads to the end of. */
+.note-reader-body {
+  flex: 1; min-height: 0; overflow: auto;
+  padding: var(--sp-4) var(--sp-3);
+  color: var(--fg); font-size: var(--fs-base); line-height: var(--lh-body);
+}
+.note-reader-body > * { max-width: 78ch; margin-inline: auto; }
+/* Editing a note: the raw markdown, over the same surface. Raw because a note IS
+   markdown on disk (ADR-0004) and the indexer reads its headings — an editor that
+   produced markdown by inference would produce a `## TL;DR` that was nearly
+   right, which is the one way to make a note quietly unfindable. */
+.note-reader-edit {
+  display: block; width: 100%; max-width: 78ch; margin-inline: auto;
+  min-height: 60vh; box-sizing: border-box; resize: vertical;
+  padding: var(--sp-3);
+  background: var(--bg-inset); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm); line-height: var(--lh-body);
+}
+.note-reader-edit:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+/* Writing one: three fields, because the shape around them is written by
+   `memory_write_note` rather than by the person. */
+.note-reader-compose {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  max-width: 78ch; margin-inline: auto;
+}
+.note-reader-row { display: flex; flex-direction: column; gap: 4px; }
+.note-reader-label { color: var(--fg-mid); font-size: var(--fs-sm); }
+.note-reader-field {
+  width: 100%; box-sizing: border-box; padding: var(--sp-2);
+  background: var(--bg-inset); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  font: inherit; font-size: var(--fs-sm); resize: vertical;
+}
+.note-reader-field--tall { min-height: 30vh; font-family: var(--font-mono); }
+.note-reader-field:focus-visible { outline: none; box-shadow: var(--focus-ring); border-color: var(--accent); }
+/* A rule a person cannot see being obeyed, written where it applies — the same
+   choice `.panel-hint` records. */
+.note-reader-rule { color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body); }
+/* The surface with no note on it. The deck's own empty state offers to start a
+   session, which under a page about notes answers a question nobody asked. */
+.note-reader-landing {
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  max-width: 68ch; margin-inline: auto; padding-top: var(--sp-6);
+}
+.note-reader-lede { margin: 0; color: var(--fg); font-size: var(--fs-lg); line-height: var(--lh-body); }
+.note-reader-landing .note-reader-rule { margin: 0; }
+
+.note-reader-wait, .note-reader-fault { margin: 0; color: var(--fg-dim); font-size: var(--fs-sm); }
+.note-reader-fault { color: var(--st-error); }
+
+/* A row of mutually exclusive choices that are not sizes. Same control, and it
+   shares `.settings-size` for the buttons themselves — what differs is only that
+   the group is not a set of numbers, so the name of the group had to. */
+.settings-choice { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+
+/* Diary rooms: a name, the sentence a lesson is routed by, and a way out. The
+   description takes the room because it is the field that does the work — a name
+   is a word and the sentence is the criterion. */
+.rooms-list { display: flex; flex-direction: column; gap: var(--sp-1); }
+.rooms-row { display: grid; grid-template-columns: 9rem 1fr auto; gap: var(--sp-2); align-items: center; }
+.rooms-row--add { margin-top: var(--sp-2); padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.rooms-name, .rooms-desc {
+  background: var(--bg-inset); border: 1px solid var(--line-strong); border-radius: var(--r-ctl);
+  color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 6px var(--sp-2);
+  min-height: 30px; outline: none; min-width: 0;
+}
+.rooms-name::placeholder, .rooms-desc::placeholder { color: var(--fg-dim); }
+.rooms-name:focus, .rooms-desc:focus { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.rooms-remove, .rooms-add {
+  font: inherit; font-size: var(--fs-sm); color: var(--fg-mid); background: var(--bg-inset);
+  border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 6px var(--sp-3);
+  min-height: 30px; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.rooms-remove:hover, .rooms-add:hover { background: var(--bg-hover-2); color: var(--fg); border-color: var(--line-strong); }
+.rooms-remove:focus-visible, .rooms-add:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* A fault reads where it happened, in the row that caused it. */
+.rooms-fault { grid-column: 1 / -1; color: var(--st-error); }
 
 /* Checkbox beside its label rather than under it, and not the 13px system size.
    accent-color themes the native control — no custom rendering needed here. */
@@ -2129,6 +2686,44 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   align-items: start;
   overflow-x: auto;
   padding-bottom: var(--sp-3);
+  /* `proximity`, never `mandatory`: a person dragging a card wants the row to
+     stay where they left it, and mandatory snapping fights that on every
+     release. What this buys is that a flick lands on a column edge rather than
+     halfway through a card. */
+  scroll-snap-type: x proximity;
+}
+.tk-col { scroll-snap-align: start; }
+
+/* Which way there is more, and it was nothing at all (#463). The board read as
+   three columns when it had five: the third showed a third of itself, and on
+   macOS an overlay scrollbar is invisible until something is already moving — so
+   there was no moment at which the interface said the row continued.
+
+   A fade rather than a permanent scrollbar, and only while there IS more: a
+   chrome that never changes is a chrome the eye stops reading, which is precisely
+   how a hidden scrollbar came to answer nothing. `overflow.ts` writes
+   `data-overflow`; this draws it.
+
+   `mask-image` and not a gradient overlay, for two reasons that are about this
+   layout rather than taste: an overlay would need a positioned child inside a
+   grid whose children are all columns, and a scrolling box's `::after` scrolls
+   with the content rather than staying at the viewport's edge. A mask fades the
+   content itself, at the box's own edge, and costs no node. */
+.tk-cols[data-overflow="right"] {
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--sp-6)), transparent);
+}
+.tk-cols[data-overflow="left"] {
+  mask-image: linear-gradient(to left, #000 calc(100% - var(--sp-6)), transparent);
+}
+.tk-cols[data-overflow="both"] {
+  mask-image: linear-gradient(
+    to right, transparent, #000 var(--sp-6), #000 calc(100% - var(--sp-6)), transparent);
+}
+/* Under forced colours a fade can only take information away: the platform draws
+   its own scrollbar there, and every colour this mask blends towards is replaced
+   by a system colour anyway. */
+@media (forced-colors: active) {
+  .tk-cols[data-overflow] { mask-image: none; }
 }
 /* The app has one idiom for "a heading over a list" — `#sidebar h3`: uppercase,
    tracked, bold, subtle — and the board did not use it, so a column's name read
@@ -2218,9 +2813,16 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   font-size: var(--fs-xs); color: var(--fg-dim);
 }
 .tk-bot { color: var(--st-ended); }
-/* Pulse via opacity only: animating box-shadow once hung the whole system. */
-.tk-busy { color: var(--st-working); animation: tk-pulse 1.6s var(--ease-out) infinite; }
-@keyframes tk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+/* Pulse via opacity only: animating box-shadow once hung the whole system.
+   `breathe` at `--breath-working`, and it was `tk-pulse` at a literal 1.6s on
+   `--ease-out` (#423). Three faults in one declaration: 1.6s is 0.62 Hz, which
+   is the rate the note on `--breath-*` argues reads as an indicator lamp — a
+   thing that has GONE WRONG — and which the redesign moved every other working
+   signal off; `--ease-out` is the curve for something that travels once, not for
+   a loop; and `tk-pulse` was `breathe` with a different trough (0.45 against
+   0.55), so one card in progress breathed differently from the tile running it.
+   The keyframe is gone with the declaration. */
+.tk-busy { color: var(--st-working); animation: breathe var(--breath-working) var(--ease-in-out) infinite; }
 .tk-warn-glyph { color: var(--st-error); cursor: help; }
 .tk-stale { color: var(--st-error); }
 .tk-board-error { color: var(--st-error); font-size: var(--fs-sm); margin-bottom: var(--sp-3); }
@@ -2417,8 +3019,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
   border-radius: var(--r-ctl);
   background: var(--bg-inset); border: 1px solid var(--line);
-  animation: skel-in 320ms var(--ease-out) both;
-  animation-delay: calc(140ms + var(--i) * 45ms);
+  /* `--dur-3` because the row travels 6px and a person has to be able to follow
+     it, and `--stagger` per row because the whole sequence has to fit `--dur-4`:
+     six rows are 5 × 26ms of delay plus 340ms, which is 470ms against a 520ms
+     ceiling. It was `320ms` after a `140ms` lead-in with `45ms` per row — 685ms
+     for six, over the budget the system states, by three literals (#423). */
+  animation: skel-in var(--dur-3) var(--ease-out) both;
+  animation-delay: calc(var(--i) * var(--stagger));
   /* Down the list, each row is a step quieter. A placeholder is a guess about a
      length nobody knows yet, and a stack of six equally solid boxes states that
      guess as a fact; fading the tail says "and then more, probably" instead. The
@@ -2458,8 +3065,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
   background: linear-gradient(100deg,
     transparent 25%, rgba(246, 247, 249, 0.05) 50%, transparent 75%);
   transform: translateX(-100%);
-  animation: skel-sweep 2.1s var(--ease-out) infinite;
-  animation-delay: calc(var(--i) * 110ms);
+  animation: skel-sweep var(--breath-sweep) var(--ease-in-out) infinite;
+  animation-delay: calc(var(--i) * var(--sweep-step));
 }
 @keyframes skel-sweep {
   from { transform: translateX(-100%); }
@@ -2555,11 +3162,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    nowhere in this file until now, and `.tile-tokens` refreshes every five seconds —
    so its badge jittered as the digits changed width. Does more for a dense numeric
    than a size step would. */
-.ws-count, .tile-tokens, .sess-group-badge, .tk-col-head, .tk-filter,
+.tile-tokens, .sess-group-badge, .tk-col-head, .tk-filter,
 .pr-detail-plus, .pr-detail-minus {
   font-variant-numeric: tabular-nums;
 }
-.ws-count { margin-left: auto; font-size: var(--fs-xs); color: var(--fg-dim); }
 
 /* Wraps: on the GitHub layout these are the repository's labels, and a repository
    with fifteen of them is ordinary. */
@@ -2671,9 +3277,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
    the dialog focuses the field on open and the caret lands at the end. So the title
    WRAPS: two lines at the dialog's width, three before it scrolls. Enter still accepts
    the dialog rather than adding a line — see `data-single-line` in dialog-shell.ts. */
+/* `--fs-lg`, and it was `--fs-md` — a token this stylesheet never declared, so
+   the declaration was invalid and `font-size` fell through to the INHERITED
+   value, discarding `.modal-input`'s own `--fs-base` on the way (#463). The
+   intent was a title larger than a field, which is what `--fs-lg` is for by its
+   own definition: "row and card titles". */
 .tk-c-title {
   min-height: 0; max-height: 5.4em; resize: none; overflow-y: auto;
-  font-size: var(--fs-md); font-weight: var(--fw-medium); line-height: 1.35;
+  font-size: var(--fs-lg); font-weight: var(--fw-medium); line-height: 1.35;
 }
 
 /* Pushed to the end of the field's own label, so "Markdown · 12 lines" sits above the
@@ -2714,7 +3325,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .tk-c-broken {
   display: flex; flex-direction: column; gap: var(--sp-1);
   padding: var(--sp-3);
-  background: var(--bg-error-soft); border: 1px solid rgba(251, 129, 122, 0.42);
+  background: var(--bg-error-soft); border: 1px solid var(--line-error-soft);
   border-radius: var(--r-ctl);
   color: var(--fg); font-size: var(--fs-sm); line-height: var(--lh-body);
 }
@@ -3437,12 +4048,6 @@ h6.md-head { font-size: var(--fs-sm); }
    `--fg-subtle` (5.31 here) because it is a note in a column of code. */
 .dv-line--meta .dv-text { color: var(--fg-dim); font-style: italic; }
 
-/* The toggle is one class, which is what makes it cheap: flipping 2507 rows to
-   `pre-wrap` was measured at 42 ms, so there is nothing to schedule and nothing to
-   virtualise. `anywhere` rather than `break-word` because minified source and long
-   URLs have no break opportunity at all, and a token wider than the pane would
-   reintroduce the horizontal scroll this modifier exists to remove. */
-.dv-file--wrap .dv-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* "Hunk 2 of 5, lines 91 to 99" — the parsed `@@` header as a sentence, never the raw
    `@@ -91,7 +91,9 @@`. An `<h4>` because the screen's own title is an `<h3>`, and a
@@ -3476,9 +4081,19 @@ h6.md-head { font-size: var(--fs-sm); }
    would have nowhere to live. The `clip-path`/1px idiom rather than `display: none`
    or `visibility: hidden`, both of which take the text out of the accessibility tree
    along with the pixels, which is the opposite of the point. */
-.dv-sr {
+/* Clipped, not hidden, and written once. `position: absolute` at 1px with
+   `clip-path: inset(50%)` rather than `display: none` or `visibility: hidden`,
+   both of which take the text out of the accessibility tree along with the
+   pixels, which is the opposite of the point.
+   `.mark-text` is the third site and stays separate: it is clipped only below a
+   breakpoint, and a rule inside a media query cannot join a selector list
+   outside one. */
+.dv-sr,
+.panel-page .hist-where {
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.dv-sr {
   /* **Not decoration.** This word lives *inside* `.dv-text`, and every engine
      copies hidden text along with the visible text around it — so without this a
      selection dragged across the diff pastes "Added, const x = 1" and the patch
@@ -3536,10 +4151,6 @@ h6.md-head { font-size: var(--fs-sm); }
    the same `h2`. It is a bare `h3` at the top of the island now, visible, because
    the head above no longer says which page the panel is holding — see `HistoryView`
    and `#sidebar h3`. */
-.panel-page .hist-where {
-  position: absolute; width: 1px; height: 1px; margin: -1px;
-  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
-}
 /* The island's head supplies the gap under itself, so the column's own gap must not
    add a second one. `.hist` is a flex column, which the other two islands are not. */
 #sidebar .hist > h3 { margin-bottom: 0; }
@@ -3575,7 +4186,7 @@ h6.md-head { font-size: var(--fs-sm); }
 .hist-chain-note { font-size: var(--fs-xs); color: var(--fg-dim); padding: 2px 0 var(--sp-2) 2px; }
 
 .hist-row {
-  background: var(--bg-island); border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--bg-island); border: 1px solid var(--line); border-radius: var(--r-ctl);
   padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2);
   display: flex; flex-direction: column; gap: 6px;
   /* The state rail, the same channel the session row and the tile use, driven by
@@ -3613,27 +4224,14 @@ h6.md-head { font-size: var(--fs-sm); }
    ground towards the text's own colour, so the number that clears 4.5:1 differs
    by hue and one uniform value would fail for some of them. All five are in
    `npm run contrast`. */
-.run-state {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-family: var(--font-ui); font-size: var(--fs-xs); font-weight: var(--fw-medium);
-  padding: 2px 8px 2px 6px; border-radius: var(--r-pill);
-  border: 1px solid transparent; line-height: 1.4; white-space: nowrap;
-}
-.run-state::before {
-  content: ""; width: 7px; height: 7px; border-radius: 50%;
-  background: currentColor; flex: none;
-}
-.run-running     { color: var(--st-working); background: rgba(123, 215, 127, 0.14); }
-.run-ended       { color: var(--st-ended);   background: rgba(185, 186, 189, 0.10); border-color: rgba(185, 186, 189, 0.32); }
-.run-error       { color: var(--st-error);   background: rgba(251, 129, 122, 0.06); border-color: rgba(251, 129, 122, 0.42); }
-.run-interrupted { color: var(--st-waiting); background: rgba(239, 200, 69, 0.16); border-color: rgba(239, 200, 69, 0.42); }
+.run-running     { color: var(--st-working); background: var(--chip-working); }
+.run-ended       { color: var(--st-ended);   background: var(--chip-ended); border-color: var(--chip-ended-line); }
+.run-error       { color: var(--st-error);   background: var(--chip-error); border-color: var(--chip-error-line); }
+.run-interrupted { color: var(--st-waiting); background: var(--chip-waiting); border-color: var(--chip-waiting-line); }
 .run-failed-to-launch {
-  color: var(--st-error); background: rgba(251, 129, 122, 0.06);
-  border-color: rgba(251, 129, 122, 0.42); border-style: dashed;
+  color: var(--st-error); background: var(--chip-error);
+  border-color: var(--chip-error-line); border-style: dashed;
 }
-/* Something is actually happening, so the dot breathes — the same shape channel
-   `.state-working` uses, and the reason a finished run's chip does not. */
-.run-running::before { animation: breathe 1.8s ease-in-out infinite; }
 
 .hist-result-box { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
 .hist-result {
@@ -3663,6 +4261,32 @@ h6.md-head { font-size: var(--fs-sm); }
    read far more often than acted on — and they stay in the DOM rather than
    appearing on hover, so they are in the tab order and reachable by touch. */
 .hist-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: 2px; }
+/* A row's secondary actions, revealed rather than hidden. Five records meant
+   fifteen identically-shaped buttons in a column 280–384px wide, and at that
+   density the eye stops reading them (#463) — so a row leads with one action and
+   the rest arrive when it is being worked with.
+
+   The same idiom as `.tile-rename` and `.tile-activity` in a tile's head, and the
+   same guarantee: `opacity`, never `display`, so the control keeps its place in
+   the tab order and `:focus-within` brings it into view for a keyboard. What is
+   traded is discoverability on touch, where there is no hover — the same trade
+   the tile head already makes, and the reason exactly one action stays visible.
+
+   `visibility` is deliberately not touched either: a refused action is
+   `aria-disabled` with its reason on activation, and a reason a screen reader
+   cannot reach is not a reason. */
+.hist-action--more {
+  opacity: 0;
+  transition: opacity var(--dur-1) var(--ease-out);
+}
+.hist-row:hover .hist-action--more,
+.hist-row:focus-within .hist-action--more { opacity: 1; }
+/* And always, for anyone who has asked not to be shown things that move: the
+   reveal IS the motion here, so removing it has to leave the controls present
+   rather than leave them at zero. */
+@media (prefers-reduced-motion: reduce) {
+  .hist-action--more { opacity: 1; }
+}
 .hist-action {
   font-size: var(--fs-xs); color: var(--fg-mid); background: var(--bg-void);
   border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px var(--sp-2);
@@ -3687,7 +4311,7 @@ h6.md-head { font-size: var(--fs-sm); }
 .hist-erase:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 .hist-empty { max-width: 64ch; padding: var(--sp-4) 0; }
-.hist-empty-title { font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--fg); margin: 0 0 var(--sp-2); }
+.hist-empty-title { font-size: var(--fs-lg); font-weight: var(--fw-medium); color: var(--fg); margin: 0 0 var(--sp-2); }
 .hist-empty-body { font-size: var(--fs-sm); color: var(--fg-mid); line-height: var(--lh-body); margin: 0; }
 
 /* The scenario row's state dot: an indicator, and visibly not the ▶ beside it.
@@ -3709,15 +4333,18 @@ h6.md-head { font-size: var(--fs-sm); }
 .sk-dot.run-failed-to-launch::before {
   background: none; border: 2px solid currentColor; box-sizing: border-box;
 }
-/* Something is actually happening — the breathing the chip has, for its reason. */
-.sk-dot.run-running::before { animation: breathe 1.8s ease-in-out infinite; }
 .sk-dot:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .sk-dot:hover { transform: scale(1.25); }
 
 @media (forced-colors: active) {
-  /* Every fill is replaced by a system colour, so the five chips collapse into
-     one. The border is what survives, and the label is already a real text node
-     — which is why the hue was never the only channel here. */
+  /* Every fill is replaced by a system colour, so the chips collapse into one.
+     The border is what survives, and the label is already a real text node —
+     which is why the hue was never the only channel here.
+     `.tile-state` is here because merging the two families' bodies made its
+     absence visible: the two chips are one shape, so a session's chip was
+     collapsing to an unbordered blank under forced colours while a run's kept
+     its edge. Same rule, same reason (#463). */
+  .tile-state,
   .run-state { border-color: CanvasText; }
   .run-failed-to-launch { border-style: dashed; }
   /* A 10px dot with no text has nothing left once its fill is forced. */
@@ -3737,9 +4364,54 @@ h6.md-head { font-size: var(--fs-sm); }
    `flex: 1` rather than being negotiated away. */
 .term-drawer {
   flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0;
+  /* AN ISLAND, the same four-part shape as `.tile`, `#wspanel` and
+     `.deck-empty`: the fill, the hairline, the 14px corners and the shadow. It
+     was the fill alone, and that made the drawer the one content surface in the
+     app with square corners and no edge — a strip butted into three window
+     edges, twelve pixels under a deck of rounded cards.
+     The gutter is on three sides and not four: `#deck` has
+     `padding: var(--sp-3)`, so the gap above is already drawn, and a second one
+     there would read as a mistake — the argument `#wspanel`'s `margin` records
+     for its own missing left edge. */
+  margin: 0 var(--sp-3) var(--sp-3);
   background: var(--bg-island);
+  border: 1px solid var(--line); border-radius: var(--r-island);
+  box-shadow: var(--sh-island);
 }
 .term-drawer[hidden] { display: none; }
+
+/* Full window, from the button in the bar — `is-full` in `drawer.ts`.
+   `flex-basis: 100%` was the other candidate and is wrong twice over. `#deck`
+   has `padding: var(--sp-3)`, and `box-sizing: border-box` floors a padded box
+   at its padding, so squeezing it leaves a 24px band of `--bg-void` above a
+   drawer that claims to fill the window; and a grid squeezed to nothing draws
+   its zoomed filmstrip and its `.bcast-panel` out of a box that no longer has
+   room for either.
+   Out of flow instead, over a deck that keeps its layout. What that buys is worth
+   stating because it was measured rather than hoped for: the deck grows to the
+   full column while it is covered, and not one tile changes size — the cards size
+   themselves (see `#deck.is-zoomed`), so the extra height goes to the grid and no
+   PTY behind the cover is resized in either direction. `z-index: 6` clears
+   `.bcast-panel`'s 5, the highest thing inside `#deck`.
+   "The window" is this column, not the app: the panel beside it has a collapse of
+   its own, and the topbar has to stay — `#ledger` is where a session that starts
+   waiting for input while it is covered says so.
+   This is the one time the drawer floats, and the exception proves the rule
+   above rather than breaking it: what the drawer must never be is the thing the
+   deck is drawn ON TOP OF, and here the drawer is on top, for as long as a
+   person asked for and no longer. */
+/* The margin is not ignored here, which is why it is restated rather than
+   dropped: with `left` and `right` both `0` an absolutely positioned box honours
+   its own margins, so the cover would keep the three gutters above and grow a
+   fourth edge flush to the top of `#workarea`. `var(--sp-3)` on all four sides
+   instead, which is `#deck`'s own padding — so the cover lands exactly on the
+   box the tiles occupy rather than a few pixels above it. */
+.term-drawer.is-full { position: absolute; inset: 0; z-index: 6; margin: var(--sp-3); }
+/* The grip stays reachable while full — dragging it takes the drawer back into
+   flow under the pointer (see `setRows`) — but its negative margin would hang it
+   outside the cover, where it would be four pixels of drag surface over the
+   deck. */
+.term-drawer.is-full .term-grip { margin-top: 0; }
 
 /* The grab handle, and the whole of the drawer's resize affordance. Four pixels
    of surface with an eight-pixel hit area above it, which is the smallest that
@@ -3748,8 +4420,48 @@ h6.md-head { font-size: var(--fs-sm); }
 .term-grip {
   flex: 0 0 auto; height: 4px; cursor: ns-resize; background: transparent;
   margin-top: -4px; padding-top: 4px; box-sizing: content-box;
+  /* Positioned for the four pixels above the drawer, and it is those four pixels
+     that need it. `#deck` is `position: relative`, so it paints — and therefore
+     hit-tests — in a later step than a sibling that is not positioned, whatever
+     the tree order says; the overhang lay under `#deck`'s own opaque `--bg-void`.
+     Three of the eight pixels the comment above promises took no `pointerdown` at
+     all, and the focus ring below was cut off along its top. `position: relative`
+     puts the grip in the same step, where tree order decides and the grip comes
+     later. No `z-index`: there is nothing in that step to rank it against. */
+  position: relative;
+  /* The hit area is the element and the drawing is the bar inside it, which is
+     `.pr-drawer-grip`'s shape turned on its side. It became necessary with the
+     corners: the fill used to be on the element itself, and a full-width band
+     across a rounded top edge hangs its square ends out past both curves —
+     unclippable from here, because the 4px above the drawer is hit area the
+     island's `overflow` must not cut off. */
+  display: flex; align-items: flex-end; justify-content: center;
 }
-.term-grip:hover, .term-grip:focus-visible { background: var(--accent); outline: none; }
+/* Short, centred, and only there once the control is being used: at rest the
+   drawer's own top edge is the seam, and a bar drawn permanently across it would
+   be a second hairline a pixel below the first. */
+.term-grip::before {
+  content: ""; width: 2.4rem; height: 4px; border-radius: var(--r-pill);
+  background: transparent;
+  transition: background var(--dur-1) var(--ease-out);
+}
+.term-grip:hover::before { background: var(--accent); }
+.term-grip:focus-visible { outline: none; }
+/* The ring goes on the bar for the shape, which is not the reason
+   `.pr-drawer-grip` gives for its own: nothing paints over this one — `.term-bar`
+   below sets no fill at all — but around the element the ring is a full-width
+   lozenge, and a full-width anything across this edge hangs its square ends past
+   both corners. The same argument as the fill above, and the same answer. */
+.term-grip:focus-visible::before { background: var(--accent); box-shadow: var(--focus-ring); }
+
+/* The bar's whole drawing is a fill, and forced colours replace a fill with the
+   ground. Named system colours instead, the pair `.pr-drawer-grip` uses — and
+   drawn at rest here rather than on hover only, because a control whose only
+   state is a colour the mode has taken away is a control that is not there. */
+@media (forced-colors: active) {
+  .term-grip::before { background: CanvasText; }
+  .term-grip:hover::before, .term-grip:focus-visible::before { background: Highlight; }
+}
 
 .term-bar {
   flex: 0 0 auto; display: flex; align-items: stretch; gap: 2px;
@@ -3808,20 +4520,53 @@ h6.md-head { font-size: var(--fs-sm); }
 .term-add:hover, .term-hide:hover { color: var(--fg); }
 .term-add:focus-visible, .term-hide:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
+/* The full-window control. A drawn glyph where its two neighbours are text, and
+   that is the lesser of two mismatches: `+` and `✕` are characters that happen to
+   read as icons, while a maximise/restore pair has no character — every candidate
+   (`⤢`, `⤒`) is outside the coverage of the UI font stack on at least one of the
+   three platforms this ships to, and a tofu box in the terminal bar is a worse
+   inconsistency than two hands. `btn--icon` carries the colour, the 24px target
+   and the hover; only the rotation and the bar's rhythm are set here.
+   The rotation IS the state, so it is animated for the same reason `.ws-caret` is:
+   a glyph that flips between two frames with nothing in between reads as a
+   different glyph rather than the same one turning. */
+.term-full-btn { min-width: 26px; }
+.term-full-btn .icon { transform: rotate(-90deg); transition: transform var(--dur-2) var(--ease-out); }
+.term-full-btn.is-full .icon { transform: rotate(90deg); }
+
 /* One mount per tab, all of them kept: a terminal moved between parents loses
    its scrollback, so the inactive ones are hidden where they stand. */
 /* One surface with the bar above it, for the reason `.tile-body` gives: the ground
    is the drawer's own. What the active tab has left to say "this one" with is its
    `--line-strong` edge and its brighter name — the shared fill said it too while the
    fills differed, and one channel of three is what the change costs here. */
-.term-bodies { flex: 1; min-height: 0; position: relative; background: var(--bg-terminal); }
+/* The clip that rounds the terminal is HERE and not on the island, for the
+   reason `#wsp-body` gives about its own: `.term-grip` hangs four pixels above
+   the drawer's top edge on a negative margin, and an `overflow: hidden` up there
+   would cut that hit area in half. This is the only child whose content can
+   reach a corner. Minus the 1px border, or the terminal's fill shows outside the
+   hairline at the curve. */
+.term-bodies {
+  flex: 1; min-height: 0; position: relative; background: var(--bg-terminal);
+  overflow: hidden;
+  border-radius: 0 0 calc(var(--r-island) - 1px) calc(var(--r-island) - 1px);
+}
 .term-body { position: absolute; inset: 0; padding: 4px var(--sp-2); }
 .term-body.hidden { display: none; }
 
 /* Memory sync dialog.
-   Borrows the modal's own type and spacing; only the arrangement is new. */
-.sync-body { display: flex; flex-direction: column; gap: 12px; }
-.sync-row { display: flex; gap: 8px; flex-wrap: wrap; }
+   Borrows the modal's own type and spacing; only the arrangement is new.
+
+   Written in this app's own vocabulary since #463, and it was not: `--danger`,
+   `--border` and `--surface-2` with hex fallbacks are three names from a design
+   system this project does not use, so each one fell through to its literal and
+   the block was a stylesheet of its own that happened to sit in this file. The
+   `color-mix()` grounds were the part that mattered — `scripts/contrast.mjs`
+   parses `#rgb`, `#rrggbb` and `rgba()` and nothing else, so the one surface in
+   the app putting body text on a tinted amber ground was the one surface with no
+   measurement behind it. */
+.sync-body { display: flex; flex-direction: column; gap: var(--sp-3); }
+.sync-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
 /* The age of the last push, given its own line rather than folded into the
    paragraph above: it is the one number that says whether sync is working, and
    a sync broken for three weeks reads exactly like a working one until someone
@@ -3829,20 +4574,427 @@ h6.md-head { font-size: var(--fs-sm); }
 .sync-when { margin: 0; font-variant-numeric: tabular-nums; opacity: 0.85; }
 .sync-status { margin: 0; min-height: 1.2em; opacity: 0.85; }
 .sync-fault {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 10px 12px; border-radius: 6px;
-  border: 1px solid var(--danger, #b3261e);
-  background: color-mix(in srgb, var(--danger, #b3261e) 8%, transparent);
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  padding: var(--sp-3); border-radius: var(--r-sm);
+  border: 1px solid var(--st-error);
+  background: var(--bg-error-soft);
 }
 .sync-fault-text { margin: 0; }
+
+/* What a pull could not decide. Amber rather than red, and each one carries its
+   own actions: none of these is a failure, and every one of them is something
+   only a person can settle. */
+.sync-asks { display: flex; flex-direction: column; gap: var(--sp-2); }
+.sync-asks:empty { display: none; }
+.sync-asks-head { margin: 0; font-weight: var(--fw-bold); }
+.sync-ask {
+  display: flex; flex-direction: column; gap: var(--sp-2);
+  padding: var(--sp-3); border-radius: var(--r-sm);
+  border: 1px solid var(--st-waiting);
+  background: var(--bg-waiting-soft);
+}
+.sync-ask-text { margin: 0; }
 
 /* The one unprompted mention of memory sync. Sits above the deck rather than
    over it: it must not cover a tile, and it must be possible to ignore. */
 .sync-offer {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  margin: 8px 12px 0; padding: 10px 12px; border-radius: 6px;
-  border: 1px solid var(--border, #3c4043);
-  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  margin: var(--sp-2) var(--sp-3) 0; padding: var(--sp-3); border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-inset);
 }
 .sync-offer-text { margin: 0; flex: 1 1 320px; }
-.sync-offer-actions { display: flex; gap: 8px; }
+.sync-offer-actions { display: flex; gap: var(--sp-2); }
+
+/* --- The activity panel: what a session actually did --- */
+
+/* The button leads the action cluster's read-only half — it changes nothing, so
+   it sits before the pencil, which is the least destructive of the ones that do.
+   Always in the DOM, hidden until the tile is worked with, exactly as
+   `.tile-rename` above and for the same two reasons: the tab order and touch. */
+.tile-activity { opacity: 0; gap: 3px; padding: 0 4px; color: var(--fg-dim); transition: opacity var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
+.tile:hover .tile-activity,
+.tile.is-active .tile-activity,
+.tile-head:focus-within .tile-activity { opacity: 1; }
+.tile-activity-count { font-size: var(--fs-xs); font-variant-numeric: tabular-nums; line-height: 1; }
+.tile-activity-count.hidden { display: none; }
+/* The badge opens the same panel, so it has to look like something you can
+   press. A cursor and a hover step, not a border: it is a measurement first and
+   a control second, and a bordered chip in the head would read as a third badge. */
+.tile-tokens[role="button"] { cursor: pointer; }
+.tile-tokens[role="button"]:hover { background: var(--bg-hover); color: var(--fg); }
+.tile-tokens[role="button"]:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Wider than a prompt and shorter than the screen. A session with 21 distinct
+   tools was measured, so the list scrolls and the head stays put while it does —
+   which is why the box is a column with a fixed head and a scrolling body rather
+   than one scrolling block. */
+.modal-box.act-box { width: min(560px, 94vw); max-height: min(680px, 88vh); gap: var(--sp-3); }
+.act-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--sp-4); }
+.act-head { display: flex; flex-direction: column; gap: var(--sp-2); position: sticky; top: 0; background: var(--bg-island); padding-bottom: var(--sp-2); z-index: 1; }
+.act-title { color: var(--fg); font-family: var(--font-display); font-size: var(--fs-lg); font-weight: var(--fw-bold); letter-spacing: -0.01em; line-height: var(--lh-tight); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-facts { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.act-fact { font-size: var(--fs-xs); color: var(--fg-dim); white-space: nowrap; padding: 1px 6px; border-radius: var(--r-pill); background: var(--bg-void); font-variant-numeric: tabular-nums; }
+.act-fact--cli { color: var(--fg-mid); }
+.act-fact--bad { color: var(--st-error); }
+.act-foot { display: flex; justify-content: flex-end; }
+.act-foot button { padding: 7px var(--sp-4); min-height: 32px; border-radius: var(--r-ctl); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-bold); cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
+.act-foot button:hover { background: var(--accent-press); }
+
+.act-section { display: flex; flex-direction: column; gap: var(--sp-2); }
+.act-section-title { color: var(--fg-mid); font-size: var(--fs-xs); font-weight: var(--fw-bold); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* `--sp-1`, and the tools override below is gone with it: the list's own gap is
+   what separates one tool from the next whatever number of lines a tool takes,
+   and there was no reason for the other three sections to sit tighter. */
+.act-list { display: flex; flex-direction: column; gap: var(--sp-1); }
+
+/* Name, chip, bar, count. The bar is scaled to the largest row and is the reason
+   a wall of 26 rows is readable at all — the shape of a session is in the
+   proportions, not in the digits. */
+/* `row-gap: 0` and the indent below are load-bearing rather than taste. The
+   outcome line spans the row's full width, so at the grid's own gap it sits
+   exactly as far from its own tool as the next tool sits from it — and reads as
+   a row of its own rather than as a note on the one above. */
+.act-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(48px, 84px) 3.5em; align-items: center; column-gap: var(--sp-2); row-gap: 0; padding: var(--sp-1) var(--sp-2); border-radius: var(--r-sm); }
+.act-row:hover { background: var(--bg-hover); }
+.act-row-name { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-row-count { font-size: var(--fs-xs); color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
+/* `--fs-xs`, and it was 10px. 13px is the documented floor and this panel was the
+   one place below it (#463) — twice, here and on `.act-chip`. The answer to "this
+   line should be quiet" in this system is `--fg-dim`, not a smaller size: see the
+   note on that token, which is where "most of what reads as small is quiet rather
+   than short" is argued. The colour here is `--st-error` because an outcome line
+   only appears when there was one. */
+.act-row-outcome { grid-column: 1 / -1; font-size: var(--fs-xs); line-height: var(--lh-body); color: var(--st-error); padding-left: var(--sp-2); }
+.act-bar { display: block; height: 4px; border-radius: var(--r-pill); background: var(--bg-void); overflow: hidden; }
+.act-bar-fill { display: block; height: 100%; border-radius: var(--r-pill); background: var(--fg-dim); }
+/* The chip is the category, and the category is never the label. It is quiet on
+   purpose: the native name is what a row is about, and a coloured taxonomy beside
+   it would compete with the state colours the deck spends its hue on. */
+.act-chip { font-size: var(--fs-xs); letter-spacing: var(--ls-caps); text-transform: uppercase; color: var(--fg-dim); background: var(--bg-void); border-radius: var(--r-pill); padding: 0 5px; white-space: nowrap; }
+.act-chip--mcp, .act-chip--delegate { color: var(--fg-mid); }
+
+/* Indented by depth, so a delegation tree reads as one. `--act-depth` is set per
+   row; the main chain is 0 and sits flush. */
+.act-agent { display: grid; grid-template-columns: minmax(0, 1fr) 3.5em; align-items: baseline; gap: var(--sp-2); padding: var(--sp-1) var(--sp-2); padding-left: calc(var(--sp-2) + var(--act-depth, 0) * 14px); border-radius: var(--r-sm); }
+.act-agent:hover { background: var(--bg-hover); }
+.act-agent-name { font-size: var(--fs-sm); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.act-agent-top { grid-column: 1 / -1; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: calc(var(--act-depth, 0) * 14px); }
+.act-server { display: grid; grid-template-columns: minmax(0, 1fr) 3.5em; align-items: baseline; gap: var(--sp-2); padding: var(--sp-1) var(--sp-2); border-radius: var(--r-sm); }
+.act-server:hover { background: var(--bg-hover); }
+
+/* A sentence, never a table of zeroes. Which sentence is the whole point: a
+   panel of zeroes is indistinguishable from a session that did nothing. */
+.act-empty { color: var(--fg-dim); font-size: var(--fs-sm); line-height: var(--lh-body); margin: 0; }
+.act-note { color: var(--fg-dim); font-size: var(--fs-xs); line-height: var(--lh-body); margin: 0; }
+
+/* --- Limits: what each connected AI has left ------------------------------
+   Three hues and no more, and one of them is deliberately absent: there is no
+   green here. Green already means "working" on every rail in this window, and
+   spending it on "your quota is fine" would make a row of healthy dials read as
+   sessions doing something. A healthy ring is NEUTRAL — the design system's rule
+   that hue belongs to state, applied rather than bent.
+
+   `--st-error` for a spent budget and `--st-waiting` for one nearly spent, which
+   is the same pair the ledger and the session rows use for the same two
+   meanings: something has stopped, and something is about to want you. A person
+   who has learned those two colours anywhere in this app has learned them here.
+   `npm run contrast` measures every pair below.
+
+   A ROW OF DIALS since #498, and it was one folded line naming the worst-off AI
+   (#392, ADR-0011), which was a slab of rows before that. What the line could not
+   fix by shrinking further is that it named ONE AI and which one it named moved:
+   a reading you find by reading is not a glance. Marks in a fixed order are found
+   by POSITION, and the answer to "how is Claude doing" is in the same place every
+   time.
+
+   TWO GROUNDS, and they are why several rules below carry a variable rather than
+   a colour: the dials are on `--bg-island` inside the deck's popover and inside
+   the status-area panel, and the one word that opens the popover is on the top
+   bar's `--bg-chrome`. */
+#limits {
+  /* `align-self: stretch` so the box is the bar's full 44px and `top: 100%` on
+     the popover is exactly the bar's bottom edge. Sized to its content it was
+     29px, and the popover then hung four pixels INTO the bar. */
+  flex: none; align-self: stretch; position: relative;
+  display: flex; align-items: center; min-width: 0;
+}
+#limits[hidden] { display: none; }
+
+/* --- the one word in the bar, and what it opens ------------------------- */
+/* The dials are not in the top bar. The bar is a row of the deck's OWN state —
+   what is blocked, what is waiting — and three logos parked in it read as three
+   more controls rather than as a reading (#498). One word, and everything behind
+   it. What does NOT go behind the press is the alarm: the dot is the reason
+   hiding the rest is acceptable at all. */
+.dial-trigger {
+  flex: none; display: flex; align-items: center; gap: 4px;
+  padding: 4px var(--sp-2); border: 0; border-radius: var(--r-ctl);
+  background: transparent; color: var(--fg-mid); cursor: pointer;
+  font: inherit; font-size: var(--fs-xs);
+}
+.dial-trigger:hover { background: var(--bg-hover); color: var(--fg); }
+.dial-trigger:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.dial-trigger-word { white-space: nowrap; }
+/* Amber, then red, on the word itself: the alarm is the half of the reading that
+   must not need a gesture. The bands are the dials' own — three quarters and
+   nine tenths (`zoneOf`) — so the word cannot stay neutral over a dial that has
+   gone red, which is the property that makes hiding them acceptable. The word
+   deliberately does NOT go green when everything is fine: "fine" is the state it
+   is in almost always, and a chrome that carried a hue almost always would be
+   spending the reader's attention on the answer they did not ask for. */
+.dial-trigger[data-alarm="near"] { color: var(--st-waiting); }
+.dial-trigger[data-alarm="out"] { color: var(--st-error); }
+.dial-caret { display: inline-flex; align-items: center; flex: none; color: var(--fg-dim); }
+/* DOWN while shut and up while open: a disclosure's caret points at where its
+   content is, and the popover is below. */
+.dial-caret .icon { transition: transform var(--dur-2) var(--ease-out); transform: rotate(90deg); }
+.dial-trigger[aria-expanded="true"] .dial-caret .icon { transform: rotate(-90deg); }
+.dial-trigger:hover .dial-caret { color: var(--fg-mid); }
+
+/* Out of the flow, so opening it costs the bar no height and the deck below does
+   not move — which is the fault ADR-0011's amendment is about, one surface up. An
+   island, because unlike the panel's foot this floats over the work: it needs its
+   own ground, its own edge and a shadow to sit above the deck. `right: 0`, so it
+   grows leftward from the word rather than out past the window's edge. */
+.dial-pop {
+  position: absolute; top: 100%; right: 0; z-index: 20;
+  min-width: 20rem; max-width: min(26rem, 90vw);
+  padding: var(--sp-3); border-radius: var(--r-island);
+  background: var(--bg-island); border: 1px solid var(--line-strong);
+  box-shadow: var(--sh-float);
+  display: flex; flex-direction: column; gap: var(--sp-3);
+}
+.dial-pop[hidden] { display: none; }
+
+/* --- a dial ------------------------------------------------------------- */
+.dial-row { display: flex; align-items: flex-start; gap: var(--sp-3); }
+
+/* A column: the ring with its mark, and the figure under it. The figure is not
+   decoration — a ring at 4% is a hairline and a ring at 0% is nothing at all,
+   which is indistinguishable at a glance from a ring that is not working. */
+.dial {
+  flex: none; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: var(--sp-1); border: 0; border-radius: var(--r-ctl);
+  background: transparent; color: var(--fg-mid); cursor: pointer; font: inherit;
+}
+.dial:hover { background: var(--bg-hover); color: var(--fg); }
+.dial:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+/* Held and undetected dials are quiet and do nothing, and they still take focus
+   — "why is this one grey" is the question their description answers, and
+   `disabled` would put that description out of reach of a keyboard. */
+.dial[aria-disabled="true"] { cursor: default; color: var(--fg-dim); }
+.dial[aria-disabled="true"]:hover { background: transparent; color: var(--fg-dim); }
+
+/* 40px, which is the size at which a real logo is a logo. The row is behind a
+   press in the deck and in a window of its own in the panel, so neither surface
+   is paying bar height for it. */
+.dial-face { position: relative; display: grid; place-items: center; width: 40px; height: 40px; }
+.dial-ring { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; }
+.dial-track { stroke: var(--bg-inset); stroke-width: 2.5; }
+/* A dashed track is what "there is no reading here" looks like, and it is not
+   the same drawing as a full ring at zero. An app that drew an empty solid ring
+   for an AI it cannot read would be claiming nothing had been spent. */
+.dial[data-soon] .dial-track,
+.dial[data-state="none"] .dial-track,
+.dial[data-state="unknown"] .dial-track { stroke: var(--line); stroke-dasharray: 2 3; }
+/* Round caps, so a session at 2% is a mark rather than a hairline nobody sees.
+   The bare `--fg-dim` is what a ring with no BAND is drawn in: an absolute with
+   no ceiling, a reading nobody has. Everything with a share takes its hue from
+   the band below, green included. */
+.dial-arc { stroke: var(--fg-dim); stroke-width: 2.5; stroke-linecap: round; }
+.dial:hover .dial-arc { stroke: var(--fg-mid); }
+
+/* --- the three bands ---------------------------------------------------- */
+/* Green to three quarters, amber to nine tenths, red past it (`zoneOf`), and
+   the same three hues wherever a limit is drawn: the arc, the logo inside it,
+   the figure under it and the meters in the card and the dialog.
+
+   Green is a reversal, and the record of it is in `zoneOf` and in ADR-0011's
+   third amendment: a provider's state is a step function, so a ring three
+   quarters through the five hours used to be drawn exactly like a ring at 4%.
+   It does not collide with the session rails, because a rail is a bar down the
+   side of a row and these are inside a dial or a bar with its own track.
+
+   The hover rules exist because `.dial:hover` brightens the arc and the mark,
+   and a hue that changed under the pointer would be a reading that changed
+   under the pointer. A band survives being pointed at. */
+.dial-ring.lim-fine .dial-arc,
+.dial:hover .dial-ring.lim-fine .dial-arc { stroke: var(--st-working); }
+.dial-ring.lim-near .dial-arc,
+.dial:hover .dial-ring.lim-near .dial-arc { stroke: var(--st-waiting); }
+.dial-ring.lim-out .dial-arc,
+.dial:hover .dial-ring.lim-out .dial-arc { stroke: var(--st-error); }
+
+.dial-mark { display: grid; place-items: center; }
+/* The AI's own logo, filled, on its own 24-unit grid — the opposite of `.icon`,
+   which is stroked on 16 and would render every one of these as nothing. */
+.brand { display: block; flex: none; fill: currentColor; stroke: none; }
+.dial-mark .brand, .dial-mark .icon { width: 20px; height: 20px; }
+/* --- the logo is the brand's colour, and nothing else on the dial is ----- */
+/* The first cut of the bands took the mark as well, on the argument that a logo
+   is the biggest thing on a 40px dial and colouring the arc alone leaves the
+   reading in the thinnest part of the drawing. The argument was about the wrong
+   element. A green Claude mark is not Claude's mark: the logo answers WHICH AI,
+   it answers it before anything has been read, and it answers it the same way at
+   3% and at 97%. Tinting it by the quota made the one fixed thing on the dial
+   move with the readings — which is the identical fault, one element further in,
+   that drawing the dials in a fixed order exists to prevent.
+
+   So the brand keeps its own colour (`--brand-claude`, and the note there for why
+   there is only one of them) and the BANDS keep everything that is about the
+   reading: the arc, the figure under it, the dot, the meters in the card and the
+   dialog, and the word in the top bar. A cleaner division than the one it
+   replaces — identity in the middle, level around it.
+
+   `--brand` falls back to `currentColor`, so a provider with no token of its own
+   inherits the dial's neutral. A HELD or undetected dial is excluded from the
+   rule altogether and keeps the `--fg-dim` of `[aria-disabled]`: dimming is how
+   "this one is not ready" is said, and a full-colour logo would say the
+   opposite. */
+.dial { --brand: currentColor; }
+.dial[data-provider="claude"] { --brand: var(--brand-claude); }
+.dial:not([data-soon]):not([data-state="none"]) .dial-mark { color: var(--brand); }
+
+/* The reading in figures, under the ring. Tabular, so three dials side by side
+   line up and a change of value does not shift the row. */
+.dial-caption {
+  font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
+  color: var(--fg-dim); white-space: nowrap;
+}
+/* The band said in characters as well as in hue — for anybody the hue does not
+   reach, and because the figure is the part of a dial that can be checked. */
+.dial[data-zone="fine"] .dial-caption { color: var(--st-working); }
+.dial[data-zone="near"] .dial-caption { color: var(--st-waiting); }
+.dial[data-zone="out"] .dial-caption { color: var(--st-error); }
+
+/* What the ring is NOT saying: now the ring is the five hours, that is the WEEK
+   in trouble behind a comfortable session. Ringed in the ground it sits on so it
+   reads as a badge on the dial rather than as a fleck in the box — which is why
+   the ground is a variable: the same badge rides the word in the top bar, on the
+   chrome. */
+.dial-dot {
+  position: absolute; top: -1px; right: -1px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--st-waiting);
+  box-shadow: 0 0 0 2px var(--dial-ground, var(--bg-island));
+}
+.dial[data-alert="out"] .dial-dot { background: var(--st-error); }
+/* On the trigger it is not absolute — there is no ring to sit on the corner of,
+   and a badge floating beside a word reads as a bullet. */
+.dial-trigger .dial-dot { position: static; width: 6px; height: 6px; box-shadow: none; }
+.dial-trigger[data-alarm="out"] .dial-dot { background: var(--st-error); }
+
+/* --- the detail behind a dial ------------------------------------------- */
+/* In the deck it is the second thing inside the popover, in the flow, because
+   the popover is already floating and is the right size for both. */
+.dial-card {
+  min-width: 0; display: flex; flex-direction: column; gap: var(--sp-2);
+}
+.dial-card[hidden] { display: none; }
+.dial-card p { margin: 0; }
+.dial-card-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.dial-card-name { flex: 1; min-width: 0; font-weight: var(--fw-medium); }
+/* The same caps as a qualifier chip, because it is the same kind of thing: a
+   word about the reading rather than part of it. */
+.dial-soon {
+  flex: none; font-size: var(--fs-xs); text-transform: uppercase;
+  letter-spacing: var(--ls-caps); color: var(--fg-dim);
+}
+.dial-card-note, .dial-card-hint {
+  font-size: var(--fs-xs); color: var(--fg-dim); line-height: var(--lh-body);
+}
+/* One window: what it is and what it reads, the meter, and the sentence about
+   its state. On its own ground, so two windows are two things rather than six
+   lines. */
+.dial-win {
+  display: flex; flex-direction: column; gap: var(--sp-1);
+  padding: var(--sp-2); background: var(--bg-inset); border-radius: var(--r-ctl);
+}
+.dial-win .lim-meter { background: var(--bg-hover-2); }
+.dial-foot { font-size: var(--fs-xs); }
+
+/* The card in the status-area panel. That window shows its dials — it is nothing
+   but a glance, and hiding its content behind a hover would put it two gestures
+   deep — but it must not GROW: a card in the flow pushed the sessions below it
+   down every time a pointer crossed a logo. So it floats over them, hung on the
+   panel's own box rather than inside its scrolling list, and `top` is set from
+   script because the two are not siblings. */
+.dial-card--float {
+  position: absolute; left: var(--sp-2); right: var(--sp-2); z-index: 20;
+  padding: var(--sp-3); border-radius: var(--r-island);
+  background: var(--bg-island); border: 1px solid var(--line-strong);
+  box-shadow: var(--sh-float);
+  /* `top` and `max-height` are set from script — see `place`. Scrolling rather
+     than clipped, because the box it hangs in clips and the last line of a spent
+     window is the one that says when work becomes possible again. */
+  overflow-y: auto;
+}
+
+/* --- and what the card shares with the dialog behind it ------------------
+   One vocabulary for a reading, drawn the same way wherever it is drawn. A meter
+   that is a different colour in the status panel than in the deck is worse than
+   no meter — which is the whole argument of ADR-0013, in CSS. */
+.lim-line { display: flex; align-items: baseline; gap: var(--sp-2); min-width: 0; }
+.lim-name { flex: none; font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+/* What qualifies a number, at the same size as the number. A tooltip would be a
+   footnote, and a footnote is what ADR-0009 exists to refuse: the source of a
+   number is part of the number.
+   The card prints the CAVEAT and not the tier's name — `tierNote`, which says
+   nothing at all for the account's own accounting. An unqualified number is the
+   account's, which is what a person assumes anyway; the failure that record
+   exists to prevent is the other direction, and only the weaker tiers can commit
+   it. The tier NAMES are in the dialog, beside the sentences that define them. */
+.lim-src {
+  flex: none; font-size: var(--fs-xs); text-transform: uppercase;
+  letter-spacing: var(--ls-caps); color: var(--fg-dim);
+}
+/* Nothing per-tier. The rule here used to colour `--reported` a step brighter,
+   under a comment claiming it coloured the WEAKEST tier — the comment and the
+   selector had disagreed since the palette port. Every tier that reaches a card
+   is equal furniture. The class is still written onto the element: it is a hook
+   worth having, and `[class]` is how the dialog's tests find a tier. */
+.lim-reading {
+  flex: 1; min-width: 0; font-size: var(--fs-xs); color: var(--fg-mid);
+  text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Thin, because it is a glance and not a chart. 4px reads as a level at every
+   text size the app offers without becoming an element in its own right. */
+.lim-meter {
+  display: block; height: 4px; border-radius: var(--r-pill);
+  background: var(--bg-inset); overflow: hidden;
+}
+/* The bare `--fg-dim` is a fill with no band — an exhausted window with no share
+   fills to the brim and is red by `.lim-out` below, so what is left here is the
+   case that has neither. The three bands are the dials' own (`zoneOf`), which is
+   what stops a bar in the card and the ring that opened it reading as two
+   different answers. */
+.lim-fill { display: block; height: 100%; background: var(--fg-dim); }
+.lim-meter.lim-fine .lim-fill { background: var(--st-working); }
+.lim-meter.lim-near .lim-fill { background: var(--st-waiting); }
+.lim-meter.lim-out .lim-fill { background: var(--st-error); }
+.lim-out-text { color: var(--st-error); }
+/* Amber in words, and both halves matter: the hue is how this is read without
+   being read, and "nearly spent" is how it is read by somebody the hue does not
+   reach. */
+.lim-near-text { color: var(--st-waiting); }
+.lim-reset { color: var(--fg-dim); }
+
+/* --- and the dialog behind a row ---------------------------------------- */
+.modal-box.lim-screen { width: min(520px, 94vw); }
+.lim-who { color: var(--fg-mid); font-size: var(--fs-sm); }
+.lim-error { color: var(--st-error); font-size: var(--fs-sm); }
+.lim-win {
+  display: flex; flex-direction: column; gap: var(--sp-1);
+  padding: var(--sp-3); background: var(--bg-inset); border-radius: var(--r-ctl);
+}
+.lim-win-head { display: flex; align-items: baseline; gap: var(--sp-2); }
+.lim-win-name { flex: 1; font-weight: var(--fw-medium); }
+.lim-win-reading { font-size: var(--fs-sm); color: var(--fg); }
+.lim-win-out { color: var(--st-error); font-size: var(--fs-sm); }
+.lim-win-reset { color: var(--fg-mid); font-size: var(--fs-sm); }
+/* What the tier means, then what the provider says about this number. Two
+   paragraphs, because they answer two questions — and the second is where "other
+   terminals and other machines are not in this" is finally written in words. */
+.lim-win-tier, .lim-win-note, .lim-hint { color: var(--fg-dim); font-size: var(--fs-xs); }
+/* The meter inside the dialog sits on the inset ground, not the island's. */
+.lim-win .lim-meter { background: var(--bg-hover-2); }

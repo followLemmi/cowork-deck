@@ -118,22 +118,116 @@ pub struct AppState {
     /// checked before every write and resize. See `ownership::SessionOwners`
     /// for why the frontend cannot be the layer that decides this.
     pub session_owners: crate::ownership::SessionOwners,
+    /// Whether the reported source of usage limits may be asked. Shared with the
+    /// Claude provider inside `usage`, so `save_ui_state` can flip it without
+    /// rebuilding the registry. See `UiState::usage_reported`.
+    pub usage_reported: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// What each connected AI has left, with a TTL cache in front of it. An
+    /// `Arc` because `usage_snapshot` hands it to a blocking task: the providers
+    /// spawn subprocesses, and none of that may happen on the runtime's own
+    /// threads.
+    pub usage: std::sync::Arc<crate::usage::registry::Registry>,
+}
+
+/// Take one of `AppState`'s locks, poisoned or not.
+///
+/// A poisoned mutex is one whose holder panicked while holding it. `lock()` then
+/// returns `Err` **forever**, so `lock().unwrap()` converts a single panic inside
+/// one command into a panic in every later command touching the same lock: the
+/// app is dead from the first fault rather than degraded by it. The store lock is
+/// the worst of them, because nearly every command takes it — a panic anywhere
+/// under `save_workspace` and the deck stops answering, including the commands
+/// that would let a person save their work and leave.
+///
+/// `PoisonError::into_inner` takes the guard anyway, and that is sound for these
+/// six specifically. None of them guards an invariant-carrying structure that can
+/// be observed mid-update: `Store` is a handle to a directory, re-reading and
+/// atomically rewriting whole JSON files (see `store.rs`), and the five caches
+/// beside it are maps whose worst reachable state is a stale or missing entry —
+/// each one already has a miss path, because each is empty on launch. A torn
+/// write is not observable through any of them, so carrying on with the data as
+/// it stands is strictly better than refusing to serve it.
+///
+/// Three styles used to coexist for the store lock alone: `unwrap()` in nineteen
+/// places, `map_err(|_| "store lock")` in six, `if let Ok` in four. The same fault
+/// was therefore fatal, an error message, or silence depending on which command
+/// met it first (#463).
+fn taken<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The six locks in `AppState`, each reached by a method that cannot panic.
+///
+/// The fields stay `pub` because `main.rs` builds the state with a struct
+/// literal, so the accessors are a convention rather than a wall — and
+/// `no_state_lock_is_unwrapped` below is what makes the convention hold.
+impl AppState {
+    /// The store: workspaces, skills, layouts, the journal, `ui_state`.
+    pub fn store(&self) -> std::sync::MutexGuard<'_, Store> { taken(&self.store) }
+
+    /// Account tokens, in memory only. See `workspace_token`.
+    pub fn gh_tokens(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<(String, String), String>> {
+        taken(&self.gh_tokens)
+    }
+
+    /// Per-workspace repository facts, as `gh` resolved them.
+    pub fn gh_repos(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, cowork_deck::tasks::gh_issues::RepoFacts>> {
+        taken(&self.gh_repos)
+    }
+
+    /// Identity environments resolved ahead of a launch. See `session_auth`.
+    pub fn session_envs(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, AuthOutcome>> {
+        taken(&self.session_envs)
+    }
+
+    /// Live shell ids, for the cap in `start_shell_session`.
+    pub fn shells(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+        taken(&self.shells)
+    }
+
+    /// The open-issue count each GitHub workspace's board last saw.
+    pub fn issue_open_counts(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, usize>> {
+        taken(&self.issue_open_counts)
+    }
 }
 
 /// Build the argv (after the program name) for launching an interactive claude
 /// session. First launch pins our own session id via `--session-id`; restart/
-/// restore resumes that same conversation via `--resume` (no prompt — context
-/// already lives in the resumed session).
+/// restore resumes a conversation via `--resume` (no prompt — context already
+/// lives in the resumed session).
+///
+/// `resume` names the conversation rather than merely asking for one, and that
+/// is deliberate: it used to be a `bool`, and the id it resumed was
+/// `session_id` — the id the deck launched with, which stops naming the
+/// conversation the person is in the moment they type `/clear` (#199). A caller
+/// that has to state the id cannot reintroduce that by omission. See
+/// [`resume_target`] for where the id comes from.
 pub fn build_claude_args(
     settings_json: &str,
     initial_prompt: &Option<String>,
     session_id: &str,
-    resume: bool,
+    resume: Option<&str>,
+    memory: &[String],
 ) -> Vec<String> {
     let mut args = vec!["--settings".to_string(), settings_json.to_string()];
-    if resume {
+    // Before the branch, so memory reaches **both** launch paths. Added inside
+    // one of them, a session that survived a restart would quietly lose its
+    // memory — and a restored tile is exactly the long-running session most
+    // likely to want it.
+    //
+    // Position also matters for a second, sharper reason. `--mcp-config` is
+    // **variadic** — `<configs...>` — so it keeps consuming arguments until one
+    // starts with a dash. Measured: `claude --mcp-config '<json>' mcp list` fails
+    // with "MCP config file not found: mcp" and "…: list", having swallowed both.
+    // On a first launch the initial prompt is a *positional* argument, so memory
+    // placed after `--session-id <id>` would have `--mcp-config` eat the prompt.
+    // Here it is followed by `--session-id` or `--resume`, both flags, so the
+    // variadic stops where it should. `no_positional_follows_the_mcp_config`
+    // pins that.
+    args.extend_from_slice(memory);
+    if let Some(conversation) = resume {
         args.push("--resume".to_string());
-        args.push(session_id.to_string());
+        args.push(conversation.to_string());
     } else {
         args.push("--session-id".to_string());
         args.push(session_id.to_string());
@@ -142,6 +236,64 @@ pub fn build_claude_args(
         }
     }
     args
+}
+
+/// Which conversation a restart or a restore should resume, for a tile the deck
+/// knows as `session`.
+///
+/// Three sources, in this order, and each one covers a case the next cannot:
+///
+/// 1. [`crate::resume_ids`] — what a hook reported during **this** app run. The
+///    freshest answer, and the only one that is right for a `/clear` followed by
+///    a ⟳ before the frontend's next poll tick has persisted anything.
+/// 2. `resume_id` on the layout entry — the only copy that survives a restart,
+///    and so the answer on the auto-restore path, where the map above is empty
+///    for the whole of a restored tile's life until its first hook arrives.
+/// 3. The launch id itself, which is what a session that has never been cleared
+///    means, and what every layout written before the field existed says.
+///
+/// Resolved here rather than passed in from the frontend, and that is the point:
+/// a caller that forgot to pass it would resume the pre-`/clear` conversation
+/// with **nothing failing** — the launch id still names a real, resumable
+/// conversation. That is #199 exactly, and it is not a mistake a second caller
+/// should be able to make. The same reasoning put transcript recording inside
+/// the listener rather than behind a callback.
+///
+/// The id is not checked against the transcripts on disk. A `--resume` naming a
+/// conversation that has been deleted fails visibly — the tile goes to `error`
+/// and offers ⟳ — whereas quietly falling back to the launch id is the silent
+/// wrong answer this whole issue is about.
+///
+/// The layout is read best-effort all the same, and that is a decision rather
+/// than an oversight. `layout()` reads an unparseable `sessions.json` as an
+/// empty one, so a file damaged *while the app runs* would send a cleared tile
+/// back to its launch id without a word — the failure above, by another route.
+/// Refusing instead would mean no session restarts at all while the file is
+/// damaged, uncleared ones included, and those are the great majority and would
+/// all have been right. A tile that loses one `/clear` is the smaller harm than
+/// a deck that will not restart anything, so this reads what it can get.
+fn resume_target(store: &Store, session: &str) -> String {
+    if let Some(current) = crate::resume_ids::get(session) {
+        return current;
+    }
+    // Takes the store rather than the mutex, and the caller passes
+    // `&state.store()` — so the guard is a temporary, dropped at the end of that
+    // statement rather than held into the launch. See the note at the top of
+    // this file about what `start_session` may and may not do. It used to take
+    // the mutex and `lock().ok()`, which meant a poisoned lock fell back to the
+    // launch id silently: after a `/clear` that is the conversation the person
+    // just left, resumed on purpose (#463).
+    //
+    // Every window's entries, not this window's: a session that was handed to
+    // another deck is owned by that one, and the id it should resume is a fact
+    // about the conversation rather than about who is showing it.
+    store
+        .layout()
+        .into_iter()
+        .find(|e| e.session_id == session)
+        .and_then(|e| e.resume_id)
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| session.to_string())
 }
 
 /// Environment a session needs to file its own tickets. When the workspace has
@@ -241,35 +393,38 @@ fn run_status_of(exit: &crate::pty::Exit) -> crate::runs::RunStatus {
     }
 }
 
+/// The workspace list, refusing rather than answering "none" for a file it
+/// cannot read.
+///
+/// It answered `Vec` until #369, on `read_vec`'s best-effort terms: an
+/// unparseable `workspaces.json` read as an empty list, which cost a stale
+/// sidebar and nothing else. It costs more now. A window pinned to a workspace
+/// closes itself when this call stops listing it, so an empty answer is a
+/// decision to hand the window's sessions back and go — and a fault has to be
+/// unable to make that decision. `try_workspaces` carries the difference; the
+/// frontend's `listWorkspaces` rejects, and every reader of it already has to
+/// survive an invoke that fails.
 #[tauri::command]
-pub fn list_workspaces(state: State<AppState>) -> Vec<Workspace> {
-    state.store.lock().unwrap().workspaces()
+pub fn list_workspaces(state: State<AppState>) -> Result<Vec<Workspace>, String> {
+    state.store().try_workspaces().map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Workspace>, String> {
     // The binding may have just changed; a stale cached token would keep this
     // workspace talking as the old account. The map holds a handful of entries,
     // so clearing all of it costs nothing and precision buys nothing.
-    if let Ok(mut cache) = state.gh_tokens.lock() {
-        cache.clear();
-    }
+    state.gh_tokens().clear();
     // The resolved environment is the same binding one step further on: a
     // workspace that now points at another account would otherwise keep handing
     // new sessions the old account's token. This is the invalidation point the
     // fork-time resolution never had.
-    if let Ok(mut cache) = state.session_envs.lock() {
-        cache.clear();
-    }
+    state.session_envs().clear();
     // A re-pointed folder is a different repository, and a re-sourced tracker is
     // a different count. Both caches are keyed by workspace, so both would
     // otherwise keep answering for the workspace this one used to be.
-    if let Ok(mut cache) = state.gh_repos.lock() {
-        cache.clear();
-    }
-    if let Ok(mut cache) = state.issue_open_counts.lock() {
-        cache.clear();
-    }
-    let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+    state.gh_repos().clear();
+    state.issue_open_counts().clear();
+    let store = state.store();
     // Seeded the same way the tracker reads them, so a version 1 config's
     // cards are not forgotten by the very save that bumps it to version 2.
     let old = store
@@ -283,7 +438,7 @@ pub fn save_workspace(state: State<AppState>, ws: Workspace) -> Result<Vec<Works
 #[tauri::command]
 pub fn remove_workspace(state: State<AppState>, id: String) -> Result<Vec<Workspace>, String> {
     let (left, dir) = {
-        let store = state.store.lock().unwrap();
+        let store = state.store();
         (store.delete_workspace(&id).map_err(|e| e.to_string())?, store.dir.clone())
     };
     // Deletion is an event, and this is the moment it happens. Sync cannot work
@@ -296,16 +451,16 @@ pub fn remove_workspace(state: State<AppState>, id: String) -> Result<Vec<Worksp
 }
 #[tauri::command]
 pub fn list_skills(state: State<AppState>) -> Vec<Skill> {
-    state.store.lock().unwrap().skills()
+    state.store().skills()
 }
 #[tauri::command]
 pub fn save_skill(state: State<AppState>, sk: Skill) -> Result<Vec<Skill>, String> {
-    state.store.lock().unwrap().upsert_skill(sk).map_err(|e| e.to_string())
+    state.store().upsert_skill(sk).map_err(|e| e.to_string())
 }
 #[tauri::command]
 pub fn remove_skill(state: State<AppState>, id: String) -> Result<Vec<Skill>, String> {
     let (left, dir) = {
-        let store = state.store.lock().unwrap();
+        let store = state.store();
         (store.delete_skill(&id).map_err(|e| e.to_string())?, store.dir.clone())
     };
     crate::sync::publish::forget_scenario(&dir, &id);
@@ -330,7 +485,7 @@ pub struct ScheduleView {
 pub fn load_schedule_state(
     state: State<AppState>,
 ) -> std::collections::HashMap<String, ScheduleView> {
-    let store = state.store.lock().unwrap();
+    let store = state.store();
     let runs = store.schedule_state();
     let skills = store.skills();
     let now = chrono::Local::now().naive_local();
@@ -371,7 +526,7 @@ pub fn schedule_ack(
     // attempts that launched nothing, and deriving "did we already fire" by
     // scanning the journal would be both slower and semantically wrong.
     {
-        let store = state.store.lock().unwrap();
+        let store = state.store();
         let mut st = store.schedule_state();
         let Some(updated) = crate::scheduler::apply_ack(st.get(&skill_id), occurrence_ms, &outcome)
         else {
@@ -404,7 +559,7 @@ pub fn list_runs(
     workspace_id: Option<String>,
     skill_id: Option<String>,
 ) -> Vec<crate::runs::RunRecord> {
-    let runs = { state.store.lock().unwrap().runs() };
+    let runs = { state.store().runs() };
     crate::runs::scoped(runs, workspace_id.as_deref(), skill_id.as_deref())
 }
 
@@ -417,7 +572,7 @@ pub fn delete_skill_history(
     skill_id: String,
     workspace_id: Option<String>,
 ) -> Result<(), String> {
-    let store = state.store.lock().unwrap();
+    let store = state.store();
     store
         .delete_skill_history(&skill_id, workspace_id.as_deref())
         .map_err(|e| e.to_string())
@@ -470,8 +625,20 @@ pub fn reveal_argv(path: &std::path::Path) -> (String, Vec<String>) {
 /// this must not become the one that does not. Their stdio is discarded too —
 /// `xdg-open`'s diagnostics belong nowhere near the app's own output.
 #[tauri::command(async)]
-pub fn reveal_path(path: String) -> Result<(), String> {
-    let p = std::path::PathBuf::from(&path);
+pub fn reveal_path(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    // Checked before the file test, so a path outside every root reports the
+    // refusal rather than reporting on a file's existence — a "no longer there"
+    // for a path that was never openable would answer a question nobody asked.
+    // The three roots are a workspace and its worktrees, this app's own config
+    // directory, and Claude Code's project directory; see `reachable`.
+    if !revealable_roots(&state).contains(&path) {
+        return Err("That file is not one this app has anything to do with.".into());
+    }
+    reveal_file(&path)
+}
+
+fn reveal_file(path: &str) -> Result<(), String> {
+    let p = std::path::PathBuf::from(path);
     if !p.is_file() {
         return Err("The transcript is no longer there.".into());
     }
@@ -512,7 +679,7 @@ pub fn scheduler_ready(state: State<AppState>) {
 pub struct HostPlatform {
     /// "macos" | "windows" | "linux"
     pub os: String,
-    /// ID дистрибутива из /etc/os-release; None на macOS/Windows.
+    /// The distribution's `ID` from `/etc/os-release`; `None` on macOS and Windows.
     pub distro: Option<String>,
     /// Whether this platform lets the app say where a window goes.
     ///
@@ -525,7 +692,7 @@ pub struct HostPlatform {
     pub places_windows: bool,
 }
 
-/// Достаёт `ID=` из /etc/os-release. Кавычки вокруг значения допустимы.
+/// Read `ID=` out of `/etc/os-release`. The value may legitimately be quoted.
 pub fn parse_os_release_id(contents: &str) -> Option<String> {
     contents.lines().find_map(|l| {
         l.strip_prefix("ID=")
@@ -534,9 +701,9 @@ pub fn parse_os_release_id(contents: &str) -> Option<String> {
     })
 }
 
-/// Сообщает факты об ОС. Строку команды установки собирает фронт — так вся
-/// матрица платформ покрывается одним набором тестов, а не двумя на разных
-/// языках.
+/// Report facts about the OS, and nothing more. The install command's text is
+/// composed on the front end, so the whole platform matrix is covered by one set
+/// of tests rather than two in two languages.
 #[tauri::command]
 pub fn host_platform() -> HostPlatform {
     let os = if cfg!(target_os = "macos") {
@@ -584,7 +751,7 @@ pub fn claude_available() -> bool {
 /// probes run at most once per process; `start_session` reads the cache.
 static CLAUDE_CACHE: std::sync::OnceLock<which::Resolution> = std::sync::OnceLock::new();
 
-fn which_claude() -> Option<which::Resolution> {
+pub(crate) fn which_claude() -> Option<which::Resolution> {
     // Respect an explicit override, else run the shared discovery: PATH,
     // known install dirs, login shell. An npm/nvm-installed claude is a
     // `#!/usr/bin/env node` script, which is why the resolution's captured
@@ -616,8 +783,9 @@ fn which_claude() -> Option<which::Resolution> {
     Some(CLAUDE_CACHE.get_or_init(|| found).clone())
 }
 
-/// Что фронт узнаёт про аккаунт стартовавшей сессии. Токена здесь нет и быть
-/// не может — только имя аккаунта и, если что-то пошло не так, причина.
+/// What the front end learns about a started session's account. There is no token
+/// here and there cannot be — the login, and where something went wrong, the
+/// reason.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionAuth {
     pub account: Option<String>,
@@ -630,12 +798,13 @@ pub struct AuthOutcome {
     pub auth: SessionAuth,
 }
 
-/// Резолвит привязку воркспейса в окружение сессии. Сбой резолва НЕ блокирует
-/// старт: сессия поднимается в деградированном режиме (см. `gh::session_env`),
-/// а причина уезжает во фронт для бейджа на тайле.
+/// Resolve a workspace's binding into a session's environment. A failed resolve
+/// does NOT block the launch: the session starts degraded (see `gh::session_env`)
+/// and the reason travels to the front end for the badge on the tile.
 ///
-/// Принимает уже извлечённый конфиг, а не `State`, специально: `gh::token`
-/// блокирует до `timeout`, и держать в это время мьютекс стора нельзя.
+/// Takes the config already extracted rather than `State`, deliberately:
+/// `gh::token` blocks for up to its timeout, and the store's mutex must not be
+/// held for that long.
 pub fn resolve_session_auth(
     cfg: Option<&WorkspaceGithub>,
     noauth_dir: &str,
@@ -679,7 +848,7 @@ pub fn resolve_session_auth(
 /// installation that already has the directory from an older build gets it
 /// fixed, and a failed login cannot leave it writable behind itself.
 fn noauth_dir(state: &State<AppState>) -> std::path::PathBuf {
-    let dir = state.store.lock().unwrap().dir.join("gh-noauth");
+    let dir = state.store().dir.join("gh-noauth");
     let _ = std::fs::create_dir_all(&dir);
     harden_noauth_dir(&dir);
     dir
@@ -719,7 +888,7 @@ fn session_auth(
     github: Option<&WorkspaceGithub>,
 ) -> AuthOutcome {
     if let Some(id) = workspace_id {
-        let hit = state.session_envs.lock().ok().and_then(|c| c.get(id).cloned());
+        let hit = state.session_envs().get(id).cloned();
         if let Some(outcome) = hit {
             return outcome;
         }
@@ -728,9 +897,7 @@ fn session_auth(
     let outcome =
         resolve_session_auth(github, &dir.to_string_lossy(), std::time::Duration::from_secs(5));
     if let (Some(id), None) = (workspace_id, outcome.auth.degraded.as_ref()) {
-        if let Ok(mut cache) = state.session_envs.lock() {
-            cache.insert(id.to_string(), outcome.clone());
-        }
+        state.session_envs().insert(id.to_string(), outcome.clone());
     }
     outcome
 }
@@ -760,10 +927,7 @@ pub fn prepare_workspace(state: State<AppState>, workspace_id: String) -> Sessio
     // somebody is watching.
     let _ = which::login_path();
     let github = {
-        let store = match state.store.lock() {
-            Ok(s) => s,
-            Err(_) => return SessionAuth { account: None, degraded: None },
-        };
+        let store = state.store();
         store.workspaces().into_iter().find(|w| w.id == workspace_id).and_then(|w| w.github)
     };
     session_auth(&state, Some(&workspace_id), github.as_ref()).auth
@@ -915,13 +1079,11 @@ pub fn pr_changed_files_argv(repo: &str, number: u64) -> Vec<String> {
 /// never logged, never persisted, dropped when a binding changes.
 fn workspace_token(state: &State<AppState>, cfg: &WorkspaceGithub) -> Option<String> {
     let key = (cfg.host.clone(), cfg.login.clone());
-    if let Some(t) = state.gh_tokens.lock().ok()?.get(&key) {
+    if let Some(t) = state.gh_tokens().get(&key) {
         return Some(t.clone());
     }
     let t = gh::token(&cfg.host, &cfg.login, std::time::Duration::from_secs(5)).ok()?;
-    if let Ok(mut cache) = state.gh_tokens.lock() {
-        cache.insert(key, t.clone());
-    }
+    state.gh_tokens().insert(key, t.clone());
     Some(t)
 }
 
@@ -950,7 +1112,7 @@ fn gh_invocation(
     // `gh::token` blocks for up to five seconds, and holding the shared mutex
     // that long would stall every other operation on the store.
     let ws = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let store = state.store();
         store.workspaces().into_iter().find(|w| w.id == workspace_id)
     }
     .ok_or_else(|| "no such workspace".to_string())?;
@@ -1118,7 +1280,7 @@ pub(crate) fn repo_facts_for(
     state: &State<AppState>,
     workspace_id: &str,
 ) -> Result<cowork_deck::tasks::gh_issues::RepoFacts, String> {
-    if let Some(f) = state.gh_repos.lock().ok().and_then(|c| c.get(workspace_id).cloned()) {
+    if let Some(f) = state.gh_repos().get(workspace_id).cloned() {
         return Ok(f);
     }
     let json = run_gh_for_workspace(
@@ -1127,9 +1289,7 @@ pub(crate) fn repo_facts_for(
         &cowork_deck::tasks::gh_issues::repo_facts_argv(),
     )?;
     let facts = cowork_deck::tasks::gh_issues::parse_repo_facts(&json)?;
-    if let Ok(mut cache) = state.gh_repos.lock() {
-        cache.insert(workspace_id.to_string(), facts.clone());
-    }
+    state.gh_repos().insert(workspace_id.to_string(), facts.clone());
     Ok(facts)
 }
 
@@ -1348,7 +1508,7 @@ fn worktree_is_clean(path: &std::path::Path) -> Result<bool, String> {
 /// git process ever runs while it is held.
 fn workspace_path(state: &State<AppState>, workspace_id: &str) -> Result<String, String> {
     let found = {
-        let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+        let store = state.store();
         store.workspaces().into_iter().find(|w| w.id == workspace_id).map(|w| w.path)
     };
     // Empty is not the same as absent, and both are refused: a workspace that
@@ -1669,21 +1829,49 @@ pub fn issue_worktree_remove(
     Ok(())
 }
 
+/// Everything the frontend supplies to launch a `claude` session.
+///
+/// A struct rather than fourteen parameters, which is what this was (#463). The
+/// arity was not the whole objection: at that width a caller passing `cols` where
+/// `rows` belongs, or a `bool` into the wrong one of two, compiles — and both
+/// pairs are adjacent here. Named fields on one side and named properties on the
+/// other remove the class.
+///
+/// The four things NOT in here are the ones the frontend does not send: the
+/// `AppHandle`, the window, the state, and the output channel. `sink` in
+/// particular has to stay a parameter of its own — Tauri gives a `Channel` its
+/// identity from the payload, and burying it in a struct is not a shape it
+/// deserialises.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchRequest {
+    pub session: String,
+    pub cwd: String,
+    pub workspace_id: Option<String>,
+    pub initial_prompt: Option<String>,
+    /// Set when the session is launched from (or restored with) a tracker card —
+    /// see `session_env`.
+    pub task_id: Option<String>,
+    pub cols: u16,
+    pub rows: u16,
+    pub resume: bool,
+    /// Set when this launch comes from a scenario, by any route. Absent for a
+    /// card, an issue, a pull request or a bare "+ session" — the journal answers
+    /// "what did my scenarios do", not "what did I run yesterday".
+    pub scenario: Option<crate::run_journal::ScenarioLaunch>,
+    /// Deliberately replacing a process that is still live under this id — the
+    /// restart button, and nothing else. Left false, a launch into an id that is
+    /// already running is refused rather than silently killing what is there; see
+    /// `PtyManager::spawn`.
+    pub replace: bool,
+}
+
 #[tauri::command]
 pub fn start_session(
     app: AppHandle,
     window: tauri::WebviewWindow,
     state: State<AppState>,
-    session: String,
-    cwd: String,
-    workspace_id: Option<String>,
-    initial_prompt: Option<String>,
-    // Set when the session is launched from (or restored with) a tracker
-    // card — see `session_env`.
-    task_id: Option<String>,
-    cols: u16,
-    rows: u16,
-    resume: bool,
+    req: LaunchRequest,
     // Where this session's pty output goes.
     //
     // A per-session `Channel` rather than a broadcast `app.emit`, and the
@@ -1701,16 +1889,19 @@ pub fn start_session(
     // preserved by the index the JS `Channel` reorders on, so the byte stream
     // stays intact across a glyph split by a batch boundary.
     sink: Channel<Response>,
-    // Set when this launch comes from a scenario, by any route. Absent for a
-    // card, an issue, a pull request or a bare "+ session" — the journal
-    // answers "what did my scenarios do", not "what did I run yesterday".
-    scenario: Option<crate::run_journal::ScenarioLaunch>,
-    // Deliberately replacing a process that is still live under this id — the
-    // restart button, and nothing else. Left false, a launch into an id that is
-    // already running is refused rather than silently killing what is there;
-    // see `PtyManager::spawn`.
-    replace: bool,
 ) -> Result<SessionAuth, String> {
+    let LaunchRequest {
+        session,
+        cwd,
+        workspace_id,
+        initial_prompt,
+        task_id,
+        cols,
+        rows,
+        resume,
+        scenario,
+        replace,
+    } = req;
     // A workspace that arrived over sync has no folder on this machine until
     // somebody says where it is (#316). Everything downstream — the pty's
     // working directory, worktrees, `gh` resolving a repository from where it
@@ -1722,15 +1913,31 @@ pub fn start_session(
     }
     let resolved = which_claude().ok_or_else(|| "claude-not-found".to_string())?;
     let program = resolved.program;
-    let settings = build_settings_json(&state.reporter_path, state.listener_port, &session, &state.task_bin_path);
-    let args = build_claude_args(&settings, &initial_prompt, &session, resume);
+    let settings = build_settings_json(
+        &state.reporter_path,
+        state.listener_port,
+        &session,
+        &state.task_bin_path,
+        workspace_id.as_deref(),
+    );
+    // Off the store lock and off any network: `session_args` stats one file and
+    // formats a JSON string. #35's rule that memory stays off the session launch
+    // path is about the *index* and the model, neither of which is touched here.
+    let memory = crate::memory::session_args(workspace_id.as_deref());
+    // The conversation, not merely the fact that there is one to resume: after a
+    // `/clear` the launch id names the conversation the person left, and
+    // resuming it succeeds — see `resume_target` (#199).
+    let resuming = resume.then(|| resume_target(&state.store(), &session));
+    let args = build_claude_args(
+        &settings, &initial_prompt, &session, resuming.as_deref(), &memory,
+    );
 
-    // Замок стора берётся и отпускается ДО резолва токена: gh::token блокирует
-    // до пяти секунд, и удерживать общий мьютекс всё это время означало бы
-    // подвесить любую другую операцию со стором.
+    // The store lock is taken and released BEFORE the token is resolved:
+    // `gh::token` blocks for up to five seconds, and holding the shared mutex
+    // that long would stall every other store operation behind it.
     let ws = match workspace_id.as_deref() {
         Some(id) => {
-            let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+            let store = state.store();
             store.workspaces().into_iter().find(|w| w.id == id)
         }
         None => None,
@@ -1792,7 +1999,24 @@ pub fn start_session(
         env.push(("PATH".to_string(), path_env));
     }
 
+    // Read on the way past, not instead of: the terminal gets every byte, and
+    // this is a copy taken from the same batch. It is here rather than in the
+    // frontend because the PTY is the only place these bytes are still whole —
+    // xterm has consumed them by the time anything in `src/` could look.
+    //
+    // Only on a `claude` session, and deliberately not on a shell or command
+    // tile: "limit reached" from a build script is not this account's budget, and
+    // a parser that refuses to guess is worth more than the coverage.
+    let sess_watch = session.clone();
+    let app_watch = app.clone();
     let on_output = move |bytes: Vec<u8>| {
+        let now = chrono::Utc::now().timestamp_millis();
+        if crate::usage::observed::note_output(&sess_watch, &bytes, now) {
+            // Something the cache cannot know has just happened. The frontend
+            // answers this by re-reading with `force`, which is why nothing here
+            // needs a route to `AppState`.
+            let _ = app_watch.emit("usage://changed", ());
+        }
         let _ = sink.send(Response::new(bytes));
     };
 
@@ -1836,12 +2060,13 @@ pub fn start_session(
     Ok(outcome.auth)
 }
 
-/// Запускает произвольную команду в PTY-тайле.
+/// Run one arbitrary command in a PTY tile.
 ///
-/// Команду пишет пользователь и видит её целиком до запуска (форма установки
-/// gh), поэтому приложение не выполняет ничего привилегированного вслепую.
-/// Хуки Claude Code сюда не подставляются: это обычный терминал, а не сессия
-/// агента, и её состояние ведётся только по факту выхода процесса.
+/// The command is typed by the person and shown to them in full before it runs
+/// — the `gh` install form is where this is used — so the app never executes
+/// anything privileged unseen. Claude Code's hooks are not injected here: this is
+/// an ordinary terminal rather than an agent session, and its state is read from
+/// the process exiting and nothing else.
 #[tauri::command]
 pub fn start_command_session(
     app: AppHandle,
@@ -1980,7 +2205,7 @@ pub fn start_shell_session(
     // Ids the manager no longer holds are closed tabs; they must not count
     // toward the cap, and pruning here means no bookkeeping anywhere else.
     {
-        let mut shells = state.shells.lock().map_err(|_| "shell registry".to_string())?;
+        let mut shells = state.shells();
         shells.retain(|id| state.pty.is_live(id));
         if !shells.contains(&session) && shells.len() >= MAX_SHELLS {
             return Err(format!("terminal-limit:{MAX_SHELLS}"));
@@ -1989,7 +2214,7 @@ pub fn start_shell_session(
 
     let ws = match workspace_id.as_deref() {
         Some(id) => {
-            let store = state.store.lock().map_err(|_| "store lock".to_string())?;
+            let store = state.store();
             store.workspaces().into_iter().find(|w| w.id == id)
         }
         None => None,
@@ -2023,9 +2248,7 @@ pub fn start_shell_session(
         .map_err(|e| e.to_string())?;
 
     state.session_owners.claim(&session, window.label());
-    if let Ok(mut shells) = state.shells.lock() {
-        shells.insert(session);
-    }
+    state.shells().insert(session);
     Ok(ShellStart { auth: outcome.auth, identity, program: shell_name(&program) })
 }
 
@@ -2057,7 +2280,7 @@ pub fn session_jobs(state: State<AppState>, session: String) -> usize {
 
 #[tauri::command]
 pub fn load_terminals(state: State<AppState>) -> crate::model::TerminalLayout {
-    state.store.lock().unwrap().terminals()
+    state.store().terminals()
 }
 
 #[tauri::command]
@@ -2065,7 +2288,7 @@ pub fn save_terminals(
     state: State<AppState>,
     layout: crate::model::TerminalLayout,
 ) -> Result<(), String> {
-    state.store.lock().unwrap().save_terminals(&layout).map_err(|e| e.to_string())
+    state.store().save_terminals(&layout).map_err(|e| e.to_string())
 }
 
 /// Input for a session, from the window that owns it.
@@ -2175,7 +2398,19 @@ fn session_io_error(e: std::io::Error) -> String {
     }
 }
 #[tauri::command]
-pub fn close_session(state: State<AppState>, session: String) {
+pub fn close_session(
+    state: State<AppState>,
+    session: String,
+    capture: Option<CaptureOnClose>,
+) {
+    // First of all, and it is a parameter of this command rather than a call the
+    // frontend makes beforehand for exactly that reason. The note needs the
+    // transcript path, `transcripts::forget` below takes it away, and an ordering
+    // that lives inside one function cannot be got wrong by a caller — the same
+    // reasoning as the `run_journal::close` line under it, one step earlier.
+    if let Some(c) = capture {
+        crate::memory::enqueue_on_close(&session, &c.workspace_id, c.cli_kind, c.session_name);
+    }
     // Before the kill, so the result is read off the transcript this session was
     // still reporting. `run_journal::close` takes the record out of its own map,
     // so the PTY's `on_exit` arriving a moment later finds nothing to close and
@@ -2184,6 +2419,37 @@ pub fn close_session(state: State<AppState>, session: String) {
     state.pty.kill(&session);
     state.session_owners.release(&session);
     crate::transcripts::forget(&session);
+    // And which conversation it was in, for the same reason: the id belongs to a
+    // tile that is gone, and the next session to be given this id is a different
+    // conversation entirely.
+    crate::resume_ids::forget(&session);
+    // And where it was working, which is the same reason once more — plus one of
+    // its own: a directory left behind here is a directory `git_roots` goes on
+    // letting through, and the reachable set should shrink when a session ends.
+    crate::session_cwd::forget(&session);
+    // The trailing output buffer, for the same reason the transcript goes: a
+    // tile that is gone should not contribute a half-drawn banner to whatever
+    // reuses its id.
+    crate::usage::observed::forget(&session);
+}
+
+/// A closing session's note, when the person has agreed to one.
+///
+/// `Option<CaptureOnClose>` on `close_session` rather than a flag, because the
+/// three fields are meaningless apart: a consent with no workspace has nowhere
+/// to file the note, and one with no CLI cannot say which reader understands the
+/// log. Absent means "close it and write nothing", which is what every close
+/// before #366 meant.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CaptureOnClose {
+    #[serde(rename = "workspaceId")]
+    pub workspace_id: String,
+    #[serde(rename = "cliKind", default)]
+    pub cli_kind: Option<String>,
+    /// What the tile was called, so a failed job can name something a person
+    /// recognises rather than an id.
+    #[serde(rename = "sessionName", default)]
+    pub session_name: Option<String>,
 }
 
 /// Quit, having been told to go ahead.
@@ -2234,7 +2500,7 @@ const WINDOW_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// `allow-create-webview-window`, and granting window-spawning to a webview that
 /// renders untrusted agent output buys less than it costs — the label scheme and
 /// the window cap belong on this side anyway. `WebviewUrl::App` is same-origin,
-/// exactly as the pill already is, so the CSP is not a factor.
+/// exactly as the main window is, so the CSP is not a factor.
 ///
 /// Returns only once the new window has announced itself, so a caller holding the
 /// label may address it at once. A window that never announces itself is closed
@@ -2267,6 +2533,12 @@ pub async fn open_workspace_window(
 
     // Already open: raise it. Tauri refuses a second window with the same label,
     // and a person who asks twice means "show me that one".
+    //
+    // Before the store is consulted, deliberately. Raising needs no title and no
+    // record — the window is on screen, whatever the store now says — and this
+    // is the path that recovers the case nothing else can, a window that died
+    // without announcing it. Refusing to raise something visible on the strength
+    // of a file read would trade that recovery for nothing.
     if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.unminimize();
         let _ = existing.show();
@@ -2274,22 +2546,30 @@ pub async fn open_workspace_window(
         return Ok(label);
     }
 
+    // The workspace has to still be there, and this is the only place that can
+    // say so before a window exists. A window's label is minted from the id and
+    // is then immutable, so a window opened for an id the store does not have is
+    // pinned to nothing for as long as it lives: its sessions collect under
+    // "Other" and it has no workspace row, which means no way to start a session
+    // in it (#369).
+    //
+    // Reachable from an ordinary click. A window's copy of the list can be older
+    // than the store — a pull that folded or deleted a record leaves the main
+    // window drawing a row for it — and pressing that row lands here. Refusing
+    // is what turns a silently broken window into a sentence, and the caller
+    // re-reads its list when it hears this.
+    let title = {
+        // Scoped: the guard must not be held across the await below.
+        let store = state.store();
+        store.workspaces().into_iter().find(|w| w.id == workspace_id).map(|w| w.name)
+    }
+    .ok_or_else(|| "that workspace is no longer in the store".to_string())?;
+
     // A label is reusable — the same workspace pulled out, returned, and pulled
     // out again — and the readiness of the window that has gone is not this
     // one's. Cleared here as well as on `Destroyed` because only one of the two
     // is guaranteed to have run by now.
     state.windows_ready.forget(&label);
-
-    let title = {
-        // Scoped: the guard must not be held across the await below.
-        let store = state.store.lock().unwrap();
-        store
-            .workspaces()
-            .into_iter()
-            .find(|w| w.id == workspace_id)
-            .map(|w| w.name)
-            .unwrap_or_else(|| "cowork-deck".to_string())
-    };
 
     let window = tauri::WebviewWindowBuilder::new(
         &app,
@@ -2367,28 +2647,93 @@ fn fit_to_display(window: &tauri::WebviewWindow) {
 /// `src/ipc.ts` is unchanged and stays that way.
 #[tauri::command]
 pub fn load_layout(window: tauri::WebviewWindow, state: State<AppState>) -> Vec<SessionEntry> {
-    state.store.lock().unwrap().layout_for(window.label())
+    state.store().layout_for(window.label())
 }
 
 /// Write this window's tiles into `sessions.json` without disturbing another
 /// window's. See `Store::save_layout` for what the merge holds and why a
 /// failed read refuses rather than truncating.
+///
+/// The conversation each session is in is taken from [`crate::resume_ids`] and
+/// not from the caller, wherever this app run has learned one. The frontend does
+/// send it — it reads it off the poll tick and keeps it on the tile — but the
+/// backend is the one that knows, and two saves in the same tick used to be able
+/// to lose it: `persistLayout` serialises the tiles it can see at the moment it
+/// is called, so a save fired for tile A carried tile B's fork as still absent,
+/// and if that save landed last the id was gone from the file with nothing left
+/// to notice — the in-memory copy already matched, so nothing would write it
+/// again (#199). Taking it from the map instead makes every save carry the
+/// freshest answer, whatever order they arrive in.
+///
+/// What the caller sent still stands where the map has nothing: a restored tile
+/// carries its fork from the layout for the whole of its life until its first
+/// hook arrives, and that copy is the only one there is.
 #[tauri::command]
 pub fn save_layout(
-    window: tauri::WebviewWindow, state: State<AppState>, sessions: Vec<SessionEntry>,
+    window: tauri::WebviewWindow, state: State<AppState>, mut sessions: Vec<SessionEntry>,
 ) -> Result<(), String> {
-    let store = state.store.lock().unwrap();
+    for entry in sessions.iter_mut() {
+        if let Some(current) = crate::resume_ids::get(&entry.session_id) {
+            entry.resume_id = Some(current);
+        }
+    }
+    let store = state.store();
     store.save_layout(window.label(), &sessions).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn load_ui_state(state: State<AppState>) -> UiState {
-    state.store.lock().unwrap().ui_state()
+    state.store().ui_state()
 }
 
 #[tauri::command]
 pub fn save_ui_state(state: State<AppState>, ui: UiStatePatch) -> Result<(), String> {
-    state.store.lock().unwrap().save_ui_state(&ui).map_err(|e| e.to_string())
+    // Applied to the live flag as well as written to the file, and in that order
+    // of importance: the registry holds this `Arc` and the providers read it on
+    // every fetch, so a person turning the reported source off has it off before
+    // the next poll rather than after the next launch.
+    if let Some(on) = ui.usage_reported {
+        state.usage_reported.store(on, std::sync::atomic::Ordering::Relaxed);
+        state.usage.invalidate("claude");
+    }
+    state.store().save_ui_state(&ui).map_err(|e| e.to_string())
+}
+
+/// How long the whole snapshot may take.
+///
+/// Generous, and it can be: this is never on the paint tick. The registry's TTL
+/// keeps it to once every five minutes per provider, and the frontend draws the
+/// block from the previous answer while this one is in flight. The number is set
+/// by the slowest thing inside it — a whole `claude` process, measured at about
+/// four seconds — with room for a machine under load.
+const USAGE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What every connected AI has left, and where each number came from.
+///
+/// `force` is "read again", and the moment a limit banner goes past on a PTY:
+/// the two cases where a cached "you are fine" is a lie.
+///
+/// A blocking body behind `command(async)`, which is how `config_paths` next
+/// door does it: every provider in here may start a process and read files, and
+/// Tauri runs an `(async)`-marked synchronous command on its thread pool. An
+/// `async fn` would put that work on the runtime's own threads and every other
+/// command behind it.
+#[tauri::command(async)]
+pub fn usage_snapshot(state: State<AppState>, force: bool) -> Vec<crate::usage::model::AiUsage> {
+    let now = chrono::Utc::now().timestamp_millis();
+    state.usage.snapshot(now, force, USAGE_DEADLINE)
+}
+
+/// Forget the refusals this app watched happen, for one provider.
+///
+/// The escape hatch the observed source needs: a parser can be wrong, and an app
+/// insisting the budget is spent while sessions are plainly running would be
+/// worse than one that never said so. Reached from the dialog, and it clears the
+/// cache too so the next read is not the same stale answer.
+#[tauri::command(async)]
+pub fn usage_clear_observed(state: State<AppState>, provider: String) {
+    crate::usage::observed::clear(&provider);
+    state.usage.invalidate(&provider);
 }
 
 /// Called by main during setup to emit state changes coming from the listener.
@@ -2404,11 +2749,117 @@ pub fn emit_state(app: &AppHandle, session: String, state: crate::model::Session
     let _ = app.emit("session://state", StatePayload { session, state });
 }
 
+/// Where the live sessions are working, as roots for the two sets below.
+///
+/// **Both of `session_cwds`' sources, and it has to be both.** A hook's reported
+/// directory is only half the answer: Claude Code pins its working directory, so
+/// that half always names the directory the session was launched in — which every
+/// workspace root already contains. The half that can name a folder outside every
+/// workspace is the other one, the leader's directory read from the OS, because
+/// that is the source for the sessions that genuinely move: a `command` tile, and
+/// a `codex`, `copilot` or `opencode` session, none of which emit a Claude Code
+/// hook. Deriving these roots from the reported half alone would therefore admit
+/// exactly the paths that needed no admitting and refuse the ones #508 is about —
+/// the display would follow its session and then be unable to read where it had
+/// followed it to.
+///
+/// Duplicates are not filtered: `Roots::contains` asks whether any root contains
+/// the path, so a repeated root costs one comparison and changes no answer.
+fn session_dirs(state: &AppState) -> Vec<String> {
+    let mut dirs: Vec<String> =
+        crate::session_cwd::all().into_iter().map(|(_, dir)| dir).collect();
+    dirs.extend(state.pty.cwds());
+    dirs
+}
+
+/// The directories a path from the frontend may name, derived from the store and
+/// from where the live sessions say they are.
+///
+/// `worktrees` for the three `git -C` commands, whose argument is always a
+/// session's working directory; `revealable` for `reveal_path`, which is also
+/// asked about a note in the config directory and a transcript under Claude
+/// Code's own. See `reachable` for why this is derived rather than recorded, and
+/// for what it does and does not narrow.
+///
+/// **Every live session's own directory is a root too**, and that is what makes
+/// #508 possible rather than merely visible: a display that follows its session
+/// has to be able to read the folder that session is in, and a session need not
+/// be in a workspace or in a worktree beside one. It stays derived — the paths
+/// come from `session_dirs`, which reads what the hooks reported and what the
+/// process table says, so there is no list to keep in step and nothing the
+/// webview can add to it. The webview can *name* such a path; only a running
+/// process can make one exist, and it stops being a root when that session
+/// closes (`close_session`).
+fn git_roots(state: &AppState) -> crate::reachable::Roots {
+    let store = state.store();
+    let workspaces = store.workspaces();
+    let mut roots = crate::reachable::Roots::worktrees(workspaces.iter().map(|w| w.path.as_str()));
+    roots.add(session_dirs(state));
+    roots
+}
+
+fn revealable_roots(state: &AppState) -> crate::reachable::Roots {
+    let store = state.store();
+    let workspaces = store.workspaces();
+    let mut roots = crate::reachable::Roots::revealable(
+        workspaces.iter().map(|w| w.path.as_str()),
+        &store.dir,
+    );
+    roots.add(session_dirs(state));
+    roots
+}
+
+/// Where each of these sessions is working now, for the displays that used to
+/// read the launch directory forever (#508).
+///
+/// One command for the whole deck rather than one per tile, because the caller is
+/// the poll: a tick already asks one question about every session
+/// (`session_snapshots`) and one per unique directory (`git_status`), and this
+/// rides the same tick. Neither source costs a process — a hook's answer is a map
+/// lookup, and the OS read is a `readlink` — so the tick grows by a lookup per
+/// tile and not by a spawn.
+///
+/// **The order of the two sources is the answer to "whose directory".** A hook's
+/// `cwd` is the session's own statement and wins whenever there is one; the
+/// leader's directory read from the OS answers for a session with no hooks to
+/// report anything. A session that has neither is simply absent from the map,
+/// which is how the frontend is told to keep using the launch path rather than
+/// being handed a guess. See `crate::session_cwd` for what each source can and
+/// cannot see.
 #[tauri::command(async)]
-pub fn git_status(cwd: String) -> GitStatus {
+pub fn session_cwds(
+    state: State<'_, AppState>,
+    sessions: Vec<String>,
+) -> std::collections::HashMap<String, String> {
+    sessions
+        .into_iter()
+        .filter_map(|id| {
+            let dir = crate::session_cwd::get(&id).or_else(|| state.pty.cwd(&id))?;
+            Some((id, dir))
+        })
+        .collect()
+}
+
+#[tauri::command(async)]
+pub fn git_status(state: State<'_, AppState>, cwd: String) -> GitStatus {
+    // A path outside every workspace answers the way an unreadable one does —
+    // the frontend already draws nothing for a branchless status, and a refusal
+    // it had to render would be a message about a path nobody typed.
+    if !git_roots(&state).contains(&cwd) {
+        return GitStatus { branch: None, dirty: false };
+    }
+    git_status_in(&cwd)
+}
+
+/// `git_status` with the reachability check already made.
+///
+/// Split out so the tests can reach it: the check needs `State<AppState>`, which
+/// a unit test cannot build, and a body only reachable through a Tauri command is
+/// a body with no tests. The same split is below for the other three.
+fn git_status_in(cwd: &str) -> GitStatus {
     use std::process::Command;
     let branch = Command::new("git")
-        .arg("-C").arg(&cwd)
+        .arg("-C").arg(cwd)
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .output().ok()
         .filter(|o| o.status.success())
@@ -2416,7 +2867,7 @@ pub fn git_status(cwd: String) -> GitStatus {
         .filter(|s| !s.is_empty() && s != "HEAD");
     let dirty = branch.is_some()
         && Command::new("git")
-            .arg("-C").arg(&cwd)
+            .arg("-C").arg(cwd)
             .args(["status", "--porcelain"])
             .output().ok()
             .map(|o| !o.stdout.is_empty())
@@ -2432,7 +2883,7 @@ pub fn git_status(cwd: String) -> GitStatus {
 /// Settings has is "what does this app keep about me" — which includes the file
 /// that does not exist yet because they have never saved a scenario. A directory
 /// listing would quietly leave that one out.
-const CONFIG_FILES: [&str; 7] = [
+const CONFIG_FILES: [&str; 8] = [
     "workspaces.json",
     "skills.json",
     "sessions.json",
@@ -2440,6 +2891,7 @@ const CONFIG_FILES: [&str; 7] = [
     "ui_state.json",
     "schedule_state.json",
     "runs.jsonl",
+    "usage_state.json",
 ];
 
 /// Split from the command so it can be tested against a real directory: the rule
@@ -2458,7 +2910,7 @@ fn config_files(dir: &std::path::Path) -> Vec<ConfigFile> {
 pub fn config_paths(state: State<AppState>) -> ConfigPaths {
     // The lock is taken and released around the reads rather than held across
     // them, which is the rule the note at the top of this file states.
-    let dir = { state.store.lock().unwrap().dir.clone() };
+    let dir = { state.store().dir.clone() };
     ConfigPaths {
         dir: dir.to_string_lossy().to_string(),
         files: config_files(&dir),
@@ -2479,10 +2931,17 @@ pub fn config_paths(state: State<AppState>) -> ConfigPaths {
 /// newline in it comes back quoted by git and is left that way rather than
 /// silently splitting into two files that do not exist.
 #[tauri::command(async)]
-pub fn worktree_files(cwd: String) -> Vec<String> {
+pub fn worktree_files(state: State<'_, AppState>, cwd: String) -> Vec<String> {
+    if !git_roots(&state).contains(&cwd) {
+        return Vec::new();
+    }
+    worktree_files_in(&cwd)
+}
+
+fn worktree_files_in(cwd: &str) -> Vec<String> {
     use std::process::Command;
     let out = Command::new("git")
-        .arg("-C").arg(&cwd)
+        .arg("-C").arg(cwd)
         .args(["ls-files", "--cached", "--others", "--exclude-standard"])
         .output().ok()
         .filter(|o| o.status.success())
@@ -2501,11 +2960,18 @@ pub fn worktree_files(cwd: String) -> Vec<String> {
 /// files and how, `--numstat` says how much. A file appears once, with zeroes when
 /// git has nothing to diff it against.
 #[tauri::command(async)]
-pub fn git_changes(cwd: String) -> GitChanges {
+pub fn git_changes(state: State<'_, AppState>, cwd: String) -> GitChanges {
+    if !git_roots(&state).contains(&cwd) {
+        return GitChanges { branch: None, files: Vec::new() };
+    }
+    git_changes_in(&cwd)
+}
+
+fn git_changes_in(cwd: &str) -> GitChanges {
     use std::process::Command;
     let git = |args: &[&str]| {
         Command::new("git")
-            .arg("-C").arg(&cwd)
+            .arg("-C").arg(cwd)
             .args(args)
             .output().ok()
             .filter(|o| o.status.success())
@@ -2612,6 +3078,54 @@ pub fn fold_usage_lines(
         acc.cache_creation += usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
         acc.cache_read += usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
     }
+}
+
+/// How many tool calls this buffer holds, deduplicated by `tool_use.id` across
+/// every buffer a session's read touches.
+///
+/// The number on the activity button, and the reason it rides here rather than
+/// in a second command: the poll already reads and JSON-parses every line of
+/// every open session's transcript, and walking the `content[]` of the assistant
+/// lines it has already parsed is cheap beside that parse. The **breakdown** does
+/// not ride the poll — `session_activity` is called when the panel opens.
+///
+/// Deliberately not shaped like `fold_usage_lines` next door, which dedupes by
+/// `message.id` because a transcript writes one line per content block and every
+/// one repeats the identical usage object. The repetition is in the usage, not
+/// in the blocks: 1673 `tool_use` blocks across 27 measured files carried 1673
+/// distinct ids. `seen` is threaded through anyway, so a session's own
+/// transcript and its subagents deduplicate against one shared set.
+pub fn fold_tool_calls(
+    content: &str,
+    seen: &mut std::collections::HashSet<String>,
+) -> u32 {
+    let mut calls = 0;
+    for line in content.lines() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // Measured: `message.content` is a string on some lines. Skip those the
+        // way the usage fold skips a line without usage.
+        let Some(blocks) = v["message"]["content"].as_array() else { continue };
+        for b in blocks {
+            if b["type"].as_str() != Some("tool_use") {
+                continue;
+            }
+            match b["id"].as_str() {
+                Some(id) => {
+                    if seen.insert(id.to_string()) {
+                        calls += 1;
+                    }
+                }
+                // A block with no id is a shape we have not seen, so count it
+                // rather than silently drop it — the rule the usage fold follows
+                // for a line without `message.id`.
+                None => calls += 1,
+            }
+        }
+    }
+    calls
 }
 
 /// Tokens resident in the context window: the prompt of the last request **plus
@@ -2865,6 +3379,25 @@ pub struct SessionSnapshot {
     pub title: Option<String>,
     #[serde(rename = "titleSource")]
     pub title_source: Option<TitleSource>,
+    /// Tool calls in this session's whole conversation, subagents included — the
+    /// number the activity button carries, so the panel is worth opening before
+    /// it is opened.
+    ///
+    /// `Option` for the reason `tokens` is: `None` is "there is nothing to read",
+    /// and `Some(0)` is "the log is here and this session has made no calls".
+    /// Those are two different sentences and one number cannot carry both — the
+    /// distinction this whole feature is drawn around.
+    pub calls: Option<u32>,
+    /// The conversation this session is in now, when a hook has reported one
+    /// other than the id the deck launched it with — i.e. after a `/clear`.
+    ///
+    /// Read off `crate::resume_ids` rather than out of the transcript, and it
+    /// rides this batch because the tick is what the frontend already has: the
+    /// deck persists it into its layout entry, which is the only copy that
+    /// survives a restart and so the only thing auto-restore can resume by
+    /// (#199). `None` is a session still in its launch conversation.
+    #[serde(rename = "resumeId")]
+    pub resume_id: Option<String>,
 }
 
 /// One read, one pass, both results — for every requested session at once.
@@ -2889,7 +3422,12 @@ pub async fn session_snapshots(
         .into_iter()
         .map(|id| {
             tokio::task::spawn_blocking(move || {
-                let snap = read_session_snapshot(&id);
+                let mut snap = read_session_snapshot(&id);
+                // Set here rather than inside `read_session_snapshot`, which
+                // returns an empty snapshot the moment there is no transcript to
+                // read — and a session that was cleared thirty seconds ago is
+                // exactly one whose new transcript may not be on disk yet.
+                snap.resume_id = crate::resume_ids::get(&id);
                 (id, snap)
             })
         })
@@ -2929,7 +3467,7 @@ fn read_session_snapshot(session_id: &str) -> SessionSnapshot {
 ///
 /// The reported path is checked rather than trusted: it is a path from another
 /// program, and a transcript can be deleted between the hook and the tick.
-fn current_transcript(session_id: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn current_transcript(session_id: &str) -> Option<std::path::PathBuf> {
     if let Some(reported) = crate::transcripts::get(session_id) {
         let path = std::path::PathBuf::from(reported);
         if path.is_file() {
@@ -2949,13 +3487,18 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
     };
     let mut seen = std::collections::HashSet::new();
     let mut spend = TokenUsage::default();
+    // Two sets, because the two folds deduplicate on different ids — see the
+    // note on `fold_tool_calls`.
+    let mut seen_calls = std::collections::HashSet::new();
     fold_usage_lines(main, &mut seen, &mut spend);
+    let mut calls = fold_tool_calls(main, &mut seen_calls);
     let mut counted = 0;
     for sub in subagents {
         // One unreadable subagent understates the bill; it should not discard
         // the main chain's figure along with it.
         if let Ok(content) = std::fs::read_to_string(sub) {
             fold_usage_lines(&content, &mut seen, &mut spend);
+            calls += fold_tool_calls(&content, &mut seen_calls);
             counted += 1;
         }
     }
@@ -2963,6 +3506,12 @@ fn snapshot_from_main(main: &str, subagents: &[std::path::PathBuf]) -> SessionSn
         tokens: Some(SessionTokens { context: last_context(main), spend, subagents: counted }),
         title,
         title_source,
+        calls: Some(calls),
+        // Not a fact about the transcript, and this function only reads one.
+        // `session_snapshots` fills it from `resume_ids` after this returns —
+        // which is also what gets it onto the snapshot of a session whose new
+        // transcript is not on disk yet.
+        resume_id: None,
     }
 }
 
@@ -3125,7 +3674,7 @@ mod tests {
     /// going between the render and the click.
     #[test]
     fn revealing_a_file_that_is_gone_refuses_rather_than_spawning_anything() {
-        let err = reveal_path("/nowhere/at/all/missing.jsonl".into())
+        let err = reveal_file("/nowhere/at/all/missing.jsonl")
             .expect_err("a missing transcript must not reach the file manager");
         assert!(err.contains("no longer there"), "{err}");
     }
@@ -3504,10 +4053,10 @@ branch refs/heads/feature/y\n";
 
     #[test]
     fn the_last_prompt_is_only_a_fallback() {
-        let prompt_only = r#"{"type":"last-prompt","lastPrompt":"собери отчёт"}"#;
+        let prompt_only = r#"{"type":"last-prompt","lastPrompt":"put the report together"}"#;
         assert_eq!(
             last_title_lines(prompt_only).resolved(),
-            Some(("собери отчёт".to_string(), TitleSource::Prompt)),
+            Some(("put the report together".to_string(), TitleSource::Prompt)),
             "23% of sessions never get a title of another kind — this is a primary path",
         );
         let with_ai = format!("{prompt_only}\n{}\n", r#"{"type":"ai-title","aiTitle":"a name"}"#);
@@ -3585,14 +4134,14 @@ branch refs/heads/feature/y\n";
     fn usage_and_title_come_from_one_pass_over_one_buffer() {
         let content = [
             turn("msg_one", 10, 5, 0, 0, &["text"]),
-            r#"{"type":"ai-title","aiTitle":"Отчёт по продажам"}"#.to_string(),
+            r#"{"type":"ai-title","aiTitle":"the sales report"}"#.to_string(),
         ]
         .join("\n");
         let snap = snapshot_from_main(&content, &[]);
         let tokens = snap.tokens.expect("a reading");
         assert_eq!(tokens.spend.input, 10);
         assert_eq!(tokens.spend.output, 5);
-        assert_eq!(snap.title.as_deref(), Some("Отчёт по продажам"));
+        assert_eq!(snap.title.as_deref(), Some("the sales report"));
         assert_eq!(snap.title_source, Some(TitleSource::Ai));
     }
 
@@ -3697,6 +4246,35 @@ branch refs/heads/feature/y\n";
 
     /// The layout the app has to walk: a session's own file, and its subagents
     /// in a directory named after it rather than beside it.
+    /// A tool call is counted once per id, and a line the fold does not
+    /// understand costs nothing.
+    #[test]
+    fn tool_calls_are_counted_once_per_id_across_a_sessions_buffers() {
+        let mut seen = std::collections::HashSet::new();
+        let main = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read"}]}}"#, "\n",
+            r#"{"type":"user","message":{"content":"a sentence, not an array"}}"#, "\n",
+            "not json at all", "\n",
+        );
+        assert_eq!(fold_tool_calls(main, &mut seen), 2);
+
+        // A subagent's own calls add to the same total against the same set.
+        let sub = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Grep"}]}}"#, "\n",
+        );
+        assert_eq!(fold_tool_calls(sub, &mut seen), 1);
+    }
+
+    /// `None` is not zero. A snapshot with no transcript says nothing about
+    /// calls; one off an empty transcript says there have been none.
+    #[test]
+    fn no_transcript_leaves_the_call_count_unsaid_rather_than_at_zero() {
+        assert_eq!(SessionSnapshot::default().calls, None);
+        assert_eq!(snapshot_from_main("", &[]).calls, Some(0));
+    }
+
     #[test]
     fn subagent_transcripts_are_found_in_the_directory_named_after_the_session() {
         let root = tempfile::tempdir().unwrap();
@@ -3736,7 +4314,7 @@ branch refs/heads/feature/y\n";
 
     #[test]
     fn builds_claude_args_first_launch_with_session_id_and_prompt() {
-        let args = build_claude_args("{\"hooks\":{}}", &Some("collect email report".into()), "sess-1", false);
+        let args = build_claude_args("{\"hooks\":{}}", &Some("collect email report".into()), "sess-1", None, &[]);
         assert_eq!(args, vec![
             "--settings".to_string(), "{\"hooks\":{}}".to_string(),
             "--session-id".to_string(), "sess-1".to_string(),
@@ -3746,20 +4324,201 @@ branch refs/heads/feature/y\n";
 
     #[test]
     fn builds_claude_args_first_launch_without_prompt() {
-        let args = build_claude_args("{}", &None, "sess-1", false);
+        let args = build_claude_args("{}", &None, "sess-1", None, &[]);
         assert_eq!(args, vec![
             "--settings".to_string(), "{}".to_string(),
             "--session-id".to_string(), "sess-1".to_string(),
         ]);
     }
 
+    /// The failure this ordering exists to prevent: memory added inside one
+    /// branch means a session that survived a restart quietly loses it, and a
+    /// restored tile is the long-running session most likely to want it.
+    #[test]
+    fn memory_reaches_both_launch_paths() {
+        let memory = vec![
+            "--mcp-config".to_string(),
+            "{\"mcpServers\":{}}".to_string(),
+            "--append-system-prompt".to_string(),
+            "consult it".to_string(),
+        ];
+        for resume in [None, Some("sess-1")] {
+            let args = build_claude_args("{}", &Some("p".into()), "sess-1", resume, &memory);
+            assert!(args.iter().any(|a| a == "--mcp-config"), "resume={resume:?}: {args:?}");
+            assert!(
+                args.iter().any(|a| a == "--append-system-prompt"),
+                "resume={resume:?}: {args:?}",
+            );
+        }
+    }
+
+    /// The hazard the placement exists to avoid, asserted rather than reasoned
+    /// about. `--mcp-config` takes `<configs...>` and keeps consuming arguments
+    /// until one starts with a dash — measured against the real CLI, which read
+    /// `mcp` and `list` as two more config paths and failed. The initial prompt is
+    /// positional, so a `--mcp-config` immediately in front of it would lose the
+    /// prompt into the flag.
+    #[test]
+    fn no_positional_follows_the_mcp_config() {
+        let memory = vec![
+            "--mcp-config".to_string(),
+            "{\"mcpServers\":{}}".to_string(),
+            "--append-system-prompt".to_string(),
+            "consult it".to_string(),
+        ];
+        for resume in [None, Some("sess-1")] {
+            let args =
+                build_claude_args("{}", &Some("a prompt".into()), "sess-1", resume, &memory);
+            let at = args.iter().position(|a| a == "--mcp-config").expect("the flag");
+            // One value, then something that stops the variadic.
+            let after = args.get(at + 2).map(String::as_str);
+            assert!(
+                after.is_none_or(|a| a.starts_with('-')),
+                "resume={resume:?}: {after:?} would be eaten by --mcp-config in {args:?}",
+            );
+        }
+    }
+
+    /// A build with no sidecar staged adds nothing, so the launch is exactly what
+    /// it was before memory existed — no empty flag, no `--mcp-config {}`.
+    #[test]
+    fn no_memory_to_offer_adds_no_arguments() {
+        let with = build_claude_args("{}", &None, "sess-1", None, &[]);
+        assert_eq!(with, vec!["--settings", "{}", "--session-id", "sess-1"]);
+    }
+
+    /// `--settings` stays first. It carries the hooks, and the reporter's own
+    /// tests read that position.
+    #[test]
+    fn the_settings_stay_where_they_were() {
+        let args = build_claude_args("{\"hooks\":{}}", &None, "s", None, &["--x".to_string()]);
+        assert_eq!(args[0], "--settings");
+        assert_eq!(args[1], "{\"hooks\":{}}");
+    }
+
+    /// The prompt is the last argument on a first launch — it is positional, and
+    /// a flag appended after it would be read as part of it.
+    #[test]
+    fn the_prompt_stays_last_with_memory_in_front_of_it() {
+        let args = build_claude_args(
+            "{}",
+            &Some("collect the report".into()),
+            "s",
+            None,
+            &["--mcp-config".to_string(), "{}".to_string()],
+        );
+        assert_eq!(args.last().unwrap(), "collect the report");
+    }
+
     #[test]
     fn builds_claude_args_resume_uses_resume_flag_and_ignores_prompt() {
-        let args = build_claude_args("{}", &Some("ignored".into()), "sess-1", true);
+        let args = build_claude_args("{}", &Some("ignored".into()), "sess-1", Some("sess-1"), &[]);
         assert_eq!(args, vec![
             "--settings".to_string(), "{}".to_string(),
             "--resume".to_string(), "sess-1".to_string(),
         ]);
+    }
+
+    /// #199, at the one line that decides it. A cleared session's tile is still
+    /// `sess-1` — its pty key, its `COWORK_SESSION`, the key its hooks are
+    /// attributed by — but the conversation it is in is a different id, and that
+    /// is what `--resume` must name. The old signature took a `bool` and could
+    /// only ever resume `session_id`, which succeeds and brings back the
+    /// conversation the person cleared away.
+    #[test]
+    fn a_cleared_session_resumes_the_conversation_it_is_in_not_its_launch_id() {
+        let args = build_claude_args("{}", &None, "sess-1", Some("after-the-clear"), &[]);
+        assert_eq!(args, vec![
+            "--settings".to_string(), "{}".to_string(),
+            "--resume".to_string(), "after-the-clear".to_string(),
+        ]);
+        assert!(!args.iter().any(|a| a == "sess-1"), "the launch id is not resumed: {args:?}");
+        // And it is still not pinned: `--session-id` belongs to a first launch.
+        assert!(!args.iter().any(|a| a == "--session-id"), "{args:?}");
+    }
+
+    fn store_in_a_temp_dir() -> Mutex<Store> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "cowork-resume-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Mutex::new(Store::new(dir))
+    }
+
+    fn entry(session: &str, resume_id: Option<&str>) -> SessionEntry {
+        SessionEntry {
+            session_id: session.to_string(),
+            cwd: "/tmp".to_string(),
+            name: "session".to_string(),
+            workspace_id: None,
+            task_id: None,
+            scheduled_skill_id: None,
+            user_name: None,
+            name_kind: None,
+            skill_id: None,
+            run_id: None,
+            owner: None,
+            cli_kind: None,
+            resume_id: resume_id.map(str::to_string),
+        }
+    }
+
+    /// A session that has never been cleared resumes itself, which is every
+    /// session before #199 and the great majority after it.
+    #[test]
+    fn resume_target_falls_back_to_the_launch_id() {
+        let store = store_in_a_temp_dir();
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-plain"), "t-plain");
+        // Including one whose layout entry exists and says nothing.
+        store.lock().unwrap().save_layout("main", &[entry("t-stored-none", None)]).unwrap();
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-stored-none"), "t-stored-none");
+    }
+
+    /// The auto-restore path: the app has been closed and reopened, so nothing
+    /// is in memory and the layout entry is the only copy of the fact left.
+    #[test]
+    fn resume_target_reads_the_layout_when_nothing_is_in_memory() {
+        let store = store_in_a_temp_dir();
+        store
+            .lock()
+            .unwrap()
+            .save_layout("main", &[entry("t-restored", Some("conversation-2"))])
+            .unwrap();
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-restored"), "conversation-2");
+    }
+
+    /// A `/clear` followed by a ⟳ before the poll tick has persisted anything —
+    /// what a hook reported during this app run outranks the file, which may be
+    /// one conversation behind.
+    #[test]
+    fn resume_target_prefers_what_a_hook_reported_over_the_layout() {
+        let store = store_in_a_temp_dir();
+        store
+            .lock()
+            .unwrap()
+            .save_layout("main", &[entry("t-live", Some("conversation-2"))])
+            .unwrap();
+        crate::resume_ids::record("t-live", "conversation-3");
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-live"), "conversation-3");
+        crate::resume_ids::forget("t-live");
+    }
+
+    /// A blank field is the launch id, not a `--resume ""`. Nothing this app
+    /// writes produces one, and a hand-edited or half-written `sessions.json`
+    /// should cost a tile its `/clear` rather than its launch.
+    #[test]
+    fn resume_target_ignores_a_blank_stored_id() {
+        let store = store_in_a_temp_dir();
+        store
+            .lock()
+            .unwrap()
+            .save_layout("main", &[entry("t-blank", Some("   "))])
+            .unwrap();
+        assert_eq!(resume_target(&store.lock().unwrap(), "t-blank"), "t-blank");
     }
 
     #[test]
@@ -3776,15 +4535,15 @@ branch refs/heads/feature/y\n";
         run(&["add", "."]);
         run(&["commit", "-m", "init"]);
 
-        let clean = git_status(cwd.to_string());
+        let clean = git_status_in(cwd);
         assert!(clean.branch.is_some(), "committed repo must report a branch");
         assert!(!clean.dirty, "just-committed repo is clean");
 
         std::fs::write(dir.join("b.txt"), "new").unwrap(); // untracked → dirty
-        let dirty = git_status(cwd.to_string());
+        let dirty = git_status_in(cwd);
         assert!(dirty.dirty, "untracked file makes it dirty");
 
-        let non_repo = git_status(std::env::temp_dir().to_str().unwrap().to_string());
+        let non_repo = git_status_in(std::env::temp_dir().to_str().unwrap());
         // temp_dir itself is not a repo (usually); branch None. Tolerate either but dirty must be false when branch is None.
         if non_repo.branch.is_none() { assert!(!non_repo.dirty); }
     }
@@ -3797,7 +4556,7 @@ branch refs/heads/feature/y\n";
         assert_eq!(parse_os_release_id("ID=\"opensuse-tumbleweed\"\n").as_deref(), Some("opensuse-tumbleweed"));
         assert_eq!(parse_os_release_id("NAME=\"Weird\"\n"), None);
         assert_eq!(parse_os_release_id(""), None);
-        // ID_LIKE не должен побеждать: strip_prefix("ID=") его не матчит.
+        // `ID_LIKE` must not win: `strip_prefix("ID=")` does not match it.
         assert_eq!(parse_os_release_id("ID_LIKE=debian\nID=pop\n").as_deref(), Some("pop"));
     }
 
@@ -3927,11 +4686,11 @@ branch refs/heads/feature/y\n";
         let outcome =
             resolve_session_auth(Some(&cfg), "/tmp/noauth", std::time::Duration::from_secs(5));
         assert_eq!(outcome.auth.account.as_deref(), Some("definitely-not-a-real-account-xyz"));
-        assert!(outcome.auth.degraded.is_some(), "должна быть причина деградации");
+        assert!(outcome.auth.degraded.is_some(), "a degraded launch must carry its reason");
         let keys: Vec<&str> = outcome.env.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(keys.contains(&"GH_CONFIG_DIR"), "деградация обязана увести gh в пустой конфиг");
-        assert!(keys.contains(&"GIT_AUTHOR_NAME"), "идентичность известна и без токена");
-        assert!(!keys.contains(&"GH_TOKEN"), "без токена GH_TOKEN выставлять нельзя");
+        assert!(keys.contains(&"GH_CONFIG_DIR"), "a degraded launch must point gh at an empty config");
+        assert!(keys.contains(&"GIT_AUTHOR_NAME"), "the identity is known without a token");
+        assert!(!keys.contains(&"GH_TOKEN"), "GH_TOKEN must not be set when there is no token");
     }
 
     /// A tab is labelled with the shell, not with the path to it.
@@ -4158,6 +4917,53 @@ branch refs/heads/feature/y\n";
         "quit_cancelled",
         "host_platform",
     ];
+
+    /// Every `AppState` lock is taken through its accessor, and none of them
+    /// panics on a poisoned mutex.
+    ///
+    /// Scanned rather than trusted, because the failure is invisible until it
+    /// happens and total when it does: a poisoned mutex returns `Err` forever, so
+    /// one `lock().unwrap()` on the store turns a single panic into a dead app —
+    /// every later command that touches the store panics too, including the ones
+    /// that would let a person save and leave. Nineteen of them were there when
+    /// the audit found this (#463).
+    ///
+    /// A scan for the field name is the right shape here, unlike the allow-list
+    /// above: the fault is one expression, spelled the same way every time, and a
+    /// new command reaching for `state.store.lock()` is exactly what this must
+    /// catch. `taken()` itself is the one place that may call `lock()`, and it is
+    /// matched by its own definition rather than by a field.
+    #[test]
+    fn no_state_lock_is_unwrapped() {
+        const LOCKS: [&str; 6] =
+            ["store", "gh_tokens", "gh_repos", "session_envs", "shells", "issue_open_counts"];
+        let files = [
+            ("commands.rs", include_str!("commands.rs")),
+            ("tasks_cmd.rs", include_str!("tasks_cmd.rs")),
+            ("sync_cmd.rs", include_str!("sync_cmd.rs")),
+            ("activity/mod.rs", include_str!("activity/mod.rs")),
+        ];
+        let mut found = Vec::new();
+        for (name, src) in files {
+            for (i, line) in src.lines().enumerate() {
+                // This test's own source names the pattern it forbids.
+                if line.trim_start().starts_with("//") || line.contains("LOCKS") {
+                    continue;
+                }
+                for field in LOCKS {
+                    if line.contains(&format!(".{field}.lock()")) {
+                        found.push(format!("{name}:{} — {}", i + 1, line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "these take an AppState lock directly instead of through its accessor, so a \
+             poisoned mutex is fatal rather than survivable: {found:#?}. Use \
+             `state.store()` and its five siblings — see `taken()`.",
+        );
+    }
 
     /// A synchronous `#[tauri::command]` runs on the main thread, and on Linux that
     /// is the thread painting the WebView — so one that shells out freezes the

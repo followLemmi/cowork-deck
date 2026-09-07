@@ -1,6 +1,8 @@
 import { TerminalPanel } from "./terminal";
-import { onState, onExit, closeSession, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig } from "./ipc";
-import { gitStatus, sessionSnapshots, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
+import { onState, onExit, closeSession, memoryCaptureOffer, saveUiState, saveLayout, updateTask, prepareWorkspace, describeExit, type RunTrigger, type ScenarioLaunch, type SessionState, type Skill, type Workspace, type SessionEntry, type SessionAuth, type Task, type BoardConfig, type CaptureOnClose } from "./ipc";
+import { gitStatus, sessionActivity, sessionCwds, sessionSnapshots, type CliKind, type HandOffTile, type NameKind, type SessionTokens } from "./ipc";
+import { localRoll, openActivityPanel, setActivityCount, type ActivityPanel } from "./activity";
+import { buildTile } from "./tile-view";
 import { formatContext, tokenTooltip, uniqueCwds } from "./observability";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { emit } from "@tauri-apps/api/event";
@@ -8,18 +10,21 @@ import { NotifyRouter, wireNotificationFocus } from "./notify";
 import { notifyIdSeed } from "./cross-window";
 import { workspaceIdOf } from "./window-role";
 import { confirmModal } from "./modal";
+import { askCapture, askWorthPutting, decideCapture } from "./memory-consent";
 import { broadcastInput } from "./broadcast";
 import { groupTilesByWorkspace, resolveWorkspaceId } from "./grouping";
 import { TileTools } from "./tile-tools";
 import { zoomParticipants, flipTransform } from "./flip";
 import { shouldSkipOverlap } from "./schedule";
-import { icon, iconButton, type IconName } from "./icons";
+import { icon, type IconName } from "./icons";
 import { linksInWorkspace, liveSessionForTask, taskPrompt, type TaskSessionLink } from "./tasks";
 import { workingStep } from "./board-config";
+import { syncDotPhase } from "./dot-phase";
+import { settleMs } from "./motion";
 
-/** Обычный тайл — сессия claude. Командный — разовый запуск пользовательской
- *  команды (установка gh, `gh auth login`): без хуков состояния, без
- *  перезапуска и, главное, без автовосстановления. */
+/** An ordinary tile is a `claude` session. A command tile is one run of
+ *  something the person typed — installing `gh`, `gh auth login` — with no state
+ *  hooks, no restart, and above all no restore on the next launch. */
 export type TileKind = "claude" | "command";
 
 interface Tile {
@@ -28,8 +33,31 @@ interface Tile {
    *  makes a commit idempotent: blur fires after Enter has already committed. */
   renameInput: HTMLInputElement | null;
   panel: TerminalPanel; state: SessionState; el: HTMLElement; label: HTMLElement;
-  workspacePath: string; workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
+  /** The directory this session was LAUNCHED in, and nothing else.
+   *
+   *  Its identity, not its whereabouts: it decides which workspace the tile is
+   *  grouped under, where a restart re-launches, and what `sessions.json` and a
+   *  hand-off carry. All four have to keep saying the launch directory, which is
+   *  why #508 did not change this field — it added the one beside it. */
+  workspacePath: string;
+  /** Where this session says it is working *now*, or `null` while nothing has
+   *  said. `tileCwd` is the one place the two are put in order, and every
+   *  per-session display goes through it.
+   *
+   *  `null` rather than a copy of `workspacePath`, so "nobody has answered yet"
+   *  and "the answer is the launch directory" stay different facts — which is
+   *  what lets the poll notice a *change* and re-read an open tools panel. Filled
+   *  by `session_cwds`; see `session_cwd.rs` for where its answers come from. */
+  liveCwd: string | null;
+  workspaceId?: string; prompt: string | null; restartBtn: HTMLButtonElement;
   searchBar: HTMLElement; bcastCheck: HTMLInputElement; gitBadge: HTMLElement; tokenBadge: HTMLElement;
+  /** The button that opens the activity panel, carrying this session's call
+   *  count. Always in the DOM; the stylesheet hides it until the tile is
+   *  hovered, active or holds focus, as `tile-rename` documents. */
+  activityBtn: HTMLButtonElement;
+  /** The open panel, or nothing. Its presence is what makes the tick re-read
+   *  this session's log at all — closing the panel is what stops the reads. */
+  activityPanel: ActivityPanel | null;
   /** The branch the poll last read for this tile's directory, kept beside the
    *  badge that renders it because the sidebar row needs the same answer and
    *  reading it back out of the badge's text would be parsing our own markup. */
@@ -40,10 +68,12 @@ interface Tile {
   authBadge: HTMLElement;
   /** Set when the tile came from a scheduled run — keys the overlap guard. */
   scheduledSkillId?: string;
-  /** Исход привязки GitHub-аккаунта на момент СТАРТА процесса. Живой сессии
-   *  окружение не поменять, поэтому значение не обновляется до перезапуска. */
+  /** How the GitHub binding resolved at the moment the process STARTED. A live
+   *  session's environment cannot be changed, so this is not updated until it
+   *  restarts. */
   auth?: SessionAuth;
-  /** Привязка воркспейса изменилась после старта — окружение устарело. */
+  /** The workspace's binding changed after the start, so the environment this
+   *  session is running on is stale. */
   authStale?: boolean;
   kind?: TileKind;
   /** Set when the tile was launched from a tracker card — keys the "in progress" state. */
@@ -58,6 +88,20 @@ interface Tile {
    *  can hand them back to the journal rather than opening a record that
    *  forgets what it ran with. */
   params?: Record<string, string>;
+  /** Which agent CLI this tile runs. Always `claude` for now, and that is the
+   *  point: the field is what the activity registry dispatches on, and the
+   *  alternative was discovering at the second reader that the shape had
+   *  nowhere to live. */
+  cliKind?: CliKind;
+  /** The conversation this tile resumes, once it is no longer the one it was
+   *  launched with. Absent until a `/clear` happens.
+   *
+   *  Carried here for one reason: to be persisted. The backend resolves what to
+   *  resume on its own — from what hooks reported during this app run, and from
+   *  the layout entry this field writes — so nothing on the launch paths reads
+   *  it. What it buys is the restart *after* the app has been closed, where the
+   *  layout is the only copy left (#199). */
+  resumeId?: string | null;
 }
 
 /** The four things that can name a tile, in one place so no reader can hold a
@@ -76,6 +120,28 @@ export interface TileNames {
   auto: string | null;
   /** Hand-typed. Wins over everything, forever. */
   user: string | null;
+}
+
+/** Where a session's per-session displays read from: what the session says, and
+ *  the directory it was launched in until it has said anything.
+ *
+ *  **The one place the two are put in order**, which is the shape #508 was
+ *  missing. Before it, each display reached for `workspacePath` on its own — the
+ *  git badge, the tools panel's scope line, its file list, its diff and the path
+ *  a click revealed — and every one of them therefore described the launch
+ *  directory forever. There is nothing to keep in step now: a display reads this,
+ *  and this reads the tile.
+ *
+ *  The fallback is not a stopgap. A session that has reported nothing has told us
+ *  nothing to contradict the directory it was started in, and that directory is a
+ *  real place — which is worth more on screen than an empty badge. What it must
+ *  never be is a *stored* copy: see `Tile.liveCwd` for why the absence is kept as
+ *  `null`.
+ *
+ *  Takes the two fields rather than a `Tile` so a test can state the pair.
+ */
+export function tileCwd(t: { liveCwd: string | null; workspacePath: string }): string {
+  return t.liveCwd ?? t.workspacePath;
 }
 
 /** Longest name kept. The same string reaches `sessions.json`, a desktop
@@ -113,9 +179,13 @@ const LABEL: Record<SessionState, string> = {
   ended: "exited", error: "error",
 };
 // `done` is here because "the agent finished the job" is exactly what an
-// unsupervised session is started for. It stays out of the pill, though: the
-// pill answers "how many sessions are blocked on me".
+// unsupervised session is started for. It stays out of the waiting count,
+// though: "how many sessions are blocked on me" is a different question, and it
+// is the one the ledger's reading and `focusNextWaiting` both answer.
 const NOTIFY_ON: SessionState[] = ["waitingInput", "done", "ended", "error"];
+
+/** How often a focused deck re-reads what its sessions are doing. */
+const POLL_MS = 5000;
 
 /** What an empty deck should say, and which one action it should offer.
  *
@@ -218,11 +288,61 @@ export class Deck {
   /** The last layout `saveLayout` actually accepted, serialised. See
    *  `persistLayout`: a write that would change nothing is skipped. */
   private savedLayout: string | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** The one tick ahead, and no more than one. Null both when there is nothing
+   *  to poll and while the window is unfocused — `polling` is what tells those
+   *  two apart. */
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Whether the deck wants to be polling at all, which is to say whether it
+   *  holds any tiles. Kept apart from the handle because a blurred window has no
+   *  handle and still has to know, when it comes back, that it had tiles. */
+  private polling = false;
   private usage = new Map<string, SessionTokens>();
   private activeWorkspaceId: string | null = null;
+  /** The session a workspace switch is on its way to, for the length of that
+   *  switch and no longer. Written by `focusSessionAnywhere` and read once by
+   *  `setActiveWorkspace`; see the note there for why the switch has to know.
+   *
+   *  A field rather than a parameter because the switch does not go through this
+   *  class. `focusSessionAnywhere` hands the workspace to `WorkspacesPanel`, which
+   *  persists it, tells the app, and only then comes back here — one notion of
+   *  "active", owned by the thing that also writes it down. Threading a session id
+   *  through the tree and the app would put a deck concern in both of them. */
+  private enteringFor: string | null = null;
   private collapsed = new Set<string>();
-  private zoomedSession: string | null = null;
+  /** Which session is zoomed, keyed by the workspace it is zoomed *in*.
+   *
+   *  A zoom is a fact about one workspace's layout, not about the deck: leaving
+   *  a workspace used to drop it, so coming back gave you a grid and no hint
+   *  that anything had been zoomed there. Keyed by workspace, the switch reads
+   *  the entry instead of resetting it.
+   *
+   *  `null` is a key like any other, and it is two things at once — the window
+   *  that adopts orphans before any workspace is active, and, in that window,
+   *  the workspaces panel's "no workspace selected". Both are the same view, so
+   *  they are the same entry.
+   *
+   *  Read and written through `zoomedSession` below, never directly, except by
+   *  `forgetZoom` — which is the one operation that is about the whole map. */
+  private zoomedByWorkspace = new Map<string | null, string>();
+  /** The zoom of the workspace on screen — the only zoom any caller means.
+   *
+   *  An accessor rather than a field because every site that had the field
+   *  wanted exactly this: `applyLayout` renders the active workspace, `zoomTo`
+   *  and `toggleZoom` act on the tiles it is showing, and a tile made visible
+   *  by an orphan's adoption is zoomed *here*, under this window's key. Writing
+   *  the map by hand at ten call sites would be ten chances to key an entry to
+   *  the workspace being left.
+   *
+   *  Setting `null` forgets this workspace's entry rather than remembering a
+   *  null: absent and "not zoomed" are the same state, and the map should not
+   *  grow an entry per workspace ever visited. */
+  private get zoomedSession(): string | null {
+    return this.zoomedByWorkspace.get(this.activeWorkspaceId) ?? null;
+  }
+  private set zoomedSession(session: string | null) {
+    if (session === null) this.zoomedByWorkspace.delete(this.activeWorkspaceId);
+    else this.zoomedByWorkspace.set(this.activeWorkspaceId, session);
+  }
   private strip: HTMLElement | null = null;
   private emptyEl: HTMLElement | null = null;
   private emptyActions: {
@@ -284,7 +404,8 @@ export class Deck {
    *  what its sessions are doing. The ledger in the top bar reads these rather
    *  than counting again: the two statements of "N waiting" this app used to make
    *  — a sidebar heading and the floating pill — came from two different places,
-   *  and with two windows open they disagreed. */
+   *  and with two windows open they disagreed. The pill is gone (#394) and the
+   *  heading with it; one reading, from one count, is what is left. */
   setCounts(fn: (counts: SessionCounts) => void) {
     this.onCounts = fn;
     this.renderList();
@@ -382,21 +503,102 @@ export class Deck {
     this.deckEl.appendChild(box);
   }
 
+  /** A tile arrived: poll, and keep polling while anyone is looking.
+   *
+   *  The tick here is not the poll and is deliberately not focus-gated: it is
+   *  what fills a new tile's branch, its context count and its transcript title,
+   *  and a background window's tiles are on screen in every *other* window's
+   *  session list, by name. Leaving them blank until this window is focused
+   *  would be a blank row in a window that is. What the gate below stops is the
+   *  every-five-seconds part, which is the part that costs.
+   *
+   *  It is every arriving tile that gets that read, not only the one that ends
+   *  an empty deck — a scheduled scenario fires into a window nobody is looking
+   *  at, which is the whole point of scheduling one, and its tile would otherwise
+   *  wait for a focus that may not come today. A restore is the one exception:
+   *  it adds tiles one at a time and `restore` reads once when the last is in,
+   *  rather than a whole deck's worth of transcripts per tile across the slowest
+   *  moment the app has. */
   private startPolling() {
-    if (this.pollTimer !== null) return;
-    void this.pollOnce();
-    this.pollTimer = setInterval(() => void this.pollOnce(), 5000);
+    this.polling = true;
+    if (!this.restoring) void this.pollOnce();
   }
+
+  /** Stop for good — nothing is left to poll. The counterpart of `pausePolling`,
+   *  and the difference is `polling`: this one cannot be resumed by a focus. */
   private stopPolling() {
-    if (this.pollTimer !== null) { clearInterval(this.pollTimer); this.pollTimer = null; }
+    this.polling = false;
+    this.clearPollTimer();
+  }
+
+  private clearPollTimer() {
+    if (this.pollTimer !== null) { clearTimeout(this.pollTimer); this.pollTimer = null; }
+  }
+
+  /** Arm the next tick, if there is anything to poll and anybody watching it.
+   *
+   *  Every path that schedules a tick goes through here, so the two conditions
+   *  are checked in one place and one place owns the handle — the shape the board
+   *  and the pull request polls in `app.ts` already use, and for the same two
+   *  reasons. A `setInterval` fires whether or not the previous tick came back,
+   *  which for a deck of twelve sessions on a slow disk means queued reads of
+   *  every transcript; and an unwatched window has no reason to read them at all.
+   *  Each tick is a `git_status` per unique directory and a `session_snapshots`
+   *  that reads and parses every open transcript, twelve times a minute, per
+   *  window. See #251. */
+  private schedulePoll() {
+    this.clearPollTimer();
+    if (!this.polling || !document.hasFocus()) return;
+    this.pollTimer = setTimeout(() => void this.pollOnce(), POLL_MS);
+  }
+
+  /** The window lost focus: hold the chain. Called from the one `blur` handler in
+   *  `app.ts` that stops the other two polls, so all three stop in one place.
+   *  `polling` survives this — the tiles are still there. */
+  pausePolling() { this.clearPollTimer(); }
+
+  /** The window came back: read once now, and let that tick re-arm the chain the
+   *  blur cleared. Ticking rather than merely re-arming is the whole point of
+   *  pausing — a returning window shows the branch and the context each session
+   *  has now, not what it had when it was last looked at. */
+  resumePolling() {
+    if (!this.polling) return;
+    void this.pollOnce();
   }
 
   private async pollOnce() {
+    // The armed handle is dropped before the reads rather than after them: a
+    // tick that a returning focus asked for must not leave the one blur missed
+    // behind it, running a second chain.
+    this.clearPollTimer();
     try {
       const tiles = [...this.tiles.values()];
       if (tiles.length === 0) { this.stopPolling(); return; }
+      // Where each session is NOW, before anything is read about it. One call for
+      // the whole deck, and it must come first: every reading below is a reading
+      // OF a directory, and asking about the launch directory is what #508 was.
+      //
+      // Isolated like the reads under it, and for a reason of its own: an id
+      // missing from the answer means "nothing has said", which `tileCwd` already
+      // renders as the launch path — so a failure here degrades to exactly the
+      // behaviour that preceded this call rather than to a blank tile.
+      let moved: Tile[] = [];
+      try {
+        const live = await sessionCwds(tiles.map((t) => t.session));
+        moved = tiles.filter((t) => {
+          // What a display WOULD read, before and after — not whether the field
+          // changed. A session reporting a directory for the first time usually
+          // reports the one it was launched in, and that is not a move: nothing
+          // on screen would read differently, so nothing should be re-read.
+          const before = tileCwd(t);
+          t.liveCwd = live[t.session] ?? null;
+          return tileCwd(t) !== before;
+        });
+      } catch (e) {
+        console.debug("sessionCwds failed", e);
+      }
       // git: one call per unique cwd; errors are isolated — a single failed IPC must not bring down the whole tick
-      const cwds = uniqueCwds(tiles.map((t) => ({ cwd: t.workspacePath })));
+      const cwds = uniqueCwds(tiles.map((t) => ({ cwd: tileCwd(t) })));
       const gitByCwd = new Map<string, { branch: string | null; dirty: boolean }>();
       await Promise.all(cwds.map(async (cwd) => {
         try {
@@ -407,7 +609,7 @@ export class Deck {
       }));
       for (const t of tiles) {
         if (!this.tiles.has(t.session)) continue;
-        const g = gitByCwd.get(t.workspacePath);
+        const g = gitByCwd.get(tileCwd(t));
         t.branch = g?.branch ?? null;
         if (g && g.branch) {
           t.gitBadge.replaceChildren(
@@ -416,8 +618,19 @@ export class Deck {
           );
           t.gitBadge.classList.remove("hidden");
         } else {
+          // Hidden, not left showing the last branch it knew. A folder that is
+          // not a checkout has no branch, and a session that has moved into one
+          // must not keep wearing the badge of where it came from — which is the
+          // same answer this already gave on launch.
           t.gitBadge.classList.add("hidden");
         }
+      }
+      // A session that moved takes its open tools panel with it. Only the ones
+      // that moved, and only if a panel is open — `refresh` is a no-op otherwise,
+      // and re-reading a checkout on every tick for every tile is exactly the
+      // cost #251 exists to keep off this path.
+      for (const t of moved) {
+        if (this.tiles.has(t.session)) t.tools.refresh();
       }
       // snapshots: one call for every session; errors isolated, plus a guard
       // against racing with tile removal.
@@ -430,11 +643,20 @@ export class Deck {
       // so clearing that name falls back to a title already in hand instead of
       // going blank for a tick.
       //
-      // Nothing here writes `sessions.json`: the automatic title is not
+      // Almost nothing here writes `sessions.json`: the automatic title is not
       // persisted, so "do not save the layout every five seconds" is not a
-      // problem that needs a dirty check — it does not arise.
+      // problem that needs a dirty check — it does not arise. The one exception
+      // is the conversation a `/clear` moved a session into, which is persisted
+      // *when it changes* — once per clear, not once per tick. See below.
       try {
         const snaps = await sessionSnapshots(tiles.map((t) => t.session));
+        // Whether anything below asked for a layout write. A flag rather than a
+        // call inside the loop: `persistLayout` serialises the tiles it can see
+        // at the moment it runs, so two calls in one tick put two saves in flight
+        // carrying different pictures, and whichever landed last won. Broadcast
+        // can type `/clear` into several sessions at once, which is exactly two
+        // tiles reporting a new conversation in the same tick (#199).
+        let layoutDirty = false;
         for (const t of tiles) {
           if (!this.tiles.has(t.session)) continue;
           const snap = snaps[t.session];
@@ -453,6 +675,35 @@ export class Deck {
             t.tokenBadge.title = tokenTooltip(u);
             t.tokenBadge.classList.remove("hidden");
           }
+          // The count rides this batch rather than a second command: the poll
+          // has already read and parsed every line of this transcript, and
+          // walking the content blocks it parsed is cheap beside that parse.
+          // The BREAKDOWN does not ride it — that is `session_activity`, called
+          // only while a panel is open.
+          setActivityCount(t.activityBtn, snap.calls);
+          // The conversation this tile is in, if a `/clear` has moved it. Kept
+          // on the tile because the tile is what `persistLayout` serialises, and
+          // the layout entry is the only copy that survives a restart — the
+          // backend's own record of it does not (#199). A write only when the
+          // answer changed, so this stays what its comment above says it is: a
+          // tick that does not touch `sessions.json`. Once per `/clear`, not
+          // once per tick.
+          //
+          // Not the only thing that writes it, and deliberately not trusted to
+          // be: the backend takes the id from its own map on every `save_layout`
+          // and writes what it knows once more at exit, so neither two saves in
+          // one tick nor a quit before the next tick can lose it — which matters
+          // more than it reads, because since #251 an unfocused window does not
+          // tick at all. This is the path that keeps the tile itself honest.
+          //
+          // A `null` never clears the slot, for the reason the title below does
+          // not: the backend answers `null` for a restored tile until its first
+          // hook arrives, and taking the stored id away on that would put the
+          // pre-clear conversation back the next time the app was closed.
+          if (snap.resumeId && snap.resumeId !== t.resumeId) {
+            t.resumeId = snap.resumeId;
+            layoutDirty = true;
+          }
           // A missing title never clears the slot. Measured over 96 transcripts a
           // title is minted once and never revised, so a null here is either "not
           // yet" or "this read did not see it" — and blanking a name on the
@@ -462,17 +713,38 @@ export class Deck {
             this.applyName(t);
           }
         }
+        // One save for the whole tick, however many tiles were cleared in it.
+        if (layoutDirty) void this.persistLayout();
       } catch (e) {
         console.debug("sessionSnapshots failed", e);
+      }
+      // Only the panels that are open, and one read each. A deck of twelve with
+      // no panel open makes no activity call at all, which is the point.
+      for (const t of tiles) {
+        if (!this.tiles.has(t.session)) continue;
+        void t.activityPanel?.refresh();
       }
       this.renderList();
     } catch (e) {
       console.debug("pollOnce failed", e);
     }
+    // The next tick is armed only once this one has returned, and outside the
+    // catch: a tick that threw is still followed by another, or one failed read
+    // would end polling for the life of the window.
+    this.schedulePoll();
   }
 
   wireNotificationFocus() {
     return wireNotificationFocus(this.notify, (s) => this.focusTile(s));
+  }
+
+  /** Whether an OS notification would actually be delivered.
+   *
+   *  Exposed because the limits block raises one too (#305) and the permission is
+   *  asked for exactly once, here, in `wireEvents`. A second module calling
+   *  `requestPermission` would be a second prompt for one answer. */
+  canNotify(): boolean {
+    return this.notifyOk;
   }
 
   async wireEvents() {
@@ -536,8 +808,9 @@ export class Deck {
     b.className = "tile-auth hidden";
   }
 
-  /** Привязка воркспейса изменилась: у живых сессий окружение уже зафиксировано
-   *  при fork, поменять его нельзя — честно помечаем как устаревшее. */
+  /** The workspace's binding changed. A live session's environment was fixed at
+   *  fork and cannot be changed, so it is marked stale rather than quietly left
+   *  looking current. */
   markAuthStale(workspaceId: string) {
     for (const t of this.tiles.values()) {
       if (t.workspaceId !== workspaceId || t.kind === "command") continue;
@@ -546,9 +819,9 @@ export class Deck {
     }
   }
 
-  /** Открывает тайл с разовой пользовательской командой (установка gh,
-   *  `gh auth login`). Такой тайл не сохраняется в layout: восстановление
-   *  молча перезапустило бы sudo-команду на следующем старте приложения. */
+  /** Open a tile running one command the person typed — installing `gh`,
+   *  `gh auth login`. It is not saved to the layout: a restore would silently
+   *  re-run a `sudo` command on the app's next launch. */
   async openCommandTile(titleText: string, command: string, cwd: string) {
     await this.spawnTile({
       session: crypto.randomUUID(),
@@ -692,6 +965,31 @@ export class Deck {
     return [...this.tiles.values()].some((t) => t.workspacePath === path);
   }
 
+  /** The names of the sessions still running in a workspace — what deleting that
+   *  workspace would cut loose.
+   *
+   *  Resolved the same way the sidebar groups them (`resolveWorkspaceId`: an
+   *  explicit id, else a matching directory), so the question a person is asked
+   *  counts exactly the rows they can see under that workspace. Proxies count
+   *  too: a workspace pulled into a window of its own still has its sessions
+   *  listed here, and deleting it closes that window and hands them back as
+   *  orphans — see `WorkspacesPanel.del`.
+   *
+   *  `ended` and `error` tiles are left out. They hold scrollback and no process,
+   *  so there is nothing left in them to cut loose — the same line `requestClose`
+   *  draws before it decides whether to ask at all. */
+  liveSessionNamesIn(workspaceId: string): string[] {
+    const ws = this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path }));
+    const alive = (state: SessionState) => state !== "ended" && state !== "error";
+    const here = [...this.tiles.values()]
+      .filter((t) => alive(t.state) && resolveWorkspaceId(t.workspaceId, t.workspacePath, ws) === workspaceId)
+      .map((t) => resolveTileName(t.names));
+    const elsewhere = this.remote
+      .filter((r) => alive(r.state) && resolveWorkspaceId(r.workspaceId, "", ws) === workspaceId)
+      .map((r) => r.name);
+    return [...here, ...elsewhere];
+  }
+
   /** What a session is called on its tile, for anything outside the deck that
    *  has to name one to a person — the quit question, in particular. Falls back
    *  to the id, which is at least something to go on for a session the deck no
@@ -702,7 +1000,10 @@ export class Deck {
   }
 
   setActiveWorkspace(id: string | null) {
-    this.zoomedSession = null;
+    // The zoom is NOT cleared here. It belongs to the workspace being left, and
+    // it is what makes coming back come back to the same layout; the workspace
+    // being entered brings its own, which `applyLayout` below reads. See
+    // `zoomedByWorkspace`.
     this.activeWorkspaceId = id;
     // Resolve this workspace's account binding now, while nobody is waiting for
     // it. Entering a workspace is the last moment before a launch that is not
@@ -724,10 +1025,39 @@ export class Deck {
         if (firstVisible === null) firstVisible = t.session;
       }
     }
+    /* One layout, and the arithmetic of that is the whole fix.
+       Restoring this workspace's zoom and THEN juggling it onto the session being
+       opened is two layouts, and the first of them was never on screen: the tiles
+       came out of `ws-hidden` a line ago. So `animateLayoutChange` measured a
+       "before" nobody saw and spent 220ms morphing away from it — a tile sliding
+       out of a filmstrip slot it had never occupied, over a deck whose own box was
+       still moving because a workspace switch collapsed the panel at the time —
+       which it no longer does (#480), and the FLIP is no less wrong for it: the
+       "before" it measures is still one nobody saw. Told where the switch is
+       going, the layout below produces the final arrangement directly and the
+       `focusTile` that follows finds nothing left to move.
+
+       Only when this workspace was already zoomed. A workspace left as a grid stays
+       a grid — opening a session in one is not a request to zoom it — and
+       `zoomParticipants` still refuses a zoom that no longer has anything to zoom
+       past, so a remembered entry that cannot be honoured is dropped here as before. */
+    const heading = this.enteringFor;
+    this.enteringFor = null;
+    if (heading !== null && this.zoomedSession !== null && this.zoomedSession !== heading
+        && this.tiles.get(heading)?.el.classList.contains("ws-hidden") === false) {
+      this.zoomedSession = heading;
+    }
     this.applyLayout();
     const active = this.activeSession;
     const activeHidden = !active || !!this.tiles.get(active)?.el.classList.contains("ws-hidden");
-    if (activeHidden && firstVisible) this.focusTile(firstVisible); // focusTile calls renderList
+    // The restored zoom takes precedence over the first tile in the grid: it is
+    // the tile this workspace was left looking at, and `focusTile` juggles the
+    // zoom onto whatever it focuses — so focusing anything else here would
+    // restore the layout and then immediately move it. `applyLayout` has already
+    // dropped an entry it could not honour, so this is null unless a zoom is on
+    // screen.
+    const target = this.zoomedSession ?? firstVisible;
+    if (activeHidden && target) this.focusTile(target); // focusTile calls renderList
     else this.renderList();
   }
 
@@ -760,7 +1090,7 @@ export class Deck {
      *  False for unattended work: a scheduled run announces itself through a
      *  notification, not by yanking the caret out of whatever is being typed. */
     grabAttention?: boolean;
-    /** "command" — разовый запуск `command` вместо сессии claude. */
+    /** `"command"` runs `command` once instead of starting a `claude` session. */
     kind?: TileKind;
     /** Take over a session that is already running instead of starting one, and
      *  put this scrollback back on screen first.
@@ -769,68 +1099,47 @@ export class Deck {
      *  when a workspace arrives from another window. */
     attach?: { scrollback: string };
     command?: string;
+    /** Which agent CLI this tile runs. Absent is `claude` — every launch path,
+     *  and every entry restored from a layout written before the field. */
+    cliKind?: CliKind;
+    /** The conversation a restored or handed-over tile resumes, read out of its
+     *  layout entry. Absent for a fresh launch, which has not been cleared. */
+    resumeId?: string | null;
   }) {
     const { session, cwd, workspaceId, titleText, prompt, resume } = opts;
     const grabAttention = opts.grabAttention ?? true;
     const isCommand = opts.kind === "command";
-    const el = document.createElement("div");
-    el.className = "tile";
-    // The state rail's carrier. A data attribute rather than a class for the reason
-    // the session row documents: `.state-*` already means "a chip with this fill",
-    // and one of those names on the tile would paint a chip across the whole thing.
-    el.dataset.state = "idle";
-    const head = document.createElement("div");
-    head.className = "tile-head";
-    const title = document.createElement("span");
-    // A class, because the selector this used to rely on could not work. The rule was
-    // `.tile-head span:first-child`, and `head.insertBefore(bcastCheck, title)` below
-    // puts an `<input>` in front of the title on every tile — so the title is never
-    // `:first-child` and never got the `flex: 1` or the ellipsis that rule grants. A
-    // long session name pushed the badges out of the head instead of truncating.
-    title.className = "tile-name";
-    // The text and the tooltip are written together by `applyName`, and only by
-    // `applyName` — the tooltip is for the sighted reader of a truncated name and
-    // the accessible name comes from the text itself, so the two must never
-    // drift. One writer is what keeps that true now that a name can change.
-    const schedMark = opts.scheduled ? icon("clock", 12) : null;
-    if (schedMark) {
-      schedMark.classList.add("tile-sched-mark");
-      schedMark.setAttribute("aria-hidden", "false");
-      schedMark.setAttribute("role", "img");
-      schedMark.setAttribute("aria-label", "started on a schedule");
-    }
-    const gitBadge = document.createElement("span");
-    gitBadge.className = "tile-git hidden";
-    const tokenBadge = document.createElement("span");
-    tokenBadge.className = "tile-tokens hidden";
-    const label = document.createElement("span");
-    label.className = "tile-state state-idle"; label.textContent = LABEL.idle;
-    // The pencil leads the action cluster because it is the least destructive of
-    // the four, and it sits after the state chip so the flexible name keeps one
-    // contiguous run of width. It is always in the DOM — so it is in the tab
-    // order and reachable by touch — and the stylesheet is what hides it until
-    // the tile is hovered, active or holds focus.
-    const renameBtn = iconButton("pencil", "Rename session", "tile-close tile-rename");
+    /* The DOM is `tile-view.ts`'s, and every handler below is this method's.
+       That is where the seam is, and it is not a matter of taste: almost every
+       handler here closes over the `Tile` record, which is built out of the
+       terminal panel and therefore after the elements. A builder that took
+       callbacks would need one parameter per button and would still be this
+       code; a builder that took the tile would be this method with a hop in it.
+       What moved is the structure and the reasons for it — the head's order, the
+       title being reached by class rather than by position, the state living on
+       `data-state`. See the note at the top of that file. */
+    const parts = buildTile({ scheduled: !!opts.scheduled, broadcasting: this.broadcasting });
+    const {
+      el, head, title, gitBadge, authBadge, tokenBadge, label, activityBtn,
+      renameBtn, clearBtn, restartBtn: restart, closeBtn: close, bcastCheck,
+      searchBar, searchInput: sInput, searchNext: sNext, searchPrev: sPrev,
+      searchClose: sClose, mount, work,
+    } = parts;
+    label.textContent = LABEL.idle;
+
+    tokenBadge.onclick = () => this.openActivity(session);
+    tokenBadge.onkeydown = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      this.openActivity(session);
+    };
+    activityBtn.onclick = () => this.openActivity(session);
     renameBtn.onclick = () => this.beginRename(session);
-    const clearBtn = iconButton("eraser", "Clear terminal", "tile-close");
     clearBtn.onclick = () => tile.panel.clear();
-    const close = iconButton("x", "Close session", "tile-close btn--icon--danger");
-    // Same question Cmd+W asks. Without it the mouse was the more dangerous
-    // of the two ways to do the same thing: one stray click killed a live
-    // session outright, while the keyboard asked first.
+    // Same question Cmd+W asks. Without it the mouse was the more dangerous of
+    // the two ways to do the same thing: one stray click killed a live session
+    // outright, while the keyboard asked first.
     close.onclick = () => { void this.requestClose(session); };
-    const authBadge = document.createElement("span");
-    authBadge.className = "tile-auth hidden";
-    head.append(
-      ...(schedMark ? [schedMark] : []),
-      title, gitBadge, authBadge, tokenBadge, label, renameBtn, clearBtn, close,
-    );
-    const bcastCheck = document.createElement("input");
-    bcastCheck.type = "checkbox"; bcastCheck.className = "bcast-check";
-    bcastCheck.classList.toggle("hidden", !this.broadcasting);
-    head.insertBefore(bcastCheck, title);
-    const restart = iconButton("rotate", "Restart session", "tile-close");
-    restart.style.display = "none";
     restart.onclick = async () => {
       restart.style.display = "none";
       tile.panel.write("\r\n[restarting session...]\r\n");
@@ -865,8 +1174,7 @@ export class Deck {
         restart.style.display = "inline";
       }
     };
-    head.insertBefore(restart, close);
-    head.addEventListener("dblclick", (e) => {
+    head.addEventListener("dblclick", (e: MouseEvent) => {
       // Buttons and anything editable. Double-clicking a word inside a header
       // input is how a person selects it, and zooming the tile instead is a
       // defect the broadcast checkbox already suffered from.
@@ -874,44 +1182,47 @@ export class Deck {
       if (t.closest("button, input, textarea, [contenteditable]")) return;
       this.toggleZoom(session);
     });
-    const mount = document.createElement("div");
-    mount.className = "tile-body";
-    const searchBar = document.createElement("div");
-    searchBar.className = "tile-search hidden";
-    const sInput = document.createElement("input"); sInput.className = "tile-search-input"; sInput.placeholder = "search…";
-    const sNext = iconButton("chevron", "Next match", "tile-search-btn icon--down");
-    const sPrev = iconButton("chevron", "Previous match", "tile-search-btn icon--up");
-    const sClose = iconButton("x", "Close search", "tile-search-btn");
-    searchBar.append(sInput, sPrev, sNext, sClose);
-    sInput.addEventListener("keydown", (e) => {
+    sInput.addEventListener("keydown", (e: KeyboardEvent) => {
       if (e.key === "Enter") { e.preventDefault(); tile.panel.search(sInput.value); }
       else if (e.key === "Escape") { e.preventDefault(); searchBar.classList.add("hidden"); tile.panel.focus(); }
     });
     sNext.onclick = () => tile.panel.search(sInput.value);
     sPrev.onclick = () => tile.panel.searchPrev(sInput.value);
     sClose.onclick = () => { searchBar.classList.add("hidden"); tile.panel.focus(); };
-    /* The tile's work area is a ROW: the terminal, then the tools that belong to
-       this session, then the strip that opens them. The strip is on the right, the
-       opposite edge from the app's panel, and that distance is doing real work — it
-       is what stops "Files" in here being read as the project's files rather than
-       this checkout's. Both are `display: none` until the tile is zoomed. */
-    const work = document.createElement("div");
-    work.className = "tile-work";
+
     const tools = new TileTools({
-      cwd,
+      /* Read through the map rather than closed over, and read on every call:
+         `tools` is built before the `Tile` exists, and the point of #508 is that
+         there is no copy of this answer anywhere for a `cd` to leave behind. The
+         launch path is the fallback for the one tick before the tile is in the
+         map, where no panel can be open anyway. */
+      cwd: () => {
+        const t = this.tiles.get(session);
+        return t ? tileCwd(t) : cwd;
+      },
       cols: () => tile.panel.cols,
       termWidth: () => mount.getBoundingClientRect().width,
       source: () => this.sourceOfTile(tile),
       onWidth: (px) => this.onToolWidth?.(px),
     });
-    work.append(mount, tools.panel, tools.rail);
-    el.append(head, searchBar, work);
+    // Appended rather than built into the row, because the tools need `mount`'s
+    // measured width and so cannot exist before it.
+    work.append(tools.panel, tools.rail);
     this.deckEl.appendChild(el);
     el.addEventListener("mousedown", () => this.focusTile(session));
 
     // A panel taking over a live session is born without resize authority: it
     // must not tell the PTY its geometry before it owns the session.
     const panel = new TerminalPanel(session, mount, isCommand, opts.attach !== undefined);
+    // The one state change no hook reports. See `interruptedTurn`.
+    //
+    // Not on a command tile. It runs one command rather than an agent, so it has
+    // no turn to end and prints no hint of its own — the string can only reach
+    // its screen as ordinary output, and `git log` on this branch prints it
+    // literally. Its real ending is its exit, which `onExit` already reports.
+    // A drawer's shell terminal is left out the same way: by never being given
+    // an `onInterrupt`.
+    if (!isCommand) panel.onInterrupt = (s) => this.interruptedTurn(s);
     const names: TileNames = {
       // The placeholder slot always holds the launch string. On a context-named
       // tile it is the same string as `context`, which the resolver never reaches
@@ -923,10 +1234,16 @@ export class Deck {
     };
     const tile: Tile = {
       session, names, nameEl: title, renameInput: null, panel, state: "idle", el, label, tools,
-      workspacePath: cwd, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
-      gitBadge, authBadge, tokenBadge, branch: null, scheduledSkillId: opts.scheduledSkillId,
+      workspacePath: cwd, liveCwd: null, workspaceId, prompt, restartBtn: restart, searchBar, bcastCheck,
+      gitBadge, authBadge, tokenBadge, activityBtn, activityPanel: null,
+      branch: null, scheduledSkillId: opts.scheduledSkillId,
       kind: opts.kind, taskId: opts.taskId,
       skillId: opts.skillId, params: opts.params,
+      // A command tile runs a shell command, not an agent, so it names no CLI
+      // at all — which is a different thing from naming the default one, and
+      // the panel says so in its own sentence.
+      cliKind: isCommand ? undefined : opts.cliKind ?? "claude",
+      resumeId: opts.resumeId ?? null,
     };
     this.applyName(tile);
     this.tiles.set(session, tile);
@@ -934,6 +1251,10 @@ export class Deck {
     // zoom has to be dropped, so this cannot wait for it — the panel would sit under the
     // new terminal until something else moved the layout.
     this.renderEmpty();
+    // A tile that takes the keyboard takes the stage with it, so the zoom it
+    // displaces is forgotten rather than merely un-rendered — and the entry
+    // dropped is this workspace's, which is the only one a grabbing launch can
+    // land in (see `newSessionIn`: a launch activates its workspace first).
     if (grabAttention && !resume && this.zoomedSession !== null) { this.zoomedSession = null; this.applyLayout(); }
     this.startPolling();
     this.renderList();
@@ -950,7 +1271,7 @@ export class Deck {
         void this.persistLayout();
       } else if (isCommand) {
         await panel.startCommand(cwd, opts.command ?? "");
-        // Командный тайл в layout не попадает — persistLayout не зовём.
+        // A command tile is not in the layout, so `persistLayout` is not called.
       } else {
         tile.auth = await panel.start(
           cwd, workspaceId ?? null, prompt, opts.taskId ?? null, resume,
@@ -989,6 +1310,56 @@ export class Deck {
     const name = resolveTileName(tile.names);
     tile.nameEl.textContent = name;
     tile.nameEl.title = name;
+  }
+
+  /** Open the activity panel for one session.
+   *
+   *  One panel per tile: pressing the button again while it is open closes it,
+   *  the way a toggle should, rather than stacking a second read of the same log
+   *  behind the first.
+   *
+   *  The reads start here and stop when the panel closes. That is the whole cost
+   *  argument: the log is the source of truth precisely because it is
+   *  retrospective, and the price of that is a file read — the heaviest
+   *  transcript measured is 3.1 MB — which must not be on the five-second poll
+   *  for twelve tiles nobody is looking at. */
+  openActivity(session: string) {
+    const t = this.tiles.get(session);
+    if (!t) return;
+    if (t.activityPanel) {
+      t.activityPanel.close();
+      t.activityPanel = null;
+      return;
+    }
+    // A command tile is not an agent session and never will have a log. The
+    // frontend is where a tile's kind is known, so the sentence is decided here
+    // rather than by asking the backend to look for a transcript that cannot
+    // exist.
+    const isCommand = t.kind === "command";
+    const panel = openActivityPanel({
+      session,
+      name: resolveTileName(t.names),
+      initial: localRoll(isCommand ? "notAnAgent" : "noLog"),
+      tokens: () => this.usage.get(session) ?? null,
+      read: isCommand
+        ? undefined
+        : async () => {
+            const rolls = await sessionActivity([session]);
+            return rolls[session] ?? null;
+          },
+    });
+    // The close comes from four places — the button, Escape, the backdrop and
+    // this method — and all four have to clear the slot, or the tick keeps
+    // reading a log for a panel that is gone.
+    const clear = panel.close;
+    panel.close = () => {
+      clear();
+      if (this.tiles.get(session)?.activityPanel === panel) {
+        const tile = this.tiles.get(session);
+        if (tile) tile.activityPanel = null;
+      }
+    };
+    t.activityPanel = panel;
   }
 
   /** Turn the header's name into an input, in place.
@@ -1086,6 +1457,17 @@ export class Deck {
           titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
           prompt: null, resume: true,
           scheduledSkillId: e.scheduledSkillId, taskId: e.taskId,
+          // A layout entry with no `cliKind`, or with one this build has never
+          // heard of, restores as `claude` and the tile behaves exactly as
+          // before. An unrecognised CLI is a session the deck can still show,
+          // which is why the field is a string on the way to disk and never an
+          // enum that could fail the parse and drop the tile.
+          cliKind: e.cliKind ?? "claude",
+          // Which conversation to resume, when a `/clear` moved this session off
+          // the id it was launched with. The backend reads the entry itself —
+          // this is what keeps the field alive across the *next* restart, since
+          // `persistLayout` writes what the tiles hold (#199).
+          resumeId: e.resumeId ?? null,
           // Only a tile that was itself launched from a scenario gets a record.
           // A restored card session or bare "+ session" stays out of the
           // journal, which answers "what did my scenarios do" and nothing wider.
@@ -1097,6 +1479,11 @@ export class Deck {
     } finally {
       this.restoring = false;
     }
+    // The one read a restore gets, now that the whole layout is in: `startPolling`
+    // holds off per tile so a boot with a dozen sessions does not read every
+    // transcript a dozen times over. `polling` is already set; this is the tick
+    // and, if the window is focused, the chain it arms.
+    if (this.tiles.size > 0) this.startPolling();
     void this.persistLayout();
   }
 
@@ -1149,13 +1536,55 @@ export class Deck {
     const id = ids[n - 1];
     if (id) this.focusTile(id);
   }
+  /** "Who is blocked on me" — the next session waiting for input, wherever it is.
+   *
+   *  **The proxies count, not just this window's tiles.** A workspace pulled onto
+   *  a second monitor is still work this person is holding up, and answering for
+   *  one window is answering a different question. When the answer is elsewhere,
+   *  that window raises itself and focuses it — the same path a click on the proxy
+   *  row takes (`onRemoteFocus`).
+   *
+   *  Until #394 that half was reachable only by clicking the floating pill, whose
+   *  handler in `app.ts` was the only thing that did the routing; the hotkey
+   *  beside it had the local half of the same command. The pill had no other
+   *  interaction at all, so removing it left one command, and this is it.
+   *
+   *  **This window first, and the two searches are why.** One list of tiles and
+   *  proxies together would put a session on the other monitor between two on
+   *  this screen — purely because the active tile happened to be the last one
+   *  launched — and throw a person with three sessions waiting here across a
+   *  monitor, or a macOS Space, and back. Every waiting session is still reached,
+   *  in the order that costs the least to follow.
+   *
+   *  Cycling starts from the active tile, so pressing the hotkey again walks the
+   *  waiting sessions instead of returning to the same one; that is also why an
+   *  active tile which is itself waiting is skipped rather than re-focused. Only
+   *  the main window is told about proxies (`setRemoteSessions`), so in a window
+   *  pinned to a workspace this is its own tiles and nothing else — everything
+   *  such a window can see. */
   focusNextWaiting() {
-    const tiles = [...this.tiles.values()];
-    const target = nextWaitingAcross(
-      tiles.map((t) => ({ session: t.session, workspaceId: t.workspaceId, state: t.state })),
+    const here = nextWaitingAcross(
+      [...this.tiles.values()].map((t) => ({
+        session: t.session, workspaceId: t.workspaceId, state: t.state,
+      })),
       this.activeSession,
     );
-    if (target) this.focusSessionAnywhere(target.session);
+    if (here) {
+      this.focusSessionAnywhere(here.session);
+      return;
+    }
+    // From the start rather than from anything remembered: nothing on this screen
+    // is a position in the other windows' list. The proxies arrive in a stable
+    // order — `showElsewhere` in `app.ts` sorts by window label before setting
+    // them — so this answers the same way twice running.
+    const away = nextWaitingAcross(
+      this.remote.map((r) => ({
+        session: r.session, workspaceId: r.workspaceId, state: r.state,
+      })),
+      null,
+    );
+    const elsewhere = away && this.remote.find((r) => r.session === away.session);
+    if (elsewhere) this.onRemoteFocus(elsewhere.label, elsewhere.session);
   }
   async closeActive() {
     const id = this.activeSession;
@@ -1170,7 +1599,73 @@ export class Deck {
     if (alive && !(await confirmModal(
       `Close session “${resolveTileName(t.names)}”? It is still alive.`,
     ))) return;
-    this.remove(session);
+    this.remove(session, await this.captureFor(session));
+  }
+
+  /** Whether this closing session gets a note, asking when it has to.
+   *
+   *  Only ever reached from a close a person asked for. The programmatic
+   *  removals — a scheduled run replacing its predecessor, a workspace handed to
+   *  another window — pass nothing, because neither is somebody deciding to end a
+   *  session and neither is a moment to put a question in front of them.
+   *
+   *  Returns `null` for "close it and write nothing", which is what every close
+   *  meant before #366. */
+  private async captureFor(session: string): Promise<CaptureOnClose | null> {
+    const t = this.tiles.get(session);
+    if (!t || !t.workspaceId) return null;
+    // A command tile is a one-shot, not a conversation.
+    if (t.kind === "command") return null;
+
+    const decision = decideCapture(this.captureAnswer);
+    if (decision.action === "skip") return null;
+    if (decision.action === "ask") {
+      // Only here, on the one path that is about to open a dialog: asking the
+      // backend whether a note is even possible costs a round trip, and it would
+      // be spent on every close of somebody who has already answered.
+      const offer = await memoryCaptureOffer(session, t.cliKind)
+        .catch(() => ({ available: false, reason: undefined }));
+      const worth = askWorthPutting(offer);
+      if (worth.action === "skip") {
+        if (worth.reason) console.debug("no note for this session:", worth.reason);
+        return null;
+      }
+      const answer = await askCapture(resolveTileName(t.names));
+      if (answer.remember) {
+        this.captureAnswer = answer.capture;
+        void saveUiState({ captureOnClose: answer.capture })
+          .catch((e) => console.debug("remembering the note answer failed", e));
+      }
+      if (!answer.capture) return null;
+    }
+    return {
+      workspaceId: t.workspaceId,
+      cliKind: t.cliKind,
+      sessionName: resolveTileName(t.names),
+    };
+  }
+
+  /** Everything live that could still be summarised, for the quit path.
+   *
+   *  Read while this window is still rendering its tiles, which is the same
+   *  reason `handOffPayload` is read here rather than in Rust. */
+  captureOnQuit(): { session: string; capture: CaptureOnClose }[] {
+    if (this.captureAnswer !== true) return [];
+    return [...this.tiles.values()]
+      .filter((t) => t.workspaceId && t.kind !== "command")
+      .map((t) => ({
+        session: t.session,
+        capture: {
+          workspaceId: t.workspaceId!,
+          cliKind: t.cliKind,
+          sessionName: resolveTileName(t.names),
+        },
+      }));
+  }
+
+  /** The remembered answer to the note question, or `undefined` for never asked. */
+  setCaptureAnswer(answer: boolean | undefined) {
+    this.captureAnswer = answer;
   }
   /** Open the editor on whichever tile has the keyboard, and do nothing when
    *  there is none — the same shape as `closeActive` and `searchActive`. */
@@ -1237,8 +1732,8 @@ export class Deck {
    *  and focusing it silently would look like the control did nothing.
    *
    *  Public because the history screen's "go to the session" needs exactly the
-   *  path the pill and the notification already take. Returns false when there
-   *  is no such tile: the caller decides whether that is worth saying. */
+   *  path a notification click already takes. Returns false when there is no such
+   *  tile: the caller decides whether that is worth saying. */
   focusSession(session: string): boolean {
     if (!this.tiles.has(session)) return false;
     this.focusSessionAnywhere(session);
@@ -1262,8 +1757,13 @@ export class Deck {
          another workspace left the panel's tint, the crumb, the board and the pull
          requests pointing at the workspace you had just left. One notion of
          "active", owned by the thing that also persists it. */
+      // Told where it is going, so it can arrive there in ONE layout. Cleared
+      // either way: `activate` refuses a workspace that has been deleted since,
+      // and a hint left behind would aim the next switch at this session.
+      this.enteringFor = session;
       if (this.tree) this.tree.activate(rid);
       else this.setActiveWorkspace(rid);
+      this.enteringFor = null;
     } else if (tile.el.classList.contains("ws-hidden")) {
       // Orphan (or otherwise stale-hidden) target: unhide so focus lands on a visible tile.
       tile.el.classList.remove("ws-hidden");
@@ -1281,26 +1781,81 @@ export class Deck {
       this.zoomTo(session);
     }
     for (const t of this.tiles.values()) t.el.classList.toggle("is-active", t === tile);
-    tile.el.scrollIntoView?.({ block: "nearest" });
+    /* Only in the grid, and the zoom is not an "it would do nothing there" case —
+       it is the one place this actively BREAKS the layout.
+
+       `#deck` scrolls in the grid, so bringing a tile below the fold into view is
+       what this line is for. `#deck.is-zoomed` is `overflow: hidden` with the
+       zoomed tile filling row 1, so there is nothing left to reveal — but the
+       scroll OFFSET is still live, and the `zoomTo` four lines up has just
+       installed the FLIP inversion: the incoming tile carries a
+       `translate(252px, 588px)` and the outgoing one a sixfold scale. A
+       transformed box counts toward scrollable overflow, so at that instant the
+       deck measures 1163px of scrollHeight against a 674px box, and this scrolled
+       it to (240, 489) to reveal a tile that is only out there because of the
+       invert. The transition then eases the transforms away, the overflow
+       collapses, and the browser CLAMPS the offset back to zero across the same
+       220ms — dragging the zoomed tile, the filmstrip and the tools rail up the
+       screen with it. Nobody wrote that motion, and it was the larger half of
+       what "the layout swims on a workspace switch" turned out to be. */
+    if (this.zoomedSession === null) tile.el.scrollIntoView?.({ block: "nearest" });
     tile.panel.focus();
     this.renderList();
   }
 
-  private setState(session: string, state: SessionState) {
+  /** A turn this session's terminal ended under an interrupt, which is a turn
+   *  Claude Code's `Stop` hook does not report (#333).
+   *
+   *  Treated exactly as `Stop` would have been — `done`, the state that says the
+   *  agent finished and the prompt is free — and by the same door, so the
+   *  scheduler's overlap guard, the card's status and the pill all read one
+   *  answer. `setState` is enough to carry it to the other windows too: the
+   *  owning window is the source of truth for its own tiles, and `renderList`
+   *  emits `session://waiting` from here.
+   *
+   *  Only from busy. A `done`, `idle` or `ended` tile has nothing to correct,
+   *  and `ended` in particular must never be walked back — the panel's own
+   *  evidence is a screen that has stopped being repainted, which cannot outrank
+   *  a process that is gone. `waitingInput` is included because it is a state a
+   *  running turn can be sitting in: `PermissionRequest` reports it, and nothing
+   *  reports the approval that put the agent back to work.
+   *
+   *  Reported without a notification, which is the one thing here that is NOT
+   *  what `Stop` gets. Every other `done` notification exists because the person
+   *  may not be looking; this one follows a key they just pressed themselves, at
+   *  the tile they were pressing it in, so it is noise every single time. The
+   *  notification is a side effect of the door rather than part of the state
+   *  going through it, and the state is what has to be identical.
+   */
+  private interruptedTurn(session: string) {
+    const tile = this.tiles.get(session);
+    if (!tile) return;
+    if (tile.state !== "working" && tile.state !== "waitingInput") return;
+    this.setState(session, "done", { notify: false });
+  }
+
+  /** @param opts.notify Whether a state worth a notification raises one. True
+   *   everywhere but the interrupt path — a reported event may be the first the
+   *   person hears of it, a keystroke of their own never is. */
+  private setState(session: string, state: SessionState, opts: { notify?: boolean } = {}) {
     const tile = this.tiles.get(session);
     if (!tile) return;
     const prev = tile.state;
     tile.state = state;
     tile.label.className = `tile-state state-${state}`;
+    // The chip is not rebuilt by the poll, but this class change restarts its
+    // loop, and from then on it would breathe against the row in the panel
+    // rather than with it. See `src/dot-phase.ts`.
+    syncDotPhase(tile.label);
     // Keeps the tile's rail in step with its chip. Two carriers, one source.
     tile.el.dataset.state = state;
     tile.label.textContent = LABEL[state];
-    // У командного тайла перезапуск не предлагаем: он поднял бы claude, а не
-    // повторил команду. Разовое действие повторяется из своего экрана.
+    // No restart is offered on a command tile: it would start `claude` rather
+    // than repeat the command. A one-off action is repeated from its own screen.
     const restartable = tile.kind !== "command" && (state === "ended" || state === "error");
     tile.restartBtn.style.display = restartable ? "inline" : "none";
     this.renderList();
-    if (state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
+    if (opts.notify !== false && state !== prev && NOTIFY_ON.includes(state) && this.notifyOk) {
       const id = this.notify.register(session);
       sendNotification({
         id, title: `cowork-deck · ${LABEL[state]}`, body: resolveTileName(tile.names),
@@ -1326,7 +1881,42 @@ export class Deck {
     return { kind: "Started by hand", detail: null, prompt: tile.prompt };
   }
 
+  /** Lay the deck out, and give the keyboard back to whatever was holding it.
+   *
+   *  `appendChild` on a node already in the document is a *move* — remove, then
+   *  insert — and removing a node unfocuses anything inside it. Every re-parent
+   *  below is therefore a blur: the terminal somebody was typing into loses focus
+   *  and `<body>` gets it, with nothing on screen saying so.
+   *
+   *  Zoom is where that was felt. The tile filled the deck, the caret still looked
+   *  like it was in it, and the next keystroke went to the window handler instead
+   *  of to the pty — which is how `Escape` came to unzoom the deck rather than
+   *  reach `vim`, `less`, `htop` or claude's own "esc to interrupt" (#269). Not
+   *  only zoom: a *background* launch — a scheduled run, or tiles handed over from
+   *  another window — re-parents every tile too, and there this is the only thing
+   *  that puts the keyboard back, because that path reaches here through
+   *  `applyWorkspaceVisibility` and never calls `focusTile`. An interactive launch
+   *  is the other way round by design: it ends in `focusTile`, which claims the
+   *  keyboard for the new tile, and this restore is overwritten a moment later.
+   *
+   *  Restored only when this is what dropped it — focus back on `<body>`, and the
+   *  element still in the document, so a layout that removed the tile (a close)
+   *  leaves focus alone. A layout that merely hid it (a workspace switch) is left
+   *  to the platform rather than checked for here: `.ws-hidden` is `display: none`,
+   *  and `focus()` on an element inside one does nothing. Callers that move focus
+   *  themselves run after this and still win. */
   private applyLayout() {
+    const had = document.activeElement as HTMLElement | null;
+    const keep = had && had !== document.body && this.deckEl.contains(had) ? had : null;
+    this.layOutTiles();
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (keep && keep.isConnected && lost) keep.focus();
+  }
+
+  /** The layout itself: which tile is zoomed, which are in the strip, and what
+   *  each one hangs from. Called only by `applyLayout`, which says why the two are
+   *  separate. */
+  private layOutTiles() {
     const parts = zoomParticipants(
       [...this.tiles.values()].map((t) => ({
         session: t.session, hidden: t.el.classList.contains("ws-hidden"),
@@ -1342,11 +1932,12 @@ export class Deck {
         this.deckEl.appendChild(t.el);
       }
       if (this.strip) { this.strip.remove(); this.strip = null; }
-      this.onZoom?.(false);
-      // Last, so the panel is appended after the tiles it replaces have been moved —
-      // and here rather than in each caller, because this is the one function every
-      // path that changes what the deck holds already goes through.
+      // Before the listener, so the panel is appended after the tiles it replaces
+      // have been moved — and here rather than in each caller, because this is the
+      // one function every path that changes what the deck holds already goes
+      // through.
       this.renderEmpty();
+      this.notifyZoom(false);
       return;
     }
     // A zoomed session is a session, so the deck is not empty.
@@ -1357,7 +1948,23 @@ export class Deck {
       this.strip = document.createElement("div");
       this.strip.className = "deck-strip";
     }
-    this.onZoom?.(true);
+    // Tiles outside this zoom — every other workspace's — go back to the deck
+    // with neither role. They are hidden, so nothing of this shows; but a zoom
+    // now survives a workspace switch, so the grid branch above is no longer
+    // guaranteed to run between one workspace's zoom and the next, and it was
+    // the only thing undressing them. Left alone, another workspace's zoomed
+    // tile keeps its class (and its tools) and its minimized siblings sit in
+    // this workspace's strip.
+    const inZoom = new Set<string>([parts.zoomed, ...parts.minimized]);
+    for (const t of this.tiles.values()) {
+      if (inZoom.has(t.session)) continue;
+      t.el.classList.remove("minimized", "zoomed", "solo");
+      t.tools.setZoomed(false);
+      // Moved only if it is somewhere else — out of a strip, typically. A tile
+      // holds a live terminal, and re-appending one that is already here would
+      // reparent that canvas on every layout for nothing.
+      if (t.el.parentElement !== this.deckEl) this.deckEl.appendChild(t.el);
+    }
     const z = this.tiles.get(parts.zoomed)!;
     z.el.classList.add("zoomed");
     z.el.classList.remove("minimized", "solo");
@@ -1371,12 +1978,19 @@ export class Deck {
       t.tools.setZoomed(false);
       this.strip.appendChild(t.el);
     }
+    this.notifyZoom(true);
   }
 
-  // FLIP: measure visible tiles (First), run the layout mutation (Last),
-  // set the inverse transform, then animate it away. transform-only, so the
-  // ResizeObserver (which fits terminals to the already-final layout box) is
-  // not retriggered — no resize feedback loop.
+  /** FLIP: measure visible tiles (First), run the layout mutation (Last), set the
+   *  inverse transform, then animate it away. Nothing here touches a property that
+   *  lays out, so the ResizeObserver (which fits terminals to the already-final
+   *  layout box) is not retriggered — no resize feedback loop.
+   *
+   *  Two inversions rather than one, and which a tile gets depends on whether it
+   *  is growing: a growing tile is clipped back to its old size and REVEALED, a
+   *  shrinking one is scaled. The loop below argues that choice where it is made;
+   *  the short of it is that scaling a box holding a terminal stretches the type,
+   *  and only the growing tile has a terminal to stretch. */
   private animateLayoutChange(mutate: () => void) {
     const before = [...this.tiles.values()].filter((t) => !t.el.classList.contains("ws-hidden"));
     const first = new Map(before.map((t) => [t.session, t.el.getBoundingClientRect()]));
@@ -1391,24 +2005,92 @@ export class Deck {
       if (dx === 0 && dy === 0 && sx === 1 && sy === 1) continue;
       t.el.style.transformOrigin = "top left";
       t.el.style.transition = "none";
-      t.el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+      /* A tile that GROWS is REVEALED, not scaled, and the difference is the
+         terminal inside it. `scale` on a box holding a WebGL canvas stretches the
+         type for the length of the morph — non-uniformly, because `sx` and `sy`
+         are independent here — which is the one artefact that reads as "this is a
+         web page" rather than an app. Clipping instead leaves the content at its
+         final layout the whole way: the type is never anything but crisp, and what
+         animates is how much of the tile is uncovered.
+         `round` keeps the corner the tile already has; without it the clip is a
+         rectangle and the radius pops back at the end.
+
+         Only growth, because a clip cannot show what is outside the box: a tile
+         SHRINKING into the strip has less room than it needs, so it keeps the
+         scale. Nothing is lost there — `.deck-strip .tile.minimized .tile-body` is
+         `display: none`, so a minimized tile has no terminal to distort.
+
+         `will-change` names whichever pair the branch actually animates, and is
+         promoted for the length of the morph and no longer. A tile holds a WebGL
+         canvas, so its layer is expensive to keep, and a hint left behind is one
+         such layer per tile held for the life of the app — the cost this exists to
+         spend deliberately rather than permanently. Cleared in the cleanup, with
+         the properties it was promoted for. */
+      const grows = sx <= 1 && sy <= 1;
+      if (grows) {
+        t.el.style.willChange = "transform, clip-path";
+        t.el.style.clipPath =
+          `inset(0px ${last.width - f.width}px ${last.height - f.height}px 0px round var(--r-island))`;
+        t.el.style.transform = `translate(${dx}px, ${dy}px)`;
+      } else {
+        t.el.style.willChange = "transform";
+        t.el.style.transform = `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})`;
+      }
       animating.push(t);
     }
     requestAnimationFrame(() => {
       for (const t of animating) {
-        t.el.style.transition = "transform 180ms var(--ease)";
+        /* The clipped ones animate to a zero inset rather than to `none`: `none`
+           is not a length and does not interpolate, so clearing the property here
+           would land the final frame instantly instead of travelling to it. It is
+           cleared for real in the cleanup below, once there is no motion left to
+           interrupt. */
+        const clipped = t.el.style.clipPath !== "";
+        t.el.style.transition = clipped
+          ? "transform var(--dur-3) var(--ease-out), clip-path var(--dur-3) var(--ease-out)"
+          : "transform var(--dur-3) var(--ease-out)";
         t.el.style.transform = "";
+        if (clipped) t.el.style.clipPath = "inset(0px 0px 0px 0px round var(--r-island))";
       }
     });
-    // Authoritative cleanup + refit after the morph (covers no-transition cases).
+    /* Authoritative cleanup + refit after the morph (covers no-transition cases).
+       The delay is READ off the token the transition runs on rather than written
+       here, because a cleanup that lands mid-flight wipes the transform the tile
+       is still travelling on — which is what the pair of literals this replaces
+       had come to do. See `motion.ts` for the rule and for what it cost.
+
+       Under `prefers-reduced-motion` the transition collapses to 1ms while this
+       still waits out the full token. That is harmless rather than overlooked —
+       the ResizeObserver has already fitted every tile to its final box, so what
+       arrives late is the second, belt-and-braces `fit`. */
     setTimeout(() => {
       for (const t of after) {
         t.el.style.transition = "";
         t.el.style.transform = "";
         t.el.style.transformOrigin = "";
+        t.el.style.willChange = "";
+        t.el.style.clipPath = "";
         t.panel.fit();
       }
-    }, 220);
+    }, settleMs());
+  }
+
+  /** Forget a session's zoom in every workspace that remembers it.
+   *
+   *  For a tile that is going: closed, or handed to the window that claimed its
+   *  session. `applyLayout` already reconciles the workspace on screen — the
+   *  entry it cannot honour is dropped there — but an entry belonging to a
+   *  workspace that is not showing would go on naming a session this deck no
+   *  longer holds, and re-zoom nothing every time somebody came back to it.
+   *
+   *  One session can be named by more than one entry: an orphan is zoomable in
+   *  the window that adopts it, under that window's key, while an entry made
+   *  before its workspace was deleted is still filed under the old id. So this
+   *  sweeps rather than deleting one key. */
+  private forgetZoom(session: string) {
+    for (const [ws, s] of this.zoomedByWorkspace) {
+      if (s === session) this.zoomedByWorkspace.delete(ws);
+    }
   }
 
   zoomTo(session: string | null) {
@@ -1451,13 +2133,39 @@ export class Deck {
 
   /** Told whenever the deck enters or leaves zoom.
    *
-   *  For the panel beside it, which collapses to the rail while one session is
-   *  filling the stage: inside a session, the queue is not what a person is
-   *  looking at, and the tile's own tools want the width more. One listener
-   *  rather than a call at every site that can zoom — there are five, and a
-   *  behaviour wired at five call sites is a behaviour with four bugs in it. */
+   *  For the workspace panel on the far edge, which closes: a zoomed tile's tool
+   *  panel takes that same edge inside the tile frame. It told the LEFT panel to
+   *  collapse as well until #480, on the argument that the tools want the width —
+   *  and that made the panel's visibility the zoom's rather than the person's,
+   *  which is not a trade a listener gets to make. One listener rather than a call
+   *  at every site that can zoom — there are five, and a behaviour wired at five
+   *  call sites is a behaviour with four bugs in it. */
   setZoomListener(fn: (zoomed: boolean) => void) { this.onZoom = fn; }
   private onZoom: ((zoomed: boolean) => void) | null = null;
+  /** What the listener was last told, and the reason it is told anything at all
+   *  from one place.
+   *
+   *  Two rules, both learned from the listener re-entering `applyLayout`:
+   *
+   *  - **Told last.** The listener closes the workspace panel, which can hand the
+   *    borrowed zoom back — an `exitZoom` that re-enters `applyLayout` and, in
+   *    its grid branch, drops the strip. Told from the middle of the zoom branch,
+   *    that left the outer call appending a strip that was now `null`. Told after
+   *    the layout is whole, a re-entrant call is just the next layout.
+   *  - **Told on the edge.** `applyLayout` runs on every launch, close and
+   *    workspace switch, and it used to announce a zoom on each of them — closing
+   *    a panel the person may have opened since. What the listener is for is the
+   *    deck entering and leaving zoom, not repeating that it is still in one.
+   *
+   *  Starts at `false` and is not replayed on registration, which is honest
+   *  because the listener is wired once at boot — before there is a tile to
+   *  zoom, let alone a zoom. */
+  private zoomTold = false;
+  private notifyZoom(zoomed: boolean) {
+    if (zoomed === this.zoomTold) return;
+    this.zoomTold = zoomed;
+    this.onZoom?.(zoomed);
+  }
 
   /** Zoom the active tile and say whether that is what happened.
    *
@@ -1505,6 +2213,24 @@ export class Deck {
     return true;
   }
 
+  /** Leave the zoom of ONE named workspace, whether or not it is on screen.
+   *
+   *  For the borrower that has to give back exactly what it took: `zoomActive`
+   *  zooms the workspace showing at the time, and a zoom now belongs to that
+   *  workspace rather than to the deck. Somebody can switch workspace between
+   *  the taking and the giving back — the workspace panel's wide mode survives
+   *  a switch, the diff inside it does not — and `exitZoom` would then un-zoom
+   *  whatever is on screen instead: a zoom the person made themselves goes, and
+   *  the borrowed one stays on for as long as the deck lives.
+   *
+   *  Off screen there is no layout to redo, so the entry is simply dropped;
+   *  coming back to that workspace then finds a grid, which is what it was
+   *  before the borrowing. */
+  exitZoomIn(workspaceId: string | null): boolean {
+    if (workspaceId === this.activeWorkspaceId) return this.exitZoom();
+    return this.zoomedByWorkspace.delete(workspaceId);
+  }
+
   /** Give a tile up because another window has taken its session over.
    *
    *  Everything `remove` does except ending the session — the PTY, the process
@@ -1515,9 +2241,14 @@ export class Deck {
   releaseTile(session: string) {
     const tile = this.tiles.get(session);
     if (!tile) return;
+    // The session carries on in the window that claimed it; this window's panel
+    // does not, or it would keep reading a log this deck no longer shows.
+    tile.activityPanel?.close();
+    tile.activityPanel = null;
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
+    this.forgetZoom(session);
     if (tile.scheduledSkillId && this.scheduledSessions.get(tile.scheduledSkillId) === session) {
       this.scheduledSessions.delete(tile.scheduledSkillId);
     }
@@ -1549,7 +2280,7 @@ export class Deck {
           kind: t.kind, scheduledSkillId: t.scheduledSkillId, taskId: t.taskId,
           userName: t.names.user,
           nameKind: t.names.context === null ? "placeholder" : "context",
-          skillId: t.skillId, runId: t.runId,
+          skillId: t.skillId, runId: t.runId, resumeId: t.resumeId,
         }])[0],
         scrollback: t.panel.serialize(),
       }));
@@ -1564,19 +2295,38 @@ export class Deck {
         titleText: e.name, nameKind: e.nameKind ?? "context", userName: e.userName ?? null,
         prompt: null, resume: false,
         scheduledSkillId: e.scheduledSkillId, taskId: e.taskId, skillId: e.skillId,
+        // A layout entry with no `cliKind`, or with one this build does not
+        // know, restores as `claude` — the tile behaves exactly as before, and
+        // an unrecognised CLI is a session the deck can still show.
+        cliKind: e.cliKind ?? "claude",
+        // Travels with the tile, or the window taking it over persists an entry
+        // that has forgotten the `/clear` — and the next restart resumes what
+        // the person cleared away (#199).
+        resumeId: e.resumeId ?? null,
         attach: { scrollback: e.scrollback },
         grabAttention: false,
       });
     }
   }
 
-  private remove(session: string) {
+  /** The remembered answer to the note question. `undefined` is never asked,
+   *  which is not the same as `false` — see `ui_state.captureOnClose`. */
+  private captureAnswer: boolean | undefined = undefined;
+
+  private remove(session: string, capture: CaptureOnClose | null = null) {
     const tile = this.tiles.get(session);
     if (!tile) return;
-    void closeSession(session);
+    // The note travels with the close rather than ahead of it — see
+    // `closeSession` for why the ordering lives in one command.
+    void closeSession(session, capture);
+    // Before the tile leaves the map, or the panel outlives the session it is
+    // describing and keeps reading a log for a tile that is gone.
+    tile.activityPanel?.close();
+    tile.activityPanel = null;
     tile.panel.dispose();
     tile.el.remove();
     this.tiles.delete(session);
+    this.forgetZoom(session);
     if (tile.scheduledSkillId && this.scheduledSessions.get(tile.scheduledSkillId) === session) {
       this.scheduledSessions.delete(tile.scheduledSkillId);
     }
@@ -1599,6 +2349,8 @@ export class Deck {
       nameKind: t.names.context === null ? "placeholder" : "context",
       skillId: t.skillId,
       runId: t.runId,
+      cliKind: t.cliKind,
+      resumeId: t.resumeId,
     })));
     // Skip a write that would change nothing. Not something the naming needs —
     // it is here because it lives in the function this change touches, and it
@@ -1635,9 +2387,17 @@ export class Deck {
     // focus; now that rows are buttons, the focused key has to be remembered
     // and restored, or keyboard focus would jump to the top of the page twice
     // a minute.
-    const focusKey = this.listEl.contains(document.activeElement)
-      ? (document.activeElement as HTMLElement).dataset.focusKey ?? null
-      : null;
+    //
+    // Read off the document rather than out of `this.listEl`, and restored the
+    // same way at the end: with a tree, every focusable row this function paints
+    // goes into a workspace's host in the sidebar's panel — the heading is not
+    // painted at all — so `listEl` holds none of them in the arrangement the app
+    // ships. Scoped to `listEl`, the capture was blind there and the restore
+    // never fired: the rows a person tabs through were the ones losing focus.
+    // Nothing outside this function writes `data-focus-key`, and the two passes
+    // below paint any one workspace exactly once, so reading and querying wider
+    // cannot reach a row this function did not paint or find two of the same.
+    const focusKey = (document.activeElement as HTMLElement | null)?.dataset.focusKey ?? null;
     const tiles = [...this.tiles.values()];
     const waiting = waitingCount(tiles.map((t) => t.state));
     this.onCounts?.({
@@ -1651,12 +2411,14 @@ export class Deck {
     // What this window has, not what the app has — and said as a list rather
     // than a number.
     //
-    // It used to send `pill://count` with its own partial total, which the pill
-    // trusted absolutely: with two windows open the pill flapped between two
-    // partial counts every five seconds, whichever arrived last winning. The
-    // main window now does the adding, because it is the only participant that
-    // sees everybody. The same message also says *where* each session is, which
-    // is what lets "who is blocked on me" reach the other monitor.
+    // It used to send a count of its own, which the floating pill trusted
+    // absolutely: with two windows open the pill flapped between two partial
+    // totals every five seconds, whichever arrived last winning. A window says
+    // what it holds and the main window works out the rest, because it is the
+    // only participant that hears everybody. That is what survived the pill
+    // (#394): the message says *where* each session is, which is what lets "who
+    // is blocked on me" reach the other monitor, and what the main window's
+    // sidebar draws a pulled-out workspace from.
     //
     // Sent on every render, unchanged included. A listener registers
     // asynchronously, and an event arriving before it is ready is dropped rather
@@ -1701,6 +2463,10 @@ export class Deck {
       this.workspaces().map((w) => ({ id: w.id, name: w.name, color: w.color, path: w.path })),
     );
     const ORPHAN_KEY = "__orphan__";
+    /* Which workspaces this pass painted a host for. The loop below only sees
+       workspaces that have tiles, and the one after it has to tell "already
+       painted" from "has nothing to paint" — see the note over it. */
+    const painted = new Set<string>();
     for (const g of groups) {
       const wsId = g.workspace?.id ?? ORPHAN_KEY;
       const color = g.workspace?.color ?? "var(--fg-subtle)";
@@ -1716,6 +2482,7 @@ export class Deck {
       if (g.workspace) {
         this.tree?.waiting(g.workspace.id, groupWaiting);
         this.tree?.expanded(g.workspace.id, !collapsed);
+        painted.add(g.workspace.id);
       }
       let into: HTMLElement = this.listEl;
       if (host) {
@@ -1818,6 +2585,10 @@ export class Deck {
         // list unreadable. The dot the chip already carries stays, and so does the
         // rail — two channels for the state, which is one more than the name gets.
         stateSpan.className = `tile-state tile-state--bare state-${t.state}`;
+        // This span is thrown away and remade on every render — twelve times a
+        // minute from the poll alone. `src/dot-phase.ts` is why that stopped
+        // being something a person can see.
+        syncDotPhase(stateSpan);
         stateSpan.textContent = LABEL[t.state];
         metaLine.append(stateSpan);
         if (t.branch) {
@@ -1843,13 +2614,24 @@ export class Deck {
        nothing is running in produces no group. It is also the case that needs the
        row most — an empty workspace's only useful sentence is "start something
        here" — and without this it was the one row in the tree that could not be
-       created into. */
+       created into.
+
+       Which makes this the ONLY pass that ever visits an emptied workspace, and
+       so the only place its host can be cleared. Closing the last session of a
+       workspace left the closed session's row in the sidebar (#358): the loop
+       above clears a host on its way to refilling it, and a workspace with no
+       tiles never reaches it. The count on the row above went stale the same
+       way — nobody was left to say it was zero — so both are written here,
+       unconditionally, rather than inferred from what the host still holds. */
     if (this.tree) {
       for (const w of this.workspaces()) {
+        if (painted.has(w.id)) continue;
         const host = this.tree.host(w.id);
-        if (!host || host.childElementCount > 0) continue;
+        if (!host) continue;
+        host.replaceChildren();
         const folded = this.collapsed.has(w.id);
         host.hidden = folded;
+        this.tree.waiting(w.id, 0);
         this.tree.expanded(w.id, !folded);
         if (!folded) host.appendChild(this.createRow(w.id, w.name));
       }
@@ -1860,7 +2642,7 @@ export class Deck {
        an orphan group appearing is what fills this again. */
     this.listEl.hidden = this.listEl.childElementCount === 0;
     if (focusKey) {
-      this.listEl.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
+      document.querySelector<HTMLElement>(`[data-focus-key="${focusKey}"]`)?.focus();
     }
   }
 }
@@ -1946,10 +2728,15 @@ export function nextWaitingAcross(
 /** What reaches `sessions.json`.
  *
  *  `name` is the **launch** name — never the resolved one. A transcript title is
- *  not persisted at all: `startPolling()` fires a tick immediately, so a restored
- *  tile refills it within one round trip and a stored copy could only go stale.
+ *  not persisted at all: `restore` polls once as soon as the layout is in, so a
+ *  restored tile refills it within one round trip and a stored copy could only go
+ *  stale.
  *  A hand-typed name goes in its own field, and `nameKind` records which of the
- *  two kinds `name` is, so the next launch knows whether a title may replace it. */
+ *  two kinds `name` is, so the next launch knows whether a title may replace it.
+ *
+ *  `resumeId` is the one field here that a *stale* copy of would lose work: it
+ *  says which conversation the next launch resumes, and its absence means the
+ *  launch id. See `SessionEntry.resumeId` (#199). */
 export function serializeTiles(
   tiles: {
     session: string; workspacePath: string; name: string; workspaceId?: string;
@@ -1959,12 +2746,14 @@ export function serializeTiles(
     nameKind?: NameKind;
     skillId?: string;
     runId?: string;
+    cliKind?: CliKind;
+    resumeId?: string | null;
   }[],
 ): SessionEntry[] {
   return tiles
-    // Командный тайл — разовое действие пользователя (установка пакета, вход в
-    // аккаунт). Восстанавливать его на следующем запуске нельзя: это молча
-    // выполнило бы sudo-команду без спроса.
+    // A command tile is one action the person took — installing a package,
+    // signing in. Restoring it on the next launch is not allowed: that would run
+    // a `sudo` command again without being asked.
     .filter((t) => t.kind !== "command")
     .map((t) => ({
       sessionId: t.session, cwd: t.workspacePath, name: t.name,
@@ -1974,6 +2763,14 @@ export function serializeTiles(
       ...(t.userName ? { userName: t.userName } : {}),
       ...(t.skillId ? { skillId: t.skillId } : {}),
       ...(t.runId ? { runId: t.runId } : {}),
+      // Written only when it is not the default, so a layout file does not grow
+      // a key that says what its absence already says. Every entry on disk today
+      // is a Claude session, and this keeps them byte-identical.
+      ...(t.cliKind && t.cliKind !== "claude" ? { cliKind: t.cliKind } : {}),
+      // Written only once a `/clear` has moved this session off the id it was
+      // launched with: absent is a session still in its launch conversation,
+      // which is what every entry on disk today says by having no key at all.
+      ...(t.resumeId ? { resumeId: t.resumeId } : {}),
       nameKind: t.nameKind ?? "context",
     }));
 }

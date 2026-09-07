@@ -4,23 +4,44 @@ use crate::tasks::model::{Task, TaskOrigin};
 const MAX_SLUG: usize = 40;
 
 /// Split `---\n…\n---\n<body>` into the frontmatter block and the body.
+///
+/// `head` never ends with a carriage return, and that is not tidiness (#65). The
+/// block ends at the `\n` before `---`, so on CRLF input the last line's `\r`
+/// falls inside `head` — and `str::lines()` strips a trailing `\r` only from a
+/// segment that was terminated by `\n`. The final segment is not, so every
+/// caller iterating `head.lines()` would get one line ending in a bare `\r`:
+/// `field()` trims it away, but `set_fields` reissues the line and puts `\r\n`
+/// after the `\r` it kept.
 fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
     let rest = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n"))?;
     let end = rest.find("\n---")?;
-    let head = &rest[..end];
+    let head = rest[..end].strip_suffix('\r').unwrap_or(&rest[..end]);
     let after = &rest[end + 4..];
     let body = after.strip_prefix('\n').or_else(|| after.strip_prefix("\r\n")).unwrap_or(after);
     Some((head, body))
 }
 
+/// The key a frontmatter line sets, or `None` where the line sets nothing at
+/// this level.
+///
+/// Column zero only, which is the half #65 was about: `k.trim()` matched an
+/// indented `status:` under a `meta:` parent, so a nested child was read as the
+/// document's own field and — worse — rewritten at column zero, losing both the
+/// value and the nesting. A line that starts with whitespace belongs to whatever
+/// is above it, and neither reading nor writing this block has any business with
+/// it. Comments are skipped for the same reason: `# status: was open` is prose.
+fn top_level_key(line: &str) -> Option<&str> {
+    if line.starts_with(char::is_whitespace) || line.starts_with('#') { return None; }
+    // Split on the FIRST colon only: titles legitimately contain colons.
+    let (k, _) = line.split_once(':')?;
+    Some(k.trim_end())
+}
+
 fn field<'a>(head: &'a str, key: &str) -> Option<&'a str> {
     for line in head.lines() {
-        // Split on the FIRST colon only: titles legitimately contain colons.
-        let Some((k, v)) = line.split_once(':') else { continue };
-        if k.trim() == key {
-            let v = v.trim();
-            return if v.is_empty() { None } else { Some(v) };
-        }
+        if top_level_key(line) != Some(key) { continue }
+        let v = line.split_once(':').map(|(_, v)| v.trim()).unwrap_or("");
+        return if v.is_empty() { None } else { Some(v) };
     }
     None
 }
@@ -187,7 +208,7 @@ pub fn set_fields(text: &str, fields: &[(&str, &str)]) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut seen = vec![false; fields.len()];
     for line in head.lines() {
-        let key = line.split_once(':').map(|(k, _)| k.trim());
+        let key = top_level_key(line);
         match fields.iter().position(|(k, _)| Some(*k) == key) {
             Some(i) => {
                 lines.push(format!("{}: {}", fields[i].0, fields[i].1));
@@ -457,6 +478,44 @@ Repro: three workspaces, Cmd+2.\n";
         assert!(!out.contains("open"));
         assert!(out.contains("\r\n"), "line endings must stay CRLF: {out:?}");
         assert!(!out.replace("\r\n", "").contains('\n'), "no stray bare LF: {out:?}");
+    }
+
+    /// The `\r` that the CRLF test above cannot see, and #65 named.
+    ///
+    /// `split_frontmatter` hands back a `head` ending at the `\n` before `---`,
+    /// so on CRLF input its last line keeps a bare `\r`. `str::lines()` strips a
+    /// trailing `\r` only from a segment that WAS terminated by `\n` — the final
+    /// segment is not, so the `\r` survives into the rewritten line and
+    /// `push_str(nl)` puts `\r\n` after it: `tags: [inbox]\r\r\n`.
+    ///
+    /// Cosmetic in effect — `field()` trims, and YAML reads the line as empty —
+    /// but the assertion the other test makes (`!out.replace("\r\n", "")
+    /// .contains('\n')`) passes on `\r\r\n`, which is why it stood for a month.
+    /// The key edited here is deliberately NOT the last frontmatter line: a
+    /// replaced last line loses its `\r` on the way through and hides the fault.
+    #[test]
+    fn set_step_does_not_double_the_carriage_return_on_the_last_crlf_line() {
+        let text = "---\r\nid: 01K1\r\nstatus: open\r\ntags: [inbox]\r\n---\r\nbody\r\n";
+        let out = set_step(text, &done(), Some("ts")).unwrap();
+        assert!(!out.contains("\r\r"), "one carriage return per line: {out:?}");
+        assert!(out.contains("tags: [inbox]\r\n"), "the vault key survives intact: {out:?}");
+    }
+
+    /// The second edge #65 named: an indented `status:` is a child key, not this
+    /// document's status.
+    ///
+    /// `line.split_once(':').map(|(k, _)| k.trim())` matches on the trimmed key,
+    /// so `meta:\n  status: keep-me` is rewritten as `status: done` at column
+    /// zero — the value lost, the nesting lost, and the parent left with no
+    /// child. Requires hand-written nested frontmatter, which is why it is a
+    /// vault card's hazard rather than a card the deck wrote.
+    #[test]
+    fn set_step_leaves_an_indented_child_key_alone() {
+        let text = "---\nid: 01K1\nstatus: open\nmeta:\n  status: keep-me\n---\nbody\n";
+        let out = set_step(text, &done(), Some("ts")).unwrap();
+        assert!(out.contains("  status: keep-me"), "the child key survives: {out}");
+        assert!(out.contains("\nstatus: done\n"), "the document's own status moves: {out}");
+        assert_eq!(out.matches("status:").count(), 2, "no third status line: {out}");
     }
 
     #[test]

@@ -2,10 +2,21 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   clearScreen: false,
-  // Vitest stubs CSS imports by default, which makes `?raw` on a stylesheet
-  // resolve to an empty string. tests/view-switch.test.ts asserts a computed
-  // `display` against the real stylesheet, so it needs the actual bytes.
-  test: { css: true },
+  // This is the vitest config: there is no `vitest.config.ts`, and vitest reads
+  // the `test` key here.
+  //
+  // `css: true` because vitest stubs CSS imports by default, which makes `?raw`
+  // on a stylesheet resolve to an empty string — and tests/view-switch.test.ts
+  // asserts a computed `display` against the real stylesheet, so it needs the
+  // actual bytes.
+  //
+  // `setupFiles` because the two shims a `TerminalPanel` cannot be built without
+  // were copied into eleven test files, identically. What is in it and what is
+  // deliberately left out is argued in the file itself (#463).
+  test: {
+    css: true,
+    setupFiles: ["tests/setup/dom-shims.ts"],
+  },
   server: {
     port: 1420,
     strictPort: true,
@@ -21,7 +32,9 @@ export default defineConfig({
     target: "es2021",
     outDir: "dist",
     rollupOptions: {
-      input: { main: "index.html", pill: "pill.html", workspace: "workspace.html" },
+      input: {
+        main: "index.html", tray: "tray.html", workspace: "workspace.html",
+      },
     },
   },
 });

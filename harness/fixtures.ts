@@ -10,6 +10,7 @@
  */
 
 import type {
+  ActivityRoll, AgentTally, AiUsage,
   BoardConfig, GhStatus, MergeOptions, PrDetail, PrDiff, ProviderCapabilities,
   PullRequest, RunRecord, ScheduleRun, SessionEntry, SessionSnapshot, Skill, Task, UiState,
   Workspace,
@@ -205,6 +206,8 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 48_300, output: 6_120, cacheCreation: 12_400, cacheRead: 214_000 },
     },
     title: "Refund webhook retries", titleSource: "ai",
+    calls: 148,
+    resumeId: null,
   },
   [S_WAIT]: {
     tokens: {
@@ -212,6 +215,8 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 12_900, output: 1_840, cacheCreation: 3_100, cacheRead: 61_500 },
     },
     title: null, titleSource: null,
+    calls: 0,
+    resumeId: null,
   },
   [S_DONE]: {
     tokens: {
@@ -219,6 +224,8 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 91_700, output: 9_430, cacheCreation: 20_800, cacheRead: 412_000 },
     },
     title: "Dependency sweep", titleSource: "custom",
+    calls: 334,
+    resumeId: null,
   },
   [S_ERR]: {
     tokens: {
@@ -226,6 +233,8 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 4_200, output: 610, cacheCreation: 900, cacheRead: 8_100 },
     },
     title: null, titleSource: null,
+    calls: 3,
+    resumeId: null,
   },
   [S_AUTO]: {
     tokens: {
@@ -233,7 +242,127 @@ export const snapshots: Record<string, SessionSnapshot> = {
       spend: { input: 21_600, output: 2_950, cacheCreation: 5_400, cacheRead: 88_200 },
     },
     title: "Trace the retry budget through the gateway", titleSource: "prompt",
+    calls: 27,
+    // The one session here that has been `/clear`ed: the deck knows it by the id
+    // it launched it with and resumes this one instead (#199). `null` on every
+    // other, which is a session still in its launch conversation.
+    resumeId: "9f2c8f4e-1d7a-4a55-b0c9-2b6f1e0a7c31",
   },
+};
+
+/* --- Activity: what each session actually did ----------------------------- */
+
+/** A tool row, with the two counters that are never rolled into one. */
+const tool = (
+  native: string,
+  category: ActivityRoll["tools"][number]["category"],
+  calls: number,
+  extra: { server?: string; errors?: number; denials?: number } = {},
+) => ({
+  native, category,
+  server: extra.server ?? null,
+  calls,
+  errors: extra.errors ?? 0,
+  denials: extra.denials ?? 0,
+});
+
+const main = (tools: ActivityRoll["tools"]): AgentTally => ({
+  id: "main", kind: "main", agentType: null, description: null,
+  depth: 0, spawnedBy: null, tools,
+  calls: tools.reduce((n, t) => n + t.calls, 0),
+});
+
+const sub = (
+  agentType: string, description: string, depth: number, tools: ActivityRoll["tools"],
+): AgentTally => ({
+  id: `agent-a${agentType.length}${description.length}`, kind: "subagent",
+  agentType, description, depth, spawnedBy: "toolu_01MgqZuTcGXhsy8Vags6FLMa", tools,
+  calls: tools.reduce((n, t) => n + t.calls, 0),
+});
+
+const roll = (agents: AgentTally[], over: Partial<ActivityRoll> = {}): ActivityRoll => {
+  // The by-tool list is folded from the agents, exactly as `ActivityRoll::finish`
+  // does it in Rust — so a fixture cannot show two totals that disagree, which is
+  // the one thing a screenshot of this panel must never do.
+  const folded = new Map<string, ActivityRoll["tools"][number]>();
+  for (const a of agents) {
+    for (const t of a.tools) {
+      const row = folded.get(t.native);
+      if (row) {
+        row.calls += t.calls; row.errors += t.errors; row.denials += t.denials;
+      } else {
+        folded.set(t.native, { ...t });
+      }
+    }
+  }
+  const tools = [...folded.values()].sort((a, b) => b.calls - a.calls || a.native.localeCompare(b.native));
+  return {
+    cli: "claude",
+    agents,
+    tools,
+    calls: tools.reduce((n, t) => n + t.calls, 0),
+    capabilities: { outcomes: true, agents: true },
+    readAt: Math.floor(NOW / 1000),
+    unavailable: null,
+    truncated: null,
+    ...over,
+  };
+};
+
+/** What `session_activity` answers with.
+ *
+ *  Between them the five cover every branch the panel has: a heavy delegated
+ *  session with MCP calls and both counters, a session that has been talked to
+ *  and has run nothing, one CLI whose reader does not attribute agents, and a
+ *  transcript that is gone. */
+export const activity: Record<string, ActivityRoll> = {
+  // The one to screenshot: MCP over two servers, real delegation, and errors and
+  // refusals that are told apart.
+  [S_WORK]: roll([
+    main([
+      tool("Bash", "run", 61, { errors: 3 }),
+      tool("Read", "read", 24),
+      tool("Edit", "edit", 18, { errors: 1 }),
+      tool("Agent", "delegate", 2),
+      tool("mcp__gitnexus__impact", "mcp", 6, { server: "gitnexus" }),
+      tool("mcp__playwright__browser_navigate", "mcp", 4, { server: "playwright" }),
+      tool("mcp__playwright__browser_snapshot", "mcp", 3, { server: "playwright" }),
+      tool("Grep", "search", 9, { denials: 1 }),
+      tool("WebSearch", "web", 2),
+    ]),
+    sub("Code Reviewer", "Review the retry budget change", 1, [
+      tool("Read", "read", 11),
+      tool("Grep", "search", 5),
+    ]),
+    sub("Explore", "Find every call site of chargeRetry", 1, [
+      tool("Grep", "search", 2),
+      tool("Read", "read", 1),
+    ]),
+  ]),
+  // Talked to, and has run nothing. `calls: 0` with no `unavailable` — the
+  // distinction the whole panel is drawn around.
+  [S_WAIT]: roll([main([])]),
+  // Call-heavy and narrow: 334 calls over five tools, which is a real measured
+  // shape and the one the bar chart exists for.
+  [S_DONE]: roll([
+    main([
+      tool("Bash", "run", 291, { errors: 11 }),
+      tool("Read", "read", 22),
+      tool("Edit", "edit", 14),
+      tool("Glob", "search", 5),
+      tool("Write", "edit", 2),
+    ]),
+  ]),
+  // The transcript is gone from under the session. Not zeroes — a sentence.
+  [S_ERR]: roll([], { unavailable: "unreadable", agents: [], tools: [], calls: 0 }),
+  // A CLI whose log does not attribute delegated work, so the by-agent section
+  // is omitted rather than drawn as a one-row tree.
+  [S_AUTO]: roll([main([
+    tool("bash", "run", 14, { errors: 2 }),
+    tool("view", "read", 9),
+    tool("edit", "edit", 3),
+    tool("report_intent", "other", 1),
+  ])], { cli: "copilot", capabilities: { outcomes: true, agents: false } }),
 };
 
 /* --- Terminal scrollback -------------------------------------------------- */
@@ -721,8 +850,96 @@ export const mergeOptions: MergeOptions = {
 
 export const uiState: UiState = {
   activeWorkspaceId: WS_RELAY, uiScale: 1, prDiffCols: 96, recordScenarioRuns: true,
-  terminalRows: 12,
+  terminalRows: 12, usageReported: true,
 };
+
+/** The caveat both of Gemini's windows carry, written once so the fixture cannot
+ *  say it two ways — which is the same discipline the provider itself applies. */
+const NO_GEMINI_READING =
+  "Gemini CLI does not report what is left, and this app has never seen it say so on a terminal.";
+
+/** What every connected AI has left — one of each state the block can draw, so a
+ *  shot of the panel shows the whole vocabulary at once rather than three healthy
+ *  rows.
+ *
+ *  Claude is on the **reported** tier and nearly spent, which is the pair that
+ *  matters most: a share the provider vouches for, and a reset time to act on.
+ *  Gemini is the honest `unknown` row — detected, unreadable, and offering the
+ *  command that would answer it.
+ *
+ *  A refusal is deliberately not here. It is the state the block exists for, and
+ *  it is also the state a person should almost never see, so a fixture that led
+ *  with it would misrepresent the app. It renders — verified in this harness by
+ *  flipping this fixture, and covered permanently by `tests/usage-block.test.ts`. */
+export const usage: AiUsage[] = [
+  {
+    provider: "claude",
+    label: "Claude",
+    account: "you@example.com",
+    plan: "Max 20x",
+    source: "reported",
+    fetchedAt: NOW,
+    error: null,
+    probeCommand: 'claude -p "/usage"',
+    needsCredential: false,
+    windows: [
+      {
+        id: "session",
+        label: "Current session",
+        usedFraction: 0.87,
+        amount: null,
+        resetsAt: NOW + 74 * 60 * 1000,
+        state: "near",
+        source: "reported",
+        note: null,
+      },
+      {
+        id: "week",
+        label: "Current week (all models)",
+        usedFraction: 0.24,
+        amount: null,
+        resetsAt: NOW + 5 * 24 * 60 * 60 * 1000,
+        state: "ok",
+        source: "reported",
+        note: null,
+      },
+    ],
+  },
+  {
+    provider: "gemini",
+    label: "Gemini",
+    account: null,
+    plan: null,
+    source: "unknown",
+    fetchedAt: NOW,
+    error: null,
+    probeCommand: "gemini",
+    needsCredential: true,
+    windows: [
+      {
+        id: "rpm",
+        label: "Requests this minute",
+        usedFraction: null,
+        amount: null,
+        resetsAt: null,
+        state: "unknown",
+        source: "unknown",
+        note: NO_GEMINI_READING,
+      },
+      {
+        id: "rpd",
+        label: "Requests today",
+        usedFraction: null,
+        amount: null,
+        resetsAt: null,
+        state: "unknown",
+        source: "unknown",
+        note: NO_GEMINI_READING,
+      },
+    ],
+  },
+];
+
 
 /** What the terminal drawer reopens with.
  *
@@ -836,26 +1053,32 @@ export const ghStatus: GhStatus = {
   ],
 };
 
+/** Memory sync, switched on and working.
+ *
+ *  Answered at all because it was not (#463): the harness mocked no `sync_*`
+ *  command, so `syncSummary()` came back `null`, `mountSync` threw inside an
+ *  unawaited promise, and Settings' "Config repository" section showed its blurb
+ *  and nothing else. The audit saw that and could not tell whether it was the
+ *  harness or the app — it was both. The app's half is a failure path in
+ *  `mountSync`; this is the harness's, and a section that cannot render here is a
+ *  section nobody can review or shoot.
+ *
+ *  ON rather than off, because `renderOn` is the richer surface: the age of the
+ *  last push, the machine's own name, and the two controls. Seconds, not
+ *  milliseconds — which is the unit the Rust side keeps and the reason
+ *  `sync-dialog.ts` converts at its call site. */
+export const syncSummary = {
+  on: true,
+  remote: "https://github.com/acme-dev/cowork-memory.git",
+  state: {
+    lastPull: Math.floor(Date.parse("2026-09-02T09:41:00Z") / 1000),
+    lastPush: Math.floor(Date.parse("2026-09-02T09:12:00Z") / 1000),
+    fault: null,
+  },
+  machine: { id: "m-1", label: "this laptop" },
+};
+
 export const openCounts: Record<string, number> = {
   [WS_RELAY]: fileTasks.filter((t) => t.status !== "shipped").length,
   [WS_HARBOR]: openCount,
 };
-
-/** Which windows the harness is pretending are on screen.
- *
- *  The window plugin's calls used to be swallowed by the `plugin:` fallback,
- *  which answers `null` and logs nothing — so `is_visible` said "hidden" for
- *  ever and the pill's show/hide state machine only ever took one branch. It is
- *  a real answer now, and this is where it lives.
- *
- *  The pill starts hidden, which is what the app builds it as: whether it is up
- *  is the deck's answer to give, through `pill://count`. */
-const windowsVisible = new Map<string, boolean>([["main", true], ["pill", false]]);
-
-export function windowVisible(label: string): boolean {
-  return windowsVisible.get(label) ?? false;
-}
-
-export function setWindowVisible(label: string, visible: boolean): void {
-  windowsVisible.set(label, visible);
-}

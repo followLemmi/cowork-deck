@@ -1,6 +1,8 @@
 import { WorkspacesPanel } from "./workspaces";
+import { mountMemory } from "./memory-page";
+import { NoteReader } from "./note-reader";
 import { SkillsPanel } from "./skills";
-import { Deck, nextWaitingAcross, type SessionCounts } from "./sessions";
+import { Deck, type SessionCounts } from "./sessions";
 import {
   applyPanel, applyWorkspacePanel, firstFocusable,
   PANEL_TITLE, WORKSPACE_PAGES, WORKSPACE_TITLE,
@@ -15,41 +17,53 @@ import {
 } from "./ui-scale";
 import type { PanelPage, WorkspacePage } from "./view";
 import {
-  claudeAvailable, deleteSkillHistory, listRuns, loadLayout, loadUiState, onRunsChanged,
+  claudeAvailable, closeSession, deleteSkillHistory, listRuns, loadLayout, loadUiState,
+  memoryForgetCaptureAnswer, memoryWarm, onMemoryChanged, onRunsChanged,
   onScheduledFire, onSchedulerBroken, onQuitBlocked, quitCancelled, quitConfirmed,
   revealPath, saveUiState, scheduleAck, schedulerReady, openWorkspaceWindow, onSessionOwner,
+  onWorkspacesChanged,
   syncSummary,
   hostPlatform,
   configPaths,
+  usageSnapshot, onUsageChanged,
+  trayUpdate, onTrayAction, onTrayAsk, TRAY_FACTS,
+  type AiUsage,
   type HandOffTile,
   type SessionState,
 } from "./ipc";
+import { LimitDials } from "./usage-dial";
+import { deckLimit, LimitNotifier } from "./usage";
+import { parseAction, trayPanel } from "./tray-panel";
+import { openUsageDialog } from "./usage-dialog";
 import { offerUpdateIfAvailable } from "./updater";
 import { TerminalDrawer, DEFAULT_TERMINAL_ROWS } from "./drawer";
 import type { Skill, Workspace } from "./ipc";
 import { BoardView } from "./board";
 import {
-  listTasks, resolveTask, taskCapabilities, taskOpenCounts, onTasksChanged, taskWatchSync, createTask,
-  taskMigrationStatus, taskMigrate, taskMigrationDismiss, updateTask,
+  resolveTask, taskCapabilities, onTasksChanged, taskWatchSync, createTask,
+  taskMigrate, taskMigrationDismiss, updateTask,
   boardConfigSave, boardStepRewrite, boardStepUsage,
-  prList, prDetail, prDiff, prFilePatch, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
+  prDetail, prDiff, prFilePatch, prMergeOptions, prMerge, prClose, prReopen, prWorktreeAdd,
   prWorktreePath, prWorktreeRemove,
-  issueTotals, issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove,
+  issueWorktreeAdd, issueWorktreePath, issueWorktreeRemove,
 } from "./ipc";
-import type { MigrationOffer, PullRequest, RunRecord, StepId, Task } from "./ipc";
-import { firstTerminal, isTerminal } from "./board-config";
+import type { PullRequest, RunRecord, StepId, Task } from "./ipc";
+import { firstTerminal } from "./board-config";
 import { issuePrompt } from "./tasks";
 import { pollIntervalMs } from "./pr";
+import { Poller } from "./poll";
+import { BoardController } from "./board-controller";
+import { PrController } from "./pr-controller";
+import { holdRefits, settleMs } from "./motion";
 import {
-  boardPollMs, CLOSED_PAGE_LIMIT, needsCloseConfirmation, needsTotals, nextPageLimit,
-  fsRootOf, repoFromIssueUrl, sourceOf, unavailableFrom,
+  boardPollMs, needsCloseConfirmation,
+  fsRootOf, repoFromIssueUrl, sourceOf,
 } from "./issues";
 import { HistoryView } from "./history";
 import { reconcileParams, type RunFilters } from "./runs";
 import { PrView } from "./pr-view";
 import { DiffDrawer } from "./diff-drawer";
 import type { GhUnavailable } from "./gh-unavailable";
-import type { PrState } from "./pr-view";
 import { alertModal, confirmModal } from "./modal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import type { Command } from "./commands";
@@ -59,15 +73,15 @@ import { appMark, iconButton, installSprite, type IconName } from "./icons";
 import { openGithubScreen } from "./github-screen";
 import { fillPlaceholders, resolvePrompt } from "./placeholders";
 import { resolveScheduledWorkspace } from "./schedule";
+import { syncDotPhase } from "./dot-phase";
 import { closeIssueModal, mergeForm, placeholderForm, taskForm } from "./forms";
 import { computePatch, openCardModal } from "./card-modal";
 import { applyBoardEdit, openBoardEditor } from "./board-editor";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import { listen, emit, emitTo } from "@tauri-apps/api/event";
-import {
-  allSessions, sumWaiting, windowOf,
-  type RemoteSession, type SessionsByWindow, type WindowSessions,
-} from "./cross-window";
-import { MAIN_WINDOW_LABEL, workspaceIdOf, workspaceLabel } from "./window-role";
+import { allSessions, windowOf } from "./cross-window";
+import type { RemoteSession, SessionsByWindow, WindowSessions } from "./cross-window";
+import { addressedTo, MAIN_WINDOW_LABEL, workspaceIdOf, workspaceLabel } from "./window-role";
 import { hasLeftWindow, pressStartsOnControl, startsTearOut } from "./tear-out";
 import { getCurrentWindow, cursorPosition } from "@tauri-apps/api/window";
 import type { WindowRole } from "./window-role";
@@ -117,6 +131,12 @@ export function startApp(role: WindowRole): Promise<void> {
   const pinnedTo = role.kind === "workspace" ? role.workspaceId : null;
   /** This window's own label — what `session://owner` is compared against. */
   const myLabel = getCurrentWindow().label;
+  /** For every listener whose event is addressed to one window rather than
+   *  broadcast: `session://focus`, `workspace://gone`, `workspace://take`. A bare
+   *  `listen` hears all three whoever they were sent to — see `addressedTo`, and
+   *  #349 for what that cost. Only the three, deliberately: every other listener
+   *  in this file is waiting on a broadcast and must go on hearing it. */
+  const addressed = addressedTo(myLabel);
 
   installSprite();
   /** The panel — still `#sidebar` in the DOM. The element stopped being a sidebar
@@ -182,9 +202,57 @@ export function startApp(role: WindowRole): Promise<void> {
   scenariosPage.className = "panel-page hidden";
   scenariosPage.append(skMount);
 
+  /* The fourth page, and the corpus's own. Memory had three doors and no home — a
+     search dialog, a captures dialog and a settings section — which is how two
+     doors to one set of facts come to disagree. It is app-wide rather than one
+     workspace's for the same reason the journal is: the diaries are global and the
+     notes span projects, so it belongs on this rail and not in `#wspanel`.
+
+     Empty here. What fills it is the corpus listed (#381, #382), read on the
+     document surface (#383), searched (#384) and written into (#385, #386) — and
+     the page exists first so none of that is blocked on the plumbing. */
+  const memMount = document.createElement("div");
+  memMount.className = "island";
+  const memHead = document.createElement("h3");
+  memHead.textContent = PANEL_TITLE.memory;
+  /* The document surface, over the deck rather than instead of it — #346's
+     precedent, and the reason giving the deck back is exact: it was covered, not
+     resized. Built in every window, pinned or not: the rail is what a pinned
+     window does not get, and this is reached from the page behind that rail. */
+  const noteReader = new NoteReader({
+    host: document.querySelector<HTMLElement>("#workarea")!,
+    describe: (note) => {
+      if (note.kind === "diary") return note.room ? `${note.room} — lessons` : "Lessons";
+      return workspaces.all.find((w) => w.id === note.scope)?.name ?? note.scope;
+    },
+    // A note written or saved on that surface is a corpus that moved, and the
+    // navigator beside it is a walk over the corpus.
+    onWrote: () => { void memoryView.refresh(); },
+  });
+  /* Asked for the workspace each render rather than handed one: the page outlives
+     every workspace switch, and "this project" has to mean whichever project the
+     panel's head is naming at the time. */
+  const memoryView = mountMemory({
+    workspace: () => {
+      const ws = workspaces.active;
+      return ws ? { id: ws.id, name: ws.name } : null;
+    },
+    names: () => new Map(workspaces.all.map((w) => [w.id, w.name])),
+    onOpen: (note) => { void noteReader.open(note); },
+    onCompose: () => {
+      const ws = workspaces.active;
+      if (ws) noteReader.compose({ workspaceId: ws.id, workspaceName: ws.name });
+    },
+  });
+  memMount.append(memHead, memoryView.mount);
+  const memoryPage = document.createElement("div");
+  memoryPage.id = "mem-page";
+  memoryPage.className = "panel-page hidden";
+  memoryPage.append(memMount);
+
   const boardEl = document.querySelector<HTMLElement>("#board")!;
   panelStack.prepend(sessionsPage);
-  panelStack.append(scenariosPage);
+  panelStack.append(scenariosPage, memoryPage);
 
   /* --- The rail -----------------------------------------------------------
      Five icons, and pressing one changes what the PANEL holds. It does not change
@@ -194,9 +262,9 @@ export function startApp(role: WindowRole): Promise<void> {
      The tab bar was answering "which of four states is this window in", which is
      not a question anybody has. The question people do have is "does anything need
      me", and the app already shipped an answer to it: a floating always-on-top pill
-     counting blocked sessions, which exists because the window could not show the
-     deck and anything else at the same time. Now it can, and the ledger in the top
-     bar says the number where the eye already is.
+     counting blocked sessions, which existed because the window could not show the
+     deck and anything else at the same time. Now it can, the ledger in the top bar
+     says the number where the eye already is, and the pill is gone (#394).
 
      Vertical, and 44px wide, because the panel beside it is a column: a horizontal
      switch over a column has to be as wide as the column, which is how the old one
@@ -206,17 +274,23 @@ export function startApp(role: WindowRole): Promise<void> {
      five are already "focus session N", which shipped first and is the more
      frequent act. The palette carries every page instead. */
   const railEl = document.querySelector<HTMLElement>("#rail")!;
-  /* Three, not five. The board and the pull requests left this rail because they
-     are not the app's: each belongs to one repository, and a global switch that
-     silently changed what it was about every time the workspace changed was the
-     old tab bar's defect wearing a new shape. They are children of their workspace
-     in the tree now — see `WorkspacesPanel.render`. What stays here is what is
-     genuinely app-wide: the tree itself, the journal of every run, and the
-     scenarios, which belong to a workspace but are listed across all of them. */
+  /* Four, not five, and never the five it started with. The board and the pull
+     requests left this rail because they are not the app's: each belongs to one
+     repository, and a global switch that silently changed what it was about every
+     time the workspace changed was the old tab bar's defect wearing a new shape.
+     They are children of their workspace in the tree now — see
+     `WorkspacesPanel.render`. What stays here is what is genuinely app-wide: the
+     tree itself, the journal of every run, the scenarios, which belong to a
+     workspace but are listed across all of them, and the corpus, whose diaries are
+     global and whose notes span projects. */
   const RAIL: { page: PanelPage; icon: IconName }[] = [
     { page: "sessions", icon: "terminal" },
     { page: "history", icon: "clock" },
     { page: "scenarios", icon: "bolt" },
+    /* Four. The fourth is the corpus — every note ever written, this project's and
+       every project's — which is app-wide by the same test the other three pass:
+       it does not change subject when the workspace does. */
+    { page: "memory", icon: "book" },
   ];
   /* The mark that travels between the icons. What makes a column of five read as
      one control with a position is that the mark MOVES — five icons one of which is
@@ -227,10 +301,10 @@ export function startApp(role: WindowRole): Promise<void> {
   const railBtns = {} as Record<PanelPage, HTMLButtonElement>;
 
   /* --- and none of it in a window pinned to one workspace ------------------
-     Three of the four things on this rail are about the app rather than about a
+     Four of the five things on this rail are about the app rather than about a
      workspace — the journal of every run, the scenarios listed across all of
-     them, and the settings — and a window pulled out to hold `relay` is about
-     `relay`. Shipping them there put the app's own navigation inside a window
+     them, the corpus of notes, and the settings — and a window pulled out to hold
+     `relay` is about `relay`. Shipping them there put the app's own navigation inside a window
      that is a project, which is how the settings in that window came to look like
      that project's settings.
      Not built, rather than built and hidden: a control that exists is a control
@@ -415,8 +489,9 @@ export function startApp(role: WindowRole): Promise<void> {
   /* --- The ledger ---------------------------------------------------------
      What replaced four tab labels: not where to go, but what wants me. Written
      from the deck's own counts rather than typed beside them — the two numbers
-     that used to be stated in the app (a sidebar heading and the pill) came from
-     two different places and could disagree. */
+     that used to be stated in the app (a sidebar heading and the floating pill)
+     came from two different places and could disagree. Both are gone; this is the
+     one reading. */
   const ledgerEl = document.querySelector<HTMLElement>("#ledger")!;
 
   // The rest of the top bar: the wordmark on the left, the global actions on the
@@ -441,10 +516,17 @@ export function startApp(role: WindowRole): Promise<void> {
   /* --- The crumb ---------------------------------------------------------
      Which workspace this window is on, and which account a push from it goes out
      as. The panel's head says the same while the panel is open — and that is
-     exactly the reason this exists: the panel CLOSES. Zoom collapses it, which is
-     the state a person spends most of their time in, and in that state nothing
-     else on screen named the folder a session is running in or the account it
-     pushes as. It was answerable before only by leaving the session.
+     exactly the reason this exists: the panel CLOSES. Somebody working in one
+     session collapses it to the rail and leaves it there, and in that state
+     nothing else on screen named the folder a session is running in or the
+     account it pushes as. It was answerable before only by opening the panel
+     again.
+
+     Written when the app did the collapsing itself, on every zoom, which is why
+     this used to say "the state a person spends most of their time in". It no
+     longer does the collapsing (#480) and the crumb is no less needed for it: the
+     panel is still gone whenever somebody has asked for the room, and a rail
+     cannot say whose folder this is.
 
      Pressing it goes to the tree rather than opening a menu of its own: switching
      workspace is what the tree is for, and it is the one that can also say what
@@ -473,16 +555,21 @@ export function startApp(role: WindowRole): Promise<void> {
 
   /* --- The second door to the workspace's own pages ------------------------
      The chip on the active workspace's row is the pointer route to the board and
-     the pull requests, and it lives in the one place a zoom takes away: a zoomed
-     tile collapses the panel to nothing, so from the state a person spends most of
-     their day in there was no way to the board with a mouse at all — only the
-     palette. That is not the zoom being wrong; it is the route having exactly one
-     door, in a room the app closes on purpose.
+     the pull requests, and it lives in the one place a collapse takes away: the
+     panel goes to zero width, chip and all, so from a collapsed panel there was
+     no way to the board with a mouse at all — only the palette. That is not the
+     collapse being wrong; it is the route having exactly one door, in a room that
+     shuts.
+
+     The room used to be shut BY THE APP, on every zoom, which is the state this
+     was written against. It is the person's own doing now (#480), and that changes
+     nothing about the door: somebody who collapsed the panel to get the room did
+     not thereby give up the board.
 
      Here rather than in the rail, and rather than as a fourth control on the right:
      the crumb already names the workspace these two pages are ABOUT, and it is the
-     one thing on screen that survives the zoom. A door beside the name of the thing
-     it opens needs no label explaining which repository it means.
+     one thing on screen that survives a collapse. A door beside the name of the
+     thing it opens needs no label explaining which repository it means.
 
      A toggle, not an opener, because it is now the only control that is visible in
      both states: `aria-expanded` says which, and pressing it twice puts the window
@@ -630,6 +717,15 @@ export function startApp(role: WindowRole): Promise<void> {
    *  what being off looks like, rather than inside a text-size dialog whose own
    *  doc comment argues against growing it casually. */
   let recordingRuns = true;
+  /** Whether the app may ask a connected AI what is left, as opposed to only
+   *  counting what it can see. Mirrors `ui_state.usageReported`; the backend holds
+   *  the authoritative copy and applies it to the usage registry. */
+  let reportedLimits = true;
+  /** Whether closing a session writes a note about it. Mirrors
+   *  `ui_state.captureOnClose`, and `undefined` is "never asked" — which is not
+   *  `false`, because a default either way would answer a question about spending
+   *  somebody's money on their behalf. */
+  let captureAnswer: boolean | undefined = undefined;
 
   const historyView = new HistoryView({
     onFilter: (f) => { runFilters = f; void refreshHistory(); },
@@ -646,8 +742,8 @@ export function startApp(role: WindowRole): Promise<void> {
       }
       setPanel("sessions");
       // The tile may live in another workspace — an unpinned scenario runs
-      // wherever it was launched — so this goes through the same path the pill
-      // and a notification click take, which switches workspace first.
+      // wherever it was launched — so this goes through the same path a
+      // notification click takes, which switches workspace first.
       deck.focusSession(rec.sessionId);
     },
     onRerun: (rec, skill) => { void rerunScenario(rec, skill); },
@@ -762,52 +858,41 @@ export function startApp(role: WindowRole): Promise<void> {
   }
 
   let boardVisible = false;
-  let boardTimer: ReturnType<typeof setTimeout> | null = null;
   let currentPage: PanelPage = "sessions";
-  /** Whether the panel took the deck's width, and whether taking it is what
-   *  zoomed the deck. Both halves matter: leaving the page has to give back
+  /** The workspace the panel took the deck's width in, or `undefined` when it
+   *  has taken nothing. Both halves matter: leaving the page has to give back
    *  exactly what was taken, and a tile a person zoomed themselves must not be
-   *  un-zoomed by a panel narrowing under them. */
-  let wideZoomed = false;
-
-  function stopBoardPolling() {
-    if (boardTimer !== null) { clearTimeout(boardTimer); boardTimer = null; }
-  }
-
-  /** Poll only while the board is on screen and the window is focused, and only
-   *  ever one tick ahead.
+   *  un-zoomed by a panel narrowing under them.
    *
-   *  Replaces a five-second `setInterval` with no focus gate. Two reasons, and the
-   *  second applies to the file board as much as to the GitHub one: a GitHub board
+   *  The workspace and not merely a flag, because a zoom belongs to the
+   *  workspace it was made in (#224) and this borrowing outlives a switch: the
+   *  panel stays wide across one, while the diff that asked for the width does
+   *  not. `undefined` rather than `null` for "nothing taken" — `null` is a
+   *  workspace key like any other, the one a window with no workspace selected
+   *  zooms under. */
+  let wideZoomedIn: string | null | undefined = undefined;
+
+  /** The board's poll. `Poller` owns the shape — chained, gated, one tick ahead,
+   *  never overlapping — and its own note is why (`poll.ts`).
+   *
+   *  What is board-specific is here. The interval is the SOURCE's: a GitHub board
    *  at five seconds would spend 14.4% of the hourly GraphQL budget on one
-   *  workspace, and `setInterval` schedules the next tick whether or not the
-   *  previous one came back — which for a slow network means queued `gh`
-   *  processes. The interval is the source's, from `boardPollMs`. */
-  function scheduleBoardPoll() {
-    stopBoardPolling();
-    if (!boardVisible || !document.hasFocus()) return;
-    const source = sourceOf(workspaces.active?.tracker ?? null);
-    boardTimer = setTimeout(() => void boardTick(), boardPollMs(source));
-  }
-
-  /** One tick: both reads, then the next tick. The reschedule is at the end rather
-   *  than beside the read, so a slow `tasks_open_counts` cannot overlap the next
-   *  `tasks_list`.
+   *  workspace, and a file board has no budget to spend.
    *
-   *  Shared with the focus handler, which has to re-arm the chain and not merely
-   *  read once: blur cleared the handle, so a focus that only refreshed would leave
-   *  the board still until the view was left and re-entered — worse than the
-   *  interval this replaces. Polling is the primary refresh path; the watcher only
-   *  makes it faster, so a watcher failure degrades into a delay and needs no
-   *  detection. The sidebar counts degrade the same way, which is why a tick
-   *  refreshes them too — otherwise on a workspace without a watcher (an SMB
-   *  volume, say) the badge stays at whatever it was at load. Each call has its own
-   *  try/catch inside, so one failing handle cannot take the other down. */
-  async function boardTick() {
-    await refreshBoard();
-    await refreshCounts();
-    scheduleBoardPoll();
-  }
+   *  A tick is both reads, in order. Polling is the primary refresh path and the
+   *  watcher only makes it faster, so a watcher failure degrades into a delay and
+   *  needs no detection. The sidebar counts degrade the same way, which is why a
+   *  tick refreshes them too — otherwise on a workspace without a watcher (an SMB
+   *  volume, say) the badge stays at whatever it was at load. Each call has its
+   *  own try/catch inside, so one failing handle cannot take the other down. */
+  const boardPoll = new Poller({
+    wanted: () => boardVisible,
+    every: () => boardPollMs(sourceOf(workspaces.active?.tracker ?? null)),
+    tick: async () => {
+      await refreshBoard();
+      await refreshCounts();
+    },
+  });
 
   /** Give the workspace panel more of the deck, or give it back.
    *
@@ -819,27 +904,79 @@ export function startApp(role: WindowRole): Promise<void> {
   function setWspWide(on: boolean) {
     wspEl.classList.toggle("is-wide", on);
     if (on) {
-      if (!deck.isZoomed()) wideZoomed = deck.zoomActive();
-    } else if (wideZoomed) {
-      deck.exitZoom();
-      wideZoomed = false;
+      if (!deck.isZoomed() && deck.zoomActive()) wideZoomedIn = workspaces.active?.id ?? null;
+    } else if (wideZoomedIn !== undefined) {
+      // Given back where it was taken. The workspace on screen may not be the
+      // one that lent it, and un-zooming that one instead would take a zoom the
+      // person made themselves and leave the borrowed one on for good.
+      deck.exitZoomIn(wideZoomedIn);
+      wideZoomedIn = undefined;
     }
     deck.refit();
   }
 
-  /** Collapse the panel to the rail, or bring it back.
-   *
-   *  `byHand` is what keeps the automatic version honest: zooming a session
-   *  collapses the panel, and leaving zoom brings it back — unless the person had
-   *  collapsed it themselves, in which case it was not the zoom's to restore. */
-  function setCollapsed(on: boolean, byHand = true) {
+  /** Put the panel where it is and say so on the button. All "collapsed" means to
+   *  the DOM, and no part of the decision — which is why the restore at boot can
+   *  use it: applying a stored answer is not answering. */
+  function applyCollapsed(on: boolean) {
     sidebar.classList.toggle("is-collapsed", on);
-    if (byHand) collapsedByHand = on;
     shutBtn.setAttribute("aria-label", on ? "Show the panel" : "Collapse the panel");
     shutBtn.title = shutBtn.getAttribute("aria-label")!;
     shutBtn.classList.toggle("icon--left", !on);
   }
-  let collapsedByHand = false;
+
+  /** Collapse the panel to the rail, or bring it back, **because a person asked.**
+   *
+   *  Nothing else calls this now, and that is the change #480 asked for. It used
+   *  to take a `byHand` flag, because the zoom collapsed the panel and the
+   *  un-zoom brought it back unless the person had collapsed it themselves — and
+   *  the asymmetry in that flag was the defect: collapsing by hand latched "leave
+   *  this alone", but OPENING by hand only cleared the latch, which read as "the
+   *  app may take it away again". So there was no way to say "I want the panel
+   *  while zoomed", and every later `false → true` zoom edge collapsed it once
+   *  more. There is no flag now because there is no automatic collapse for one to
+   *  exempt anything from.
+   *
+   *  The one caller that is not a control is `setPanel`, which opens the panel
+   *  because choosing a page is asking to see it — a person's action reaching this
+   *  by a different route, not the app deciding. */
+  function setCollapsed(on: boolean) {
+    /* The width behind this class is animated, and behind the edge it moves is a
+       grid of terminals. Refits are held off for the length of it and one lands at
+       the end: without that, every visible terminal reflows its whole buffer once
+       a frame for `--dur-3`, which is the cost `drag.ts` was written to keep out of
+       the GRIP and which the collapse button had kept for itself.
+
+       Three conditions on that, and each is a bug it would otherwise be:
+       — Only when the class actually CHANGES. This function is called to assert a
+         state as often as to change one (`setPanel` opens the panel whether or not
+         it was shut), and a hold with no transition behind it is 460ms of every
+         terminal ignoring a window resize for nothing.
+       — One timer, restarted. Collapse then expand inside `--dur-3` would leave
+         the first timer to release the hold partway through the second animation,
+         which is the jank back for the remainder of it.
+       — `holdRefits(false)` and the refit in the same callback. Releasing without
+         refitting leaves every terminal at the size it had when the hold began,
+         waiting for a box change that has already happened. */
+    if (sidebar.classList.contains("is-collapsed") !== on) {
+      holdRefits(true);
+      if (settleTimer !== undefined) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        settleTimer = undefined;
+        holdRefits(false);
+        deck.refit();
+      }, settleMs());
+    }
+    applyCollapsed(on);
+    /* Remembered, because there is now one kind of writer and it is a person. It
+       would have been dishonest to store this while a zoom could set it: what a
+       restart restored would have been the last zoom's doing, under the name of a
+       preference. */
+    saveUiState({ panelCollapsed: on })
+      .catch((e) => console.debug("panel state save failed", e));
+  }
+  /** The pending release of the refit hold, or undefined when none is owed. */
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
   function setPanel(page: PanelPage) {
     /* The journal and the scenarios are the app's pages, and this window is one
@@ -852,7 +989,10 @@ export function startApp(role: WindowRole): Promise<void> {
     // Choosing a page is asking to see it.
     if (sidebar.classList.contains("is-collapsed")) setCollapsed(false);
     applyPanel({
-      pages: { sessions: sessionsPage, history: historyEl, scenarios: scenariosPage },
+      pages: {
+        sessions: sessionsPage, history: historyEl, scenarios: scenariosPage,
+        memory: memoryPage,
+      },
       buttons: railBtns,
     }, page);
     moveRailInk();
@@ -860,6 +1000,36 @@ export function startApp(role: WindowRole): Promise<void> {
     // while it is visible and does not poll at all. Opening it is a deliberate
     // act, so the read is unconditional.
     if (page === "history") void refreshHistory();
+    /* Same rule as the journal's, and for the same reason: opening a page is a
+       deliberate act, so the read is unconditional — and the page does not poll.
+       What keeps it current while it is open is `memory://changed`, which a
+       capture and a reindex both fire.
+
+       The stage goes with it. The deck's empty state offers to start a session,
+       which under a page about notes is an answer to a question nobody asked — so
+       memory gets a surface of its own for as long as it is the page the rail is
+       holding, and leaving gives the deck back. Leaving is not allowed to throw
+       away an edit: `close` is skipped while somebody is typing into a note. */
+    if (page === "memory") {
+      /* Load the model while the person reads the list. A search is 6 ms with it
+         in memory and two seconds without, and opening this page is the clearest
+         signal anybody is about to search (#389). Fire and forget: it resolves
+         when the warm-up starts, and a build with no sidecar answers false. */
+      void memoryWarm().catch(() => {});
+      /* Still on this page, or the landing is not ours to paint. `refresh` waits
+         on the note list and on two answers from the sidecar, which is seconds on
+         a cold machine — long enough to leave for the sessions page first. The
+         `close` below would then have already run, and this would put the cover
+         back over the deck on a page that is not memory, with Escape the only way
+         out of it. */
+      void memoryView.refresh().then(() => {
+        if (currentPage !== "memory") return;
+        noteReader.showLanding(memoryView.summary());
+      });
+      noteReader.showLanding(memoryView.summary());
+    } else if (!noteReader.isEditing()) {
+      noteReader.close();
+    }
   }
   /** Which of the two the workspace panel is holding.
    *
@@ -897,10 +1067,10 @@ export function startApp(role: WindowRole): Promise<void> {
        then waits. Leaving a page stops its polling in the same breath as hiding it:
        a timer that outlives the page keeps talking to GitHub about something nobody
        is looking at. */
-    if (page === "board") { void refreshBoard(); scheduleBoardPoll(); }
-    else stopBoardPolling();
+    if (page === "board") { void refreshBoard(); boardPoll.arm(); }
+    else boardPoll.stop();
     if (page === "pr") void refreshPrs();
-    else stopPrPolling();
+    else prPoll.stop();
     drawCrumbPages();
     deck.refit();
   }
@@ -910,8 +1080,8 @@ export function startApp(role: WindowRole): Promise<void> {
     if (wspEl.hidden) return;
     wspEl.hidden = true;
     boardVisible = false;
-    stopBoardPolling();
-    stopPrPolling();
+    boardPoll.stop();
+    prPoll.stop();
     setWspWide(false);
     drawCrumbPages();
     deck.refit();
@@ -1075,11 +1245,14 @@ export function startApp(role: WindowRole): Promise<void> {
       // The backend emits one `schedule://fire`. Every window listening would
       // launch the scenario and acknowledge it, so a nightly job would run as
       // many times as there are windows open.
-      ...(isMain ? [() => onScheduledFire((skillId, occurrenceMs, catchUp) => {
+      ...(isMain ? [() => onScheduledFire(({ skillId, workspaceId: where, occurrenceMs, catchUp }) => {
         const missedAt = catchUp
           ? new Date(occurrenceMs).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })
           : undefined;
-        void handleScheduledFire(skillId, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
+        // Where it runs comes down with the fire: the backend resolved the pin
+        // against `workspaces.json`, so this window's own selection has no say
+        // in which repository an unattended session works in (#249).
+        void handleScheduledFire(skillId, where, "schedule", missedAt).then(async ({ outcome, workspaceId }) => {
           if (outcome !== "launched") console.warn("scheduled fire not launched:", skillId, outcome);
           // Tell the backend what came of it: an occurrence it emitted counts as
           // a run only once a session has actually started. Anything else also
@@ -1116,13 +1289,41 @@ export function startApp(role: WindowRole): Promise<void> {
           .map((w) => `${terminals.nameOf(w.session) ?? deck.nameOf(w.session)} (${w.processes} running)`)
           .join(", ");
         void confirmModal(`Still running: ${named}. Quit anyway and stop it?`)
-          .then((go) => (go ? quitConfirmed() : quitCancelled()))
+          .then(async (go) => {
+            if (!go) return quitCancelled();
+            /* Notes for whatever was still open, queued before the exit and run
+               at the next start by #364's recovery. No second question: a quit is
+               not the moment to ask about spending money, so this follows the
+               answer already given and does nothing at all when there is none.
+               `close_session` is what queues them, and it is called here rather
+               than left to the teardown because the teardown does not know about
+               consent. */
+            for (const { session, capture } of deck.captureOnQuit()) {
+              await closeSession(session, capture)
+                .catch((e) => console.debug("queueing a note at quit failed", e));
+            }
+            return quitConfirmed();
+          })
           .catch((e) => {
             // An answer that never arrives leaves the app up with no explanation.
             console.error("quit question failed:", e);
             void quitCancelled();
           });
       }).then(() => {})] : []),
+      // The limits block: one read at boot, then a slow loop of its own, plus
+      // the one event that cannot wait for it.
+      //
+      // Sixty seconds, and it is not a poll of anything: the registry answers
+      // from a TTL cache, so this is how often the SCREEN may change, not how
+      // often a provider is asked. A limit banner going past a PTY is the case
+      // the loop is too slow for, and it arrives as an event instead — with
+      // `force`, because the cached answer is exactly the one that just became a
+      // lie.
+      () => onUsageChanged(() => { void readLimits(true); }).then(() => {}),
+      () => {
+        void readLimits();
+        setInterval(() => { void readLimits(); }, 60_000);
+      },
       // A record opened or closed. The sidebar's dot is repainted whatever screen
       // is showing — it is the one always-visible reader of the journal, and a
       // handful of events per run is not polling. The list re-reads only while it
@@ -1131,12 +1332,43 @@ export function startApp(role: WindowRole): Promise<void> {
         void skills.refreshRuns();
         if (currentPage === "history") void refreshHistory();
       }).then(() => {}),
-      () => workspaces.load(),
+      /* A note was written, or the index moved. Only while the page is on
+         screen, and for the same reason the journal re-reads that way: a corpus
+         re-read behind a hidden page is work nobody asked for, and opening the
+         page reads unconditionally anyway. */
+      () => onMemoryChanged(() => {
+        if (currentPage === "memory") void memoryView.refresh();
+        /* Whatever page the panel is on: the note being READ can be rewritten
+           under it — by a capture draining, or by an edit (#386) — and stale
+           markdown left on a surface somebody is reading is the one failure this
+           costs nothing to avoid. */
+        void noteReader.reread();
+      }).then(() => {}),
+      // The list, and the one question a pinned window has to ask of it before
+      // anything is drawn from it. See `closeIfPinnedWorkspaceGone` for why the
+      // backend's refusal does not cover this on its own.
+      //
+      // A list that could not be read is caught here rather than left to
+      // `onError`, and the two halves of that are both deliberate. Boot goes on:
+      // an unreadable list costs a sidebar, while stopping the remaining steps
+      // would cost the deck and every session waiting in it — the app has to stay
+      // the place those are recovered from. And the pinned question is not asked,
+      // because a store that would not parse deleted nothing.
+      () => workspaces.load().then(
+        () => closeIfPinnedWorkspaceGone().then(() => {}),
+        (e: unknown) => { console.error("the workspace list could not be read at boot", e); },
+      ),
       () => skills.load(),
       () => onTasksChanged((workspaceId) => {
         if (boardVisible && workspaces.active?.id === workspaceId) void refreshBoard();
         void refreshCounts();
       }).then(() => {}),
+      // The store's workspace list changed without this window asking. Every
+      // window listens, main and pinned alike: the row to drop is the main
+      // window's business and the window to close is the pinned one's, and
+      // neither can be decided by whoever wrote the file. See
+      // `rereadWorkspaces`.
+      () => onWorkspacesChanged(() => { void rereadWorkspaces(); }).then(() => {}),
       // Idempotent, and merely wasteful rather than wrong — but it re-points
       // backend watchers from a list every window holds the same copy of. The
       // other two calls to it are reactions to something *this* window did, and
@@ -1249,188 +1481,26 @@ export function startApp(role: WindowRole): Promise<void> {
     setPanel("sessions");
   }
 
-  /** The last good list per GitHub workspace, so a failed tick keeps the screen
-   *  populated. In memory only, and keyed by workspace id: a late reply about a
-   *  workspace nobody is looking at must not repaint the current one.
+  /** The board's own state and its two reads, in `board-controller.ts` since
+   *  #463: the two caches, which workspace the screen belongs to, the refresh and
+   *  the paging. What is still here is the action half — capturing a card,
+   *  launching from one, moving one, the modal, the editor — because each of those
+   *  reaches into session launching and the modal stack, and a context wide enough
+   *  to carry them would be this closure again with a name.
    *
-   *  **GitHub only, deliberately — on the read as much as on the write.** The reason
-   *  for keeping stale rows is that being offline or rate-limited is a blip in front
-   *  of data that is still true, which is a GitHub condition; a file board's failure
-   *  is almost always "the folder is gone", where phantom cards would invite actions
-   *  that can only fail and would replace the one screen offering `Configure`. The
-   *  plan's code kept them for both sources; narrowed here rather than changing a
-   *  shipped screen nobody asked about.
-   *
-   *  Gating only the write was not enough, and the entry outliving the source is the
-   *  reason: switching a workspace's source to a folder is a first-class action with
-   *  its own confirmation, and it leaves this map holding that workspace's issues
-   *  under the same id. An ungated read then handed the file board those issues on
-   *  its first failure — phantom cards on a board whose root is gone, `Configure`
-   *  withheld because the list was not empty, and a count line about issues that
-   *  were never in that folder. */
-  const lastGood = new Map<
-    string, { tasks: Task[]; fetchedAt: number; total: number | null; closedTotal: number | null }
-  >();
+   *  Declared before `refreshBoard` and `refreshCounts` below, which are the two
+   *  one-line wrappers everything in this file already calls: the seam is where
+   *  the state lives, not where the callers are. */
+  const boardCtl = new BoardController({
+    workspaces: { get active() { return workspaces.active; } },
+    board,
+    taskLinks: (wsId) => deck.taskLinks(wsId),
+    onCounts: (counts) => { openCounts = counts; drawWspCount(); },
+  });
+  const refreshBoard = () => boardCtl.refresh();
+  const refreshCounts = () => boardCtl.refreshCounts();
+  const showMoreTasks = (from: number) => boardCtl.showMore(from);
 
-  /** How far each GitHub workspace has been paged, or absent for the source's own
-   *  defaults (50 open, 20 closed).
-   *
-   *  Keyed by workspace, so paging one board does not widen another's — and every
-   *  poll from then on fetches the larger page, which is the honest cost of showing
-   *  rows somebody asked to see. In memory only: a page is a reading position, not a
-   *  setting, and a restart landing back on the first fifty is the right default. */
-  const pageLimits = new Map<string, number>();
-
-  /** Which workspace the board is currently showing an answer for, whatever that
-   *  answer is — rows, an error beside them, or an unavailable box.
-   *
-   *  The one thing the skeleton needs to know. A loading state is painted only when
-   *  this is not the workspace about to be read: the first read of a board, and the
-   *  first read after a switch, are the two moments when nothing on screen belongs
-   *  to it. A poll tick keeps what is drawn; replacing a screen that is true — or a
-   *  box explaining why it cannot be — with grey boxes every 30 s is a flicker
-   *  rather than feedback. */
-  let boardShowing: string | null = null;
-
-  /** "Show more": one step past the page the rows on screen were measured against,
-   *  then read it again. `from` comes from the view because the two states start at
-   *  different defaults and only the view knows which filter the button was under. */
-  async function showMoreTasks(from: number) {
-    const ws = workspaces.active;
-    if (!ws) return;
-    pageLimits.set(ws.id, nextPageLimit(from));
-    await refreshBoard();
-  }
-
-  /** Redraw the active workspace's board. Every IPC call is isolated: one failing
-   *  handle must not take the whole tick down. */
-  async function refreshBoard() {
-    const ws = workspaces.active;
-    if (!ws) {
-      board.render({ project: "", caps: null, error: null, tasks: [], links: [], source: "fs" });
-      // No workspace is nobody's answer, so the next board to be read gets a
-      // skeleton rather than inheriting this screen's emptiness.
-      boardShowing = null;
-      return;
-    }
-    const wsId = ws.id;
-    const source = sourceOf(ws.tracker ?? null);
-    const pageLimit = pageLimits.get(wsId) ?? null;
-    let caps = null;
-    try { caps = await taskCapabilities(wsId); } catch (e) { console.debug("caps failed", e); }
-
-    // Until now this window drew nothing at all: `setPanel("board")` called this, and
-    // the first render came after every await below — so opening a GitHub board left an
-    // empty pane for as long as a repository lookup plus a page per state takes.
-    //
-    // Painted after `taskCapabilities` and not before it, and the few milliseconds are
-    // affordable because that call is a local read by construction — `provider_for`
-    // does no I/O, which is what keeps the three unavailable states reachable. What it
-    // buys is a head drawn with this board's real `+ task` and `⚙` rather than one
-    // that grows buttons a moment later. It is not what keeps "No task tracker is
-    // configured" off the screen: the skeleton branch in `board.ts` sits ahead of that
-    // one deliberately, and the comment there is the reason.
-    if (boardShowing !== wsId && workspaces.active?.id === wsId) {
-      board.render({
-        project: ws.name, caps, error: null, tasks: [], links: deck.taskLinks(wsId),
-        source, unavailable: null, fetchedAt: null, total: null, closedTotal: null,
-        rateRemaining: null, loading: true, pageLimit,
-      }, Date.now());
-    }
-
-    let tasks: Task[] = [];
-    let error: string | null = null;
-    let unavailable: GhUnavailable | null = null;
-    let total: number | null = null;
-    let closedTotal: number | null = null;
-    let rateRemaining: number | null = null;
-    let fetchedAt: number | null = null;
-
-    if (caps) {
-      const cfg = caps.board;
-      try {
-        tasks = await listTasks(wsId, pageLimit ?? undefined);
-        fetchedAt = Date.now();
-        const open = tasks.filter((t) => !isTerminal(cfg, t.status)).length;
-        const closed = tasks.length - open;
-        // Only when it can change the answer: a page shorter than what was asked for
-        // *is* the total, so in a repository under fifty open issues this never
-        // fires. Measured against the page actually requested rather than against
-        // the constant — a board paged to 150 would otherwise ask for totals it
-        // already has on screen, every 30 s.
-        //
-        // Either state being at its cap is reason enough: the closed filter needs its
-        // own total for the same reason the open one does, and both come back in the
-        // one point this call costs.
-        if (source === "github"
-            && (needsTotals(open, pageLimit ?? undefined)
-              || needsTotals(closed, pageLimit ?? CLOSED_PAGE_LIMIT))) {
-          const t = await issueTotals(wsId).catch(() => null);
-          if (t) { total = t.open; closedTotal = t.closed; rateRemaining = t.rateRemaining; }
-        }
-        if (source === "github") lastGood.set(wsId, { tasks, fetchedAt, total, closedTotal });
-      } catch (e) {
-        const msg = String((e as { message?: string })?.message ?? e);
-        // The three states in which the source cannot be read at all become their
-        // own screen; everything else — offline, rate-limited, a missing scope —
-        // keeps the last good list on screen beside the error, with its age. Asked
-        // only of a GitHub source: none of those markers can come out of a folder,
-        // and a file board's own errors already say what is wrong.
-        const known = source === "github" ? unavailableFrom(msg) : null;
-        if (known !== null) unavailable = known;
-        else error = msg;
-        // Read under the same condition it is written under: the map is keyed by
-        // workspace id and outlives a source switch, so an ungated read is how a
-        // file board ends up drawing the issues that workspace had while it was
-        // GitHub-backed.
-        const kept = source === "github" ? lastGood.get(wsId) : undefined;
-        if (kept) {
-          tasks = kept.tasks;
-          fetchedAt = kept.fetchedAt;
-          total = kept.total;
-          closedTotal = kept.closedTotal;
-        }
-      }
-    }
-    let migration: MigrationOffer | null = null;
-    // Asked only where it can be answered: a GitHub workspace has no previous
-    // folder, and the backend refuses the command rather than inventing one.
-    if (source === "fs") {
-      try { migration = await taskMigrationStatus(wsId); }
-      catch (e) { console.debug("migration status failed", e); }
-    }
-    // The workspace may have been switched while we waited on IPC: a late reply
-    // must not repaint the board with another workspace's data over the current one.
-    if (workspaces.active?.id !== wsId) return;
-    board.render({
-      // This workspace's links, never the app's: the rules behind "in progress" and
-      // "no live session" match on the card id, and an issue number is unique to one
-      // repository. A session on another workspace's #42 must not speak for this
-      // board's — it would read as in progress and lose its ▶.
-      project: ws.name, caps, error, tasks, links: deck.taskLinks(wsId), migration,
-      source, unavailable, fetchedAt, total, closedTotal, rateRemaining, pageLimit,
-    }, Date.now());
-    // Whatever the board ended up drawing, it is this workspace's answer — so the
-    // next tick keeps it rather than blanking it. Set after the render, and after the
-    // late-reply guard above, so a reply that was discarded does not claim the screen.
-    boardShowing = wsId;
-  }
-
-  /** The sidebar counts — one handle covering every workspace. */
-  /** Open tasks per workspace, and the one number that gets shown: the active
-   *  workspace's, on the board's own tab.
-   *
-   *  It used to be a badge in the tree — first beside the waiting count on the
-   *  workspace's own line, where "12" beside "1 waiting" said neither what it
-   *  counted, then on a "Board" row of its own under every workspace. On the tab it
-   *  sits beside the page it counts, which is the only place it needs no
-   *  explaining. */
-  async function refreshCounts() {
-    try {
-      openCounts = await taskOpenCounts();
-      drawWspCount();
-    } catch (e) { console.debug("taskOpenCounts failed", e); }
-  }
   let openCounts: Record<string, number> = {};
   function drawWspCount() {
     const id = workspaces.active?.id;
@@ -1624,130 +1694,58 @@ export function startApp(role: WindowRole): Promise<void> {
 
   /* --- Pull requests ------------------------------------------------------- */
 
-  let prTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Which workspace the pull request view is showing an answer for — rows, an error
-   *  beside them, or an unavailable box. The board's `boardShowing`, for the same
-   *  reason and with the same rule: a skeleton is painted only where nothing on
-   *  screen belongs to the workspace about to be read.
+  /** The pull request list's state and its read, in `pr-controller.ts` since
+   *  #463 — the symmetric half of the board's cut, and its note says where the
+   *  two views genuinely differ now that the poll they were said to share is
+   *  `poll.ts`.
    *
-   *  Not derivable from `prState`. `workspace` alone says which workspace the state is
-   *  *about*, and pairing it with `fetchedAt === null` was wrong in the case that
-   *  matters most: a first read that fails leaves both set that way, so every tick
-   *  from then on would blank the error — or the unavailable box and its only button —
-   *  for grey boxes and then put it back. */
-  let prShowing: string | null = null;
-  let prState: PrState = {
-    workspace: null, unavailable: null, prs: [], error: null, fetchedAt: null, total: null,
-    loading: false,
-  };
+   *  What is still here is the poll and every action. `prVisible` is two DOM
+   *  facts that belong to the panel, and the actions — launching from a row,
+   *  merging, closing, reopening, the worktree cleanup — each reach into session
+   *  launching and the modal stack. */
+  const prCtl = new PrController({
+    workspaces: { get active() { return workspaces.active; } },
+    prView,
+    onPolled: (prs) => diffDrawer.onPoll(prs),
+  });
 
   /** The mirror of `boardVisible`, and a function rather than a variable because
    *  the pull request page has no watcher to keep one honest: the answer is two
    *  facts that are already on screen. */
   const prVisible = () => !wspEl.hidden && wspPage === "pr";
 
-  function stopPrPolling() {
-    if (prTimer !== null) { clearTimeout(prTimer); prTimer = null; }
-  }
+  /** The pull request list's poll — the same `Poller` the board uses, with its
+   *  own two answers. The interval comes from how many rows there are
+   *  (`pollIntervalMs`), which is why it is read per tick rather than captured. */
+  const prPoll = new Poller({
+    wanted: prVisible,
+    every: () => pollIntervalMs(prCtl.prs),
+    tick: () => prCtl.read(),
+  });
 
-  /** Poll only while the PR view is on screen and the window is focused. Every
-   *  path that schedules a tick goes through here, so there is one place where
-   *  the two conditions are checked and one place that owns the handle. */
-  function schedulePrPoll() {
-    stopPrPolling();
-    if (!prVisible() || !document.hasFocus()) return;
-    prTimer = setTimeout(() => void refreshPrs(), pollIntervalMs(prState.prs));
-  }
-
-  /** Re-read the list. The single-timer-chain shape matters: the next tick is
-   *  scheduled only after this request has returned, so a slow network cannot
-   *  queue up `gh` processes. */
-  async function refreshPrs() {
-    // The previous handle is dropped before the request, not after it: a manual ↻
-    // in the middle of a wait must not leave a tick behind.
-    stopPrPolling();
-    const ws = workspaces.active;
-    if (!ws) {
-      prState = {
-        ...prState, workspace: null, unavailable: "no-account", prs: [], loading: false,
-      };
-      prView.render(prState, Date.now());
-      // No workspace is nobody's answer, so the next one read gets a skeleton rather
-      // than inheriting this screen.
-      prShowing = null;
-      return;
-    }
-    if (!ws.github) {
-      prState = {
-        ...prState, workspace: ws.name, unavailable: "no-account", prs: [], loading: false,
-      };
-      prView.render(prState, Date.now());
-      prShowing = ws.id;
-      // Nothing will change here without a human editing the workspace, so this
-      // state does not poll — but it also must not leave the previous one polling.
-      return;
-    }
-    const wsId = ws.id;
-    // Only where there is nothing of this workspace's to keep: a poll tick every 15 s
-    // keeps the rows it already has, with the age line above saying how old they are.
-    if (prShowing !== wsId) {
-      prState = {
-        workspace: ws.name, unavailable: null, prs: [], error: null, fetchedAt: null,
-        total: null, loading: true,
-      };
-      prView.render(prState, Date.now());
-    }
-    try {
-      const prs = await prList(wsId);
-      // The workspace may have been switched while we waited on IPC: a late reply
-      // must not repaint the view with another workspace's pull requests.
-      if (workspaces.active?.id !== wsId) return;
-      prState = {
-        workspace: ws.name, unavailable: null, prs,
-        error: null, fetchedAt: Date.now(),
-        // What came back, and nothing more: `pr_list` asks for one page, so the
-        // number of open pull requests the repository has is not knowable from
-        // here (see #115).
-        total: prs.length,
-        loading: false,
-      };
-    } catch (e) {
-      if (workspaces.active?.id !== wsId) return;
-      const msg = String((e as { message?: string })?.message ?? e);
-      // Known unavailabilities become their own screen; everything else — a
-      // missing `repo` scope, the rate limit, an offline machine — keeps the last
-      // good list on screen beside the error, with its age. The mapping itself now
-      // lives in `issues.ts` and is read by the board too: it used to be an
-      // if-chain here, which was one place for the two GitHub views to disagree
-      // about what "no repository" looks like.
-      const known = unavailableFrom(msg);
-      if (known !== null) prState = { ...prState, unavailable: known, loading: false };
-      else prState = { ...prState, error: msg, loading: false };
-    }
-    prView.render(prState, Date.now());
-    // After the render and after the two late-reply guards, so the drawer is never
-    // told about a workspace whose answer was discarded. It re-reads the head of
-    // whichever pull request it is showing and offers a Reload if the branch has
-    // moved — it never swaps the diff out from under a reader.
-    diffDrawer.onPoll(prState.prs);
-    // Whatever it ended up drawing, it is this workspace's answer — so the next tick
-    // keeps it. After the render, and after the two late-reply guards above, so a
-    // reply that was discarded does not claim the screen.
-    prShowing = wsId;
-    schedulePrPoll();
-  }
+  /** What a manual refresh and the focus handler call: read now, then re-arm. */
+  const refreshPrs = () => prPoll.run();
 
   // Focus is the other half of "only while watched": a minimised or background
   // window polls nothing, and coming back refreshes at once rather than at the
-  // next tick.
+  // next tick. All three of this window's polls are here, so there is one place
+  // that answers "what stops when nobody is looking".
   window.addEventListener("focus", () => {
-    if (prVisible()) void refreshPrs();
+    if (prVisible()) void prPoll.run();
     // Coming back refreshes at once rather than at the next tick, which is the
-    // whole point of pausing on blur — and `boardTick` re-arms the chain the blur
+    // whole point of pausing on blur — and `run` re-arms the chain the blur
     // cleared.
-    if (boardVisible) void boardTick();
+    if (boardVisible) void boardPoll.run();
+    // The deck has no view to be on: its tiles are on screen whenever any exist,
+    // so focus is its only gate. It decides for itself whether it has anything to
+    // resume, and its own tick re-arms its chain.
+    deck.resumePolling();
   });
-  window.addEventListener("blur", () => { stopPrPolling(); stopBoardPolling(); });
+  window.addEventListener("blur", () => {
+    prPoll.stop();
+    boardPoll.stop();
+    deck.pausePolling();
+  });
 
   /** ▶ on a row: a worktree for the branch, then an ordinary session inside it. */
   async function launchFromPr(pr: PullRequest) {
@@ -1856,6 +1854,10 @@ export function startApp(role: WindowRole): Promise<void> {
    *  scheduled run cannot ask) and launch it as a fresh tile. */
   async function handleScheduledFire(
     skillId: string,
+    /** The workspace the run belongs in. Never the active one: for a scheduled
+     *  fire this is what the backend resolved, and for the ⏰ button it is the
+     *  scenario's own pin. */
+    workspaceId: string | null,
     /** Which path the fire came down. Both are journalled — the question a
      *  history answers is "when did this scenario last run", not "who pressed
      *  it" — and both are told apart, so the screen can filter one out. */
@@ -1864,7 +1866,7 @@ export function startApp(role: WindowRole): Promise<void> {
   ): Promise<FireResult> {
     const skill = skills.find(skillId);
     if (!skill?.schedule?.enabled) return { outcome: "not-scheduled", workspaceId: null };
-    const res = resolveScheduledWorkspace(skill, workspaces.all, workspaces.active);
+    const res = resolveScheduledWorkspace(workspaceId, workspaces.all);
     if (!res.ok) return { outcome: res.reason, workspaceId: null };
     const filled = fillPlaceholders(skill.prompt, skill.schedule.defaults);
     const launched = await deck.launchScheduled(res.workspace, skill, filled, trigger, catchUpFor);
@@ -1881,39 +1883,57 @@ export function startApp(role: WindowRole): Promise<void> {
    *  loop, so the regular occurrence still fires. Unlike a backend-driven fire,
    *  a click must say why nothing happened. */
   async function runScheduledNow(skill: Skill) {
-    const { outcome } = await handleScheduledFire(skill.id, "runNow");
+    const { outcome } = await handleScheduledFire(skill.id, skill.workspaceId ?? null, "runNow");
     if (outcome === "skipped-overlap") {
       await alertModal("Run skipped: the previous one is still active.");
     } else if (outcome === "no-workspace") {
-      await alertModal("This scenario has no workspace available: pin it to one or pick a workspace.");
+      await alertModal(
+        "This scenario is not pinned to a workspace that exists, so there is nowhere to run it. "
+        + "Edit it with the workspace it belongs to open.");
     }
   }
 
-  // Clicking the floating status pill raises the main window (same raise
-  // sequence as notify.ts's OS-notification click handler) and focuses the
-  // next session that's waiting for input.
-  //
-  // One addressee, and it is this window. Every window used to answer, so a
-  // single click raised all of them and each focused its own next waiting tile.
-  // The main window is the one that can answer properly: it is the only
-  // participant that sees every session — its own, the orphans, and the proxy
-  // rows for detached workspaces (#243, #244).
-  if (isMain) void listen("pill://focus-next", async () => {
-    // Across every window, not just this one. "Who is blocked on me" is the one
-    // command whose entire purpose is that question, and answering it for one
-    // monitor is answering the wrong question.
-    const target = nextWaitingAcross(allSessions(sessionsByWindow), null);
-    const where = target ? windowOf(sessionsByWindow, target.session) : null;
-    if (target && where && where !== myLabel) {
-      await emitTo(where, "session://focus", { session: target.session });
+  /** A row of the status-area menu was chosen.
+   *
+   *  The main window only, for the reason above: it is the only participant that
+   *  can tell which window holds a session. Rust sends the row's `action` back
+   *  exactly as `tray-panel.ts` minted it and reads nothing in it — the
+   *  vocabulary lives at both ends of `parseAction`, and an action this build
+   *  does not know is dropped rather than guessed at.
+   *
+   *  Nothing was raised before this arrived, deliberately: a session may live in
+   *  a workspace window, and raising the deck first would flash the wrong window
+   *  forward. Each branch below raises what it is about to show.
+   */
+  if (isMain) void onTrayAction(async (action) => {
+    const chosen = parseAction(action);
+    if (!chosen) return;
+    if (chosen.verb === "session") {
+      const where = windowOf(sessionsByWindow, chosen.id);
+      if (where && where !== myLabel) {
+        await emitTo(where, "session://focus", { session: chosen.id });
+        return;
+      }
+      await raiseThisWindow();
+      deck.focusSession(chosen.id);
       return;
     }
+    // The snapshot on hand rather than a fresh read: the panel was drawn from
+    // it, and re-reading here would let the deck say something the row the
+    // person clicked did not.
+    const snap = lastUsage.find((u) => u.provider === chosen.id);
+    if (!snap) return;
     await raiseThisWindow();
-    deck.focusNextWaiting();
+    // A limit dial opens the same dialog its dial in the deck's own top bar
+    // opens — one screen, two ways in. Which is also where "Ask in a tile" is
+    // offered: the panel used to carry that button beside an unreadable row, and
+    // the dials have no room for a control beside a 26px mark.
+    openUsageDialog(snap, limitsHost, () => limits.redraw(Date.now()));
   });
 
-  /** Focus a session because another window asked — the far end of the routing
-   *  above, and of a click on a detached workspace's session row (#244).
+  /** Focus a session because another window asked — the far end of `onRemoteFocus`
+   *  below, of the tray routing above, and of a click on a detached workspace's
+   *  session row (#244).
    *
    *  Raising happens here rather than at the sender, and only on an explicit
    *  gesture. `set_focus` on a window living on another macOS Space yanks the
@@ -1922,7 +1942,7 @@ export function startApp(role: WindowRole): Promise<void> {
   const focusListener = listen<{ session: string }>("session://focus", async (e) => {
     await raiseThisWindow();
     deck.focusSession(e.payload.session);
-  });
+  }, addressed);
 
   /** The workspace this window is pinned to has been deleted.
    *
@@ -1935,7 +1955,7 @@ export function startApp(role: WindowRole): Promise<void> {
    *  once and in one place whatever ends the window. */
   const goneListener = listen("workspace://gone", () => {
     void getCurrentWindow().close();
-  });
+  }, addressed);
 
   async function raiseThisWindow() {
     const w = getCurrentWindow();
@@ -1943,6 +1963,107 @@ export function startApp(role: WindowRole): Promise<void> {
     await w.show().catch(() => {});
     await w.setFocus().catch(() => {});
   }
+
+  /* --- What every connected AI has left -----------------------------------
+     One line in the top bar of every window, including one pinned to a
+     workspace: a shared ceiling above twelve sessions is not a property of a
+     repository, and a person in a detached window needs it as much as anybody.
+     What that line holds, and why it is a line rather than a row per AI, is
+     `usage-dial.ts` and ADR-0011; nothing here changed when it shrank, and
+     nothing here changed when it moved out of the panel's foot (#461) — this
+     code finds `#limits` by id and the id did not move.
+
+     Read on a timer of its own and NOT on the five-second poll tick. The
+     registry behind it holds a TTL cache, so this interval is how often the
+     screen may change rather than how often a provider is asked — but putting a
+     provider that spawns a process anywhere near the tick is the mistake
+     `sessions.ts` already documents, so it gets its own slow loop. */
+  const limitsEl = document.querySelector<HTMLElement>("#limits")!;
+  /** Named rather than inlined, because the status-area menu opens the same
+   *  dialog from the same host: a row in the menu bar and a row in the panel are
+   *  two ways to reach one screen, not two screens. */
+  const limitsHost = {
+    openCommandTile: (t: string, c: string, cwd: string) => deck.openCommandTile(t, c, cwd),
+    cwd: () => workspaces.active?.path ?? ".",
+  };
+  const limits = new LimitDials(limitsEl, limitsHost);
+  /** The last snapshot, so the block on screen, the notification and the tray
+   *  report agree on one reading rather than each asking for its own. */
+  let lastUsage: AiUsage[] = [];
+  const limitNotifier = new LimitNotifier();
+
+  async function readLimits(force = false): Promise<void> {
+    try {
+      lastUsage = await usageSnapshot(force);
+    } catch (e) {
+      // A failed read leaves the previous answer on screen. Blanking the block
+      // would say "no limits" where the truth is "we could not ask".
+      console.debug("usage: could not read the limits", e);
+      return;
+    }
+    limits.render(lastUsage, Date.now());
+    announceLimit();
+  }
+
+  /** Tell somebody who is not looking at the window.
+   *
+   *  One of the two, and the only one that interrupts: the status-area panel is
+   *  where the same `deckLimit` is read at a glance, and `announceOutside` below
+   *  is what keeps the two a tick apart at most. On screen the same reading is
+   *  the limits block above.
+   *
+   *  Once for the whole deck, because the notifier holds its own state and twelve
+   *  notifications about one ceiling is the bug #305 exists to prevent. */
+  function announceLimit(): void {
+    if (!isMain) return;
+    announceOutside();
+    const notice = limitNotifier.next(deckLimit(lastUsage));
+    // Through the deck, which owns the one permission request — see `canNotify`.
+    if (notice && deck.canNotify()) sendNotification({ title: notice.title, body: notice.body });
+  }
+
+  /** Tell everything that speaks for the deck while its window is not in front.
+   *
+   *  Two surfaces — the status-area panel and the dock badge — and one call,
+   *  because they are answers to the same two questions and must never be a tick
+   *  apart. Only the main window sends: it is the only participant that hears
+   *  every window's sessions, which is why the count behind both is added up
+   *  here (#243).
+   *
+   *  Safe on every tick. An identical tray report is dropped in Rust rather than
+   *  rebuilding a native menu under an open cursor — see ADR-0013.
+   */
+  function announceOutside(): void {
+    if (!isMain) return;
+    const sessions = allSessions(sessionsByWindow);
+    // Twice, and they are not the same message. Rust gets the composed report —
+    // the tooltip, the badge count, and the sentences the Linux menu is built
+    // from. The panel window gets the FACTS, because it runs the same helpers
+    // and the same `LimitDials` the deck's own row does, and a meter is not a
+    // string. One `PANEL` list decides both (`tray-panel.ts`).
+    const panel = trayPanel({ usage: lastUsage, sessions, now: Date.now() });
+    // A surface that stopped updating looks exactly like a deck with nothing to
+    // report, so the failure is said rather than swallowed — but it is not worth
+    // a modal: the next tick is the recovery.
+    void trayUpdate(panel).catch((e) => console.debug("tray: could not update the surface", e));
+    void emit(TRAY_FACTS, {
+      usage: lastUsage,
+      // Only what the panel draws. A `RemoteSession` also carries the workspace
+      // it belongs to, which is the main window's own bookkeeping and not
+      // something to hand another window that has no use for it.
+      sessions: sessions.map((s) => ({ session: s.session, name: s.name, state: s.state })),
+      // The panel is a separate document, so the text-size setting does not
+      // reach it on its own — see `applyScale`.
+      scale: currentScale(),
+    });
+  }
+
+  /** The panel behind the status-area icon has just been shown.
+   *
+   *  A report goes out every few seconds anyway; this is so the panel is right
+   *  at the instant somebody opens it, which is exactly the moment being up to a
+   *  tick stale would matter. */
+  if (isMain) void onTrayAsk(() => announceOutside());
 
   /** Every window's sessions, as each of them last reported. Only the main
    *  window keeps this filled — it is the only participant that hears everybody
@@ -1952,9 +2073,11 @@ export function startApp(role: WindowRole): Promise<void> {
   const waitingListener = listen<WindowSessions>("session://waiting", (e) => {
     if (!isMain) return;
     sessionsByWindow.set(e.payload.label, e.payload.sessions);
-    // The pill's payload stays a bare number: it has one addressee and one job,
-    // and the adding is done here, where the whole picture is.
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow) });
+    // Kept here, where the whole picture is: this window is the only participant
+    // that hears every other one. What it is for is `showElsewhere` below,
+    // `focusNextWaiting` reaching the other monitor through the proxies it sets,
+    // and the count the status area and the dock badge are told.
+    announceOutside();
     showElsewhere();
   });
 
@@ -1969,7 +2092,7 @@ export function startApp(role: WindowRole): Promise<void> {
   const windowGoneListener = listen<{ label: string }>("window://gone", (e) => {
     if (!isMain) return;
     if (!sessionsByWindow.delete(e.payload.label)) return;
-    void emit("pill://count", { n: sumWaiting(sessionsByWindow) });
+    announceOutside();
     showElsewhere();
   });
 
@@ -1988,12 +2111,20 @@ export function startApp(role: WindowRole): Promise<void> {
   function showElsewhere() {
     const detached = new Set<string>();
     const proxies: (RemoteSession & { label: string })[] = [];
-    for (const [label, sessions] of sessionsByWindow) {
+    // Sorted by label, and it is not cosmetic. `Map` iterates in insertion
+    // order, which is the order the windows happened to report in after a
+    // restart — so "the next session waiting elsewhere" would mean a different
+    // session on two runs with the same windows open, and `setRemoteSessions`
+    // would see its serialised comparison change for a list that had not.
+    // `allSessions` used to carry this rule; it was the only thing left using it
+    // when #394 took the pill's event handler, so the rule moved here, where the
+    // list is actually built.
+    for (const label of [...sessionsByWindow.keys()].sort()) {
       if (label === myLabel) continue;
       const id = workspaceIdOf(label);
-      if (id === null) continue; // the pill, and anything added later
+      if (id === null) continue; // the main window, and anything added later
       detached.add(id);
-      for (const s of sessions) proxies.push({ ...s, label });
+      for (const s of sessionsByWindow.get(label) ?? []) proxies.push({ ...s, label });
     }
     workspaces.setDetached(detached);
     deck.setRemoteSessions(proxies);
@@ -2004,13 +2135,14 @@ export function startApp(role: WindowRole): Promise<void> {
   // — and the terminal drawer with it, which is why both go through one call.
   const workspaces = new WorkspacesPanel(wsMount, (ws) => {
     activateWorkspace(ws.id);
-    // `boardTick`, not `refreshBoard` — deliberate, and not a copy of the line
-    // below. A switch changes which source the board has, and the pending tick was
-    // armed for the old one: github→fs would wait 30 s once, fs→github would fire
-    // at 5 s. `scheduleBoardPoll` stops the old handle and re-reads the source, so
-    // going through `boardTick` re-arms at the new interval without making this a
-    // second owner of the timer. Do not simplify it back.
-    if (boardVisible) void boardTick();
+    // `boardPoll.run()`, not `refreshBoard` — deliberate, and not a copy of the
+    // line below. A switch changes which source the board has, and the pending
+    // tick was armed for the old one: github→fs would wait 30 s once, fs→github
+    // would fire at 5 s. `run` drops the old handle and re-arms afterwards, and
+    // `Poller` reads the interval per tick — so this re-arms at the NEW interval
+    // without making this line a second owner of the timer. Do not simplify it
+    // back to the read alone.
+    if (boardVisible) void boardPoll.run();
     // The pull requests on screen belong to the workspace that was active a
     // moment ago; re-reading also re-points the poll at the new one. The drawer
     // goes with them, cache and all: its slots are keyed by pull request number,
@@ -2058,12 +2190,87 @@ export function startApp(role: WindowRole): Promise<void> {
     // when it exists and opens one when it does not, so the click always does
     // what it says — including in the case this cannot otherwise recover from,
     // a window that died without announcing it.
-    (ws) => { void openWorkspaceWindow(ws.id).catch((e) => console.debug("raise failed", e)); },
+    (ws) => {
+      void openWorkspaceWindow(ws.id).catch((e) => {
+        console.debug("raise failed", e);
+        // As in `detachWorkspace`: a row for a record the store has lost is
+        // refused rather than opened, and re-reading is what removes the row.
+        void rereadWorkspaces();
+      });
+    },
     (workspaceId) => { void emitTo(workspaceLabel(workspaceId), "workspace://gone", {}); });
   /* A window pinned to one workspace shows that one and no other — see `pinTo`.
      Before `load()`, so the first render is already the right list rather than a
      full tree that blinks down to one row. */
   if (pinnedTo !== null) workspaces.pinTo(pinnedTo);
+
+  /** Read the workspace list again, because the store changed under this window.
+   *
+   *  The list is read once during boot, and until #369 that was the only read
+   *  there ever was: a pull that deleted a workspace record — or carried the
+   *  answer somebody gave to a duplicate question on the other machine — left
+   *  every open window drawing a row for a record that no longer exists. See
+   *  `onWorkspacesChanged` for what says so and when.
+   *
+   *  Two things follow from the new list, and they are the two states a stale one
+   *  hid:
+   *
+   *  A window pinned to a workspace that has gone is pinned to nothing, and that
+   *  is the state the comment on `workspace://gone` says the app has no answer
+   *  for. It was reachable anyway: the sessions collected under "Other" — the
+   *  heading for a session whose workspace was deleted — and with no workspace
+   *  row there was no "New session in …" row either, so the window could not be
+   *  given work at all. It closes instead, which hands its sessions back to the
+   *  main window, where an orphan has always lived.
+   *
+   *  And the *active* workspace can be the one that went. The panel then has no
+   *  active workspace while the deck goes on filtering its tiles to an id nothing
+   *  answers for, so the window falls back to the first workspace there is — the
+   *  same choice `load()` makes on a cold start. */
+  async function rereadWorkspaces(): Promise<void> {
+    try {
+      await workspaces.load();
+    } catch (e) {
+      // `list_workspaces` refuses a list it cannot read rather than answering
+      // "none" (#369), and refusing is what has to stop this: the *absence* of a
+      // record is what closes a pinned window, and a store that would not parse
+      // deleted nothing. Keeping the list this window already has is the only
+      // honest reading of a failed read.
+      console.error("re-reading the workspace list failed; keeping the list this window has", e);
+      return;
+    }
+    if (await closeIfPinnedWorkspaceGone()) return;
+    if (workspaces.active === null) {
+      const first = workspaces.all[0]?.id ?? null;
+      if (first) workspaces.activate(first);
+      else activateWorkspace(null);
+    }
+    // Paired with `refreshCounts` everywhere the workspace set changes, and for
+    // the reason `AppState.watchers` gives: a record that arrived in a pull has
+    // no tracker watcher until something re-points them, so its open-task count
+    // would sit still until the next restart. Main only, exactly as at boot —
+    // every window hears this event and holds the same list, so the other copies
+    // of the call would re-point the same backend watchers at the same roots.
+    if (isMain) void taskWatchSync();
+    void refreshCounts();
+  }
+
+  /** Close this window if the workspace it is pinned to is not in the store.
+   *
+   *  Answers whether it did, because everything a caller does next is work for a
+   *  window that is staying.
+   *
+   *  Asked on the announcement and again once at boot. `open_workspace_window`
+   *  refuses an id the store does not have, but it answers *before* the window
+   *  exists: a pull landing in the gap between that answer and this window's
+   *  first read leaves it pinned to nothing with the announcement it would have
+   *  heard already sent, which is #369 again with no way out of it. */
+  async function closeIfPinnedWorkspaceGone(): Promise<boolean> {
+    if (pinnedTo === null || workspaces.all.some((w) => w.id === pinnedTo)) return false;
+    await getCurrentWindow().close();
+    return true;
+  }
+
   /** Every launch path needs an active workspace. Saying so beats a button that
    *  looks broken — the old behaviour was a bare `return`. */
   async function requireWorkspace(): Promise<Workspace | null> {
@@ -2092,10 +2299,14 @@ export function startApp(role: WindowRole): Promise<void> {
     (skill) => { void launchScenario(skill); },
     (skill) => { void runScheduledNow(skill); }, () => workspaces.all.map((w) => w.id),
      () => workspaces.active?.name ?? null,
-     (skill) => openHistoryFor(skill));
+     (skill) => openHistoryFor(skill),
+     (id) => workspaces.all.find((w) => w.id === id)?.name ?? null);
   // Deleting a workspace strands the scenarios pinned to it — the confirmation
   // says how many before it happens.
   workspaces.setSkillsSource(() => skills.all);
+  // And it cuts loose the sessions running in it, which the confirmation used to
+  // say nothing about at all — so it names them too.
+  workspaces.setSessionsSource((id) => deck.liveSessionNamesIn(id));
   /** Create a session in a NAMED workspace. The row that was pressed says which
    *  one, and it is not necessarily the active one — which is the whole of
    *  "creation is positional".
@@ -2155,6 +2366,10 @@ export function startApp(role: WindowRole): Promise<void> {
       if (n === 0) return;
       const b = document.createElement("button");
       b.className = `led led--${kind}`;
+      // `drawLedger` replaces its children outright and runs on every list
+      // render, so the waiting lamp is a new element every five seconds. See
+      // `src/dot-phase.ts`.
+      syncDotPhase(b);
       const num = document.createElement("b");
       num.textContent = String(n);
       b.append(num, document.createTextNode(` ${words}`));
@@ -2191,17 +2406,24 @@ export function startApp(role: WindowRole): Promise<void> {
     btn.setAttribute("aria-label", name);
     btn.title = name;
   }
-  /* Zoom takes the panel's room, and gives it back. The tool panel inside a zoomed
-     tile is the thing that wants the width — and it has its own floor to keep, so
-     the fewer boxes competing for the same pixels the better. */
+  /* Zoom leaves the left panel exactly as it found it. It used to collapse it and
+     put it back, on the argument that the tool panel inside a zoomed tile wants
+     the same width — and the argument was about room, which is not the panel's to
+     answer: the panel is the person's, and #480 is the record of what it cost to
+     have the app hold that opinion twice.
+
+     The room argument still gets an answer, in the place that can measure it. A
+     zoomed tile with the panel open is simply a narrower tile, and the tool panel
+     checks the 80-column floor against the tile it actually has — see
+     `TileTools.refit`, which floats the panel over the terminal rather than
+     squeezing it under the floor, on every open and on every box change. */
   deck.setZoomListener((zoomed) => {
-    if (zoomed) setCollapsed(true, false);
-    else if (!collapsedByHand) setCollapsed(false, false);
-    /* And the workspace panel goes, because a zoomed tile's tool panel takes this
-       same edge inside the tile frame. Two panels on one edge is a person guessing
-       which one a drag will move. It is not brought back on un-zoom: it was opened
-       by hand and closed by the app, and restoring it would put a board over a deck
-       somebody just came back to. */
+    /* The workspace panel is the one that does go, and it is a different
+       conflict: a zoomed tile's tool panel takes this same edge INSIDE the tile
+       frame, and two panels on one edge is a person guessing which one a drag will
+       move. It is not brought back on un-zoom: it was opened by hand and closed by
+       the app, and restoring it would put a board over a deck somebody just came
+       back to. */
     if (zoomed) closeWorkspacePanel();
   });
   /* One width for the tool panel, remembered for the app: every session's tools
@@ -2287,6 +2509,31 @@ export function startApp(role: WindowRole): Promise<void> {
           .catch((e) => console.debug("run recording save failed", e));
         if (currentPage === "history") void refreshHistory();
       },
+      reportedLimits,
+      /* Persisted as a patch, like the switch above, and then re-read at once:
+         the backend applies the flag to the live registry before it writes the
+         file, so the very next read is on the new footing rather than the old
+         one. `force`, because the cached snapshot was taken under the other
+         answer. */
+      onReportedLimits: (on) => {
+        reportedLimits = on;
+        saveUiState({ usageReported: on })
+          .catch((e) => console.debug("reported limits save failed", e));
+        void readLimits(true);
+      },
+      captureOnClose: captureAnswer,
+      /* Three states and two routes, which is why this is not a patch field
+         alone: a patch says "set this" and an omitted field says "leave it
+         alone", so there is no value left to spell "back to asking". Forgetting
+         is its own command. */
+      onCaptureOnClose: (value) => {
+        captureAnswer = value;
+        deck.setCaptureAnswer(value);
+        const done = value === undefined
+          ? memoryForgetCaptureAnswer()
+          : saveUiState({ captureOnClose: value });
+        done.catch((e) => console.debug("session note answer save failed", e));
+      },
     });
   }
 
@@ -2317,7 +2564,11 @@ export function startApp(role: WindowRole): Promise<void> {
    *  a palette entry is a way in, and leaving one for a page with no way out is
    *  worse than the button this window already does not have. */
   const APP_WIDE_COMMANDS = new Set([
-    "panel", "sessions", "history", "scenarios", "settings", "sync",
+    "panel", "sessions", "history", "scenarios", "memory", "notes-search", "notes-jobs",
+    // The three that open the app's own settings window. `notes` is as much one
+    // of those as `settings` and `sync` are — it is the same window on a
+    // different tab.
+    "settings", "sync", "notes",
   ]);
 
   function paletteCommands(): Command[] {
@@ -2326,13 +2577,22 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "close-active", title: "Close active session", hotkey: hotkeyLabel("W"), run: () => deck.closeActive() },
       { id: "rename-active", title: "Rename active session", hotkey: "F2", run: () => deck.renameActive() },
       { id: "next-waiting", title: "Go to next session waiting for input", hotkey: isMacPlatform() ? "Cmd+Shift+]" : "Ctrl+Shift+]", run: () => deck.focusNextWaiting() },
-      { id: "zoom", title: "Zoom active session", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
+      { id: "zoom", title: "Zoom active session, or leave zoom", hotkey: isMacPlatform() ? "Cmd+Enter" : "Ctrl+Shift+Enter", run: () => deck.toggleZoomActive() },
       { id: "search", title: "Search in terminal", hotkey: hotkeyLabel("F"), run: () => deck.searchActive() },
       { id: "clear", title: "Clear terminal", run: () => deck.clearActive() },
       { id: "toggle-terminals", title: "Terminals: show or hide the drawer", hotkey: hotkeyLabel("J"), run: () => { void terminals.toggle(); } },
+      /* The keyboard half of the button in the terminal bar, and the only half a
+         keyboard can use: xterm swallows Tab in both directions, so nothing in
+         `.term-bar` is reachable by tabbing once focus is in a terminal. */
+      { id: "expand-terminals", title: "Terminals: fill the window, or restore", hotkey: isMacPlatform() ? "Cmd+Shift+E" : "Ctrl+Shift+E", run: () => { void terminals.toggleFull(); } },
       { id: "new-terminal", title: "New terminal", run: () => { void terminals.newTerminal(); } },
       { id: "broadcast", title: "Broadcast mode (type into several sessions)", hotkey: hotkeyLabel("B"), run: () => deck.toggleBroadcast() },
+      /* Both directions, because the palette is where a binding is discoverable
+         and one that is not listed may as well not exist. The key is in the title
+         as well as the `hotkey` column: the filter matches titles only, so this is
+         what makes typing "f6" find them. */
       { id: "next-region", title: "Go to next region (F6)", hotkey: "F6", run: () => cycleRegion(1) },
+      { id: "prev-region", title: "Go to previous region (Shift+F6)", hotkey: "Shift+F6", run: () => cycleRegion(-1) },
       /* One entry per page the rail can select, and the wording says what they are
          now: pages of one panel rather than screens that replace the deck. The rail
          has no digits of its own — ⌘1…⌘5 are "focus session N" in this app — so this
@@ -2348,6 +2608,7 @@ export function startApp(role: WindowRole): Promise<void> {
       { id: "wsp-close", title: "Workspace panel: close", run: () => closeWorkspacePanel() },
       { id: "history", title: "Panel: the journal", run: () => setPanel("history") },
       { id: "scenarios", title: "Panel: scenarios", run: () => setPanel("scenarios") },
+      { id: "memory", title: "Panel: memory", run: () => setPanel("memory") },
       { id: "new-task", title: "New task", hotkey: isMacPlatform() ? "Cmd+Shift+T" : "Ctrl+Shift+T", run: () => { void captureTask(); } },
       { id: "github", title: "GitHub: accounts and gh install", run: () => void openGithubScreen(deck, workspaces.active?.path ?? ".") },
       // The two steps are direct commands because stepping is what a person wants
@@ -2360,6 +2621,15 @@ export function startApp(role: WindowRole): Promise<void> {
       /* The window's own section rather than the standalone dialog: two doors to
          one set of facts is how they drift. The dialog stays for the first-run
          offer, which is a flow of its own with its own copy. */
+      /* Both land on the memory page now. It is the one door to everything about
+         the corpus, and two doors onto one set of facts is how they drift. */
+      { id: "notes-jobs", title: "Memory: what has been captured…", run: () => { setPanel("memory"); memoryView.revealCaptures(); } },
+      /* The page with the field focused, rather than a dialog of its own. Two
+         doors to one set of facts is how they drift, and the page is where the
+         result opens anyway — the dialog's preview pane was approximating the
+         document surface. */
+      { id: "notes-search", title: "Search your notes…", run: () => { setPanel("memory"); memoryView.focusSearch(); } },
+      { id: "notes", title: "Session notes…", run: () => void openSettings("notes") },
       { id: "sync", title: "Memory sync…", run: () => void openSettings("config") },
     ];
     return pinnedTo === null ? all : all.filter((c) => !APP_WIDE_COMMANDS.has(c.id));
@@ -2379,7 +2649,12 @@ export function startApp(role: WindowRole): Promise<void> {
    *  so without this focus inside the drawer reads as `"screen"` and F6 from a diff
    *  sends you to the sidebar, with no key at all going the other way. */
   function regions(): Region[] {
-    const cycle: Region[] = ["sidebar", "deck"];
+    const cycle: Region[] = ["sidebar"];
+    // The deck, unless the terminal drawer is covering it — the same rule as the
+    // diff drawer, applied the other way round: F6 onto a deck nobody can see
+    // would put the keyboard in an invisible tile, and the two presses back out
+    // of it would look like two presses that did nothing.
+    if (!terminals.isFull()) cycle.push("deck");
     // Only while it is up, for the same reason as the diff drawer: a region you
     // cannot see is a stop that appears to do nothing.
     if (terminals.isOpen()) cycle.push("terminals");
@@ -2457,6 +2732,11 @@ export function startApp(role: WindowRole): Promise<void> {
       if (tiles.length) await emitTo(label, "workspace://take", { tiles });
     } catch (e) {
       await alertModal(`Could not open a window for ${ws.name}: ${String(e)}`);
+      // One of the two reasons this fails is that the row pressed is a record the
+      // store no longer has — `open_workspace_window` refuses those rather than
+      // opening a window pinned to nothing (#369). Re-reading is what takes the
+      // row away, so the same press does not fail the same way twice.
+      void rereadWorkspaces();
     }
   }
 
@@ -2552,6 +2832,9 @@ export function startApp(role: WindowRole): Promise<void> {
       if (tiles.length) await emitTo(label, "workspace://take", { tiles });
     } catch (e) {
       await alertModal(`Could not pull ${ws.name} out: ${String(e)}`);
+      // As in `detachWorkspace`, and for the same reason: one of the two ways
+      // this fails is a row for a record the store has lost (#369).
+      void rereadWorkspaces();
     }
   }
 
@@ -2575,6 +2858,7 @@ export function startApp(role: WindowRole): Promise<void> {
     "next-waiting": () => deck.focusNextWaiting(),
     "broadcast": () => deck.toggleBroadcast(),
     "toggle-terminals": () => { void terminals.toggle(); },
+    "expand-terminals": () => { void terminals.toggleFull(); },
     "zoom": () => deck.toggleZoomActive(),
     "next-region": () => cycleRegion(1),
     "prev-region": () => cycleRegion(-1),
@@ -2586,6 +2870,7 @@ export function startApp(role: WindowRole): Promise<void> {
     "prs": () => openWorkspacePage("pr"),
     "history": () => setPanel("history"),
     "scenarios": () => setPanel("scenarios"),
+    "memory": () => setPanel("memory"),
     "new-task": () => { void captureTask(); },
     "github": () => void openGithubScreen(deck, workspaces.active?.path ?? "."),
   };
@@ -2603,12 +2888,54 @@ export function startApp(role: WindowRole): Promise<void> {
     return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable;
   }
 
+  /** Whether the keystroke came from a terminal — the pty's keyboard, not the
+   *  app's.
+   *
+   *  `isTextEntry` answers false for the terminal's hidden textarea on purpose,
+   *  because `Cmd+N` and `Cmd+W` have to keep working with the caret in one. That
+   *  is right for the hotkey table and wrong for `Escape`, which no table claims:
+   *  `Escape` belongs to whatever has the keyboard, and in a terminal that is the
+   *  program — `vim`, `less`, `htop`, `fzf`, claude's own "esc to interrupt" (#269).
+   *
+   *  Second line rather than first. xterm consumes `Escape` while its own textarea
+   *  has focus: it writes the byte to the pty and then calls `preventDefault` *and*
+   *  `stopPropagation`, so the event never reaches this listener at all — the same
+   *  fact `diff-drawer.ts` binds its own `Escape` on `.pr-view` for. The first line
+   *  is therefore that focus is really in the terminal, which is what
+   *  `Deck.applyLayout` now keeps true across a zoom.
+   *
+   *  This guard is what makes the rule the app's own rather than a dependency's. It
+   *  holds for anything focusable inside `.xterm` that is not that textarea, and
+   *  for the next person to move this listener somewhere it fires ahead of xterm —
+   *  which is precisely the mistake `diff-drawer.ts` documents not making. */
+  function isTerminalCaret(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    if (!el || !(el instanceof HTMLElement)) return false;
+    return el.classList.contains("xterm-helper-textarea") || el.closest(".xterm") !== null;
+  }
+
   window.addEventListener("keydown", (e) => {
     if (document.querySelector(".modal-overlay")) return; // do not intercept while a modal, the palette or a form is open
     // Without this, Cmd+N spawned a session and Cmd+W closed the tile while the
     // caret sat in the tile's search box or the broadcast bar.
     if (isTextEntry(e.target)) return;
-    if (e.key === "Escape" && deck.exitZoom()) { e.preventDefault(); return; }
+    /* The reader is the thing on top, so it takes Escape first. A person reading
+       a note over a zoomed tile means "put the note away" by it — leaving the
+       zoom, which is behind the cover and unchanged, exactly as they left it. */
+    if (e.key === "Escape" && noteReader.isOpen()) {
+      e.preventDefault();
+      /* Never out from under an unsaved edit. A keystroke that discards what
+         somebody has written is the one thing this surface must not do by
+         accident — Discard is the way out, and it asks. */
+      if (!noteReader.isEditing()) noteReader.close();
+      return;
+    }
+    /* Unzooming is what `Escape` means when focus is anywhere but a terminal. With
+       focus in one the deck stays exactly as it is and the byte is the program's,
+       so the keyboard way out of a zoom is the zoom key itself — `Cmd+Enter` /
+       `Ctrl+Shift+Enter`, which `matchHotkey` claims above the pty and which is in
+       the palette by name — or `F6` out of the terminal region first. */
+    if (e.key === "Escape" && !isTerminalCaret(e.target) && deck.exitZoom()) { e.preventDefault(); return; }
     const id = matchHotkey(e, isMacPlatform());
     if (!id) return;
     if (id.startsWith("focus-")) {
@@ -2657,6 +2984,16 @@ export function startApp(role: WindowRole): Promise<void> {
       // while the backend writes nothing — the one thing its empty state exists
       // to prevent.
       recordingRuns = ui.recordScenarioRuns;
+      // Read on the same pass, for the same reason: the settings window must not
+      // draw a switch in the wrong position, and the backend has already applied
+      // the stored value to its own registry at startup.
+      reportedLimits = ui.usageReported;
+      // The remembered answer to the note question, on the same pass and for a
+      // sharper version of the same reason: read late, the first close of the
+      // session would ask somebody who had already answered, which is exactly the
+      // reflex-click failure the remembered answer exists to avoid.
+      captureAnswer = ui.captureOnClose;
+      deck.setCaptureAnswer(captureAnswer);
       // Read here rather than again inside `boot()`: one read of one file, and
       // the drawer's own restore step below runs after the deck's layout so its
       // height lands on a window that is already laid out. *Whether* it is up is
@@ -2669,6 +3006,19 @@ export function startApp(role: WindowRole): Promise<void> {
       if (ui.wspPx) wspEl.style.setProperty("--wsp-w", `${ui.wspPx}px`);
       if (ui.wspWidePx) wspEl.style.setProperty("--wsp-wide-w", `${ui.wspWidePx}px`);
       if (ui.toolPx) document.documentElement.style.setProperty("--tool-w", `${ui.toolPx}px`);
+      /* And whether the panel is showing at all, which is a preference rather
+         than a width and is restored the same way: as whatever the person last
+         chose. `applyCollapsed` rather than `setCollapsed`, for two reasons —
+         this is reading the answer and not giving one, so it must not write it
+         back; and `setCollapsed` holds every terminal's refit off for the length
+         of the collapse animation, which across `boot()` below would leave the
+         restored layout's terminals deaf to their own boxes. There is no
+         animation to protect here: nothing has been laid out yet.
+
+         Only the main window. A pinned workspace window has no rail and hides the
+         shut button, so the panel is its only navigation — see `shutBtn` — and a
+         stored `true` there would be a window with nothing to press. */
+      if (pinnedTo === null && ui.panelCollapsed) applyCollapsed(true);
     } catch (e) {
       console.debug("ui state read failed, using the defaults", e);
     }
@@ -2768,7 +3118,7 @@ export function startApp(role: WindowRole): Promise<void> {
     // A workspace arriving from another window.
     listen<{ tiles: HandOffTile[] }>("workspace://take", (e) => {
       void deck.receive(e.payload.tiles);
-    }),
+    }, addressed),
     // A session changed hands. The window that asked for it ignores this; every
     // other one gives up the tile without ending anything — the process, the PTY
     // and the conversation carry on where they went.

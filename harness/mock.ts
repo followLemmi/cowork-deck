@@ -170,6 +170,16 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     case "scheduler_ready": return null;
     case "claude_available": return true;
     case "gh_status": return F.ghStatus;
+    /* Memory sync. Answered so Settings' "Config repository" section has content
+       — see the note on `syncSummary` in `fixtures.ts`. `sync_now` returns the
+       state unchanged: the harness has no remote to reach, and a push that
+       claimed to have happened would be the one thing this surface must not
+       invent. */
+    case "sync_summary": return F.syncSummary;
+    case "sync_questions": return [];
+    case "sync_now": return F.syncSummary.state;
+    case "sync_preflight":
+      return { blocked: null, accounts: F.ghStatus.accounts, error: null };
     /* `placesWindows` was missing, which reads as false — and false is the one
        value that switches the tear-out gesture OFF. So the harness ran the branch
        no desktop but Wayland runs, and could not see that the capture the gesture
@@ -224,10 +234,30 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
       // a mock that dropped the unknown ones would hide the bug it exists to show.
       const out: Record<string, unknown> = {};
       for (const id of args.sessionIds as string[]) {
-        out[id] = F.snapshots[id] ?? { tokens: null, title: null, titleSource: null };
+        out[id] = F.snapshots[id]
+          ?? { tokens: null, title: null, titleSource: null, calls: null, resumeId: null };
       }
       return out;
     }
+    case "session_activity": {
+      // Every requested id gets an entry, as the Rust command promises. An id
+      // with no fixture gets `noLog` — a sentence, never a roll of zeroes.
+      const out: Record<string, unknown> = {};
+      for (const id of args.sessionIds as string[]) {
+        out[id] = F.activity[id] ?? {
+          cli: "claude", agents: [], tools: [], calls: 0,
+          capabilities: { outcomes: false, agents: false },
+          readAt: Math.floor(Date.now() / 1000), unavailable: "noLog", truncated: null,
+        };
+      }
+      return out;
+    }
+
+    /* What every connected AI has left. Answered unconditionally, `force` or
+       not: the harness has no cache to bypass, and a mock that refused the forced
+       read would hide the block whenever a limit signal arrived. */
+    case "usage_snapshot": return F.usage;
+    case "usage_clear_observed": return null;
 
     /* The tracker. */
     case "tasks_capabilities":
@@ -259,25 +289,17 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
 
     /* The window plugin.
      *
-     * These used to fall through to the `plugin:` case below, which answers
-     * `null` and logs nothing — so the pill's show/hide, the focus a
-     * notification click produces, and the raise a detached workspace's row asks
-     * for could not be exercised or screenshot at all. They are answered
-     * truthfully now, against a per-label visibility the harness keeps, which is
-     * what `pill.ts` reads back before deciding whether to show itself.
+     * Listed rather than left to the `plugin:` fallback below so that a call the
+     * app makes here is a call somebody chose to answer. `null` is the honest
+     * answer for all of them: a raise is three fire-and-forget calls
+     * (`raiseThisWindow` in `app.ts`) and nothing reads a window back.
      *
-     * The `pill://count` path in particular is a state machine over `isVisible`
-     * — `show()` is `makeKeyAndOrderFront:` on macOS and is not idempotent — and
-     * a stub that always said "hidden" would have exercised the wrong branch
-     * every time. */
-    case "plugin:window|is_visible":
-      return F.windowVisible(String(args.label ?? "main"));
+     * There used to be a per-label visibility map behind these, because the
+     * floating pill's show/hide was a state machine over `isVisible` and a stub
+     * that always said "hidden" exercised one branch of it for ever. #394
+     * removed that window and with it the only caller of `is_visible`, so the
+     * map went too rather than stay as scenery. */
     case "plugin:window|show":
-      F.setWindowVisible(String(args.label ?? "main"), true);
-      return null;
-    case "plugin:window|hide":
-      F.setWindowVisible(String(args.label ?? "main"), false);
-      return null;
     case "plugin:window|unminimize":
     case "plugin:window|set_focus":
     case "plugin:window|destroy":

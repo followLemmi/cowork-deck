@@ -14,28 +14,33 @@
  *  The mock surface is the one `tests/main-hotkey-guard.test.ts` established for
  *  standing the app up in jsdom. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
 
+/** What the workspaces panel answers with, this boot.
+ *
+ *  Mutable because the store's workspace list is: a pull can fold or delete a
+ *  record while a window pinned to it is open, which is the whole of #369. Reset
+ *  by `boot`. */
+let panelItems: (typeof WS)[] = [WS];
+/** Which of them is active, held separately from the list for the reason the real
+ *  panel holds it separately: a pull can take the active record out of the list
+ *  without naming a replacement, and `active` is then null while `all` is not
+ *  empty. A mock that derived `active` from `panelItems[0]` could not express
+ *  that, which is the state `startApp` falls back to the first workspace in. */
+let panelActiveId: string | null = WS.id;
+/** What the panel was asked to activate. The fallback names a workspace rather
+ *  than clearing the active one, so the assertion is on the argument. */
+const activateSpy = vi.hoisted(() => vi.fn((id: string) => id));
+/** Set to make the next `load()` reject, the way `listWorkspaces` does for a
+ *  `workspaces.json` it cannot read — which is not the same answer as a list
+ *  without this workspace in it. Reset by `boot`. */
+let loadRejects: Error | null = null;
+
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  saveLayout: vi.fn().mockResolvedValue(undefined),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onQuitBlocked: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  onRunsChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
-  taskCapabilities: vi.fn().mockResolvedValue(null),
-  listTasks: vi.fn().mockResolvedValue([]),
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
-  gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
-  sessionSnapshots: vi.fn().mockResolvedValue({}),
+  ...bootIpc(),
 }));
 
 vi.mock("../src/updater", () => ({ offerUpdateIfAvailable: vi.fn().mockResolvedValue(undefined) }));
@@ -50,11 +55,12 @@ const pinnedCalls: string[] = [];
 
 vi.mock("../src/workspaces", () => ({
   WorkspacesPanel: class {
-    get active() { return WS; }
-    get all() { return [WS]; }
-    load = vi.fn().mockResolvedValue(undefined);
+    get active() { return panelItems.find((w) => w.id === panelActiveId) ?? null; }
+    get all() { return panelItems; }
+    load = vi.fn(() => (loadRejects ? Promise.reject(loadRejects) : Promise.resolve(undefined)));
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    setSessionsSource = vi.fn();
     // The tree's half of the panel: the workspace row is this panel's and the
     // sessions under it are the deck's, so `startApp` hands each the other.
     /* Captured, because the board and the pull requests are opened through this
@@ -69,7 +75,7 @@ vi.mock("../src/workspaces", () => ({
     showWaiting = vi.fn();
     showExpanded = vi.fn();
     focusActive = vi.fn();
-    activate = vi.fn().mockReturnValue(true);
+    activate = vi.fn((id: string) => { activateSpy(id); panelActiveId = id; return true; });
   },
 }));
 
@@ -99,8 +105,14 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn().mockResolvedValue(undefined),
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
+/** The label of the window being booted. Varied by `boot`, because a window's
+ *  own label is what narrows its addressed listeners — see the third describe. */
+let currentLabel = "main";
+/** `close()` on this window. A window pinned to a workspace the store has lost
+ *  closes rather than living on pinned to nothing — see the last describe. */
+const closeSpy = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ label: "main", onCloseRequested: async () => () => {}, destroy: async () => {}, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
+  getCurrentWindow: () => ({ label: currentLabel, onCloseRequested: async () => () => {}, destroy: async () => {}, close: closeSpy, unminimize: vi.fn(), show: vi.fn(), setFocus: vi.fn() }),
 }));
 
 import {
@@ -111,19 +123,37 @@ import { offerUpdateIfAvailable } from "../src/updater";
 import { listen } from "@tauri-apps/api/event";
 import type { WindowRole } from "../src/window-role";
 
-const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+/** Drain the boot chain.
+ *
+ *  A fixed count of microtasks is not enough on its own: every `await` inside
+ *  `runBoot` adds ticks, so the number had to grow every time a step was added
+ *  and the failure it produced named the LAST assertion in the list rather than
+ *  the step that had lengthened the chain. Yielding a macrotask at the end
+ *  drains whatever is left, whatever the length. */
+const flush = async () => {
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  await new Promise((r) => setTimeout(r, 0));
+};
 
 /** Now that the bootstrap is a function, a test file can boot it more than once
  *  — which is the whole reason this file can exist. It was a side-effect module,
  *  and a side-effect module imports once per file. */
-async function boot(role: WindowRole) {
+async function boot(role: WindowRole, items: (typeof WS)[] = [WS]) {
   document.body.innerHTML =
     '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
-    + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
+    // `#workarea` stacks the deck and the terminal drawer, and is what the note
+    // reader covers — the same box `.term-drawer.is-full` covers. It is on all
+    // four real bodies (`page-bodies.test.ts`), and was missing here.
+    + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div>'
+    + '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>'
     + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';
   pinnedCalls.length = 0;
+  panelItems = items;
+  panelActiveId = WS.id;
+  loadRejects = null;
+  currentLabel = role.kind === "main" ? "main" : `workspace-${role.workspaceId}`;
   const { startApp } = await import("../src/app");
   startApp(role);
   await flush();
@@ -159,19 +189,6 @@ describe("the singletons a second window must not run", () => {
     }
   });
 
-  /** One click on the pill used to raise every window, each focusing its own
-   *  next waiting tile. The main window is the only participant that can answer
-   *  properly — it sees its own sessions, the orphans, and the proxy rows for
-   *  detached workspaces (#243, #244). */
-  it("answers the pill in the main window and nowhere else", async () => {
-    await boot({ kind: "main" });
-    expect(vi.mocked(listen).mock.calls.map(([e]) => e)).toContain("pill://focus-next");
-
-    vi.clearAllMocks();
-    await boot({ kind: "workspace", workspaceId: "w" });
-    expect(vi.mocked(listen).mock.calls.map(([e]) => e)).not.toContain("pill://focus-next");
-  });
-
   /** A window going away is invisible from inside another one, so Rust says it.
    *  Without the main window listening, its picture of what the other windows
    *  hold outlives them — and a workspace brought back by closing its window
@@ -202,8 +219,8 @@ describe("the singletons a second window must not run", () => {
  *  "what may this window do once" but "what is this window ABOUT".
  *
  *  A window pulled out to hold one workspace is that workspace's, so the app's own
- *  navigation is not built in it — the rail carries the journal, the scenarios and
- *  the settings, and all three are about the app. The confusion this ends is a
+ *  navigation is not built in it — the rail carries the journal, the scenarios, the
+ *  corpus of notes and the settings, and all four are about the app. The confusion this ends is a
  *  concrete one: the settings opened from inside a project window read as that
  *  project's settings, and they are not.
  */
@@ -214,7 +231,7 @@ describe("the shape of a window pinned to one workspace", () => {
     await boot({ kind: "main" });
     expect(rail().hidden).toBe(false);
     expect([...rail().querySelectorAll(".rail-btn")].map((b) => b.getAttribute("title")))
-      .toEqual(["Workspaces and sessions", "Journal", "Scenarios", "Settings"]);
+      .toEqual(["Workspaces and sessions", "Journal", "Scenarios", "Memory", "Settings"]);
   });
 
   /* Not built rather than hidden: a control that exists is one the palette can
@@ -257,5 +274,168 @@ describe("the shape of a window pinned to one workspace", () => {
 
     await boot({ kind: "workspace", workspaceId: "w" });
     expect(pinnedCalls).toEqual(["w"]);
+  });
+});
+
+/** The third thing this boundary decides: which events this window is allowed to
+ *  act on.
+ *
+ *  Here rather than in a file of its own because it is the same seam the two
+ *  describes above hold — what `startApp(role)` wires — and because standing the
+ *  app up in jsdom costs the two hundred lines of mocks at the top of this file.
+ *
+ *  The defect (#349): `listen` registers with `EventTarget::Any` by default, and
+ *  Tauri delivers every addressed emit to an `Any` listener whatever label it was
+ *  addressed to. So `emitTo(workspaceLabel(id), "workspace://gone")` reached the
+ *  main window too, whose handler closes the window it is in — deleting a
+ *  workspace took the main window with it, with no error anywhere and a process
+ *  left running behind the floating status pill, which nothing ever destroyed.
+ *  The pill is gone (#394); a workspace window left up does the same thing.
+ */
+describe("the events a window may act on", () => {
+  /** Every event one window addresses to another, and what each would do in a
+   *  window it was not meant for. */
+  const ADDRESSED = [
+    ["workspace://gone", "closes the window it is in"],
+    ["session://focus", "raises the window and steals the keyboard"],
+    ["workspace://take", "adopts tiles belonging to somebody else"],
+  ] as const;
+
+  const targetOf = (event: string) =>
+    vi.mocked(listen).mock.calls.find(([e]) => e === event)?.[2]?.target;
+
+  it("narrows every addressed one to this window, in the main window", async () => {
+    await boot({ kind: "main" });
+    for (const [event, harm] of ADDRESSED) {
+      expect(targetOf(event), `${event} would otherwise ${harm}`)
+        .toEqual({ kind: "Window", label: "main" });
+    }
+  });
+
+  /** The same in a pinned window, and with its own label: a narrowing that named
+   *  the wrong window would be worse than none — the listener would go deaf to
+   *  what is genuinely addressed to it. */
+  it("narrows them to the pinned window's own label", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" });
+    for (const [event] of ADDRESSED) {
+      expect(targetOf(event), event).toEqual({ kind: "Window", label: "workspace-w" });
+    }
+  });
+
+  /** And the other direction, which the narrowing must not touch. A broadcast is
+   *  addressed to nobody, and Tauri delivers it to every listener whatever its
+   *  target — so these stay unnarrowed to say plainly that they are broadcasts,
+   *  and a future narrowing of one would be a window that stops hearing the app.
+   */
+  it("leaves the broadcasts alone", async () => {
+    await boot({ kind: "main" });
+    for (const event of ["session://waiting", "window://gone", "ui://scale"]) {
+      expect(targetOf(event), event).toBeUndefined();
+    }
+  });
+});
+
+/** #369: a window pinned to a workspace the store no longer has.
+ *
+ *  The list is read once, during boot, and until this it was the only read there
+ *  ever was — so a pull that deleted a workspace record, or carried the answer
+ *  somebody gave to a duplicate question on the other machine, left the window
+ *  pinned to an id nothing answers for. Its sessions collected under "Other", the
+ *  heading for a session whose workspace was deleted, and with no workspace row
+ *  there was no "New session in …" row either: the window could not be given work
+ *  at all.
+ *
+ *  Here rather than in a file of its own for the reason the two describes above
+ *  are: this is `startApp(role)`'s boundary again — what a window does about its
+ *  own workspace disappearing is decided by which kind of window it is.
+ */
+describe("a workspace that leaves the store", () => {
+  /** The announcement, delivered the way Tauri would. `onWorkspacesChanged`
+   *  wraps the handler and drops the payload, so the argument is a formality. */
+  const announce = () => {
+    const call = vi.mocked(listen).mock.calls.find(([e]) => e === "workspaces://changed");
+    expect(call, "nothing listens for the store's workspace list changing").toBeDefined();
+    (call![1] as (e: unknown) => void)({ event: "workspaces://changed", id: 0, payload: null });
+  };
+
+  /* Both kinds of window: the row to drop is the main window's business and the
+     window to close is the pinned one's, and neither can be decided by whichever
+     side wrote the file. */
+  it("is listened for in either kind of window", async () => {
+    await boot({ kind: "main" });
+    expect(vi.mocked(listen).mock.calls.map(([e]) => e)).toContain("workspaces://changed");
+
+    vi.clearAllMocks();
+    await boot({ kind: "workspace", workspaceId: "w" });
+    expect(vi.mocked(listen).mock.calls.map(([e]) => e)).toContain("workspaces://changed");
+  });
+
+  it("closes a pinned window whose workspace has gone", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" });
+    panelItems = []; // the pull took it
+    announce();
+    await flush();
+    expect(closeSpy).toHaveBeenCalled();
+  });
+
+  /* The common case, and the one a close would be a disaster in: the list changed
+     because something else in it did. */
+  it("keeps a pinned window whose workspace is still there", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" });
+    announce();
+    await flush();
+    expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  /* The main window is not pinned to anything, so there is nothing it can be
+     pinned to nothing about — and it is where the sessions of a window that did
+     close land. */
+  it("never closes the main window, whatever the store lost", async () => {
+    await boot({ kind: "main" });
+    panelItems = [];
+    announce();
+    await flush();
+    expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  /* The announcement can arrive before the window that needs it exists.
+     `open_workspace_window` refuses an id the store does not have, but it answers
+     before the window is built — so a pull landing in that gap leaves a window
+     whose first read is already of a list without it, with nothing further coming
+     to tell it. Asked once at boot for exactly that. */
+  it("closes a pinned window whose workspace was already gone at boot", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" }, []);
+    expect(closeSpy).toHaveBeenCalled();
+  });
+
+  it("boots the main window normally with an empty store", async () => {
+    await boot({ kind: "main" }, []);
+    expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  /* The other state a stale list hid, and the one the main window is in when the
+     record that went was the one it was showing: the panel has no active
+     workspace while the deck goes on filtering its tiles to an id nothing answers
+     for. The fallback is the first workspace there is — not a close, and not
+     nothing. */
+  it("falls back to the first workspace when the active one has gone", async () => {
+    await boot({ kind: "main" });
+    panelItems = [{ id: "w2", name: "Q", path: "/q", color: "#eee" }];
+    announce();
+    await flush();
+    expect(activateSpy).toHaveBeenCalledWith("w2");
+    expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  /* A list that could not be read is not a list without the workspace in it.
+     `list_workspaces` refuses rather than answering "none" (#369), and the refusal
+     has to stop the close: a store that would not parse deleted nothing. */
+  it("keeps a pinned window when the list could not be read", async () => {
+    await boot({ kind: "workspace", workspaceId: "w" });
+    loadRejects = new Error("workspaces.json is not readable as JSON");
+    panelItems = []; // what a best-effort read would have answered instead
+    announce();
+    await flush();
+    expect(closeSpy).not.toHaveBeenCalled();
   });
 });

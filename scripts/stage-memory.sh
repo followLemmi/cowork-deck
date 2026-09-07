@@ -27,10 +27,13 @@ esac
 mkdir -p src-tauri/binaries
 DEST="src-tauri/binaries/cowork_memory-${TARGET_TRIPLE}${EXT}"
 
-# A placeholder, executable from the start. cowork_memory is not declared in
-# tauri.conf.json yet — that lands when the app starts spawning it — so this is
-# inert today and correct from the moment it is declared. `install -m 0755`
-# rather than a redirect, so a placeholder never sits there non-executable.
+# A placeholder, executable from the start, for the window between this script
+# starting and the build below landing: cowork_memory IS declared in
+# tauri.conf.json's bundle.externalBin, and tauri-build's build.rs refuses to run
+# while a declared externalBin is missing from disk. `install -m 0755` rather than
+# a redirect, so a placeholder never sits there non-executable — `cp` preserves
+# the destination's mode, so one created 0644 would stay 0644 after the real
+# binary landed and fail with permission denied at the first spawn.
 if [ ! -e "$DEST" ]; then
   install -m 0755 /dev/null "$DEST"
 fi

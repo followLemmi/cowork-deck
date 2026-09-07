@@ -22,7 +22,7 @@
  *  3.0 allowance applies.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -200,6 +200,58 @@ const termColor = (name) => {
   if (!m) throw new Error(`no ${name} in src/terminal.ts`);
   return m[1];
 };
+
+// --- the workspace tint ---------------------------------------------------
+
+/** The band a workspace's colour paints under its row and its sessions (#511).
+ *
+ *  Its alpha is not in the stylesheet and cannot be: the six swatches are three
+ *  hues and three greys, and at one fixed alpha chalk lifts the sidebar's island
+ *  1.6× as far as slate does — one workspace glaring and another invisible — so
+ *  the alpha is solved per colour in `src/tint.ts`. Both ends of that solve are
+ *  read from source here, the way the terminal's palette above is, so a change to
+ *  either moves these numbers instead of silently disagreeing with them.
+ *
+ *  The one line of arithmetic is mirrored rather than imported, because this file
+ *  is plain Node with nothing to install and `src/tint.ts` is TypeScript.
+ *  `tests/tint.test.ts` is what pins the formula; this is what measures what the
+ *  formula costs.
+ */
+const tintSrc = readFileSync(join(root, "src/tint.ts"), "utf8");
+const TINT_LUMA = Number(tintSrc.match(/export const TINT_LUMA = ([\d.]+);/)?.[1]);
+if (!Number.isFinite(TINT_LUMA)) throw new Error("no TINT_LUMA in src/tint.ts");
+
+/** The workspace form's palette, from the form. Six today; the loop below does not
+ *  care how many there are, which is the point of reading them rather than listing
+ *  them — a seventh swatch arrives with its own measured band. */
+const SWATCHES = [...readFileSync(join(root, "src/forms.ts"), "utf8")
+  .matchAll(/\{\s*value:\s*"(#[0-9a-fA-F]{3,6})"\s*,\s*name:\s*"(\w+)"\s*\}/g)]
+  .map((m) => ({ value: m[1], name: m[2] }));
+if (SWATCHES.length === 0) throw new Error("no COLORS table in src/forms.ts");
+
+for (const sw of SWATCHES) {
+  const { r, g, b } = parseColor(sw.value, tokens);
+  const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  const a = Math.round(Math.min(0.25, TINT_LUMA / luma) * 1e4) / 1e4;
+  tokens.set(`--ws-tint-${sw.name}`, `rgba(${r}, ${g}, ${b}, ${a})`);
+}
+
+/** The heaviest of the six once painted on the island. "Comparable in weight" is
+ *  not "identical in luminance" — a hue and a grey of the same luma differ a
+ *  little — so the text cases below are measured against the worst one rather than
+ *  against a favourite, and against whichever colour that is after the next
+ *  palette edit. */
+const TINT_WORST = SWATCHES
+  .map((sw) => ({ name: sw.name, y: luminance(stack(["--bg-island", `--ws-tint-${sw.name}`], tokens)) }))
+  .sort((a, b) => b.y - a.y)[0].name;
+/** The three grounds a row inside a tinted group can be read on: at rest, hovered
+ *  and selected. Hover has its own stack rather than borrowing `--bg-hover`,
+ *  because inside a group it is `--bg-hover-soft` — translucent, so it composites
+ *  over the band instead of painting it out. The opaque pair is still what a skill
+ *  row and a flat session list hover, and the cases above still measure those. */
+const TINTED = ["--bg-island", `--ws-tint-${TINT_WORST}`];
+const TINTED_ACTIVE = [...TINTED, "--sel"];
+const TINTED_HOVER = [...TINTED, "--bg-hover-soft"];
 
 const TEXT = 4.5;   // 1.4.3
 const UI = 3.0;     // 1.4.11
@@ -472,6 +524,42 @@ const CASES = [
     fg: "--fg", backdrop: ["--bg-island"], group: [decl(css, ".tk-c-broken", "background")],
     threshold: TEXT, sc: "1.4.3",
   },
+  // The sync dialog's two banners, measured for the first time: both grounds were
+  // `color-mix()` until #463, which this parser cannot read, so neither pair had
+  // ever been through here. The dialog is a modal on an island.
+  {
+    what: "sync fault banner text",
+    where: "the sentence naming what stopped the cycle, on `--bg-error-soft` over the dialog",
+    fg: "--fg", backdrop: ["--bg-island"], group: [decl(css, ".sync-fault", "background")],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "sync question banner text",
+    where:
+      "what a pull could not decide — amber rather than red, because none of these is a " +
+      "failure and every one is something only a person can settle",
+    fg: "--fg", backdrop: ["--bg-island"], group: [decl(css, ".sync-ask", "background")],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  // The border is what tells the two banners apart at a glance, so it carries the
+  // 3.0 threshold a meaningful graphic does — against the ground the banner's own
+  // tint has already laid down, not against the dialog.
+  {
+    what: "sync fault banner border",
+    where: "the red edge of the fault block, over its own tinted ground",
+    fg: "--st-error",
+    backdrop: ["--bg-island"],
+    group: [decl(css, ".sync-fault", "background")],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "sync question banner border",
+    where: "the amber edge of a question block, over its own tinted ground",
+    fg: "--st-waiting",
+    backdrop: ["--bg-island"],
+    group: [decl(css, ".sync-ask", "background")],
+    threshold: UI, sc: "1.4.11",
+  },
   {
     what: "card facts value",
     where: "the facts list's own inset ground inside the dialog",
@@ -699,10 +787,337 @@ const CASES = [
     fg: "--line-strong", backdrop: ["--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
+  /* The limits (#301). Three BANDS and one absence, and the green is new: #498's
+     review asked for green to three quarters, amber to nine tenths, red past it,
+     which reverses the rule these cases were written under — that a healthy
+     window is `--fg-dim` on its own track, because "your quota is fine" is not
+     worth a hue that already means "working". What that rule cost is the thing a
+     gauge is for: a provider's state is a step function, so three quarters of the
+     five hours was drawn in exactly the hue of four percent. The record of the
+     reversal is in `zoneOf` and ADR-0011's third amendment; what it costs HERE is
+     one more pair per surface, because green on this ground has never been
+     measured for the limits before.
+
+     The absence stays: a window with no share and nothing wrong gets no hue at
+     all, which is `--fg-dim` and is measured below as it always was.
+
+     TWO GROUNDS since #498, and neither is the one measured here before. The
+     limits were a card in the panel (#301), then a strip at the panel's foot
+     against `--bg-void` (#392), then a line in the top bar (#461) — and that last
+     move changed the ground under every pair below without any of these cases
+     saying so. They are a ROW OF DIALS now, and the row is not in the bar: what
+     the bar carries is one WORD on `--bg-chrome`, and the dials and everything
+     they open are on the `--bg-island` of the box that word opens — or of the
+     status-area panel, which is the same token. Inside a dial the arc is on its
+     own `--bg-inset` track. Each pair is measured against every ground it is
+     actually drawn on. */
+  {
+    what: "the word in the top bar",
+    where: "“Limits”, which is the whole of the limits until somebody points at "
+      + "it — the dials are behind it (#498), on the ground it opens",
+    fg: "--fg-mid", backdrop: ["--bg-chrome"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the word once something is nearly spent",
+    where: "amber on the word itself. This is the pair that makes hiding the dials "
+      + "acceptable at all: the alarm must not need a gesture",
+    fg: "--st-waiting", backdrop: ["--bg-chrome"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the word once something is spent",
+    where: "red on the same word, which is the reading a whole deck stalls on",
+    fg: "--st-error", backdrop: ["--bg-chrome"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "a limit ring inside its first three quarters",
+    where: "green on the arc around a logo, and on the fill of a meter inside the card "
+      + "— a graphic, not text, on the box's ground and on its own track",
+    fg: "--st-working", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "a limit ring with no band at all",
+    where: "the neutral arc: an absolute with no ceiling, or a reading nobody has. Not "
+      + "green — a hue there would be this app inventing the denominator it has just "
+      + "said it does not have",
+    fg: "--fg-dim", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "a limit ring past three quarters",
+    where: "amber on the same arc: the one that means something is about to want you",
+    fg: "--st-waiting", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "a limit ring past nine tenths",
+    where: "red on the same arc, and on a spent one — the band and the refusal share a hue "
+      + "and are told apart in words (`alarmPhrase`)",
+    fg: "--st-error", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the ring's own track", rejected: true,
+    where: "rejected — the ARC carries the level and is measured above; a 3:1 track would "
+      + "read as a full ring, and the figure under the dial states the reading in "
+      + "characters either way",
+    fg: "--bg-inset", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the dashed track on a held or unreadable dial", rejected: true,
+    where: "rejected — same reasoning, one step quieter: the dashes are what an ABSENT "
+      + "reading looks like, and a 3:1 dashed circle would read as a ring that had been "
+      + "filled. What carries the fact is the logo's own dimming (measured below), the "
+      + "figure under it (“soon”, “—”) and the accessible name",
+    fg: "--line", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the figure under a dial in its first three quarters",
+    where: "“62%” in green, and it is not decoration: a ring at 4% is a hairline and a "
+      + "ring at 0% is nothing at all, which is what a broken dial also looks like. The "
+      + "band is in the characters as well as in the hue",
+    fg: "--st-working", backdrop: ["--bg-island"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the figure under a dial with no band",
+    where: "“—”, and every quiet figure: “soon”, and a reading nobody has",
+    fg: "--fg-dim", backdrop: ["--bg-island"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the figure under a dial in trouble",
+    where: "amber, then red, on the same figure — the band said in the characters as "
+      + "well as in the ring, for anybody the hue does not reach",
+    fg: "--st-waiting", backdrop: ["--bg-island"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the figure under a spent dial",
+    where: "the red half of that pair",
+    fg: "--st-error", backdrop: ["--bg-island"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  /* The logo is the BRAND's colour, which is the one pair in this file measuring a
+     hue the design system did not choose. It is measured on two grounds because
+     `.dial:hover` raises the one under a mark that deliberately does not move with
+     the pointer — a brand colour that brightened on hover would be a brand colour
+     for as long as nobody pointed at it.
+
+     The first cut of the bands coloured the mark too, and that is why there is no
+     green/amber/red logo case here any more: a green Claude mark is not Claude's
+     mark. The bands are measured above, on the arc and the figure. */
+  {
+    what: "the Claude logo inside its dial",
+    where: "`#D97757`, Anthropic's own coral — the mark says WHICH AI, at 3% and at "
+      + "97% alike, so it is the one thing on a dial that does not take a band",
+    fg: "--brand-claude", backdrop: ["--bg-island", "--bg-hover"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the logo inside a dial whose brand has no colour of its own",
+    where: "`--brand` falls back to the dial's neutral — and the hover brightens THIS "
+      + "one, because there is no brand colour for the brightening to overrule",
+    fg: "--fg-mid", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the logo inside a held dial",
+    where: "one step quieter, which is how a dial that is not ready is told from one that "
+      + "is without reading anything",
+    fg: "--fg-dim", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the logo on a hovered dial with no brand colour",
+    where: "the hover raises the ground under it and the mark brightens to meet it, so "
+      + "this pair is measured too",
+    fg: "--fg", backdrop: ["--bg-hover"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the dot for a window the ring is not showing",
+    where: "the ring is the five hours, so this is the WEEK past three quarters behind a "
+      + "fresh session. Ringed in the ground it sits on, and it rides the word in the bar "
+      + "too, so both are measured",
+    fg: "--st-waiting", backdrop: ["--bg-island", "--bg-chrome"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the same dot once that window is past nine tenths",
+    where: "red rather than amber, which is the pair everything else in this app uses "
+      + "for the same two meanings",
+    fg: "--st-error", backdrop: ["--bg-island", "--bg-chrome"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "\"nothing moves until 19:00\"",
+    where: "the sentence under a spent reading, inside the card's window block — text, "
+      + "not a graphic",
+    fg: "--st-error", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  /* Amber in words, from #392 and kept: the ring carries the state's hue, and a
+     hue is not a reading for somebody who cannot see it. So "nearly spent" is
+     said, and a hue on TEXT is measured at 4.5 rather than at 3. */
+  {
+    what: "“nearly spent — resets 19:00”",
+    where: "amber in words under a nearly-spent reading, in the card and in the dialog",
+    fg: "--st-waiting", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the caveat beside a reading",
+    where: "THIS APP ONLY / ESTIMATE after the number — the qualifier ADR-0009 refuses to "
+      + "make a tooltip. The account's own accounting prints none, which is that record "
+      + "as amended. The same pair carries the reading itself, COMING SOON, and every "
+      + "quiet line in the card",
+    fg: "--fg-dim", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "a window's caveat in the dialog",
+    where: "“other terminals and other machines are not in this”, on the inset a window block sits on",
+    fg: "--fg-dim", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "a spent window's line in the dialog",
+    where: "the red sentence inside a window block, which sits on the inset rather than the island",
+    fg: "--st-error", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the meter's track inside the dialog", rejected: true,
+    where: "rejected — the same reasoning one ground up: measured so the step is on record, "
+      + "and it is a step (1.27 here, 1.22 out on the island) rather than an accident",
+    fg: "--bg-hover-2", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: UI, sc: "1.4.11",
+  },
   {
     what: "added band against removed band", rejected: true,
     where: "rejected — tint alone cannot tell the two apart, which is why the marker is a character",
     fg: "--diff-add-weak", backdrop: ["--bg-code"], group: ["--diff-del-weak"],
+    threshold: UI, sc: "1.4.11",
+  },
+  /* The workspace tint, six bands and what sits on them (#511).
+     The six come first, and they are rejected on purpose: a band is ground, not a
+     graphic that carries meaning, and 3:1 is the line it must stay UNDER. The rail
+     down a row's left edge is what says working / waiting / stopped, and a tint
+     that reached a graphic's threshold would be a second colour channel behind the
+     one channel that means something.
+     Rejected also makes them a guard rather than a note, which is the reason they
+     are cases at all: this file fails the run when a rejected case starts passing,
+     so `TINT_LUMA` cannot be raised past a quiet band without somebody being told.
+     And read down the column, the six numbers ARE the claim that the palette reads
+     as comparable in weight — one measurement per swatch, reproducible. */
+  {
+    what: "the green workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-green", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the amber workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-amber", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the red workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-red", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the chalk workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-chalk", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the stone workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-stone", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the slate workspace's band", rejected: true,
+    where: "rejected — ground under a group, deliberately under the 3:1 a MEANINGFUL graphic owes: "
+      + "the state rail is what carries meaning in this row",
+    fg: "--ws-tint-slate", backdrop: ["--bg-island"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "a session's branch on a tinted band",
+    where: "the quietest text in the tree, on the strongest end of the strongest band — the floor",
+    fg: "--fg-dim", backdrop: TINTED,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "a branch on a selected row in a tinted group",
+    where: "`--sel` over the band, with the raised ink the selection rule already owed it",
+    fg: "--fg-mid", backdrop: TINTED_ACTIVE,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-error on a tinted band",
+    where: "a stopped session inside a tinted group, at rest",
+    fg: "--st-error", backdrop: TINTED, group: [ERROR_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-error on a tinted selected row",
+    where: "the worst ground in the tree: the band, the selection and the chip's own fill, in that order",
+    fg: "--st-error", backdrop: TINTED_ACTIVE, group: [ERROR_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-ended on a tinted selected row",
+    where: "the hueless label on the same stack — the other end of the chip set",
+    fg: "--st-ended", backdrop: TINTED_ACTIVE, group: [ENDED_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the state rail on a tinted band",
+    where: "red is the darkest of the four rails, so it is the set's floor against the band behind it",
+    fg: "--st-error", backdrop: TINTED,
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: ".btn--icon at rest on a tinted band",
+    where: "the row's own controls, on the ground the tint puts under them",
+    fg: ICON_REST_COLOR, backdrop: TINTED,
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "a branch on a hovered row in a tinted group",
+    where: "`--bg-hover-soft` over the band — the lightest ground a row at `--fg-dim` reaches in the tree",
+    fg: "--fg-dim", backdrop: TINTED_HOVER,
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: ".state-error on a hovered row in a tinted group",
+    where: "the same stack under the chip that has the least room on it",
+    fg: "--st-error", backdrop: TINTED_HOVER, group: [ERROR_FILL],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the soft hover step, against a plain island", rejected: true,
+    where: "rejected — not a contrast requirement: it is here so the two hovers are on record as "
+      + "one step. `--bg-hover-soft` on `--bg-island` must land on `--bg-hover`, or a row inside a "
+      + "group and a row outside one stop hovering alike",
+    fg: "--bg-hover-soft", backdrop: ["--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
 ];
@@ -733,10 +1148,77 @@ function selfCheck() {
 
 // --- report ---------------------------------------------------------------
 
+// --- every var() resolves ---------------------------------------------------
+
+/** Custom properties used without a fallback that nothing declares.
+ *
+ *  An undeclared `var(--x)` with no fallback is not a no-op: the declaration
+ *  becomes invalid at computed-value time, so the property takes its INHERITED
+ *  value and every earlier declaration for it in the cascade is discarded.
+ *  `.tk-c-title` did exactly that (#463) — `font-size: var(--fs-md)` threw away
+ *  `.modal-input`'s own `--fs-base` and inherited from the dialog instead, which
+ *  is invisible in a review and invisible on screen until the two sizes differ.
+ *  Two more like it went unnoticed for a month: `--r-md` on `.hist-row`, which
+ *  therefore had no radius at all, and `--lh-normal` on two wrapping paragraphs.
+ *
+ *  Uses WITH a fallback are skipped, and deliberately: `var(--panel-w, clamp(…))`
+ *  is a value the app may override at runtime and a default when it has not, which
+ *  is the mechanism working rather than a hole.
+ *
+ *  So is anything `src/*.ts` sets with `setProperty` — read out of the source
+ *  rather than listed here, because a list of names would be a second thing to
+ *  keep in step, and the reason a property is legitimately absent from `:root` is
+ *  precisely that JavaScript writes it. `--i` on a staggered animation, `--y` on
+ *  a dragged row, `--depth` on a tree indent: all real, none declarable.
+ */
+function undeclaredVars(css, scripted) {
+  const declared = new Set([...css.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]));
+  const missing = new Map();
+  const lines = css.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    // `var(--name)` and `var( --name )`, but not `var(--name, fallback)`.
+    for (const m of lines[i].matchAll(/var\(\s*(--[\w-]+)\s*\)/g)) {
+      const name = m[1];
+      if (declared.has(name) || scripted.has(name)) continue;
+      if (!missing.has(name)) missing.set(name, []);
+      missing.get(name).push(i + 1);
+    }
+  }
+  return missing;
+}
+
+/** Every custom property `src/*.ts` writes with `setProperty`. */
+function scriptedVars() {
+  const names = new Set();
+  for (const file of readdirSync(join(root, "src"))) {
+    if (!file.endsWith(".ts")) continue;
+    const src = readFileSync(join(root, "src", file), "utf8");
+    for (const m of src.matchAll(/setProperty\(\s*["'`](--[\w-]+)/g)) names.add(m[1]);
+  }
+  return names;
+}
+
 function main() {
   if (!selfCheck()) {
     console.error("\nThe contrast maths is wrong. Fix it before trusting anything below.");
     process.exit(2);
+  }
+
+  // Before the measurements, because a `var()` that does not resolve makes every
+  // number below a measurement of the wrong declaration.
+  const missing = undeclaredVars(css, scriptedVars());
+  if (missing.size) {
+    console.error("\nCustom properties used with no fallback and never declared:\n");
+    for (const [name, at] of missing) {
+      console.error(`  ${name} — src/styles.css:${at.join(", ")}`);
+    }
+    console.error(
+      "\nAn undeclared var() with no fallback is not inert: the declaration is " +
+      "invalid at\ncomputed-value time, so the property inherits and every earlier " +
+      "declaration for it\nin the cascade is discarded. Declare it in `:root`, give " +
+      "it a fallback, or use a\ntoken that exists.\n",
+    );
+    return 1;
   }
 
   const rows = CASES.map((c) => {

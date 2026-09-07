@@ -2,19 +2,59 @@ import { listWorkspaces, saveWorkspace, removeWorkspace, loadUiState, saveUiStat
 import { confirmModal } from "./modal";
 import { workspaceForm } from "./forms";
 import { icon, iconButton, type IconName } from "./icons";
+import { workspaceTint } from "./tint";
 
-/** Confirmation text for deleting a workspace. Deleting one strands every
- *  scenario pinned to it — they stop being runnable, and any schedule on them
- *  quietly stops producing anything — so the count belongs in the question,
- *  not in a surprise afterwards. */
-export function describeDeleteImpact(workspaceId: string, skills: Skill[]): string {
+/** How many live sessions get named rather than counted. Three names still read
+ *  as a sentence; a fourth turns the question into an inventory, and by then the
+ *  number is the useful part anyway. */
+const NAMED_SESSIONS = 3;
+
+/** "a", "a and b", "a, b and c" — a list a sentence can contain. */
+function andList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/** Confirmation text for deleting a workspace, over the two things deletion does
+ *  to what is attached to the workspace — and they are not the same thing.
+ *
+ *  Every scenario pinned to it is stranded: it stops being runnable, and any
+ *  schedule on it quietly stops producing anything. Every session running in it
+ *  survives — deletion orphans a session, it does not kill it — but it is cut
+ *  loose from the repository, the board and the pull requests it was opened
+ *  against. Neither belongs in a surprise afterwards, and the second was the one
+ *  the question never mentioned.
+ *
+ *  `sessions` is the names of the workspace's live sessions, already resolved by
+ *  the caller: which tiles belong to a workspace is the deck's question (an
+ *  explicit id, else a matching path), and it includes the ones running in
+ *  another window. Named while there are few of them, because "“fix-250” is
+ *  still running in it" is an answer and "1 session is" is a riddle.
+ *
+ *  Names have to be distinct to be worth printing, and they are not always: a
+ *  session gets "session · <workspace>" until a transcript title replaces it,
+ *  so two fresh ones in the same workspace carry the same string. Naming the
+ *  same session twice is the riddle again, and the count is the honest answer. */
+export function describeDeleteImpact(workspaceId: string, skills: Skill[], sessions: string[]): string {
+  const parts: string[] = [];
   const pinned = skills.filter((s) => s.workspaceId === workspaceId);
-  if (pinned.length === 0) return "Delete workspace?";
-  const scheduled = pinned.filter((s) => s.schedule?.enabled).length;
-  const noun = pinned.length === 1 ? "scenario is" : "scenarios are";
-  const tail = scheduled > 0 ? `, ${scheduled} of them scheduled` : "";
-  return `Delete workspace? ${pinned.length} ${noun} pinned to it${tail}`
-    + " — they will stop running.";
+  if (pinned.length > 0) {
+    const scheduled = pinned.filter((s) => s.schedule?.enabled).length;
+    const noun = pinned.length === 1 ? "scenario is" : "scenarios are";
+    const tail = scheduled > 0 ? `, ${scheduled} of them scheduled` : "";
+    parts.push(`${pinned.length} ${noun} pinned to it${tail} — they will stop running.`);
+  }
+  if (sessions.length > 0) {
+    const one = sessions.length === 1;
+    const distinct = new Set(sessions).size === sessions.length;
+    const subject = sessions.length <= NAMED_SESSIONS && distinct
+      ? `${andList(sessions.map((n) => `\u201c${n}\u201d`))} ${one ? "is" : "are"}`
+      : `${sessions.length} sessions are`;
+    parts.push(`${subject} still running in it — ${one ? "it" : "they"} will keep`
+      + " running, attached to no workspace.");
+  }
+  if (parts.length === 0) return "Delete workspace?";
+  return `Delete workspace? ${parts.join(" ")}`;
 }
 
 /** Tooltip for the open-task badge. English needs one distinction rather than
@@ -29,6 +69,11 @@ export class WorkspacesPanel {
    *  the skills panel owns them and loads independently. */
   private getSkills: () => Skill[] = () => [];
   setSkillsSource(get: () => Skill[]) { this.getSkills = get; }
+  /** The names of a workspace's live sessions, so deletion can report what it
+   *  will cut loose. Injected for the same reason `getSkills` is: the deck owns
+   *  the tiles, and neither of the two is built before the other. */
+  private getSessions: (workspaceId: string) => string[] = () => [];
+  setSessionsSource(get: (workspaceId: string) => string[]) { this.getSessions = get; }
   private items: Workspace[] = [];
   /** The `ws-waiting` span in each row of the last render, so the deck's count can
    *  be written into a row this panel is not re-rendering. */
@@ -93,8 +138,8 @@ export class WorkspacesPanel {
     private mount: HTMLElement,
     private onSelect: (ws: Workspace) => void,
     private onChanged?: () => void,
-    /** Привязка воркспейса к GitHub-аккаунту изменилась: живые сессии этого
-     *  воркспейса работают на устаревшем окружении до перезапуска. */
+    /** The workspace's GitHub binding changed, so its live sessions are running
+     *  on a stale environment until they restart. */
     private onGithubChanged: (workspaceId: string) => void = () => {},
     /** Whether selecting a workspace here is remembered as the app's startup
      *  workspace.
@@ -256,7 +301,7 @@ export class WorkspacesPanel {
   }
 
   private async del(id: string) {
-    if (!(await confirmModal(describeDeleteImpact(id, this.getSkills())))) return;
+    if (!(await confirmModal(describeDeleteImpact(id, this.getSkills(), this.getSessions(id))))) return;
     this.items = await removeWorkspace(id);
     // A window pinned to this workspace is now pinned to nothing. It hands its
     // sessions back — they survive as orphans in the main window — and closes.
@@ -304,6 +349,14 @@ export class WorkspacesPanel {
       caret.className = "ws-caret";
       caret.setAttribute("aria-hidden", "true");
       caret.append(icon("chevron", 12));
+      /* KEPT, now that the group behind it carries the same colour, and the reason
+         is that the two say different things. The band is wayfinding — which of
+         these rows belong together — and it is deliberately weak ground, so at its
+         strength chalk, stone and slate land on the same neutral (see the note in
+         `src/tint.ts`). The dot is the only place in the app where the CHOICE is
+         legible at full saturation, and it is the only colour a detached workspace
+         has left once its sessions are in another window. Nine pixels for the
+         precise reading, a band for the glance. */
       const dot = document.createElement("span");
       dot.className = "dot"; dot.style.background = w.color;
       const label = document.createElement("button");
@@ -434,14 +487,34 @@ export class WorkspacesPanel {
         sub.append(scope);
       }
       if (sub.childElementCount > 0) row.append(sub);
-      this.mount.appendChild(row);
       /* The workspace's sessions go here, and the deck is what fills them: one
          tree, one row per workspace, its sessions as its children. See
          `Deck.setTree`. */
       const kids = document.createElement("div");
       kids.className = "ws-kids";
       kids.dataset.ws = w.id;
-      this.mount.appendChild(kids);
+      /* The row and its sessions, in one box, and the box is what the workspace's
+         colour is painted on. The two used to go into the mount flat, side by
+         side, and a gradient spanning both had nothing to paint on — which is the
+         whole reason this element exists. It changes no query: everything that
+         reaches into this panel does so by `data-ws` from the mount
+         (`sessionHost`, `showExpanded`, `focusActive`), and those are descendant
+         selectors that do not care how deep the row is.
+
+         The tint is two halves of one continuous band and neither of them is a
+         `background` on a row: `.ws-row.active` and `.sess-row.active` own that
+         property, and a tint written there would either overwrite selection or be
+         overwritten by it. See `.ws-group` in `src/styles.css`. */
+      const group = document.createElement("div");
+      group.className = "ws-group";
+      group.dataset.ws = w.id;
+      const tint = workspaceTint(w.color);
+      if (tint) {
+        group.style.setProperty("--ws-tint", tint.rgb);
+        group.style.setProperty("--ws-tint-a", String(tint.alpha));
+      }
+      group.append(row, kids);
+      this.mount.appendChild(group);
     }
     /* Adding a workspace is the app's act, not this workspace's: the new one
        would appear in the main window's tree and in no list this window keeps. */

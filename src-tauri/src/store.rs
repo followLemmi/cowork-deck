@@ -98,12 +98,15 @@ impl Store {
     /// for the io half.
     fn try_read_vec<T: serde::de::DeserializeOwned>(path: &PathBuf) -> std::io::Result<Vec<T>> {
         match std::fs::read_to_string(path) {
-            // An empty file is a first run, not a corrupt one: `write_vec`
-            // truncates before it writes, so this is what a crash mid-write
-            // leaves behind, and refusing it would wedge every save with no
-            // recovery inside the app. A *non-empty* file we cannot parse still
-            // refuses — half an array is evidence of records a save would
-            // destroy, and an empty one is evidence of nothing.
+            // An empty file is a first run, not a corrupt one, and refusing it
+            // would wedge every save with no recovery inside the app. Our own
+            // writes no longer produce one — `write_atomic` renames a complete
+            // file into place rather than truncating this one (#145) — but a
+            // build older than that fix, a filesystem that lost the bytes on a
+            // power cut, or a person with an editor can all still leave one, and
+            // the tolerance is what makes those recoverable. A *non-empty* file
+            // we cannot parse still refuses: half an array is evidence of records
+            // a save would destroy, and an empty one is evidence of nothing.
             Ok(s) if s.trim().is_empty() => Ok(Vec::new()),
             Ok(s) => serde_json::from_str(&s).map_err(|e| {
                 std::io::Error::new(
@@ -133,17 +136,110 @@ impl Store {
         }
     }
 
+    /// Replace `path`'s contents without ever leaving it truncated.
+    ///
+    /// `fs::write` opens with `O_TRUNC`: the old records are gone before the new
+    /// ones reach the disk, so a crash, a kill or a full disk in between leaves a
+    /// **zero-byte file**. `try_read_vec` then reads that as an empty list — on
+    /// purpose, because refusing there would wedge every save with no recovery
+    /// from inside the app — and the next save writes the emptiness back as the
+    /// truth. That was the last open route to #117 (#145). Writing a sibling and
+    /// renaming it over the target closes it: `rename` is atomic within a
+    /// filesystem, so the target only ever holds a whole file, the old one or the
+    /// new one and never a prefix of either.
+    ///
+    /// The temp name carries a pid and a counter rather than being derived from
+    /// the target alone. `sessions.json` is written from more than one window,
+    /// and `merge_layout`'s own doc comment describes saves that race; two of
+    /// them sharing one temp file would let a rename publish half of the other
+    /// writer's bytes — a *non-empty* unparseable file, which since #117 the next
+    /// save refuses outright. That wedges the store instead of costing it one
+    /// tick, so it is a worse failure than the one being fixed. The leading dot
+    /// and the `.tmp` suffix keep whatever a crash leaves behind out of sight.
+    ///
+    /// `sync_all` before the rename, because the rename can otherwise reach the
+    /// disk before the bytes it publishes do — and what that leaves is exactly
+    /// the zero-byte file this function exists to make impossible.
+    ///
+    /// `tasks/fs.rs::write_atomic` is the same manoeuvre for cards. It stays
+    /// separate because it speaks `TaskError` and resolves temp files against the
+    /// board's root rather than the target's own directory.
+    fn write_atomic(path: &PathBuf, body: &str) -> std::io::Result<()> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let tmp = path.with_file_name(format!(
+            ".{name}.{}.{}.tmp",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let spill = || -> std::io::Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(body.as_bytes())?;
+            f.sync_all()
+        };
+        match spill().and_then(|()| std::fs::rename(&tmp, path)) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Nobody else will: the name is unique per call, so a temp file
+                // left by a failure here would stay for good.
+                let _ = std::fs::remove_file(&tmp);
+                Err(e)
+            }
+        }
+    }
+
+    /// Serialize `value` and put it in `path`, atomically.
+    ///
+    /// The one place a store file is serialized and written. Every save went
+    /// through its own copy of these three lines, which is how `ui_state.json`
+    /// came to have the truncation hazard that `write_vec`'s callers had, in a
+    /// function nothing pointed at.
+    fn write_json<T: serde::Serialize>(path: &PathBuf, value: &T) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(value)
+            .map_err(std::io::Error::other)?;
+        Self::write_atomic(path, &json)
+    }
+
     fn write_vec<T: serde::Serialize>(path: &PathBuf, items: &[T]) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(items)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(path, json)
+        Self::write_json(path, &items)
     }
 
     pub fn workspaces(&self) -> Vec<Workspace> { Self::read_vec(&self.ws_path()) }
+    /// The workspace list, or the reason it could not be read.
+    ///
+    /// `workspaces` above is best-effort, and `read_vec` states the condition
+    /// that makes that safe: nothing destructive follows a plain listing. Since
+    /// #369 something does. A window pinned to a workspace closes itself when
+    /// the list stops containing it, so "this file will not parse" arriving as
+    /// "there are no workspaces" would close every detached window over a fault
+    /// that deleted nothing. A caller about to act on the *absence* of a record
+    /// asks this one, and says nothing when it cannot be answered.
+    pub fn try_workspaces(&self) -> std::io::Result<Vec<Workspace>> {
+        Self::try_read_vec(&self.ws_path())
+    }
     pub fn save_workspaces(&self, items: &[Workspace]) -> std::io::Result<()> {
         Self::write_vec(&self.ws_path(), items)
     }
     pub fn skills(&self) -> Vec<Skill> { Self::read_vec(&self.sk_path()) }
+    /// The scenario list, or the reason it could not be read.
+    ///
+    /// Same argument as `try_workspaces` above, for the other file the
+    /// scheduler tick reads. The tick prunes `schedule_state.json` down to the
+    /// scenarios that still exist, so "this file will not parse" arriving as
+    /// "there are no scenarios" would drop every rule's `lastRun` over a fault
+    /// that deleted nothing — and every schedule would then re-arm from
+    /// scratch. A caller about to act on the *absence* of a record asks this
+    /// one.
+    pub fn try_skills(&self) -> std::io::Result<Vec<Skill>> {
+        Self::try_read_vec(&self.sk_path())
+    }
     pub fn save_skills(&self, items: &[Skill]) -> std::io::Result<()> {
         Self::write_vec(&self.sk_path(), items)
     }
@@ -176,6 +272,55 @@ impl Store {
         Self::write_vec(&self.layout_path(), &merged)
     }
 
+    /// Write down which conversation each session is in, over whatever the file
+    /// already says, for every id in `ids`.
+    ///
+    /// The fork a `/clear` produces is learned by a hook, kept in
+    /// [`crate::resume_ids`] for the life of the app run, and reaches this file
+    /// through the frontend's poll. That leaves a window: a `/clear` and then a
+    /// quit before the next tick wrote a layout with no `resumeId`, and the next
+    /// launch resumed the conversation the person cleared away — #199 again. The
+    /// quit path calls this, so the last thing the app does is agree with what it
+    /// learned.
+    ///
+    /// The window is not five seconds wide, either. Since #251 the poll is armed
+    /// only while the deck has focus, so a session cleared in a window the person
+    /// then tabbed away from is never polled again — and without this, never
+    /// written down.
+    ///
+    /// Every window's entries at once, which is why this is not `save_layout`:
+    /// at exit there is no window to attribute a write to, and which conversation
+    /// a session is in is a fact about the conversation rather than about who was
+    /// showing it. Entries this does not recognise are left exactly as they are.
+    ///
+    /// `try_read_vec` for the reason `save_layout` gives — a read-before-write
+    /// that took an unreadable file for an empty one would replace every other
+    /// session in it with nothing.
+    pub fn update_resume_ids(
+        &self,
+        ids: &std::collections::HashMap<String, String>,
+    ) -> std::io::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut existing: Vec<SessionEntry> = Self::try_read_vec(&self.layout_path())?;
+        let mut touched = false;
+        for entry in existing.iter_mut() {
+            let Some(id) = ids.get(&entry.session_id) else { continue };
+            if entry.resume_id.as_deref() == Some(id.as_str()) {
+                continue;
+            }
+            entry.resume_id = Some(id.clone());
+            touched = true;
+        }
+        // A write that would change nothing is not worth the rename, and at exit
+        // it is the common case: the poll tick has usually already been here.
+        if !touched {
+            return Ok(());
+        }
+        Self::write_vec(&self.layout_path(), &existing)
+    }
+
     fn terminals_path(&self) -> PathBuf { self.dir.join("terminals.json") }
     /// The drawer's tabs. A missing or damaged file is an empty drawer, the same
     /// forgiveness the deck layout gets: a person who loses their terminal tabs
@@ -187,9 +332,7 @@ impl Store {
         }
     }
     pub fn save_terminals(&self, layout: &TerminalLayout) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(layout)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(self.terminals_path(), json)
+        Self::write_json(&self.terminals_path(), layout)
     }
 
     fn ui_path(&self) -> PathBuf { self.dir.join("ui_state.json") }
@@ -238,12 +381,39 @@ impl Store {
         if let Some(on) = patch.record_scenario_runs {
             st.record_scenario_runs = on;
         }
+        // An answer given, never one withdrawn: a patch that omits the field
+        // leaves it alone, exactly like every field above. Forgetting the answer
+        // is `clear_capture_on_close`, because "leave it alone" and "put it back
+        // to never-asked" cannot both be spelled `None` here.
+        if let Some(on) = patch.capture_on_close {
+            st.capture_on_close = Some(on);
+        }
         if let Some(rows) = patch.terminal_rows {
             st.terminal_rows = rows;
         }
-        let json = serde_json::to_string_pretty(&st)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(self.ui_path(), json)
+        // Whether the left panel is showing — a preference rather than a width,
+        // and one that is in this file only because a person chose it. It used to
+        // be whatever the last zoom had made it (#480), which is not a thing to
+        // remember on anybody's behalf.
+        if let Some(on) = patch.panel_collapsed {
+            st.panel_collapsed = on;
+        }
+        if let Some(on) = patch.usage_reported {
+            st.usage_reported = on;
+        }
+        Self::write_json(&self.ui_path(), &st)
+    }
+
+    /// Forget the remembered answer to the capture question, so the next close
+    /// asks again.
+    ///
+    /// Its own method rather than a patch field: a patch says "set this" and an
+    /// omitted field says "leave it alone", so there is no value of
+    /// `Option<bool>` left to mean "back to never asked".
+    pub fn clear_capture_on_close(&self) -> std::io::Result<()> {
+        let mut st = self.ui_state();
+        st.capture_on_close = None;
+        Self::write_json(&self.ui_path(), &st)
     }
 
     fn schedule_state_path(&self) -> PathBuf { self.dir.join("schedule_state.json") }
@@ -275,9 +445,31 @@ impl Store {
         &self,
         st: &std::collections::HashMap<String, ScheduleRun>,
     ) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(st)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        std::fs::write(self.schedule_state_path(), json)
+        Self::write_json(&self.schedule_state_path(), st)
+    }
+
+    fn usage_state_path(&self) -> PathBuf { self.dir.join("usage_state.json") }
+
+    /// The limits this app has watched a session be refused by (#303).
+    ///
+    /// A `Vec` rather than a map, and read through `read_vec` like the workspaces
+    /// and the skills, because that path already has the rule this file needs: an
+    /// unparseable non-empty file refuses the read rather than reporting an
+    /// emptiness a save would then write back over it.
+    ///
+    /// Losing this file costs one fact — that the budget was spent — and the app
+    /// carries on saying "unknown" until the next banner goes past. That is why
+    /// there is no warning printed here where `schedule_state` prints one: this
+    /// degrades to the state the feature was designed to sit in anyway.
+    pub fn usage_state(&self) -> Vec<crate::model::UsageExhaustion> {
+        Self::read_vec(&self.usage_state_path())
+    }
+
+    pub fn save_usage_state(
+        &self,
+        items: &[crate::model::UsageExhaustion],
+    ) -> std::io::Result<()> {
+        Self::write_vec(&self.usage_state_path(), items)
     }
 
     /// The scenario run journal, beside `skills.json` and `schedule_state.json`.
@@ -289,11 +481,12 @@ impl Store {
 
     /// Append one event. **`OpenOptions::append`, never `write_vec`.**
     ///
-    /// `write_vec` truncates before it writes, and `try_read_vec`'s own comment
-    /// already records what that costs when a crash lands in the middle (#117).
-    /// A file written on every launch cannot afford that failure mode; a
-    /// half-written appended line is discarded by the reader and everything
-    /// before it stands.
+    /// Not because the whole-file write is unsafe any more — `write_atomic`
+    /// settled that (#145) — but because rewriting a journal that grows all day
+    /// in order to add one line to it is the wrong shape: every append would
+    /// read, fold and re-render every record before it. A half-written appended
+    /// line is discarded by the reader and everything before it stands, which is
+    /// the cheaper guarantee and the one this file needs.
     ///
     /// One `write` of one line, so two writers interleaving produce two whole
     /// lines rather than one spliced one — this is the guarantee `O_APPEND`
@@ -323,7 +516,7 @@ impl Store {
         }
         line.push_str(
             &ev.to_line()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+                .map_err(std::io::Error::other)?,
         );
         line.push('\n');
         f.write_all(line.as_bytes())
@@ -362,23 +555,22 @@ impl Store {
 
     /// Rewrite the journal from `keep`, atomically.
     ///
-    /// Temp file plus rename, so a crash mid-compaction leaves the old journal
+    /// Through `write_atomic`, so a crash mid-compaction leaves the old journal
     /// intact — the one place this file is *not* append-only is also the one
-    /// place it cannot afford to be truncated in.
+    /// place it cannot afford to be truncated in. This had its own temp-file
+    /// copy of that manoeuvre before the store's other writes needed one.
     fn rewrite_runs(&self, keep: &[RunRecord]) -> std::io::Result<()> {
         let mut body = String::new();
         for rec in keep {
             for ev in rec.to_events() {
                 body.push_str(
                     &ev.to_line()
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?,
+                        .map_err(std::io::Error::other)?,
                 );
                 body.push('\n');
             }
         }
-        let tmp = self.runs_path().with_extension("jsonl.tmp");
-        std::fs::write(&tmp, body)?;
-        std::fs::rename(&tmp, self.runs_path())
+        Self::write_atomic(&self.runs_path(), &body)
     }
 
     /// Drop everything past the retention limit. Returns how many records went.
@@ -426,8 +618,7 @@ impl Store {
             .iter()
             .any(|r| doomed(r) && r.status == crate::runs::RunStatus::Running)
         {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "one of this scenario's runs is still going — its record would be erased out \
                  from under it, and the run would never be journalled at all",
             ));
@@ -459,7 +650,15 @@ impl Store {
         Ok(items)
     }
 
-    pub fn upsert_skill(&self, sk: Skill) -> std::io::Result<Vec<Skill>> {
+    /// Write one scenario, because somebody saved it.
+    ///
+    /// That is what clears `pinned_by_migration`: the #249 migration's guess at
+    /// a workspace lasts exactly until a person opens the form and presses OK,
+    /// having been shown the pin it keeps. From then on it is an ordinary pin
+    /// and travels like one. The migration itself writes through `save_skills`,
+    /// the bulk write, and does not come through here.
+    pub fn upsert_skill(&self, mut sk: Skill) -> std::io::Result<Vec<Skill>> {
+        sk.pinned_by_migration = false;
         let mut items: Vec<Skill> = Self::try_read_vec(&self.sk_path())?;
         match items.iter_mut().find(|x| x.id == sk.id) {
             Some(existing) => *existing = sk,
@@ -505,7 +704,7 @@ mod tests {
     fn empty_store_reads_empty_then_upserts_and_deletes() {
         let s = Store::new(tmp());
         assert!(s.workspaces().is_empty());
-        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into(), github: None, tracker: None };
+        let w = Workspace { id: "w1".into(), name: "Grosh".into(), path: "/tmp/grosh".into(), color: "#3b82f6".into(), github: None, tracker: None, repo: None };
         let after = s.upsert_workspace(w.clone()).unwrap();
         assert_eq!(after.len(), 1);
         // reload from disk
@@ -519,6 +718,79 @@ mod tests {
         // delete
         let after = s.delete_workspace("w1").unwrap();
         assert!(after.is_empty());
+    }
+
+    /// A layout entry for the resume-id tests: a session, and whatever the file
+    /// already says about which conversation it should resume.
+    fn entry_for(session_id: &str, resume_id: Option<&str>) -> SessionEntry {
+        SessionEntry { resume_id: resume_id.map(Into::into), ..entry(session_id, None) }
+    }
+
+    /// The quit path's last word. A `/clear` inside the final five seconds never
+    /// reached the file through the poll tick, and resuming what the file said
+    /// would bring back the conversation the person cleared away (#199).
+    #[test]
+    fn update_resume_ids_writes_what_the_tick_did_not() {
+        let dir = tmp();
+        let s = Store::new(dir);
+        s.save_layout(MAIN_WINDOW, &[entry_for("s1", None), entry_for("s2", None)]).unwrap();
+        let mut ids = std::collections::HashMap::new();
+        ids.insert("s2".to_string(), "after-the-clear".to_string());
+        s.update_resume_ids(&ids).unwrap();
+
+        let back = s.layout();
+        // The one that was cleared, and only it.
+        assert_eq!(back.iter().find(|e| e.session_id == "s2").unwrap().resume_id.as_deref(),
+                   Some("after-the-clear"));
+        assert_eq!(back.iter().find(|e| e.session_id == "s1").unwrap().resume_id, None);
+    }
+
+    /// An id for a session the file has never heard of changes nothing — a tile
+    /// closed before the quit, or one another machine's layout owns.
+    #[test]
+    fn update_resume_ids_leaves_sessions_it_does_not_know() {
+        let dir = tmp();
+        let s = Store::new(dir);
+        s.save_layout(MAIN_WINDOW, &[entry_for("s1", Some("already-here"))]).unwrap();
+        let mut ids = std::collections::HashMap::new();
+        ids.insert("gone".to_string(), "nowhere".to_string());
+        s.update_resume_ids(&ids).unwrap();
+
+        let back = s.layout();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].resume_id.as_deref(), Some("already-here"));
+    }
+
+    /// Every other window's sessions survive it: this is the one writer with no
+    /// window to attribute itself to, so a whole-file rewrite is what it does and
+    /// leaving the rest alone is the whole requirement.
+    #[test]
+    fn update_resume_ids_does_not_disturb_another_window() {
+        let dir = tmp();
+        let s = Store::new(dir);
+        s.save_layout(MAIN_WINDOW, &[entry_for("s1", None)]).unwrap();
+        s.save_layout("w2", &[entry_for("s2", None)]).unwrap();
+        let mut ids = std::collections::HashMap::new();
+        ids.insert("s1".to_string(), "after-the-clear".to_string());
+        s.update_resume_ids(&ids).unwrap();
+
+        assert_eq!(s.layout().len(), 2);
+        assert_eq!(s.layout_for("w2").len(), 1, "the other window is still there");
+        assert_eq!(s.layout_for(MAIN_WINDOW)[0].resume_id.as_deref(), Some("after-the-clear"));
+    }
+
+    /// An unreadable file refuses rather than replacing every session in it with
+    /// nothing — `save_layout`'s rule (#117), in a third place.
+    #[test]
+    fn update_resume_ids_refuses_an_unreadable_layout() {
+        let dir = tmp();
+        let s = Store::new(dir.clone());
+        std::fs::write(dir.join("sessions.json"), "[{\"sessionId\": ").unwrap();
+        let mut ids = std::collections::HashMap::new();
+        ids.insert("s1".to_string(), "after-the-clear".to_string());
+        assert!(s.update_resume_ids(&ids).is_err());
+        // And the half-written file is still there to be recovered by hand.
+        assert!(std::fs::read_to_string(dir.join("sessions.json")).unwrap().contains("sessionId"));
     }
 
     #[test]
@@ -546,6 +818,7 @@ mod tests {
             color: "#111111".into(),
             github: None,
             tracker: None,
+            repo: None,
         };
         s.upsert_workspace(w1.clone()).unwrap();
 
@@ -569,6 +842,7 @@ mod tests {
             color: "#222222".into(),
             github: None,
             tracker: None,
+            repo: None,
         };
         let result = s.upsert_workspace(w2);
         assert!(
@@ -594,7 +868,7 @@ mod tests {
                 workspace_id: Some("w1".into()), task_id: Some("01AAA".into()),
                 scheduled_skill_id: None, user_name: None,
                 name_kind: Some(NameKind::Context), skill_id: None, run_id: None,
-                owner: None,
+                owner: None, cli_kind: None, resume_id: None,
             },
             SessionEntry {
                 session_id: "s2".into(), cwd: "/tmp/b".into(), name: "terminal · P".into(),
@@ -602,7 +876,9 @@ mod tests {
                 // The whole point of the field: this one survives the round trip.
                 user_name: Some("the one I must not close".into()),
                 name_kind: Some(NameKind::Placeholder), skill_id: None, run_id: None,
-                owner: None,
+                // The other field a stale copy of which would lose work: this
+                // one says which conversation the next launch resumes.
+                owner: None, cli_kind: None, resume_id: Some("after-the-clear".into()),
             },
         ];
         s.save_layout(MAIN_WINDOW, &entries).unwrap();
@@ -623,7 +899,7 @@ mod tests {
             session_id: session_id.into(), cwd: "/tmp".into(), name: session_id.into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: None, name_kind: None, skill_id: None, run_id: None,
-            owner: owner.map(Into::into),
+            owner: owner.map(Into::into), cli_kind: None, resume_id: None,
         }
     }
 
@@ -728,17 +1004,30 @@ mod tests {
         assert_eq!(UiState::default().terminal_rows, 14);
         // Off: nobody has been asked yet, so nobody has declined.
         assert!(!UiState::default().sync_offer_dismissed);
+        // Open: a panel nobody has collapsed is a panel showing.
+        assert!(!UiState::default().panel_collapsed);
+        // On. Asking spends no quota and reads no credential, and the
+        // alternative default is a screen saying "unknown" to somebody who
+        // never knew there was a switch.
+        assert!(UiState::default().usage_reported);
+        // Never asked, which is a third state and not `false`. A default either
+        // way would answer a question about spending somebody's money on their
+        // behalf — see the field's own note.
+        assert_eq!(UiState::default().capture_on_close, None);
         let patch = UiStatePatch {
             active_workspace_id: Some("w-1".into()),
             ui_scale: Some(1.3),
             pr_diff_cols: Some(80),
             sync_offer_dismissed: Some(true),
             record_scenario_runs: Some(false),
+            capture_on_close: Some(true),
             terminal_rows: Some(20),
+            usage_reported: Some(false),
             panel_px: Some(340),
             wsp_px: Some(720),
             wsp_wide_px: None,
             tool_px: Some(360),
+            panel_collapsed: Some(true),
         };
         s.save_ui_state(&patch).unwrap();
         let reloaded = Store::new(s.dir.clone()).ui_state();
@@ -755,6 +1044,10 @@ mod tests {
         assert_eq!(reloaded.terminal_rows, 20);
         // An offer that comes back after being waved away is not an offer.
         assert!(reloaded.sync_offer_dismissed);
+        // And the panel stays where the person left it, which is the whole reason
+        // it is in this file: it used to come back as whatever the last zoom made
+        // it.
+        assert!(reloaded.panel_collapsed);
     }
 
     /// The drawer's own file, and the reason it is a struct rather than the bare
@@ -922,6 +1215,7 @@ mod tests {
             .upsert_workspace(Workspace {
                 id: "w3".into(), name: "C".into(), path: "/c".into(), color: "#fff".into(),
                 github: None, tracker: None,
+                repo: None,
             })
             .expect_err("a file we could not parse must never be overwritten");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
@@ -954,6 +1248,7 @@ mod tests {
             .upsert_skill(Skill {
                 id: "s1".into(), name: "S".into(), icon: "play".into(),
                 prompt: "p".into(), workspace_id: None, schedule: None,
+                pinned_by_migration: false,
             })
             .is_err());
         assert!(s.delete_skill("s1").is_err());
@@ -979,9 +1274,12 @@ mod tests {
     /// That last one is not pedantry. `read_to_string` gives `Ok("")`,
     /// `from_str::<Vec<_>>("")` errors, and the refusal this task introduces would
     /// then make every write fail permanently with no way back from inside the
-    /// app. And a zero-byte `workspaces.json` is exactly what `write_vec`'s bare
-    /// `fs::write` leaves behind if the process dies between the truncate and the
-    /// write — the crash case this task's own reasoning names.
+    /// app. A zero-byte `workspaces.json` was exactly what `write_vec`'s bare
+    /// `fs::write` left behind if the process died between the truncate and the
+    /// write — the crash case this task's own reasoning named, and the one #145
+    /// closed by writing through `write_atomic`. The tolerance stays for the
+    /// files that fix cannot reach: written by an older build, or by something
+    /// that is not this app.
     ///
     /// **A truncated-but-non-empty file keeps the refusal**, and the difference is
     /// deliberate: empty carries no information, so treating it as "nothing yet"
@@ -1107,6 +1405,7 @@ mod tests {
             params: std::collections::HashMap::new(),
             prompt: Some("go".into()),
             continues_run_id: None,
+            cli_kind: Some("claude".into()),
         })
     }
 
@@ -1292,6 +1591,7 @@ mod tests {
         s.upsert_skill(Skill {
             id: "s1".into(), name: "Triage".into(), icon: "bolt".into(),
             prompt: "p".into(), workspace_id: Some("w1".into()), schedule: None,
+            pinned_by_migration: false,
         }).unwrap();
         s.append_run_event(&a_run("r1", "s1", 10)).unwrap();
         s.delete_skill("s1").unwrap();
@@ -1315,5 +1615,219 @@ mod tests {
         let runs = s.runs();
         assert_eq!(runs.iter().filter(|r| r.skill_id == "hourly").count(), RUNS_PER_SKILL);
         assert_eq!(runs.iter().filter(|r| r.skill_id == "nightly").count(), 1);
+    }
+
+    /// #145, and the mechanism rather than the crash: a save must publish a
+    /// *finished* file by renaming it over the target, never empty the target
+    /// and fill it back in. Provoking a real torn write is not something a unit
+    /// test can do, so what is pinned here is the property that makes one
+    /// harmless — there is no moment at which the target holds neither the old
+    /// records nor the new ones.
+    ///
+    /// The inode is the witness. `fs::write` truncates and refills the same
+    /// file, so the number is unchanged; a rename puts a different file at the
+    /// name. Nothing else distinguishes the two after the fact, which is why the
+    /// assertion is this and not a byte comparison.
+    ///
+    /// **Every write path in this file, not the one the issue was reported
+    /// against.** `write_vec`'s three callers were the reported ones, and
+    /// `ui_state.json` — named in the same report — never went through it at
+    /// all; a fix applied to some of them is a fix somebody will assume covers
+    /// the rest.
+    #[test]
+    fn every_save_replaces_the_file_rather_than_truncating_it() {
+        use std::os::unix::fs::MetadataExt;
+
+        let s = Store::new(tmp());
+        let ino = |p: &PathBuf| std::fs::metadata(p).unwrap().ino();
+        let replaced = |p: &PathBuf, before: u64, what: &str| {
+            assert_ne!(
+                before,
+                ino(p),
+                "{what} was written in place: between the truncate and the write \
+                 it holds neither the old records nor the new ones",
+            );
+        };
+
+        let ws = |id: &str| Workspace {
+            id: id.into(), name: id.into(), path: "/tmp/a".into(), color: "#fff".into(),
+            github: None, tracker: None, repo: None,
+        };
+        s.save_workspaces(&[ws("w1")]).unwrap();
+        let before = ino(&s.ws_path());
+        s.save_workspaces(&[ws("w1"), ws("w2")]).unwrap();
+        replaced(&s.ws_path(), before, "workspaces.json");
+        assert_eq!(s.workspaces().len(), 2, "and the new records are the ones on disk");
+
+        let sk = |id: &str| Skill {
+            id: id.into(), name: id.into(), icon: "play".into(), prompt: "p".into(),
+            workspace_id: None, schedule: None, pinned_by_migration: false,
+        };
+        s.save_skills(&[sk("s1")]).unwrap();
+        let before = ino(&s.sk_path());
+        s.save_skills(&[sk("s1"), sk("s2")]).unwrap();
+        replaced(&s.sk_path(), before, "skills.json");
+        assert_eq!(s.skills().len(), 2);
+
+        s.save_layout(MAIN_WINDOW, &[entry("t1", None)]).unwrap();
+        let before = ino(&s.layout_path());
+        s.save_layout(MAIN_WINDOW, &[entry("t1", None), entry("t2", None)]).unwrap();
+        replaced(&s.layout_path(), before, "sessions.json");
+        assert_eq!(s.layout().len(), 2);
+
+        s.save_ui_state(&UiStatePatch { active_workspace_id: Some("w1".into()), ..Default::default() })
+            .unwrap();
+        let before = ino(&s.ui_path());
+        s.save_ui_state(&UiStatePatch { active_workspace_id: Some("w2".into()), ..Default::default() })
+            .unwrap();
+        replaced(&s.ui_path(), before, "ui_state.json");
+        assert_eq!(s.ui_state().active_workspace_id, Some("w2".into()));
+
+        let drawer = |name: &str| TerminalLayout {
+            items: vec![TerminalEntry {
+                session_id: "t1".into(), cwd: "/tmp/a".into(), name: name.into(),
+                workspace_id: None,
+            }],
+            ..Default::default()
+        };
+        s.save_terminals(&drawer("zsh")).unwrap();
+        let before = ino(&s.terminals_path());
+        s.save_terminals(&drawer("bash")).unwrap();
+        replaced(&s.terminals_path(), before, "terminals.json");
+        assert_eq!(s.terminals().items[0].name, "bash");
+
+        let fired = |at: i64| {
+            let mut m = std::collections::HashMap::new();
+            m.insert("s1".to_string(), ScheduleRun {
+                last_attempt: at, last_run: Some(at), last_outcome: Some("launched".into()),
+                preset: None, version: SCHEDULE_STATE_VERSION,
+            });
+            m
+        };
+        s.save_schedule_state(&fired(1)).unwrap();
+        let before = ino(&s.schedule_state_path());
+        s.save_schedule_state(&fired(2)).unwrap();
+        replaced(&s.schedule_state_path(), before, "schedule_state.json");
+        assert_eq!(s.schedule_state()["s1"].last_attempt, 2);
+
+        // The journal's compaction, the one place it is not append-only. It had
+        // this manoeuvre before the rest of the file did; it now shares the
+        // implementation, so it is pinned here with everything else.
+        for i in 0..(RUNS_PER_SKILL + 2) {
+            s.append_run_event(&a_run(&format!("r{i}"), "s1", i as i64)).unwrap();
+        }
+        let before = ino(&s.runs_path());
+        assert!(s.compact_runs().unwrap() > 0, "the fixture must actually provoke a rewrite");
+        replaced(&s.runs_path(), before, "runs.jsonl");
+    }
+
+    /// The consequence, stated as the issue states it: a write that fails
+    /// cannot leave a zero-byte file where the records were.
+    ///
+    /// The failure is injected where the app cannot recover from it either — a
+    /// store directory that has become unwritable — because that is the one
+    /// point a test can reach. What the old code did here is worse than an
+    /// error: the target already exists and is writable, so `O_TRUNC` succeeds,
+    /// the save reports success, and the records are gone. Refusing is the
+    /// improvement, and the file surviving byte for byte is the point.
+    #[test]
+    fn a_save_that_fails_leaves_the_previous_records_byte_for_byte() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let s = Store::new(tmp());
+        let w = Workspace {
+            id: "w1".into(), name: "First".into(), path: "/tmp/a".into(), color: "#111111".into(),
+            github: None, tracker: None, repo: None,
+        };
+        s.save_workspaces(std::slice::from_ref(&w)).unwrap();
+        let original = fs::read_to_string(s.ws_path()).unwrap();
+
+        let perms = fs::metadata(&s.dir).unwrap().permissions();
+        fs::set_permissions(&s.dir, fs::Permissions::from_mode(0o500)).unwrap();
+        // As root the mode bits do not stop the write, so the scenario cannot be
+        // exercised on this platform/user — skip rather than false-fail, the same
+        // way `upsert_refuses_to_truncate_on_non_not_found_read_error` does.
+        let still_writable = fs::write(s.dir.join("probe"), "x").is_ok();
+        if still_writable {
+            let _ = fs::remove_file(s.dir.join("probe"));
+            fs::set_permissions(&s.dir, perms).unwrap();
+            return;
+        }
+
+        let mut w2 = w.clone();
+        w2.name = "Renamed".into();
+        assert!(
+            s.save_workspaces(&[w2]).is_err(),
+            "a save that cannot be completed must report so, not half-happen",
+        );
+
+        fs::set_permissions(&s.dir, perms).unwrap();
+        assert_eq!(
+            fs::read_to_string(s.ws_path()).unwrap(),
+            original,
+            "the records that were there must still be there, in full",
+        );
+        // And no debris at the name the next save will use.
+        let leftovers: Vec<String> = fs::read_dir(&s.dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "a failed save left temp files behind: {leftovers:?}");
+    }
+
+    /// The difference `try_workspaces` exists for (#369).
+    ///
+    /// `workspaces` answers an unparseable file with an empty list, which is the
+    /// right trade for a plain listing and the wrong one for a decision: a window
+    /// pinned to a workspace closes itself when the list stops containing it, so
+    /// a fault that deleted nothing would close every detached window. The strict
+    /// read is what lets a caller tell the two apart and say nothing.
+    #[test]
+    fn try_workspaces_refuses_a_list_it_cannot_parse() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.ws_path(), "{ not an array").unwrap();
+
+        assert!(
+            s.workspaces().is_empty(),
+            "the best-effort read still answers empty, as its callers rely on"
+        );
+        assert!(
+            s.try_workspaces().is_err(),
+            "a list that will not parse must not read as a list with nothing in it"
+        );
+    }
+
+    /// The same difference, for the other file the scheduler tick reads.
+    ///
+    /// The tick prunes `schedule_state.json` down to the scenarios that still
+    /// exist. Reading an unparseable `skills.json` as "there are none" would
+    /// therefore rewrite that file empty — every rule's `lastRun` gone, every
+    /// schedule re-armed from scratch — over a fault that deleted nothing.
+    #[test]
+    fn try_skills_refuses_a_list_it_cannot_parse() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.sk_path(), "{ not an array").unwrap();
+
+        assert!(s.skills().is_empty(), "the best-effort read still answers empty");
+        assert!(
+            s.try_skills().is_err(),
+            "a list that will not parse must not read as a list with nothing in it"
+        );
+    }
+
+    /// And an *empty* file is still a first run rather than a fault — the
+    /// tolerance `try_read_vec` documents, which a zero-byte file left by an
+    /// older build or a power cut depends on.
+    #[test]
+    fn try_workspaces_accepts_an_empty_file() {
+        let s = Store::new(tmp());
+        std::fs::create_dir_all(&s.dir).unwrap();
+        std::fs::write(s.ws_path(), "").unwrap();
+        assert!(s.try_workspaces().unwrap().is_empty());
     }
 }

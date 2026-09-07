@@ -34,6 +34,7 @@ function mount(): PanelElements & {
     '<div id="ws-page" class="panel-page"></div>' +
     '<div id="history" class="panel-page hidden"></div>' +
     '<div id="sk-page" class="panel-page hidden"></div>' +
+    '<div id="mem-page" class="panel-page hidden"></div>' +
     '</div></aside>' +
     '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>' +
     '<aside id="wspanel" hidden><div id="wsp-head"></div>' +
@@ -59,6 +60,7 @@ function mount(): PanelElements & {
   return {
     pages: {
       sessions: pick("#ws-page"), history: pick("#history"), scenarios: pick("#sk-page"),
+      memory: pick("#mem-page"),
     },
     buttons,
     deck: pick("#deck"),
@@ -89,7 +91,8 @@ describe("applyPanel", () => {
   /** The regression the whole shell exists to make impossible. What this replaces
    *  hid the deck to show the board — which is why the app shipped an always-on-top
    *  pill counting blocked sessions: the window could not show the deck and
-   *  anything else at once. Asserted against the real stylesheet, on every page,
+   *  anything else at once. This assertion is what let #394 delete the pill rather
+   *  than replace it. Asserted against the real stylesheet, on every page,
    *  because `#deck { display: grid }` is an id selector and a class cannot take it
    *  down by accident. */
   it("never hides the deck, whichever page is showing", () => {
@@ -105,7 +108,7 @@ describe("applyPanel", () => {
    *  getComputedStyle is what makes this checkable — and also what makes the
    *  grouping trap real, since it applies a group's highest specificity to every
    *  selector in it. */
-  it.each(["sessions", "scenarios"] as PanelPage[])(
+  it.each(["sessions", "scenarios", "memory"] as PanelPage[])(
     "hides #%s against the real stylesheet",
     (page) => {
       applyPanel(el, "history");

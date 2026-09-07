@@ -1,13 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "cowork-deck",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "identifier": "ca.jvl.coworkdeck",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml --bin cowork_report --bin cowork_task && npm run dev",
-    "beforeBuildCommand": "npm run build && npm run stage:reporter && npm run stage:task"
+    "beforeDevCommand": "npm run stage:reporter && npm run stage:task && npm run stage:memory && npm run dev",
+    "beforeBuildCommand": "npm run build && npm run stage:reporter && npm run stage:task && npm run stage:memory"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -16,6 +16,8 @@
         "title": "cowork-deck",
         "width": 1200,
         "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
         "resizable": true
       }
     ],
@@ -45,7 +47,16 @@
     ],
     "externalBin": [
       "binaries/cowork_report",
-      "binaries/cowork_task"
-    ]
+      "binaries/cowork_task",
+      "binaries/cowork_memory"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libayatana-appindicator3-1"]
+      },
+      "rpm": {
+        "depends": ["libayatana-appindicator3"]
+      }
+    }
   }
 }

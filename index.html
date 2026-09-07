@@ -11,8 +11,9 @@
       <!-- There are no screens any more. `#stage` is a row of three: the rail
            that selects what the panel holds, the panel, and the deck — and the
            deck never leaves it. What used to be four tab labels was not a
-           structure but four states of one window, and the floating pill exists
-           because that window could not show the deck and anything else at once.
+           structure but four states of one window, and the floating pill existed
+           because that window could not show the deck and anything else at once —
+           which is why #394 could simply delete it.
            `#board` is a page of the panel now; `#pr` and `#history` join it there
            from `app.ts`, which is also what fills `#rail`, `#panel-head` and
            `#ledger`. -->
@@ -24,6 +25,19 @@
              destination. Empty here on purpose: `app.ts` writes it from the deck's
              own counts, so no number in this markup can go stale. -->
         <div id="ledger" data-od-id="ledger"></div>
+        <!-- What every connected AI has left, and where each number came from.
+             Glanceable WHILE working, which is the half of ADR-0011 that has not
+             moved: a screen you have to navigate to would be consulted once, on
+             the day you first found it, and never at the moment it matters.
+             ONE LINE of it — the worst-off AI, its tier and its reading, with the
+             rest counted and the rows one press away.
+             In the top bar since #461, and it was the panel's foot. Two readings
+             of the deck's own state already live to the left of it; a quota is a
+             third number that wants a person, and unlike the tree it does not
+             grow. The amendment at the foot of ADR-0011 is the argument. Empty
+             here — `app.ts` fills it, and draws nothing at all when no AI is
+             detected. -->
+        <div id="limits"></div>
         <div id="topbar-actions"></div>
       </header>
       <div id="stage">

@@ -13,6 +13,10 @@
 #   * No bundling. `tauri build` is the release workflow's job; duplicating it
 #     per pull request would multiply the slowest step in the project for no
 #     answer that a tag build does not already give.
+#
+# Clippy used to be on that list, with 21 warnings standing. It is a gate now
+# (see the step in the `rust` job): the warnings are gone, so `-D warnings` fails
+# only on something new.
 name: ci
 
 on:
@@ -32,9 +36,9 @@ jobs:
   frontend:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -49,6 +53,21 @@ jobs:
       - name: Tests
         run: npm test
 
+      # `scripts/contrast.mjs` exits non-zero when a pair the design system
+      # claims does not actually reach its WCAG ratio. It has been in the repo,
+      # exiting correctly, and called by nobody — so three green ticks could sit
+      # over a contrast regression (#455). It reads styles.css and needs no
+      # browser, which is why it costs a second and runs here rather than in a
+      # job of its own.
+      - name: Contrast
+        run: npm run contrast
+
+      # Two ADRs numbered 0010 and two numbered 0011 reached `dev` and stayed
+      # there (#451), which no test could have caught and a listing makes
+      # obvious. Cheap enough to sit beside the contrast gate.
+      - name: ADR numbering
+        run: npm run adr:check
+
   rust:
     # Both platforms, and not for symmetry: the terminal bugs this project has
     # shipped were platform-shaped. The Darwin tty caps a pty read at 1024 bytes
@@ -60,8 +79,14 @@ jobs:
       matrix:
         platform: [ubuntu-22.04, macos-latest]
     runs-on: ${{ matrix.platform }}
+    # Named by OS family rather than by runner label, and that is load-bearing:
+    # a required status check is matched by name, so `rust (ubuntu-22.04)` would
+    # silently stop being required the day this matrix moves to 24.04 — the check
+    # a branch ruleset waits for would be one that no longer runs, and every
+    # merge would block on a tick that never arrives.
+    name: rust (${{ startsWith(matrix.platform, 'ubuntu') && 'linux' || 'macos' }})
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The crate depends on tauri, so even `cargo test` needs the webkit
       # headers. Same list as the release workflow's, minus the bundling-only
@@ -83,7 +108,7 @@ jobs:
 
       # `scripts/stage-sidecar.sh` reads the sidecar list out of
       # tauri.conf.json with node.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -106,6 +131,20 @@ jobs:
       # worth.
       - name: Tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # `--all-targets`, so the test code is linted too — and that is not
+      # thoroughness for its own sake: half the dead code the audit turned up was
+      # variants and helpers only the test build constructs, which the default
+      # target set reports as dead and this reports correctly. `-D warnings`
+      # rather than a report nobody reads, because the crate is at zero; the one
+      # configured lint is in `src-tauri/clippy.toml`, with the reason.
+      #
+      # Linux only. Clippy's findings are not platform-shaped the way the pty
+      # tests are, and running it on both would double the slowest half of this
+      # job for the same answer.
+      - name: Clippy
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       # `cowork-memory` is a separate crate with its own target directory,
       # deliberately outside any root `[workspace]` — one would move src-tauri's

@@ -54,29 +54,6 @@ export const RUN_TRIGGER_LABEL: Record<RunTrigger, string> = {
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 
-/** "just now" / "12 minutes ago" / "2 hours ago" / "3 days ago".
- *
- *  Relative rather than absolute, because the question a history answers is
- *  "how long ago", and a wall clock makes the reader do the subtraction. Past
- *  a week it gives up and prints the date: "37 days ago" is arithmetic nobody
- *  asked for either.
- *
- *  A future timestamp reads as "just now" rather than "in 3 minutes". Clocks do
- *  move backwards — a DST change, an NTP correction — and a journal entry
- *  claiming to be from the future is a distraction, not information. */
-export function agoLabel(at: number, now: number): string {
-  const d = now - at;
-  if (d < MIN) return "just now";
-  if (d < HOUR) return plural(Math.floor(d / MIN), "minute");
-  if (d < DAY) return plural(Math.floor(d / HOUR), "hour");
-  if (d < 7 * DAY) return plural(Math.floor(d / DAY), "day");
-  return new Date(at).toLocaleDateString();
-}
-
-function plural(n: number, unit: string): string {
-  return `${n} ${unit}${n === 1 ? "" : "s"} ago`;
-}
-
 /** How long a run took, or nothing when it is still going. */
 export function durationLabel(rec: RunRecord): string | null {
   if (rec.closedAt === null) return null;

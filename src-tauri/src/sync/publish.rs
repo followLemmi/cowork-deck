@@ -20,15 +20,11 @@ use crate::sync::projection::{
 use std::path::Path;
 
 /// What the repository should contain, written where sync will find it.
-///
-/// `repo_of` answers what repository a workspace's folder is, which only the
-/// caller can know — it means asking `gh`, and this is worth testing without one.
 pub fn publish(
     root: &Path,
     workspaces: &[Workspace],
     skills: &[Skill],
     machine: &Machine,
-    repo_of: &dyn Fn(&Workspace) -> Option<String>,
 ) -> std::io::Result<()> {
     // Rewritten every cycle rather than only at activation: a build that adds a
     // path shape has to take effect on an already-connected machine, and the
@@ -37,7 +33,7 @@ pub fn publish(
     std::fs::write(root.join(activation::MARKER), activation::marker_body())?;
 
     for w in workspaces {
-        let wire = project_workspace(w, repo_of(w).as_deref());
+        let wire = project_workspace(w);
         let p = workspace_path(root, &w.id);
         if let Some(dir) = p.parent() {
             std::fs::create_dir_all(dir)?;
@@ -129,6 +125,7 @@ mod tests {
             color: "#8ab4f8".into(),
             github: None,
             tracker: None,
+            repo: None,
         }
     }
 
@@ -136,14 +133,10 @@ mod tests {
         Machine { id: "m-1".into(), label: "laptop".into() }
     }
 
-    fn no_repo(_: &Workspace) -> Option<String> {
-        None
-    }
-
     #[test]
     fn the_store_lands_where_sync_will_commit_it() {
         let r = root("basic");
-        publish(&r, &[ws("ws-1"), ws("ws-2")], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[ws("ws-1"), ws("ws-2")], &[], &machine()).unwrap();
 
         assert!(r.join("ws-1/workspace.json").is_file());
         assert!(r.join("ws-2/workspace.json").is_file());
@@ -161,12 +154,12 @@ mod tests {
     #[test]
     fn an_unchanged_record_is_not_rewritten() {
         let r = root("mtime");
-        publish(&r, &[ws("ws-1")], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[ws("ws-1")], &[], &machine()).unwrap();
         let p = r.join("ws-1/workspace.json");
         let first = fs::metadata(&p).unwrap().modified().unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(20));
-        publish(&r, &[ws("ws-1")], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[ws("ws-1")], &[], &machine()).unwrap();
         assert_eq!(
             fs::metadata(&p).unwrap().modified().unwrap(),
             first,
@@ -176,7 +169,7 @@ mod tests {
         let mut changed = ws("ws-1");
         changed.name = "renamed".into();
         std::thread::sleep(std::time::Duration::from_millis(20));
-        publish(&r, &[changed], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[changed], &[], &machine()).unwrap();
         assert_ne!(
             fs::metadata(&p).unwrap().modified().unwrap(),
             first,
@@ -189,7 +182,7 @@ mod tests {
     #[test]
     fn a_workspace_deleted_here_stops_being_published() {
         let r = root("prune");
-        publish(&r, &[ws("ws-1"), ws("ws-2")], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[ws("ws-1"), ws("ws-2")], &[], &machine()).unwrap();
 
         forget_workspace(&r, "ws-2");
 
@@ -202,7 +195,7 @@ mod tests {
     #[test]
     fn but_its_memory_is_left_alone() {
         let r = root("keepmem");
-        publish(&r, &[ws("ws-1"), ws("ws-2")], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[ws("ws-1"), ws("ws-2")], &[], &machine()).unwrap();
         fs::write(r.join("ws-2/Facts.md"), "- something that happened\n").unwrap();
         fs::create_dir_all(r.join("ws-2/Sessions/2026-08")).unwrap();
         fs::write(r.join("ws-2/Sessions/2026-08/24-topic.md"), "# a session\n").unwrap();
@@ -235,7 +228,7 @@ mod tests {
         fs::create_dir_all(r.join("ws-from-a")).unwrap();
         fs::write(r.join("ws-from-a/workspace.json"), "{\"id\":\"ws-from-a\"}").unwrap();
 
-        publish(&r, &[ws("ws-1")], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[ws("ws-1")], &[], &machine()).unwrap();
 
         assert!(
             r.join("ws-from-a/workspace.json").is_file(),
@@ -249,7 +242,7 @@ mod tests {
         fs::create_dir_all(r.join("scenarios")).unwrap();
         fs::write(r.join("scenarios/sk-from-a.json"), "{\"id\":\"sk-from-a\"}").unwrap();
 
-        publish(&r, &[], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[], &[], &machine()).unwrap();
 
         assert!(r.join("scenarios/sk-from-a.json").is_file());
     }
@@ -262,7 +255,7 @@ mod tests {
         fs::create_dir_all(r.join("runs/m-2")).unwrap();
         fs::write(r.join("runs/m-2/runs.jsonl"), "{\"b\":2}\n").unwrap();
 
-        publish(&r, &[], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[], &[], &machine()).unwrap();
 
         assert_eq!(fs::read_to_string(r.join("runs/m-1/runs.jsonl")).unwrap(), "{\"a\":1}\n");
         assert_eq!(
@@ -278,7 +271,7 @@ mod tests {
         fs::create_dir_all(r.join("Diaries/reviewer")).unwrap();
         fs::write(r.join("Diaries/reviewer/2026-08.md"), "# lessons\n").unwrap();
 
-        publish(&r, &[ws("ws-1")], &[], &machine(), &no_repo).unwrap();
+        publish(&r, &[ws("ws-1")], &[], &machine()).unwrap();
         assert!(r.join("Diaries/reviewer/2026-08.md").is_file(), "global diaries are not workspaces");
     }
 }

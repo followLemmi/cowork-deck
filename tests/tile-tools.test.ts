@@ -1,5 +1,14 @@
-import { describe, it, expect } from "vitest";
-import { fileTree, wouldSqueeze } from "../src/tile-tools";
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("../src/ipc", () => ({
+  worktreeFiles: vi.fn().mockResolvedValue([]),
+  gitChanges: vi.fn().mockResolvedValue({ branch: null, files: [] }),
+  revealPath: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { TileTools, fileTree, wouldSqueeze, type TileToolsHost } from "../src/tile-tools";
+import { gitChanges, revealPath, worktreeFiles } from "../src/ipc";
 
 /** The rule the tool panel exists to keep. This app has already shipped the bug
  *  it guards against — the filmstrip resized a PTY to about 22 columns by 3 rows —
@@ -36,6 +45,70 @@ describe("the 80-column floor", () => {
   });
 });
 
+/** The room argument the zoom's auto-collapse used to answer.
+ *
+ *  Zooming a session collapsed the left panel, and the reason given was that the
+ *  tool panel inside a zoomed tile wants the same width. #480 took the collapse
+ *  away — the panel is the person's — so a zoomed tile with the panel open is
+ *  simply a narrower tile, and the floor has to hold there rather than being kept
+ *  by the panel getting out of the way.
+ *
+ *  Which it does, because the floor is measured and not assumed: the panel FLOATS
+ *  over the terminal instead of squeezing it under 80 columns, decided against the
+ *  box the tile actually has. Two moments matter, and both are asserted — the open,
+ *  and every later change to the tile's box. */
+describe("a zoomed tile with the left panel open still honours the floor", () => {
+  /** A tile whose terminal can be narrowed the way an open left panel narrows it,
+   *  keeping the cell width fixed at 10px so the arithmetic stays readable. */
+  function host(): TileToolsHost & { width: number } {
+    return {
+      width: 1200,
+      cwd: () => "/p",
+      cols() { return Math.round(this.width / 10); },
+      termWidth() { return this.width; },
+      source: () => ({ kind: "person", detail: null, prompt: null }),
+      onWidth: () => {},
+    };
+  }
+
+  const open = (t: TileTools) =>
+    (t as unknown as { show(tool: unknown): Promise<void> })
+      .show({ id: "source", icon: "list", name: "Source" });
+
+  it("squeezes on a wide window, where 80 columns are left over", async () => {
+    // 1200px is 120 columns; the panel's 304px leaves 89.
+    const tools = new TileTools(host());
+    await open(tools);
+    expect(tools.panel.classList.contains("is-floating")).toBe(false);
+  });
+
+  it("floats on a narrow one, which is what the collapse used to hide", async () => {
+    // 1000px with the panel open beside it: 69 columns left, under the floor.
+    const h = host();
+    h.width = 1000;
+    const tools = new TileTools(h);
+    await open(tools);
+    expect(tools.panel.classList.contains("is-floating")).toBe(true);
+  });
+
+  it("re-decides when the tile's box changes under an open tool", async () => {
+    /* The case the panel's grip and a window resize both produce, and the reason
+       the floor is not a one-time answer: nothing about the open tool changed. */
+    const h = host();
+    const tools = new TileTools(h);
+    await open(tools);
+    expect(tools.panel.classList.contains("is-floating")).toBe(false);
+
+    h.width = 1000;
+    tools.refit();
+    expect(tools.panel.classList.contains("is-floating")).toBe(true);
+
+    h.width = 1200;
+    tools.refit();
+    expect(tools.panel.classList.contains("is-floating")).toBe(false);
+  });
+});
+
 describe("the file tree", () => {
   it("nests paths into folders", () => {
     const tree = fileTree(["src/app.ts", "src/ui/view.ts", "README.md"]);
@@ -65,5 +138,131 @@ describe("the file tree", () => {
 
   it("is empty for an empty checkout", () => {
     expect(fileTree([])).toEqual([]);
+  });
+});
+
+/** #508: the panel is a reading OF a directory, and which directory that is has
+ *  to be asked at every read.
+ *
+ *  It used to be a string handed over once, at construction — so a session that
+ *  moved kept a panel listing the files of the folder it was launched in, diffing
+ *  that folder's branch, naming that folder in its scope line, and revealing that
+ *  folder's paths on a click. Four displays, one frozen field. These tests move
+ *  the host's answer between reads, which is the only thing the panel can notice.
+ */
+describe("the tools panel reads its scope at every read", () => {
+  const LAUNCHED = "/p/deck";
+  const MOVED = "/p/deck-issue/508-a-bug";
+
+  /** A host whose directory can be moved between reads, the way a session's is. */
+  function host(): TileToolsHost & { at: string } {
+    return {
+      at: LAUNCHED,
+      cwd() { return this.at; },
+      cols: () => 200,
+      termWidth: () => 2000,
+      source: () => ({ kind: "person", detail: null, prompt: null }),
+      onWidth: () => {},
+    };
+  }
+
+  /** `show` is private: the rail's buttons are what a person presses, and the
+   *  panel's behaviour is what is under test rather than its access modifiers. */
+  const open = (t: TileTools, id: "files" | "changes") =>
+    (t as unknown as { show(tool: unknown): Promise<void> })
+      .show({ id, icon: id === "files" ? "folder" : "git-branch", name: id });
+
+  /** One row of the file tree, by the name it shows. */
+  const row = (t: TileTools, name: string): HTMLElement => {
+    const found = [...t.panel.querySelectorAll<HTMLElement>(".tree-row")]
+      .find((r) => r.textContent === name);
+    if (!found) throw new Error(`no tree row named ${name}`);
+    return found;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(worktreeFiles).mockResolvedValue([]);
+    vi.mocked(gitChanges).mockResolvedValue({ branch: null, files: [] });
+  });
+
+  it("lists the files of the folder the session is in now", async () => {
+    const h = host();
+    const tools = new TileTools(h);
+    await open(tools, "files");
+    expect(worktreeFiles).toHaveBeenLastCalledWith(LAUNCHED);
+
+    h.at = MOVED;
+    await open(tools, "files");
+    expect(worktreeFiles).toHaveBeenLastCalledWith(MOVED);
+  });
+
+  it("diffs the folder the session is in now, and names it beside its branch", async () => {
+    const h = host();
+    const tools = new TileTools(h);
+    h.at = MOVED;
+    vi.mocked(gitChanges).mockResolvedValue({ branch: "issue-508", files: [] });
+
+    await open(tools, "changes");
+
+    expect(gitChanges).toHaveBeenLastCalledWith(MOVED);
+    const scope = tools.panel.querySelector(".tool-scope")!;
+    // The last segment plus the branch, which is what the column has room for;
+    // the whole path is in the tooltip.
+    expect(scope.textContent).toBe("…/508-a-bug · issue-508");
+    expect(scope.getAttribute("title")).toBe(`${MOVED} · issue-508`);
+  });
+
+  it("names the folder the session is in now in its scope line", async () => {
+    const h = host();
+    const tools = new TileTools(h);
+    h.at = MOVED;
+    await open(tools, "files");
+    expect(tools.panel.querySelector(".tool-scope")!.getAttribute("title")).toBe(MOVED);
+  });
+
+  /** The one that could reveal the WRONG FILE rather than merely a missing one:
+   *  two worktrees of a repository hold the same paths, so a row drawn before the
+   *  session moved would open the same-named file in the other checkout. Rows are
+   *  therefore resolved at click time, not at draw time. */
+  it("reveals a file against the folder the session is in when it is clicked", async () => {
+    const h = host();
+    const tools = new TileTools(h);
+    vi.mocked(worktreeFiles).mockResolvedValue(["src/app.ts"]);
+    await open(tools, "files");
+    // The tree draws one level at a time, so the folder is opened first — which
+    // is also the gesture that keeps `expanded` across the re-read.
+    row(tools, "src").click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    h.at = MOVED;
+    row(tools, "app.ts").click();
+
+    expect(revealPath).toHaveBeenCalledWith(`${MOVED}/src/app.ts`);
+  });
+
+  it("reveals a changed file the same way", async () => {
+    const h = host();
+    const tools = new TileTools(h);
+    vi.mocked(gitChanges).mockResolvedValue({
+      branch: "issue-508",
+      files: [{ mark: "M", path: "src/sessions.ts", added: 12, removed: 3 }],
+    });
+    await open(tools, "changes");
+
+    h.at = MOVED;
+    tools.panel.querySelector<HTMLElement>(".chg-row")!.click();
+
+    expect(revealPath).toHaveBeenCalledWith(`${MOVED}/src/sessions.ts`);
+  });
+
+  /** A folder that is no repository says so, rather than keeping the branch of
+   *  wherever the session came from on screen. */
+  it("says there is nothing to compare in a folder that is not a checkout", async () => {
+    const tools = new TileTools(host());
+    vi.mocked(gitChanges).mockResolvedValue({ branch: null, files: [] });
+    await open(tools, "changes");
+    expect(tools.panel.querySelector(".tool-note")!.textContent)
+      .toContain("Not a git checkout");
   });
 });

@@ -1,4 +1,5 @@
 use crate::corpus::chunk_note;
+use crate::dates::{self, Window};
 use crate::embed::Embedder;
 use crate::scan::{detect_scope, scan, FileStat};
 use crate::DIARY_SCOPE;
@@ -268,6 +269,14 @@ pub struct Hit {
     pub scope: String,
     pub room: Option<String>,
     pub text: String,
+    /// When the note was written — `2026-08-31`, or `2026-08` for a diary, and
+    /// `None` for a note the layout does not date.
+    ///
+    /// Derived from `file` rather than stored (see [`crate::dates`]), so it costs
+    /// nothing in the cache and cannot drift from the corpus. It is here because
+    /// a passage presented without its age reads as current: #462 watched an
+    /// agent hand back an August note as though it described today.
+    pub date: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -291,6 +300,27 @@ impl SearchScope {
 }
 
 /// Brute-force cosine over unit vectors, at most one hit per file.
+///
+/// # `window` selects on *when*, and the query still selects on *what*
+///
+/// #462: a corpus with no time axis answers "what did we do yesterday" with
+/// whatever notes happen to talk about doing things, from any month. `window`
+/// confines the search to a period, taken off each note's path — see
+/// [`crate::dates`].
+///
+/// Ranking does not change when a window is given: the window is the *when* and
+/// cosine is still the *what*, so "what did we break in the cross build last
+/// week" gets the cross build rather than merely the most recent thing. One
+/// ranking rule, and a person who wants the period alone gets the period alone
+/// because that is all the window admits.
+///
+/// **The similarity floor is dropped when a window is given**, and that is not a
+/// convenience. `min_score` exists to keep an unrelated note out of an answer to
+/// a topic question; a period question has already said which notes it wants,
+/// and "what did we do yesterday" embeds nowhere near the notes describing what
+/// was in fact done yesterday. Applying the floor there would return nothing
+/// from a period that had plenty in it — the exact failure this parameter is
+/// here to fix.
 pub fn search(
     ix: &Index,
     emb: &dyn Embedder,
@@ -298,6 +328,7 @@ pub fn search(
     scope: &SearchScope,
     top: usize,
     min_score: f32,
+    window: &Window,
 ) -> Result<Vec<Hit>> {
     if ix.meta.chunks.is_empty() || ix.meta.dim == 0 {
         return Ok(Vec::new());
@@ -320,16 +351,18 @@ pub fn search(
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
 
+    let floor = if window.is_any() { min_score } else { f32::NEG_INFINITY };
+
     let mut hits = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
     for (score, i) in scored {
         // The cap is checked before pushing, not after: checking afterwards
         // lets `top == 0` return one hit.
-        if hits.len() >= top || score < min_score {
+        if hits.len() >= top || score < floor {
             break;
         }
         let c = &ix.meta.chunks[i];
-        if !scope.admits(c) || !seen.insert(&c.file) {
+        if !scope.admits(c) || !window.admits(&c.file) || !seen.insert(&c.file) {
             continue;
         }
         hits.push(Hit {
@@ -338,6 +371,7 @@ pub fn search(
             scope: c.scope.clone(),
             room: c.room.clone(),
             text: c.text.clone(),
+            date: dates::note_date(&c.file).map(|d| d.label()),
         });
     }
     Ok(hits)
@@ -632,28 +666,110 @@ mod tests {
         let emb: Vec<f32> = e.embed(&texts).unwrap().into_iter().flatten().collect();
         let ix = Index { meta, emb };
 
-        let hits = search(&ix, &e, "любой запрос", &SearchScope::Project("ws-1".into()), 10, -1.0).unwrap();
+        let hits = search(&ix, &e, "любой запрос", &SearchScope::Project("ws-1".into()), 10, -1.0, &dates::ANY).unwrap();
         let files: Vec<&str> = hits.iter().map(|h| h.file.as_str()).collect();
         assert!(files.contains(&"ws-1/Facts.md"), "own workspace must match");
         assert!(files.contains(&"Diaries/reviewer/2026-07.md"), "diaries are always in scope");
         assert!(!files.contains(&"ws-2/Facts.md"), "other workspaces must not match");
         assert_eq!(files.len(), 2, "one hit per file, got {files:?}");
 
-        let lessons = search(&ix, &e, "любой запрос", &SearchScope::Lessons, 10, -1.0).unwrap();
+        let lessons = search(&ix, &e, "любой запрос", &SearchScope::Lessons, 10, -1.0, &dates::ANY).unwrap();
         assert_eq!(lessons.len(), 1);
         assert_eq!(lessons[0].room.as_deref(), Some("reviewer"));
 
-        let all = search(&ix, &e, "любой запрос", &SearchScope::All, 10, -1.0).unwrap();
+        let all = search(&ix, &e, "любой запрос", &SearchScope::All, 10, -1.0, &dates::ANY).unwrap();
         assert_eq!(all.len(), 3, "three distinct files");
 
-        let capped = search(&ix, &e, "любой запрос", &SearchScope::All, 1, -1.0).unwrap();
+        let capped = search(&ix, &e, "любой запрос", &SearchScope::All, 1, -1.0, &dates::ANY).unwrap();
         assert_eq!(capped.len(), 1, "top must cap results");
 
-        let nothing = search(&ix, &e, "любой запрос", &SearchScope::All, 0, -1.0).unwrap();
+        let nothing = search(&ix, &e, "любой запрос", &SearchScope::All, 0, -1.0, &dates::ANY).unwrap();
         assert!(nothing.is_empty(), "top = 0 must return nothing, not one hit");
 
-        let none = search(&ix, &e, "любой запрос", &SearchScope::All, 10, 1.01).unwrap();
+        let none = search(&ix, &e, "любой запрос", &SearchScope::All, 10, 1.01, &dates::ANY).unwrap();
         assert!(none.is_empty(), "nothing scores above 1.01");
+    }
+
+    /// #462: a window is the *when*, and it both filters and lifts the score
+    /// floor — a period question scores nowhere near the notes that answer it.
+    #[test]
+    fn a_window_confines_a_search_to_a_period_and_lifts_the_floor() {
+        use crate::embed::{Embedder, FakeEmbedder};
+        let e = FakeEmbedder::new();
+        let dim = e.dim();
+
+        let mut meta = Meta { dim, ..Default::default() };
+        for (file, text) in [
+            ("ws-1/Sessions/2026-09/06-сборка.md", "чинили кросс-сборку"),
+            ("ws-1/Sessions/2026-09/01-фаза.md", "закрыли фазу 4"),
+            ("ws-1/Sessions/2026-05/12-старое.md", "давняя работа"),
+            ("ws-1/Facts.md", "факты без даты"),
+        ] {
+            meta.chunks.push(ChunkRecord {
+                file: file.into(),
+                scope: "ws-1".into(),
+                room: None,
+                text: text.into(),
+            });
+        }
+        let texts: Vec<String> = meta.chunks.iter().map(|c| c.text.clone()).collect();
+        let emb: Vec<f32> = e.embed(&texts).unwrap().into_iter().flatten().collect();
+        let ix = Index { meta, emb };
+
+        let scope = SearchScope::Project("ws-1".into());
+        // A floor nothing clears, to prove the window lifts it.
+        let day = Window::parse(Some("2026-09-06"), Some("2026-09-06")).unwrap();
+        let hits = search(&ix, &e, "что мы вчера делали", &scope, 10, 1.01, &day).unwrap();
+        let files: Vec<&str> = hits.iter().map(|h| h.file.as_str()).collect();
+        assert_eq!(files, vec!["ws-1/Sessions/2026-09/06-сборка.md"]);
+        assert_eq!(hits[0].date.as_deref(), Some("2026-09-06"));
+
+        // The same floor with no window keeps its own job.
+        let unwindowed = search(&ix, &e, "что мы вчера делали", &scope, 10, 1.01, &dates::ANY).unwrap();
+        assert!(unwindowed.is_empty(), "the floor still applies without a window");
+
+        // A month, and the undated note is not in it.
+        let month = Window::parse(Some("2026-09"), Some("2026-09")).unwrap();
+        let hits = search(&ix, &e, "что делали", &scope, 10, -1.0, &month).unwrap();
+        let mut files: Vec<&str> = hits.iter().map(|h| h.file.as_str()).collect();
+        files.sort();
+        assert_eq!(
+            files,
+            vec!["ws-1/Sessions/2026-09/01-фаза.md", "ws-1/Sessions/2026-09/06-сборка.md"],
+            "a window leaves the undated Facts.md and May out"
+        );
+    }
+
+    /// Every hit carries the age of its note, so a passage is never presented
+    /// without it (#462).
+    #[test]
+    fn a_hit_carries_the_date_off_its_path() {
+        use crate::embed::{Embedder, FakeEmbedder};
+        let e = FakeEmbedder::new();
+        let dim = e.dim();
+        let mut meta = Meta { dim, ..Default::default() };
+        for (file, scope, room) in [
+            ("ws-1/Sessions/2026-08/31-topic.md", "ws-1", None),
+            ("Diaries/reviewer/2026-07.md", crate::DIARY_SCOPE, Some("reviewer")),
+            ("ws-1/Facts.md", "ws-1", None),
+        ] {
+            meta.chunks.push(ChunkRecord {
+                file: file.into(),
+                scope: scope.into(),
+                room: room.map(str::to_string),
+                text: "какой-то текст заметки".into(),
+            });
+        }
+        let texts: Vec<String> = meta.chunks.iter().map(|c| c.text.clone()).collect();
+        let emb: Vec<f32> = e.embed(&texts).unwrap().into_iter().flatten().collect();
+        let ix = Index { meta, emb };
+
+        let hits = search(&ix, &e, "заметка", &SearchScope::All, 10, -1.0, &dates::ANY).unwrap();
+        let dated: std::collections::BTreeMap<&str, Option<&str>> =
+            hits.iter().map(|h| (h.file.as_str(), h.date.as_deref())).collect();
+        assert_eq!(dated["ws-1/Sessions/2026-08/31-topic.md"], Some("2026-08-31"));
+        assert_eq!(dated["Diaries/reviewer/2026-07.md"], Some("2026-07"));
+        assert_eq!(dated["ws-1/Facts.md"], None, "the layout does not date Facts.md");
     }
 
     #[test]
@@ -674,7 +790,7 @@ mod tests {
         let emb: Vec<f32> = e.embed(&texts).unwrap().into_iter().flatten().collect();
         let ix = Index { meta, emb };
 
-        let hits = search(&ix, &e, "чанк номер 3", &SearchScope::All, 8, -1.0).unwrap();
+        let hits = search(&ix, &e, "чанк номер 3", &SearchScope::All, 8, -1.0, &dates::ANY).unwrap();
         for w in hits.windows(2) {
             assert!(w[0].score >= w[1].score, "not sorted: {:?}", hits);
         }

@@ -5,6 +5,7 @@
  *  a screen nobody is looking at, which is exactly the failure no unit test of
  *  `pr.ts` or `pr-view.ts` can catch. */
 import { describe, it, expect, vi } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const prListMock = vi.fn().mockResolvedValue([]);
 const listTasksMock = vi.fn().mockResolvedValue([]);
@@ -35,21 +36,12 @@ const CAPS = {
 // the shape it expects.
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
+  ...bootIpc(),
   prList: prListMock,
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
   // Real capabilities and an empty list, so the board's own read is the thing
   // counted: `refreshBoard` never calls `listTasks` while `caps` is null.
   taskCapabilities: vi.fn().mockResolvedValue(CAPS),
   listTasks: listTasksMock,
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
 }));
 
 // A workspace with an account bound, so the view has something to poll for. The
@@ -68,6 +60,7 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    setSessionsSource = vi.fn();
     // The tree's half of the panel: the workspace row is this panel's and the
     // sessions under it are the deck's, so `startApp` hands each the other.
     /* Captured, because the board and the pull requests are opened through this
@@ -125,7 +118,11 @@ describe("pull request polling", () => {
       // switch into it and asserts it exists, so a harness missing it throws
       // before any of the polling under test here can run.
       '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
-      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div>'
+      // `#workarea` stacks the deck and the terminal drawer; the note reader
+      // covers it, as `.term-drawer.is-full` does. On all four real bodies —
+      // `page-bodies.test.ts` — and it was missing from this fixture.
+      + '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>'
       + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';
@@ -135,13 +132,13 @@ describe("pull request polling", () => {
     await flush();
 
     // A rail of icons names itself for a reader rather than for the eye, so the
-    // accessible name is what there is to assert. Three PAGES, and the two that are
+    // accessible name is what there is to assert. Four PAGES, and the two that are
     // absent are absent on purpose: a board and a list of pull requests belong to
     // one repository, so each is a child of its workspace in the tree rather than
     // an app-wide switch whose subject changes under it.
     const buttons = [...document.querySelectorAll<HTMLButtonElement>("#rail .rail-btn[data-page]")];
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
-      "Workspaces and sessions", "Journal", "Scenarios",
+      "Workspaces and sessions", "Journal", "Scenarios", "Memory",
     ]);
     // And one control at the foot that is not a page: it opens a window about the
     // app rather than changing what the panel holds, which is what the gap above it

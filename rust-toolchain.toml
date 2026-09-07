@@ -1,0 +1,12 @@
+# The toolchain a clone gets, and the one CI gets. `dtolnay/rust-toolchain@stable`
+# in ci.yml honours this file, so the channel is stated in one place rather than
+# two that can drift.
+#
+# `stable` rather than a pinned version, deliberately: this crate tracks tauri v2,
+# which tracks stable, and a pin would turn every toolchain release into a chore.
+# What the file is for is the other direction — a clone that has an old default
+# toolchain installed gets the one the project is built with, instead of a
+# compile error about a feature stabilised last spring.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]

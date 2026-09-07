@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity;
 mod model;
 mod store;
 mod sync;
@@ -7,16 +8,23 @@ mod sync_cmd;
 mod gh;
 mod gh_pr;
 mod hooks;
+mod instance;
 mod listener;
+mod memory;
 mod pty;
 mod commands;
 mod run_journal;
 mod runs;
 mod scheduler;
 mod tasks_cmd;
+mod resume_ids;
+mod session_cwd;
 mod transcripts;
+mod tray;
+mod usage;
 mod which;
 mod ownership;
+mod reachable;
 mod windows;
 use cowork_deck::tasks;
 
@@ -91,6 +99,14 @@ fn ready_to_quit(app: &tauri::AppHandle) -> bool {
     if work.is_empty() {
         return true;
     }
+    // Nobody left to ask. `app://quit-blocked` is a question the main window puts
+    // to the person, so with that window gone the refusal below could never be
+    // lifted: the app would be a running process with no interface, which is the
+    // half of #349 that outlived the vanishing window. Losing the question is the
+    // lesser harm, and every session dies at `RunEvent::Exit` either way.
+    if app.get_webview_window(windows::MAIN).is_none() {
+        return true;
+    }
     if state.quit_asked.swap(true, Ordering::SeqCst) {
         return true;
     }
@@ -100,18 +116,37 @@ fn ready_to_quit(app: &tauri::AppHandle) -> bool {
 
 fn main() {
     tauri::Builder::default()
+        // First, and the ordering is the whole of it: plugins are initialised in
+        // `Builder::build`, and the window declared in `tauri.conf.json` is
+        // created later, when the event loop reports ready. A second launch
+        // therefore exits from inside this call — before a window, before the
+        // run journal is swept, before anything below has run at all (#361).
+        .plugin(instance::plugin())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        // Geometry survives a restart; visibility does not. The plugin's restore
-        // runs `show()` *and* `set_focus()` on every window it manages, and it
-        // does so for a window with no saved entry too — so the pill, hidden by
-        // default and up only while a session waits, arrived blank and holding
-        // the keyboard at every launch. Whether the pill is up is the deck's
-        // answer to give (`pill://count`, see src/pill.ts); the plugin is here to
-        // remember where the person dragged it to.
+        // Geometry survives a restart; visibility does not, and the flag saying
+        // so is load-bearing rather than tidy. The plugin's restore runs
+        // `show()` *and* `set_focus()` on every window it manages, including one
+        // with no saved entry — so a window the app means to bring up hidden, or
+        // to bring up behind whatever the person is working in, would arrive in
+        // front of them holding the keyboard. Whether a window is up is the
+        // app's answer to give; the plugin is here to remember where it was and
+        // how big it was.
+        //
+        // The floating pill was what first made this necessary (#394 removed it),
+        // but the rule is not about the pill: a workspace window restored by
+        // `open_workspace_window` is shown deliberately, once, by the code that
+        // opens it.
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::all() & !StateFlags::VISIBLE)
+                // The tray panel is the one window whose position is not a
+                // choice anybody made: it is placed under the status-area icon
+                // every time it opens, and its height follows its content. A
+                // remembered geometry would be applied at launch and then
+                // overwritten on the first click, which is a restore that only
+                // ever produces one wrong frame.
+                .with_denylist(&[windows::TRAY])
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -126,9 +161,35 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // Config dir for the store.
-            let dir = app.path().app_config_dir().expect("app config dir");
+            // Config dir for the store. Everything below is rooted here — the
+            // store, the journal, the memory corpus, the single-instance claim
+            // — so there is nothing to degrade to and this is the one place a
+            // failure is fatal. An error rather than a panic, though: `setup`
+            // returns `Result`, and Tauri reports what comes out of it, where a
+            // panic here gave a backtrace naming this line and nothing a person
+            // could act on (#463).
+            let dir = match app.path().app_config_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    return Err(format!(
+                        "cowork-deck cannot find a configuration directory to use, and \
+                         everything it remembers lives in one: {e}. On Linux this is \
+                         $XDG_CONFIG_HOME or ~/.config; on macOS ~/Library/Application \
+                         Support.",
+                    )
+                    .into());
+                }
+            };
             let store = store::Store::new(dir.clone());
+
+            // A scheduled scenario now runs only in the workspace it is pinned
+            // to (#249). Schedules written before that rule may have no pin, so
+            // they acquire the stored active workspace — the very one the old
+            // fallback would have picked on this machine — before anything reads
+            // `skills.json`: the scheduler's first catch-up tick is one of those
+            // readers, and a schedule owed a run must not miss it over a pin the
+            // migration was going to give it a moment later.
+            scheduler::migrate_pins(&store);
 
             // Before the listener, and long before the frontend can launch
             // anything: a hook or a PTY exit arriving with the journal unwired
@@ -138,17 +199,72 @@ fn main() {
             run_journal::init(dir.clone(), handle.clone());
             run_journal::sweep_and_compact();
 
+            // Same reasoning one line up, for the same kind of fact: a limit
+            // observed before the last quit has to be back before the first
+            // snapshot is asked for, or the block opens saying "unknown" about
+            // something the app already knew. Records whose reset has passed are
+            // dropped on the way in.
+            usage::observed::restore(dir.clone(), chrono::Utc::now().timestamp_millis());
+
+            // And once more for the same reason, about the queue that carries
+            // the memory of a closed session. `recover_wrapup_queue` puts back
+            // whatever a crash left mid-job — sound only here, before the
+            // frontend can close a tile, because nothing has a job in flight at
+            // this point and so every `running` job on disk is one of those.
+            memory::init(dir.clone(), handle.clone());
+            memory::recover_wrapup_queue();
+            // And then drain it, on a thread of its own. Whatever was queued
+            // before the last quit is summarised while the window opens rather
+            // than before it — #35 is explicit that memory stays off the session
+            // launch path, and a summary is worth none of that delay.
+            memory::spawn_drain();
+            // And bring the index up to date with whatever is already on disk —
+            // notes this machine wrote before the last quit, and notes that
+            // arrived from another machine through sync. Its own thread, guarded
+            // against overlapping the drain's own reindex.
+            memory::spawn_reindex();
+
             // Start the status listener on the tokio runtime Tauri provides.
+            //
+            // A bind that fails is not fatal, and used to be (#463): a firewall
+            // or a security product that forbids a loopback listener took the
+            // whole app down with `expect("listener bind")`, on a machine where
+            // every terminal would have worked. Port 0 is the "no listener"
+            // value, and it degrades along a path the app already has — the
+            // reporter's `TcpStream::connect` to port 0 fails at once and it
+            // exits quietly, exactly as it does when the app is not running, so
+            // a tile's state label stays `idle` while the terminal under it is
+            // unaffected. That is the graceful degradation the README
+            // documents, reached by one more route.
             let handle_for_cb = handle.clone();
             let port = tauri::async_runtime::block_on(async move {
                 listener::start_listener(move |session, state| {
                     commands::emit_state(&handle_for_cb, session, state);
                 })
                 .await
-                .expect("listener bind")
+            })
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "warning: could not listen on 127.0.0.1 ({e}). Sessions will run, but \
+                     nothing will report their state: every tile will read `idle`, \
+                     notifications and the waiting count will stay empty, and a session \
+                     will not be handed what memory has on its prompt.",
+                );
+                0
             });
+            // And now the guard can say where to knock. Until this line the
+            // claim on the config directory names a pid and nothing else, so a
+            // second launch in the meantime exits without focusing anything —
+            // which is a launch that quietly does nothing, not a second app.
+            instance::publish_port(&dir, port);
 
             let scheduler_ready = std::sync::Arc::new(tokio::sync::Notify::new());
+            // One flag, held by both the state and the Claude provider inside the
+            // registry, so a settings change reaches the provider without
+            // rebuilding it.
+            let reported_flag = std::sync::Arc::new(AtomicBool::new(
+                store.ui_state().usage_reported,
+            ));
             app.manage(AppState {
                 store: Mutex::new(store),
                 pty: pty::PtyManager::new(),
@@ -165,6 +281,12 @@ fn main() {
                 issue_open_counts: Mutex::new(std::collections::HashMap::new()),
                 windows_ready: std::sync::Arc::new(windows::WindowReady::default()),
                 session_owners: ownership::SessionOwners::default(),
+                // On by default: it spends no quota and reads no credential (see
+                // `usage::reported`). The person's own setting is applied a moment
+                // later, once `ui_state.json` has been read — starting from the
+                // stored value would mean reading that file twice.
+                usage_reported: reported_flag.clone(),
+                usage: std::sync::Arc::new(usage::registry(reported_flag)),
             });
 
             // Scheduled scenarios: the backend decides *when* and emits
@@ -180,52 +302,39 @@ fn main() {
             // #35 set for memory generally — it stays off the launch path.
             sync_cmd::spawn(handle.clone());
 
-            // Floating "N waiting" status pill: a second, hidden-by-default
-            // window shown/hidden via the `pill://count` event (see src/pill.ts).
-            // Transparent + always-on-top confirmed working on macOS with
-            // macOSPrivateApi + the `macos-private-api` Cargo feature (spike).
-            let pill = tauri::WebviewWindowBuilder::new(
-                app,
-                windows::PILL,
-                tauri::WebviewUrl::App("pill.html".into()),
-            )
-            .inner_size(200.0, 48.0)
-            .position(40.0, 40.0)
-            .decorations(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .transparent(true)
-            .visible(false)
-            // A status indicator must never take the keyboard. `show()` reaches
-            // `makeKeyAndOrderFront:`, and a focusable window duly becomes the
-            // *key* window — so every re-show stole the keyboard from the
-            // session the person was typing into, mid-question. `focusable(false)`
-            // makes `canBecomeKeyWindow` answer false: the pill still orders
-            // front, which is all it ever wanted.
+            // The status-area icon and the menu behind it. Put up here and never
+            // taken down: the point of the surface is that it is there when the
+            // window is not, and it survives a restart because it is built in
+            // setup rather than by anything the frontend does.
             //
-            // The pair matters: a window that cannot become key would otherwise
-            // swallow the first click into it, and the pill's only interaction
-            // *is* that first click (focus the next waiting session, plus the
-            // drag region). `accept_first_mouse` delivers it to the webview.
-            //
-            // Both calls are cross-platform in Tauri, but only the first has an
-            // effect off macOS: on Linux `focusable(false)` becomes
-            // `gtk_window_set_accept_focus(false)` and `accept_first_mouse` is a
-            // no-op, so whether the click still reaches the webview there is
-            // down to the compositor and has not been tried on a Linux machine.
-            .focusable(false)
-            .accept_first_mouse(true)
-            .build();
-            // Without the pill there is no waiting indicator at all, and every
-            // `pill://count` afterwards goes nowhere — worth a line to diagnose
-            // it by rather than a silently discarded `Result`.
-            if let Err(e) = pill {
-                eprintln!("error: failed to create the status pill window ({e})");
+            // What the menu SAYS arrives later, from the deck, through
+            // `tray::tray_update` — this file's job is only to exist. See
+            // ADR-0013 for why the panel is a native menu and why its rows are
+            // composed in the webview.
+            if let Err(e) = tray::install(&handle) {
+                eprintln!("error: failed to create the status-area icon ({e})");
             }
 
             Ok(())
         })
         .on_window_event(|window, event| {
+            // The dock badge is a way of telling somebody who is not looking at
+            // the deck. While they are looking, it has nothing to say — so focus
+            // clears it, and a report arriving while the window is in front does
+            // not put it back (`tray::badge_count`). Only the main window counts:
+            // a workspace window is a place sessions live, not the deck.
+            if let tauri::WindowEvent::Focused(focused) = event {
+                if window.label() == windows::MAIN {
+                    tray::set_focused(window.app_handle(), *focused);
+                }
+                // And the panel behind the status-area icon goes when it loses
+                // the keyboard, which is the only way a window with no chrome
+                // can be dismissed by clicking away from it. It is focusable for
+                // exactly this reason — see `tray::build_panel`.
+                if window.label() == windows::TRAY && !*focused {
+                    tray::panel_blurred(window.app_handle());
+                }
+            }
             // `Destroyed`, not `CloseRequested`: the latter is preventable and
             // also fires while the runtime tears everything down at quit, so a
             // window that refused to close would be marked gone while it is
@@ -252,15 +361,44 @@ fn main() {
                     "window://gone",
                     commands::WindowGonePayload { label: window.label().to_string() },
                 );
+                // And when the window that has gone is the main one, the app goes
+                // with it. The runtime exits of its own accord only when the
+                // *last* window is destroyed, and a workspace window pulled out
+                // of the deck outlives the main one — so without this, closing
+                // the deck left a process holding its sync loop, its schedulers
+                // and its watchers behind a window pinned to one project, whose
+                // sessions `CloseRequested` below has just killed. A relaunch
+                // then stacked a second instance beside it rather than replacing
+                // it (#349).
+                //
+                // #349's own reason was the floating pill, which was never
+                // destroyed and so kept the count of live windows off zero for
+                // ever. #394 removed the pill; this stays because workspace
+                // windows do the same thing for as long as one is open, and
+                // because "the deck closed" meaning "the app quit" is a decision
+                // rather than a consequence of how many windows happen to be up.
+                //
+                // Whatever ended the window, and not only a close the person
+                // asked for: a webview that died under the main window leaves
+                // exactly the same orphan, and this is the one handler both paths
+                // pass through. `CloseRequested` below already treats the main
+                // window closing as the app quitting — it kills every session in
+                // every workspace — so this is that decision carried out rather
+                // than a new one.
+                if window.label() == windows::MAIN {
+                    window.app_handle().exit(0);
+                }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // The label check is load-bearing and its absence is invisible
                 // from the frontend. `AppState` is app-level, so this handler
                 // resolves the same PTY manager whichever window sent the event
-                // — and the app has a second window, the floating status pill.
-                // One `close()` on the pill, a Linux compositor's delete-event,
-                // or any future decoration on it would otherwise kill every
-                // session in every workspace.
+                // — and the app has other windows: one per workspace pulled out
+                // of the deck. Closing one of those returns its workspace and
+                // must never cost a session, least of all a session in a
+                // workspace it has nothing to do with (#245). Without the check,
+                // its close button — or a Linux compositor's delete-event — would
+                // kill every session in every workspace.
                 if window.label() != windows::MAIN {
                     return;
                 }
@@ -304,12 +442,36 @@ fn main() {
             commands::worktree_files,
             commands::config_paths,
             commands::session_snapshots,
+            commands::session_cwds,
+            commands::usage_snapshot,
+            commands::usage_clear_observed,
+            activity::session_activity,
             commands::scheduler_ready,
             commands::schedule_ack,
             commands::load_schedule_state,
             commands::list_runs,
             commands::delete_skill_history,
             commands::reveal_path,
+            memory::memory_jobs,
+            memory::memory_retry_job,
+            memory::memory_capture_offer,
+            memory::memory_status,
+            memory::memory_search,
+            memory::memory_read_note,
+            memory::memory_notes,
+            memory::memory_facts,
+            memory::memory_add_fact,
+            memory::memory_supersede_fact,
+            memory::memory_add_lesson,
+            memory::memory_write_note,
+            memory::memory_save_note,
+            memory::memory_warm,
+            memory::memory_download_model,
+            memory::memory_rooms,
+            memory::memory_save_room,
+            memory::memory_retire_room,
+            memory::memory_rename_room,
+            memory::memory_forget_capture_answer,
             sync_cmd::sync_summary,
             sync_cmd::sync_preflight,
             sync_cmd::sync_probe,
@@ -318,8 +480,8 @@ fn main() {
             sync_cmd::sync_disconnect,
             sync_cmd::sync_now,
             sync_cmd::sync_questions,
-            sync_cmd::sync_blocked_kinds,
-            sync_cmd::sync_fault,
+            sync_cmd::sync_merge_workspaces,
+            sync_cmd::sync_keep_distinct,
             commands::start_command_session,
             commands::gh_status,
             commands::pr_list,
@@ -353,6 +515,9 @@ fn main() {
             tasks_cmd::board_config_save,
             tasks_cmd::board_step_rewrite,
             tasks_cmd::board_step_usage,
+            tray::tray_update,
+            tray::tray_resize,
+            tray::tray_activate,
         ])
         .build(tauri::generate_context!())
         .expect("error while building cowork-deck")
@@ -374,7 +539,26 @@ fn main() {
                 }
             }
             tauri::RunEvent::Exit => {
+                // Before the sessions, because this one talks to the desktop and
+                // `kill_all` can take a moment. A launcher told a count over
+                // D-Bus keeps showing it after the process is gone, which is the
+                // worst version of a stale badge — see `tray::clear_badge`.
+                tray::clear_badge(app);
                 if let Some(state) = app.try_state::<AppState>() {
+                    // Before the PTYs go, and this is the ordering that matters:
+                    // which conversation each session is in is learned from a
+                    // hook and kept in memory, and it reaches `sessions.json`
+                    // through the deck's poll. A `/clear` and then a quit before
+                    // the next tick left the file naming the conversation the
+                    // person cleared away, which the next launch would then
+                    // resume — #199, through the one gap the poll leaves. Not a
+                    // five-second gap either, since #251: the chain is armed only
+                    // while the window has focus, so a person who clears, tabs
+                    // away and quits an hour later never ticked at all. A hard
+                    // kill still loses it, as it loses every other unsaved thing.
+                    if let Err(e) = state.store().update_resume_ids(&resume_ids::all()) {
+                        eprintln!("warning: could not write the conversations to resume ({e})");
+                    }
                     state.pty.kill_all();
                 }
             }

@@ -1,0 +1,39 @@
+# Two ecosystems, monthly, grouped. Monthly rather than weekly because this is a
+# one-maintainer repository and a queue of open dependency pull requests nobody
+# reads is worse than a slightly older lockfile; grouped because reviewing one
+# pull request that moves nine xterm addons is the same work as reviewing nine.
+#
+# Cargo is here too, and `crates/cowork-memory` is named separately: it is a
+# crate with its own lockfile, deliberately outside any root [workspace], so a
+# single entry would miss it — the same fault that kept its tests out of CI.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      xterm:
+        patterns: ["@xterm/*"]
+      tauri:
+        patterns: ["@tauri-apps/*"]
+
+  - package-ecosystem: cargo
+    directory: "/src-tauri"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: cargo
+    directory: "/crates/cowork-memory"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+
+  # The workflows pin actions by major tag, which is a moving target by design —
+  # this is what notices when a major moves.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

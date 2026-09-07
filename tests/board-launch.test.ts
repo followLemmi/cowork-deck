@@ -4,6 +4,7 @@
  *  test of `sessions.ts` can see it: `Deck.launchOnWorktree` is only reached once
  *  the worktree call has already succeeded. */
 import { describe, it, expect, vi } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const listTasksMock = vi.fn();
 const issueWorktreeAddMock = vi.fn();
@@ -35,26 +36,8 @@ const issue = (id: string) => ({
 
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
-  prList: vi.fn().mockResolvedValue([]),
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  saveLayout: vi.fn().mockResolvedValue(undefined),
-  closeSession: vi.fn(),
-  gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
-  sessionSnapshots: vi.fn().mockResolvedValue({}),
-  onState: vi.fn().mockResolvedValue(() => {}),
-  onExit: vi.fn().mockResolvedValue(() => {}),
-  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
-  describeExit: vi.fn().mockReturnValue(null),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
+  ...bootIpc(),
   taskCapabilities: vi.fn().mockResolvedValue(CAPS),
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
   listTasks: listTasksMock,
   issueWorktreeAdd: issueWorktreeAddMock,
 }));
@@ -70,6 +53,7 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    setSessionsSource = vi.fn();
     // The tree's half of the panel: the workspace row is this panel's and the
     // sessions under it are the deck's, so `startApp` hands each the other.
     /* Captured, because the board and the pull requests are opened through this
@@ -127,7 +111,11 @@ describe("▶ on a github issue", () => {
     document.body.innerHTML =
       // Mirrors index.html — `app.ts` mounts the rail into `#rail` and the panel's pages into `#panel-stack`.
       '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
-      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div>'
+      // `#workarea` stacks the deck and the terminal drawer; the note reader
+      // covers it, as `.term-drawer.is-full` does. On all four real bodies —
+      // `page-bodies.test.ts` — and it was missing from this fixture.
+      + '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>'
       + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';

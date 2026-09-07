@@ -1,0 +1,4 @@
+# Every path, one owner. The repository has one maintainer, so this file is not
+# about routing — it is about a review request appearing without anyone
+# remembering to ask for one, now that `dev` requires a pull request.
+*       @evgenykharetski

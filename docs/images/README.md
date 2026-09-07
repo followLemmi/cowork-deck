@@ -126,13 +126,6 @@ of this one: one workspace in the panel, no rail at all, and the board and pull 
 still there. What it has to show is the absence — nothing app-wide in a window that is one
 project's.
 
-### `pill.png` — no longer on the front page
-
-`harness/shoot.mjs` still takes it, and `docs/images/pill.png` is still here, because the
-floating pill is still in the app. It left the README ahead of itself: the pill is on its
-way out, and a front page arguing for a feature about to be removed is a page that has to
-be edited twice. When the pill goes, the shot and `harness/pill.html` go with it.
-
 ### `demo.gif` — the take
 
 Half a minute of one continuous take, driven the same way the stills are and by the same

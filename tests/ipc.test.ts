@@ -30,9 +30,15 @@ describe("ipc", () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
     const sink = {} as OutputSink;
     await startSession("s1", "/proj", "w1", "do the thing", "01AAA", 80, 24, false, sink);
+    // One `req` object and the channel beside it: the Rust command takes a
+    // `LaunchRequest`, and `sink` cannot live inside it — Tauri gives a
+    // `Channel` its identity from the payload's own property.
     expect(invoke).toHaveBeenCalledWith("start_session", {
-      session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing",
-      taskId: "01AAA", cols: 80, rows: 24, resume: false, sink, scenario: null, replace: false,
+      req: {
+        session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: "do the thing",
+        taskId: "01AAA", cols: 80, rows: 24, resume: false, scenario: null, replace: false,
+      },
+      sink,
     });
   });
 
@@ -44,7 +50,7 @@ describe("ipc", () => {
     vi.mocked(invoke).mockResolvedValue({ account: null, degraded: null });
     await startSession("s1", "/proj", "w1", null, null, 80, 24, true, {} as OutputSink, null, true);
     expect(invoke).toHaveBeenCalledWith("start_session", expect.objectContaining({
-      replace: true,
+      req: expect.objectContaining({ replace: true }),
     }));
   });
 
@@ -86,10 +92,12 @@ describe("ipc", () => {
       continuesRunId: null,
     });
     expect(invoke).toHaveBeenCalledWith("start_session", expect.objectContaining({
-      scenario: {
-        runId: "r1", skillId: "sk1", trigger: "manual", params: { branch: "dev" },
-        continuesRunId: null,
-      },
+      req: expect.objectContaining({
+        scenario: {
+          runId: "r1", skillId: "sk1", trigger: "manual", params: { branch: "dev" },
+          continuesRunId: null,
+        },
+      }),
     }));
   });
 
@@ -97,8 +105,10 @@ describe("ipc", () => {
     vi.mocked(invoke).mockResolvedValue({ account: "followLemmi", degraded: null });
     const auth = await startSession("s1", "/proj", "w1", null, null, 80, 24, false, {} as OutputSink);
     expect(invoke).toHaveBeenCalledWith("start_session", expect.objectContaining({
-      session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: null,
-      taskId: null, cols: 80, rows: 24, resume: false, scenario: null, replace: false,
+      req: expect.objectContaining({
+        session: "s1", cwd: "/proj", workspaceId: "w1", initialPrompt: null,
+        taskId: null, cols: 80, rows: 24, resume: false, scenario: null, replace: false,
+      }),
     }));
     expect(auth).toEqual({ account: "followLemmi", degraded: null });
   });
@@ -118,15 +128,34 @@ describe("ipc", () => {
 
   // The occurrence has to survive the round trip: the backend records only
   // that it attempted a fire, and matches the ack against that exact
-  // occurrence before it will record a run.
-  it("onScheduledFire hands the occurrence to the callback", async () => {
+  // occurrence before it will record a run. So does the workspace the backend
+  // resolved the fire to — the frontend no longer has a say in it (#249).
+  it("onScheduledFire hands the occurrence and its workspace to the callback", async () => {
     const cb = vi.fn();
     await onScheduledFire(cb);
 
     const handler = vi.mocked(listen).mock.calls[0][1] as (e: unknown) => void;
-    handler({ payload: { skillId: "s1", occurrenceMs: 1_700_000_000_000, catchUp: true } });
+    handler({ payload: {
+      skillId: "s1", workspaceId: "w1", occurrenceMs: 1_700_000_000_000, catchUp: true,
+    } });
 
-    expect(cb).toHaveBeenCalledWith("s1", 1_700_000_000_000, true);
+    expect(cb).toHaveBeenCalledWith({
+      skillId: "s1", workspaceId: "w1", occurrenceMs: 1_700_000_000_000, catchUp: true,
+    });
+  });
+
+  // A pin naming a workspace that no longer exists still fires, so the refusal
+  // is journalled rather than the schedule going quiet.
+  it("onScheduledFire reports an unresolved workspace as null", async () => {
+    const cb = vi.fn();
+    await onScheduledFire(cb);
+
+    const handler = vi.mocked(listen).mock.calls[0][1] as (e: unknown) => void;
+    handler({ payload: { skillId: "s1", occurrenceMs: 1_700_000_000_000 } });
+
+    expect(cb).toHaveBeenCalledWith({
+      skillId: "s1", workspaceId: null, occurrenceMs: 1_700_000_000_000, catchUp: false,
+    });
   });
 
   it("scheduleAck reports the outcome for that occurrence", async () => {

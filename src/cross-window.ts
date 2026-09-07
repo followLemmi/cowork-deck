@@ -1,21 +1,32 @@
-/** What one window tells the others about its sessions, and what the main window
- *  works out from all of it.
+/** What one window tells the others about its sessions.
  *
- *  Pure functions of plain data, deliberately. Two windows cannot coexist in one
- *  jsdom document and the harness's event bus has no notion of a target, so
- *  cross-window behaviour cannot be tested through the DOM at all — it has to be
- *  tested at seams like these. The same shape the codebase already uses for
- *  `nextWaitingAcross`, `zoomParticipants` and `serializeTiles`.
+ *  The shape of the message, and the one rule that has to hold across windows
+ *  without them having spoken. Pure data and a pure function, deliberately: two
+ *  windows cannot coexist in one jsdom document and the harness's event bus has
+ *  no notion of a target, so cross-window behaviour cannot be tested through the
+ *  DOM at all — it has to be tested at a seam like this. The same shape the
+ *  codebase already uses for `nextWaitingAcross`, `zoomParticipants` and
+ *  `serializeTiles`.
+ *
+ *  It was three functions before #394, all three for the floating pill's click
+ *  and its count. Adding the reports up went with the pill and has not come
+ *  back: nothing counts windows any more, because the status-area panel is a
+ *  list and the badge's number is composed with it (`tray-panel.ts`). The other
+ *  two are here because #393 gave them a caller again — the panel names every
+ *  session in one order, and a click on one of those rows has to reach the
+ *  window that holds it.
  */
 import type { SessionState } from "./ipc";
 
 /** One session, as another window describes it.
  *
  *  A **list**, not a count, and that decision is what makes the rest of this
- *  file small. A count answers "how many are waiting" and nothing else; the same
- *  message carrying the sessions answers that *and* which window to raise when
- *  somebody asks for the next one, *and* what to draw in the main window's
- *  sidebar for a workspace that has been pulled out. Three problems, one message.
+ *  file small — and what let the floating pill go (#394) without taking anything
+ *  with it. A count would have answered "how many are waiting" and nothing else;
+ *  the same message carrying the sessions answers which window to raise when
+ *  somebody clicks a row in the status-area panel, *and* what to draw in the
+ *  main window's sidebar for a workspace that has been pulled out. Two problems
+ *  that outlived the count, one message.
  */
 export interface RemoteSession {
   session: string;
@@ -33,24 +44,11 @@ export interface WindowSessions {
 /** Every window's report, keyed by the window that sent it. */
 export type SessionsByWindow = Map<string, RemoteSession[]>;
 
-/** How many sessions are waiting for input, across every window.
- *
- *  The pill used to flap between two partial counts every five seconds, because
- *  each window computed the number from its own tiles and then broadcast it as
- *  though it were the app's. Whichever arrived last won.
- */
-export function sumWaiting(byWindow: SessionsByWindow): number {
-  let n = 0;
-  for (const sessions of byWindow.values()) {
-    for (const s of sessions) if (s.state === "waitingInput") n++;
-  }
-  return n;
-}
-
 /** The window that holds `session`, or null if nobody reports it.
  *
- *  Used to answer "who is blocked on me" across monitors: the main window works
- *  out which session is next and this says where to send the request.
+ *  What lets a row of the status-area panel reach the session it names: the main
+ *  window composes the panel out of every window's report, and this says where
+ *  to send the click when the row belongs to somebody else.
  */
 export function windowOf(byWindow: SessionsByWindow, session: string): string | null {
   for (const [label, sessions] of byWindow) {
@@ -61,10 +59,11 @@ export function windowOf(byWindow: SessionsByWindow, session: string): string | 
 
 /** Every session any window reports, in a stable order.
  *
- *  Ordered by window label and then by the order that window listed them, so
- *  "the next one waiting" means the same thing twice running. Without that the
- *  answer would depend on `Map` insertion order, which depends on which window
- *  happened to report first after a restart.
+ *  Ordered by window label and then by the order that window listed them, so the
+ *  panel lists the same sessions in the same order twice running. Without it the
+ *  order would depend on `Map` insertion order, which depends on which window
+ *  happened to report first after a restart — and a menu whose rows move between
+ *  two openings is a menu you cannot click without reading it again.
  */
 export function allSessions(byWindow: SessionsByWindow): RemoteSession[] {
   return [...byWindow.keys()].sort().flatMap((label) => byWindow.get(label) ?? []);

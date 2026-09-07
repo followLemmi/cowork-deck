@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { workspaceIdOf } from "../src/window-role";
+import { addressedTo, workspaceIdOf } from "../src/window-role";
 
 /** The other half of `windows.rs`'s `a_label_carries_its_workspace_and_gives_it_back`.
  *
@@ -15,9 +15,8 @@ describe("workspaceIdOf", () => {
       .toBe("3f2b1c4e-0a11-4c2d-9f77-1b2c3d4e5f60");
   });
 
-  it("says nothing for the windows that are not workspaces", () => {
+  it("says nothing for the window that is not a workspace", () => {
     expect(workspaceIdOf("main")).toBeNull();
-    expect(workspaceIdOf("pill")).toBeNull();
   });
 
   /** The bare prefix names no workspace. Otherwise an empty id would round trip
@@ -29,6 +28,29 @@ describe("workspaceIdOf", () => {
   /** A prefix match, not a substring one: a label that merely contains the word
    *  must not be read as a workspace window. */
   it("matches at the start and nowhere else", () => {
-    expect(workspaceIdOf("pill-workspace-w1")).toBeNull();
+    expect(workspaceIdOf("not-workspace-w1")).toBeNull();
+  });
+});
+
+/** The listen options that decide whether an addressed event is actually
+ *  addressed.
+ *
+ *  Written out as a literal rather than compared against anything the source
+ *  builds, because the value only means something to Tauri: a target of
+ *  `{ kind: "Any" }` — which is what a bare `listen` registers, and what this
+ *  exists to replace — is delivered every addressed emit as well as every
+ *  broadcast, so `emitTo` stops meaning "to that window" (#349). The literal
+ *  here is the shape `@tauri-apps/api`'s own `EventTarget` names, and a drift
+ *  from it would be silent: a target Tauri does not recognise fails to
+ *  deserialise and the listener registers not at all. */
+describe("addressedTo", () => {
+  it("narrows a listener to one window, by label", () => {
+    expect(addressedTo("main")).toEqual({ target: { kind: "Window", label: "main" } });
+  });
+
+  /** The case the bug was about: two windows, two different narrowings, so an
+   *  event addressed to one is not delivered to the other. */
+  it("gives two windows two different targets", () => {
+    expect(addressedTo("workspace-w1")).not.toEqual(addressedTo("main"));
   });
 });

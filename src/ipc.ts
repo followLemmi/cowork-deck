@@ -5,9 +5,10 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
  *  `done` — the agent finished its turn and the prompt is free: nothing is
  *  blocked, but work got done, which is worth a notification. */
 export type SessionState = "idle" | "working" | "waitingInput" | "done" | "ended" | "error";
-/** Привязка воркспейса к GitHub-аккаунту. Здесь только имя аккаунта —
- *  публичное значение. Токены приложение не хранит: они читаются из keyring
- *  `gh` на старте сессии и живут лишь в памяти дочернего процесса. */
+/** A workspace's binding to a GitHub account. The login only, which is a public
+ *  value: the app stores no token. One is read out of `gh`'s keyring when a
+ *  session starts and lives in that child process's memory and nowhere else —
+ *  ADR-0001's invariant, and `gh.rs` is where it is kept. */
 export interface WorkspaceGithub {
   host: string;
   login: string;
@@ -19,7 +20,16 @@ export interface Workspace {
   id: string; name: string; path: string; color: string;
   github?: WorkspaceGithub | null;
   tracker?: TrackerConfig | null;
+  /** What repository this workspace's folder is, remembered so sync can tell
+   *  two records for one project apart from two projects. Written by the sync
+   *  cycle, never by this side — an editor that set it would be guessing at a
+   *  folder it has not read. */
+  repo?: WorkspaceRepo | null;
 }
+/** The remote a workspace's folder points at, and the folder that was read in.
+ *  Mirrors `model::WorkspaceRepo`; `url` absent means the folder was asked and
+ *  has none, which is an answer rather than a gap. */
+export interface WorkspaceRepo { url?: string | null; from: string }
 export type SchedulePreset =
   | { kind: "hourly"; minute: number }
   | { kind: "daily"; hour: number; minute: number }
@@ -53,6 +63,24 @@ export interface SessionEntry {
    *  degrades into guessing "the previous run of this scenario" — wrong the
    *  moment a scenario ran twice in a day. */
   runId?: string;
+  /** Which agent CLI this session runs. **Absent means `claude`**, which is
+   *  every entry written before this field existed and every session in them —
+   *  `start_session` resolves `claude` and nothing else. Typed as `CliKind`
+   *  here and as a bare string on the Rust side, deliberately: an entry naming
+   *  a CLI an older build has never heard of must still restore its tile rather
+   *  than fail the whole parse. */
+  cliKind?: CliKind;
+  /** Which conversation this tile resumes, when it is no longer the one it was
+   *  launched with. **Absent until a `/clear` happens**, which is what every
+   *  entry written before this field existed says.
+   *
+   *  `sessionId` above stays the launch id — the pty key, the `COWORK_SESSION`
+   *  in the session's argv, and the key every hook event is attributed by. What
+   *  a clear changes is the conversation: Claude Code mints a new id, and
+   *  `claude --resume <launch-id>` then quietly restores the conversation the
+   *  person cleared away (#199). Written by the poll tick, which is where the
+   *  backend reports it. */
+  resumeId?: string;
 }
 export type NameKind = "context" | "placeholder";
 export interface UiState {
@@ -76,6 +104,11 @@ export interface UiState {
    *  and deletes nothing already written, and reads keep working. Required for
    *  the same reason as the two above: Rust fills it from a `serde` default. */
   recordScenarioRuns: boolean;
+  /** Whether closing a session writes a note about it, once the person has said.
+   *  `undefined` is "never asked", which is deliberately not "no": a default
+   *  either way would answer a question about spending their money on their
+   *  behalf. Local to this machine — `ui_state.json` does not travel. */
+  captureOnClose?: boolean;
   /** How tall the drawer is, **in rows of the terminal's own type** — not
    *  pixels, and for a sharper version of `prDiffCols`' reason: the thing being
    *  sized is a grid of characters, so "show me twenty rows" has to keep meaning
@@ -96,11 +129,26 @@ export interface UiState {
   panelPx?: number;
   wspPx?: number;
   wspWidePx?: number;
+  /** Whether the reported source of usage limits may be asked. Default on.
+   *
+   *  Required rather than optional, for the same reason as `uiScale`: the Rust
+   *  side fills it from a `serde` default, so a reader treating it as
+   *  possibly-absent would guard a case that cannot happen and hide one that
+   *  can. Off means the limits block stays on the observed source and says so. */
+  usageReported: boolean;
   /** And the tool panel inside a zoomed tile. One width for the app, not one per
    *  tile: sizing it is sizing the tool, and every session's tools are the same
    *  tool. Its floor is the 80-column rule, which is enforced where the panel is
    *  drawn — a stored number cannot know what the terminal is doing. */
   toolPx?: number;
+  /** Whether the left panel is collapsed to the rail — the person's own answer.
+   *
+   *  Required rather than optional, for the same reason as `uiScale`: the Rust
+   *  side fills it from a `serde` default, and the default is the right one — a
+   *  panel nobody has collapsed is open. Stored at all because it used not to be:
+   *  a zoom collapsed the panel and an un-zoom brought it back, so what a restart
+   *  found was whatever the last zoom had made it (#480). */
+  panelCollapsed: boolean;
 }
 
 /** A change to the stored state, which is what `save_ui_state` takes.
@@ -111,15 +159,20 @@ export interface UiState {
  *  size. An absent key here means "leave it alone". */
 export interface UiStatePatch {
   activeWorkspaceId?: string;
+  /** Sets the remembered answer. Omitted leaves it alone, like every other field
+   *  here — putting it back to "never asked" is `memoryForgetCaptureAnswer`. */
+  captureOnClose?: boolean;
   uiScale?: number;
   prDiffCols?: number;
   syncOfferDismissed?: boolean;
   recordScenarioRuns?: boolean;
   terminalRows?: number;
+  usageReported?: boolean;
   panelPx?: number;
   wspPx?: number;
   wspWidePx?: number;
   toolPx?: number;
+  panelCollapsed?: boolean;
 }
 /** Runtime record of a scenario's scheduled runs, owned by the backend.
  *  `lastAttempt` is the occurrence last emitted; `lastRun` only advances when
@@ -131,6 +184,13 @@ export interface ScheduleRun {
   nextRunMs?: number | null;
 }
 
+/** The workspace list.
+ *
+ *  **Rejects** for a `workspaces.json` it cannot read, rather than resolving
+ *  empty. It resolved empty until #369, when an unreadable list cost a stale
+ *  sidebar and nothing else; a window pinned to a workspace now closes itself
+ *  when this stops listing it, so an empty answer is a decision and a fault must
+ *  not be able to make it. Every caller has to survive the rejection. */
 export const listWorkspaces = () => invoke<Workspace[]>("list_workspaces");
 export const saveWorkspace = (ws: Workspace) => invoke<Workspace[]>("save_workspace", { ws });
 export const removeWorkspace = (id: string) => invoke<Workspace[]>("remove_workspace", { id });
@@ -194,7 +254,17 @@ export interface SyncSummary {
 }
 export type SyncQuestion =
   | { kind: "needs-path"; workspaceId: string; name: string; cloneFrom: string | null }
-  | { kind: "duplicate"; arrivingId: string; localId: string; name: string }
+  | {
+      kind: "duplicate";
+      arrivingId: string;
+      localId: string;
+      name: string;
+      /** What matched: the same remote URL, or one folder on this machine —
+       *  which is the identity a project with no repository has
+       *  (`sync::adopt::DuplicateBasis`). The two read differently to whoever
+       *  answers, so the sentence is not shared. */
+      basis: "repository" | "folder";
+    }
   | { kind: "needs-board-path"; workspaceId: string; name: string };
 
 export const syncSummary = () => invoke<SyncSummary>("sync_summary");
@@ -208,11 +278,31 @@ export const syncConnect = (host: string, login: string, repo: string, url: stri
 export const syncDisconnect = () => invoke<void>("sync_disconnect");
 export const syncNow = () => invoke<SyncState>("sync_now");
 export const syncQuestions = () => invoke<SyncQuestion[]>("sync_questions");
+/** These two records are one project: fold `from` into `into`. Answers with the
+ *  workspaces that are left. */
+export const syncMergeWorkspaces = (from: string, into: string) =>
+  invoke<Workspace[]>("sync_merge_workspaces", { from, into });
+/** These two records are not one project, and the deck is to stop asking. */
+export const syncKeepDistinct = (a: string, b: string) =>
+  invoke<void>("sync_keep_distinct", { a, b });
 
 /** The loop pushes state after every cycle, so a panel left open does not have
  *  to poll to stay honest. */
 export const onSyncState = (fn: (s: SyncState) => void): Promise<UnlistenFn> =>
   listen<SyncState>("sync://state", (e) => fn(e.payload));
+
+/** The store's workspace list is no longer what this window read at boot.
+ *
+ *  Sent when the list changed without a window asking for it: a pull that
+ *  brought a record, deleted one, or carried the answer somebody gave on the
+ *  other machine. A window reads `workspaces.json` once, during boot, so
+ *  without this it draws a row for a record that is gone — and a window pinned
+ *  to that record is pinned to nothing (#369).
+ *
+ *  No payload: the list is one file, and re-reading it says more than any
+ *  description of the change could. */
+export const onWorkspacesChanged = (fn: () => void): Promise<UnlistenFn> =>
+  listen("workspaces://changed", () => fn());
 export const hostPlatform = () => invoke<HostPlatform>("host_platform");
 
 /** Four distinct check states. `none` is not `passed`: nothing has built this.
@@ -401,8 +491,9 @@ export const prWorktreeAdd = (
 export const prWorktreeRemove = (workspaceId: string, number: number, branch: string) =>
   invoke<void>("pr_worktree_remove", { workspaceId, number, branch });
 
-/** Исход привязки аккаунта для стартовавшей сессии. Токена тут нет: только имя
- *  аккаунта и, если резолв не удался, причина — её показывает бейдж на тайле. */
+/** How the account binding resolved for a session that has started. No token
+ *  here either: the login, and — where the resolution failed — the reason, which
+ *  is what the badge on the tile says. */
 export interface SessionAuth { account: string | null; degraded: string | null; }
 
 /** Where a session's pty output is delivered. One channel per terminal, created
@@ -445,7 +536,13 @@ export const startSession = (
    *  launches can be in flight before the first resolves. */
   replace = false,
 ) => invoke<SessionAuth>("start_session", {
-  session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, sink, scenario, replace,
+  /* One `req` object, not eleven properties: the Rust side takes a
+     `LaunchRequest` struct, because at fourteen parameters `cols`/`rows` and the
+     two adjacent booleans could be swapped by a caller and still compile. `sink`
+     stays outside it — Tauri gives a `Channel` its identity from the payload,
+     and it does not deserialise from inside a struct. */
+  req: { session, cwd, workspaceId, initialPrompt, taskId, cols, rows, resume, scenario, replace },
+  sink,
 });
 
 /** Resolve a workspace's account binding and `claude`'s location ahead of a
@@ -508,15 +605,244 @@ export const loadTerminals = () => invoke<TerminalLayout>("load_terminals");
 export const saveTerminals = (layout: TerminalLayout) =>
   invoke<void>("save_terminals", { layout });
 
-/** Разовый запуск пользовательской команды в тайле-терминале (установка gh,
- *  `gh auth login`). Не сессия агента: хуков состояния нет. */
+/** One run of a command the person typed, in a terminal tile: installing `gh`,
+ *  `gh auth login`. Not an agent session, so there are no state hooks and nothing
+ *  reports back. */
 export const startCommandSession = (
   session: string, cwd: string, command: string, cols: number, rows: number, sink: OutputSink,
 ) => invoke<void>("start_command_session", { session, cwd, command, cols, rows, sink });
 export const writeSession = (session: string, data: string) => invoke<void>("write_session", { session, data });
 export const resizeSession = (session: string, cols: number, rows: number) =>
   invoke<void>("resize_session", { session, cols, rows });
-export const closeSession = (session: string) => invoke<void>("close_session", { session });
+/** What a closing session needs for its note, when the person has agreed to one.
+ *
+ *  The three fields are meaningless apart: consent with no workspace has nowhere
+ *  to file the note, and consent with no CLI cannot say which reader understands
+ *  the log. */
+export interface CaptureOnClose {
+  workspaceId: string;
+  cliKind?: CliKind;
+  sessionName?: string;
+}
+/** Close a session, and write a note about it when `capture` says to.
+ *
+ *  The note is an argument of the close rather than a call before it, and that is
+ *  the guarantee: `close_session` calls `transcripts::forget`, so the transcript
+ *  path is gone the instant the close goes through. An ordering inside one
+ *  command cannot be got wrong by a caller. */
+export const closeSession = (session: string, capture?: CaptureOnClose | null) =>
+  invoke<void>("close_session", { session, capture: capture ?? null });
+/** Whether closing this session could produce a note at all — a CLI this build
+ *  can read, and a log it knows the location of. Asked before anybody is asked,
+ *  because consent to spend money on something that cannot work is worse than no
+ *  offer. */
+export const memoryCaptureOffer = (session: string, cliKind?: CliKind) =>
+  invoke<CaptureOffer>("memory_capture_offer", { session, cliKind: cliKind ?? null });
+/** What the model directory holds. Three states, not a boolean: `partial` is a
+ *  resumable download, and calling it absent would invite somebody to start
+ *  479 MB again with the bytes already on disk. */
+export interface MemoryModelState {
+  dir: string;
+  state: "absent" | "partial" | "present";
+  have: number;
+  total: number;
+}
+/** The index and the model, from the sidecar's own `status`. */
+export interface MemoryStatus {
+  root: string;
+  cache: string;
+  /** `absent` — nothing has been indexed; `empty` — indexed, nothing in it;
+   *  `ready`. Three, because counts alone cannot tell the first two apart. */
+  state: "absent" | "empty" | "ready";
+  files: number;
+  chunks: number;
+  dim: number;
+  model: MemoryModelState;
+}
+/** The index and the model. Needs neither, which is what makes it the call that
+ *  decides what the interface may offer — a search returning nothing cannot tell
+ *  "no matches" from "no model" from "never indexed". */
+export const memoryStatus = () => invoke<MemoryStatus>("memory_status");
+/** Search the notes. Scoped to a workspace sees its notes plus the global
+ *  diaries; absent, it searches everything. */
+export const memorySearch = (query: string, workspaceId?: string, top?: number) =>
+  invoke<MemoryHit[]>("memory_search", {
+    query, workspaceId: workspaceId ?? null, top: top ?? null,
+  });
+export interface MemoryHit {
+  score: number;
+  /** Relative to the corpus root — `ws-1/Sessions/2026-08/31-topic.md`. */
+  file: string;
+  /** The workspace id, or `lessons` for a diary. */
+  scope: string;
+  room: string | null;
+  text: string;
+  /** When the note was written — `2026-08-31`, or `2026-08` for a diary.
+   *
+   *  Derived by the sidecar from `file`, which is the same derivation
+   *  `labelHit` performs here (#462). It is on the hit so that the block the
+   *  prompt hook injects can show a passage's age; the memory page keeps
+   *  reading the path, because it needs a title and a room off it anyway. */
+  date: string | null;
+}
+/** What one capture cost, off the CLI's own envelope. */
+export interface MemoryCost {
+  inputTokens: number;
+  outputTokens: number;
+  /** What the CLI said it cost, when it said. Absent on a plan where the question
+   *  has no dollar answer. */
+  usd?: number;
+}
+/** One wrapup job, folded out of the queue's events. */
+export interface MemoryJob {
+  jobId: string;
+  queuedAt: number;
+  sessionId: string;
+  workspaceId: string;
+  transcriptPath: string;
+  cliKind: CliKind;
+  sessionName: string | null;
+  state: "queued" | "running" | "done" | "failed";
+  attempts: number;
+  /** Why it last came out of `running` without finishing, or why it was given up
+   *  on. Can hold model output, which is ours — render it as detail, never as a
+   *  headline. */
+  lastError: string | null;
+  notePath: string | null;
+  cost: MemoryCost | null;
+}
+/** Every wrapup job, oldest first. Machine-local: the queue names transcript
+ *  paths on this machine and does not travel. */
+export const memoryJobs = () => invoke<MemoryJob[]>("memory_jobs");
+/** Put a finished-with job back on the queue. Resolves whether there was one to
+ *  reopen. **It spends money**, like any capture. */
+export const memoryRetryJob = (jobId: string) =>
+  invoke<boolean>("memory_retry_job", { jobId });
+/** One note, read back out of the corpus by its path relative to the root. */
+export interface MemoryNote {
+  path: string;
+  markdown: string;
+}
+/** Read a note. The path is relative and checked against the corpus root on the
+ *  Rust side — a command taking an absolute one would be a command any window
+ *  could ask to read any file. */
+/** One note as the corpus holds it, read off its path and its first heading. */
+export interface MemoryNoteEntry {
+  /** Relative to the corpus root — what `memoryReadNote` takes back. */
+  file: string;
+  /** The workspace id, or `Diaries` for a lesson. */
+  scope: string;
+  room: string | null;
+  kind: "session" | "facts" | "diary" | "other";
+  /** `2026-08-31` for a session note, `2026-08` for a diary, empty otherwise —
+   *  from the path, which is where the day the work happened is recorded. */
+  when: string;
+  /** The first `# ` heading, or the file stem. Verbatim: a session note's own
+   *  heading begins with its date, and a row showing both must not say it
+   *  twice. */
+  title: string;
+  size: number;
+  /** Seconds since the epoch. The only sort key the three shapes share. */
+  mtime: number;
+}
+/** One fact of a workspace that still stands. */
+export interface MemoryFact {
+  /** `YYYY-MM-DD`, the day it was recorded. */
+  date: string;
+  /** The claim, without the date or the `[active]` marker — what a replacement
+   *  matches on. */
+  body: string;
+}
+/** The facts a workspace still claims, for the form that replaces one. */
+export const memoryFacts = (workspaceId: string) =>
+  invoke<MemoryFact[]>("memory_facts", { workspaceId });
+/** Record a fact by hand. One line: `subject — predicate — object`. The date and
+ *  the `[active]` marker are the app's to write. */
+export const memoryAddFact = (workspaceId: string, fact: string) =>
+  invoke<void>("memory_add_fact", { workspaceId, fact });
+/** Replace a fact that has stopped being true. The old line is marked and the new
+ *  one goes under it (ADR-0004). Resolves `false` when nothing matched — the file
+ *  moved under the form, and that is worth showing rather than swallowing. */
+export const memorySupersedeFact = (workspaceId: string, old: string, replacement: string) =>
+  invoke<boolean>("memory_supersede_fact", { workspaceId, old, replacement });
+/** File a lesson into a room the person picked. */
+export const memoryAddLesson = (lesson: {
+  room: string;
+  workspace: string;
+  severity: string;
+  category: string;
+  what: string;
+  avoid: string;
+}) => invoke<void>("memory_add_lesson", lesson);
+/** Write a note by hand. Takes the three parts rather than markdown, so the shape
+ *  a search reads — the frontmatter, the H1, the `## TL;DR` — is written for the
+ *  person. Resolves the path it landed on, relative to the corpus root. */
+export const memoryWriteNote = (workspaceId: string, title: string, tldr: string, body: string) =>
+  invoke<string>("memory_write_note", { workspaceId, title, tldr, body });
+/** Save an edited note over itself, atomically. Refuses a path that is not a note
+ *  and markdown with no `## TL;DR`. */
+export const memorySaveNote = (file: string, markdown: string) =>
+  invoke<void>("memory_save_note", { file, markdown });
+/** Load the embedding model before anything asks for it.
+ *
+ *  Resolves as soon as the warm-up is *started*, not when it finishes — it is
+ *  1.7 s of CPU, and the point is that it overlaps with reading the list rather
+ *  than landing on the first search. `false` means there is nothing to warm: no
+ *  sidecar staged on this build. */
+export const memoryWarm = () => invoke<boolean>("memory_warm");
+/** Everything ever written down, newest first.
+ *
+ *  A directory walk rather than a search, which is why the memory page is useful
+ *  on a machine that has downloaded nothing: `memorySearch` needs the sidecar and
+ *  the model, and this needs neither. */
+export const memoryNotes = () => invoke<MemoryNoteEntry[]>("memory_notes");
+export const memoryReadNote = (file: string) =>
+  invoke<MemoryNote>("memory_read_note", { file });
+/** Start fetching the embedding model. Resolves whether a download was started —
+ *  `false` when one already is. Progress arrives on `memory://model`. */
+export const memoryDownloadModel = () => invoke<boolean>("memory_download_model");
+/** Where a download has got to, or how it ended. One shape for both, so a
+ *  surface rendering "fetching", "done" and "it failed" in one place cannot let
+ *  them disagree. */
+export interface MemoryModelEvent {
+  phase: "fetching" | "verifying" | "ready" | "failed";
+  file?: string;
+  got: number;
+  total: number;
+  error?: string;
+}
+export const onMemoryModel = (fn: (e: MemoryModelEvent) => void): Promise<UnlistenFn> =>
+  listen<MemoryModelEvent>("memory://model", (e) => fn(e.payload));
+/** The corpus or the index moved. */
+export const onMemoryChanged = (fn: () => void): Promise<UnlistenFn> =>
+  listen("memory://changed", () => fn());
+/** A diary room: a name, and the sentence a lesson is routed by. */
+export interface DiaryRoom {
+  name: string;
+  description: string;
+}
+/** Every configured room. Seeds a usable default set on a corpus that has never
+ *  had any, so the surface never opens on an empty page with an Add button. */
+export const memoryRooms = () => invoke<DiaryRoom[]>("memory_rooms");
+/** Declare a room or change its description. Resolves the name it was stored
+ *  under, which is the slug of what was asked for. */
+export const memorySaveRoom = (name: string, description: string) =>
+  invoke<string>("memory_save_room", { name, description });
+/** Stop routing lessons to a room. **Its lessons stay on disk** — a room removed
+ *  by mistake must not take months of them with it. */
+export const memoryRetireRoom = (name: string) =>
+  invoke<boolean>("memory_retire_room", { name });
+/** Rename a room, moving its lessons with it. Rejects a merge into an existing
+ *  one. */
+export const memoryRenameRoom = (from: string, to: string) =>
+  invoke<string>("memory_rename_room", { from, to });
+/** Forget the remembered answer, so the next close asks again. */
+export const memoryForgetCaptureAnswer = () =>
+  invoke<void>("memory_forget_capture_answer");
+export interface CaptureOffer {
+  available: boolean;
+  reason?: string;
+}
 /** One tile as it crosses between windows: everything `sessions.json` records
  *  about it, plus what was on its screen.
  *
@@ -625,11 +951,28 @@ export const quitCancelled = () => invoke<void>("quit_cancelled");
 /** Released once, after the fire listener below is attached, so the backend
  *  scheduler's first (catch-up) tick has somewhere to land. */
 export const schedulerReady = () => invoke<void>("scheduler_ready");
+/** One occurrence coming due, as the backend resolved it.
+ *
+ *  `workspaceId` is where the run belongs, decided by the scheduler against
+ *  `workspaces.json` rather than by whichever workspace this window happens to
+ *  have selected (#249). `null` means the scenario's pin names no workspace that
+ *  exists: the fire is still delivered, so the refusal is journalled instead of
+ *  the schedule going quiet. */
+export interface ScheduledFire {
+  skillId: string;
+  workspaceId: string | null;
+  occurrenceMs: number;
+  catchUp: boolean;
+}
 export const onScheduledFire = (
-  cb: (skillId: string, occurrenceMs: number, catchUp: boolean) => void,
+  cb: (fire: ScheduledFire) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ skillId: string; occurrenceMs: number; catchUp: boolean }>("schedule://fire", (e) =>
-    cb(e.payload.skillId, e.payload.occurrenceMs, e.payload.catchUp ?? false));
+  listen<ScheduledFire>("schedule://fire", (e) => cb({
+    skillId: e.payload.skillId,
+    workspaceId: e.payload.workspaceId ?? null,
+    occurrenceMs: e.payload.occurrenceMs,
+    catchUp: e.payload.catchUp ?? false,
+  }));
 
 /** Report what a fire produced. The backend records only that it attempted a
  *  run; `lastRun` advances only when this says a session actually started.
@@ -750,8 +1093,34 @@ export interface SessionSnapshot {
   tokens: SessionTokens | null;
   title: string | null;
   titleSource: TitleSource | null;
+  /** Tool calls in the whole conversation, subagents included — what the
+   *  activity button carries, so the panel is worth opening before it is. `null`
+   *  is the reading being unavailable and `0` is a session that has made no
+   *  calls; the panel says two different sentences for those. */
+  calls: number | null;
+  /** The conversation this session is in now, when it is no longer the one the
+   *  deck launched it with — i.e. after a `/clear`. `null` means it still is.
+   *
+   *  The deck persists this into the session's layout entry: it is the only copy
+   *  that survives a restart, and so the only thing auto-restore has to resume
+   *  by. Without it a restart brings back the conversation the person cleared
+   *  away and orphans the one they were working in (#199). */
+  resumeId: string | null;
 }
 export const gitStatus = (cwd: string) => invoke<GitStatus>("git_status", { cwd });
+
+/** Where each of these sessions is working now, keyed by session id.
+ *
+ *  A session that has not said — and whose process could not be asked — is
+ *  **absent from the answer** rather than present with its launch path. That is
+ *  the distinction the caller needs: absent means "keep using the directory this
+ *  tile was launched in", which is a real answer, and a backend that filled it in
+ *  would be guessing on the frontend's behalf.
+ *
+ *  One call for the whole deck, because the caller is the poll — see
+ *  `session_cwds` in `commands.rs` for what the two sources are and which wins. */
+export const sessionCwds = (sessions: string[]) =>
+  invoke<Record<string, string>>("session_cwds", { sessions });
 
 /** One changed file in a session's own checkout. `mark` is git's own letter — M,
  *  A, D, R, `?` for untracked, U for a conflict — because anyone with a worktree
@@ -782,6 +1151,86 @@ export const configPaths = () => invoke<ConfigPaths>("config_paths");
  *  twice. Every requested id comes back, including ids with no transcript. */
 export const sessionSnapshots = (sessionIds: string[]) =>
   invoke<Record<string, SessionSnapshot>>("session_snapshots", { sessionIds });
+
+/** Which CLI a session runs. `claude` is what every stored session is until the
+ *  deck can launch anything else, and what an unrecognised name reads back as. */
+export type CliKind = "claude" | "copilot" | "opencode" | "codex";
+
+/** A lens over native tool names, never a rename of them. A row shows the name
+ *  the CLI itself used; the category is what makes `shell` and `Bash`
+ *  comparable across two CLIs without either being relabelled. */
+export type ToolCategory =
+  | "run" | "read" | "edit" | "search" | "web"
+  | "mcp" | "delegate" | "task" | "ask" | "other";
+
+/** One tool, as invoked by one agent, counted. `errors` and `denials` are
+ *  separate because they are different events: a denied call never ran, and
+ *  rolling it into a failure rate would make a session that refused three
+ *  commands look like one that broke three times. */
+export interface ToolTally {
+  native: string;
+  category: ToolCategory;
+  /** The MCP server, for a name shaped `mcp__<server>__<tool>`. */
+  server: string | null;
+  calls: number;
+  errors: number;
+  denials: number;
+}
+
+export type AgentRole = "main" | "subagent";
+
+export interface AgentTally {
+  id: string;
+  kind: AgentRole;
+  /** `"Code Reviewer"`, where the log names it. A subagent whose metadata was
+   *  missing keeps its calls and loses only this. */
+  agentType: string | null;
+  description: string | null;
+  depth: number;
+  /** The tool-call id that started this agent. Absent for a teammate raised
+   *  with the session rather than delegated to from a call. */
+  spawnedBy: string | null;
+  tools: ToolTally[];
+  calls: number;
+}
+
+/** Why there is nothing to read. Four sentences, not one absence: a CLI with no
+ *  reader, a tile that is not an agent session, a log that was never there, and
+ *  a path that would not open are four different things to tell a person. */
+export type Unavailable = "noReader" | "notAnAgent" | "noLog" | "unreadable";
+
+/** What a reader can actually answer. Declared rather than inferred, in the
+ *  manner of `ProviderCapabilities`: a reader that cannot tell a failure from a
+ *  success says so, and the panel omits the column instead of drawing zeroes
+ *  that read as "nothing failed". */
+export interface ReaderCapabilities { outcomes: boolean; agents: boolean }
+
+/** What a session did. `unavailable` set is NOT `calls: 0` — the first is "there
+ *  is no log for this session", the second is "the log is here and this session
+ *  has made no calls", and the panel says them differently. */
+export interface ActivityRoll {
+  cli: CliKind;
+  agents: AgentTally[];
+  tools: ToolTally[];
+  calls: number;
+  capabilities: ReaderCapabilities;
+  readAt: number;
+  unavailable: Unavailable | null;
+  /** The read stopped at this many files rather than walking a tree without
+   *  end. `null` is "everything was read". Reported rather than absorbed: a
+   *  tally that quietly stopped counting is worse than one that says it did. */
+  truncated: number | null;
+}
+
+/** What each of these sessions did, read off the agent's own log.
+ *
+ *  **Not on the five-second poll.** The heaviest transcript measured is 3.1 MB
+ *  over 1728 lines and 47 files are past 1 MB; re-reading every open session's
+ *  log every five seconds to fill a panel nobody has opened is the cost this is
+ *  shaped to avoid. Called when a panel opens, and re-called on the tick only
+ *  while one is on screen. Every requested id comes back. */
+export const sessionActivity = (sessionIds: string[]) =>
+  invoke<Record<string, ActivityRoll>>("session_activity", { sessionIds });
 
 /** A step id and a kind id are whatever `board.json` says they are — the
  *  frontend never enumerates them, it reads them (see src/board-config.ts). */
@@ -955,3 +1404,165 @@ export const boardStepRewrite = (workspaceId: string, from: StepId, to: StepId, 
   invoke<RewriteReport>("board_step_rewrite", { workspaceId, from, to, config });
 export const boardStepUsage = (workspaceId: string) =>
   invoke<StepUsage[]>("board_step_usage", { workspaceId });
+
+/* --- What each connected AI has left ------------------------------------
+   The one command #301 is built on, and it is deliberately provider-agnostic:
+   the label, the window names, the caveats and the command that would answer an
+   unknown row all arrive **inside the snapshot**. Nothing here knows the word
+   "Claude", and #308's acceptance criterion is that adding a second AI does not
+   change that. */
+
+/** Where a number came from, and it is always on screen. See ADR-0009.
+ *
+ *  `reported` is the account's own accounting — what `/usage` draws. `observed`
+ *  is what this app can see for itself, from the sessions it runs: real, and
+ *  narrower than the account, because other terminals and other machines are
+ *  not in it. `estimated` says so. `unknown` is not zero, and the difference is
+ *  the whole point of the feature. */
+export type UsageSource = "reported" | "observed" | "estimated" | "unknown";
+
+/** How full a window is, in the only terms that change what a person does.
+ *
+ *  `exhausted` is a refusal, never arithmetic: a window at 100% has spent
+ *  everything, which is not the same as having been turned away. */
+export type LimitState = "ok" | "near" | "exhausted" | "unknown";
+
+/** Absolutes, where a source gives them. `limit: null` is the ordinary case for
+ *  an observed count — this app knows what it spent, not what was allowed. */
+export interface Amount { used: number; limit: number | null; unit: string }
+
+export interface LimitWindow {
+  id: string;
+  /** The provider's own words for this window, so the dialog reads the way the
+   *  provider's own report reads. */
+  label: string;
+  usedFraction: number | null;
+  amount: Amount | null;
+  /** Epoch ms. `null` is legitimate: a window known to be spent whose reset the
+   *  provider did not say, or did not say parseably. */
+  resetsAt: number | null;
+  state: LimitState;
+  /** Where the **quantity** came from. `state` is outside this — a refusal can
+   *  be known alongside a reported share. */
+  source: UsageSource;
+  /** The caveat, in words, for the dialog to print under the number. */
+  note: string | null;
+}
+
+export interface AiUsage {
+  /** The registry key. Never printed — see `label`. */
+  provider: string;
+  label: string;
+  account: string | null;
+  plan: string | null;
+  windows: LimitWindow[];
+  /** The **weakest** source among the windows, so it cannot over-claim. A row
+   *  that prints one number prints that window's own source, not this. */
+  source: UsageSource;
+  fetchedAt: number;
+  error: string | null;
+  /** The command that would answer this if a person ran it themselves — for the
+   *  action on an unknown row. Carried here rather than looked up by provider
+   *  name, so nothing in `src/` needs a table of them. */
+  probeCommand: string | null;
+  /** Whether answering would need a credential this app does not hold. */
+  needsCredential: boolean;
+}
+
+/** Every detected AI's limits. `force` is "read again", and the moment a limit
+ *  banner has just gone past on a PTY: the two cases where a cached "you are
+ *  fine" is a lie. Everything else is served from a TTL cache, so this is safe
+ *  to call on a view change — but never on the poll tick. */
+export const usageSnapshot = (force = false) =>
+  invoke<AiUsage[]>("usage_snapshot", { force });
+
+/** Forget the refusals this app watched happen, for one provider.
+ *
+ *  The escape hatch the observed source needs: a parser can be wrong, and an app
+ *  insisting the budget is spent while sessions are plainly running would be
+ *  worse than one that never said so. */
+export const usageClearObserved = (provider: string) =>
+  invoke<void>("usage_clear_observed", { provider });
+
+/** A limit signal reached the app through a PTY. Emitted from the backend only
+ *  when something changed, so the handler may re-read with `force`. */
+export const onUsageChanged = (cb: () => void): Promise<UnlistenFn> =>
+  listen("usage://changed", () => cb());
+
+/* --- The status-area menu -------------------------------------------------
+   The model is composed in `tray-panel.ts` and rendered by `src-tauri/src/tray.rs`,
+   which knows nothing about what is in it. See ADR-0013. */
+
+/** One row of the menu.
+ *
+ *  `action` is what separates a control from a reading: a row with none is drawn
+ *  disabled, because a fact that can be clicked invites a click that does
+ *  nothing. The string is opaque to Rust — it comes back through `tray://action`
+ *  verbatim, and `tray-panel.ts` owns both ends of the vocabulary. */
+export interface TrayRow { text: string; action: string | null }
+
+export interface TraySection { heading: string; rows: TrayRow[] }
+
+export interface TrayPanel {
+  sections: TraySection[];
+  /** One line on hover. Never a count — the dock badge owns the glance
+   *  (ADR-0013). */
+  tooltip: string;
+  /** Sessions waiting for input, for the dock badge. */
+  waiting: number;
+}
+
+/** Tell the status area what to say, and the dock what to badge.
+ *
+ *  Safe to call on every tick: an identical report is dropped in Rust rather
+ *  than rebuilding a native menu under an open cursor. */
+export const trayUpdate = (panel: TrayPanel) => invoke<void>("tray_update", { panel });
+
+/** What the panel window draws from.
+ *
+ *  The facts rather than the rendered rows, because a meter is not a string: the
+ *  panel runs the same `usage.ts` helpers and the same `LimitDials` the deck's
+ *  own block does. `now` is deliberately absent — the panel reads its own clock,
+ *  so a reset time is relative to when it is looked at rather than to when the
+ *  deck last reported.
+ *
+ *  `scale` travels with it because the panel is a separate window and nothing
+ *  else would tell it: the text-size setting is applied to a document root, and
+ *  this document has its own. */
+export interface TrayFactsPayload {
+  usage: AiUsage[];
+  sessions: TraySessionRow[];
+  scale: number;
+}
+
+/** One session, as the panel needs it. Structurally `RemoteSession` from
+ *  `cross-window.ts`, restated here because this is the wire and that file is
+ *  about the deck's own bookkeeping. */
+export interface TraySessionRow {
+  session: string;
+  name: string;
+  state: SessionState;
+}
+
+/** The event the panel window listens on. Named here so the two ends cannot
+ *  drift: the deck emits it and `tray-window.ts` listens for it. */
+export const TRAY_FACTS = "tray://facts";
+
+/** The panel has just been shown and wants a fresh report. Emitted by Rust when
+ *  the icon is clicked, so the panel is right at the instant somebody reads it
+ *  rather than up to a tick stale. */
+export const onTrayAsk = (cb: () => void): Promise<UnlistenFn> => listen("tray://ask", () => cb());
+
+/** A row of the status-area surface was chosen. The payload is the row's own
+ *  `action` string, straight back — neither Rust nor the panel window reads it
+ *  or rewrites it, and `parseAction` in `tray-panel.ts` owns both ends. */
+export const onTrayAction = (cb: (action: string) => void): Promise<UnlistenFn> =>
+  listen<{ action: string }>("tray://action", (e) => cb(e.payload.action));
+
+/** The panel has measured itself: resize the window to fit and keep it under the
+ *  icon. */
+export const trayResize = (height: number) => invoke<void>("tray_resize", { height });
+
+/** The panel's own two controls, which are not rows: showing the deck, and
+ *  quitting. Quitting goes through the same guard every other way out does. */
+export const trayActivate = (what: "open" | "quit") => invoke<void>("tray_activate", { what });

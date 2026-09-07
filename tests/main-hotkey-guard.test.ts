@@ -6,27 +6,14 @@
  *
  *  The precedent for standing `main.ts` up in jsdom is tests/pr-polling.test.ts. */
 import { describe, it, expect, vi } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const startSessionMock = vi.fn().mockResolvedValue({ account: null, degraded: null });
 const WS = { id: "w", name: "P", path: "/p", color: "#fff" };
 
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  saveLayout: vi.fn().mockResolvedValue(undefined),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
-  taskCapabilities: vi.fn().mockResolvedValue(null),
-  listTasks: vi.fn().mockResolvedValue([]),
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
-  gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
-  sessionSnapshots: vi.fn().mockResolvedValue({}),
+  ...bootIpc(),
 }));
 
 /** The tree hooks `startApp` hands the workspaces panel — the app's only route
@@ -40,6 +27,7 @@ vi.mock("../src/workspaces", () => ({
     load = vi.fn().mockResolvedValue(undefined);
     setCounts = vi.fn();
     setSkillsSource = vi.fn();
+    setSessionsSource = vi.fn();
     // The tree's half of the panel: the workspace row is this panel's and the
     // sessions under it are the deck's, so `startApp` hands each the other.
     /* Captured, because the board and the pull requests are opened through this
@@ -93,6 +81,20 @@ const newSessionKey = (target: EventTarget) =>
     code: "KeyN", key: "n", metaKey: true, bubbles: true, cancelable: true,
   }));
 
+/** `Cmd+Enter`, which is `zoom`. It reaches the window handler from inside a
+ *  terminal too: the panel's `attachCustomKeyEventHandler` asks `matchHotkey`
+ *  first and returns false for anything it claims, which is what makes this the
+ *  keyboard way out of a zoom now that Escape is the program's. */
+const zoomKey = (target: EventTarget) =>
+  target.dispatchEvent(new KeyboardEvent("keydown", {
+    code: "Enter", key: "Enter", metaKey: true, bubbles: true, cancelable: true,
+  }));
+
+const escapeKey = (target: EventTarget) =>
+  target.dispatchEvent(new KeyboardEvent("keydown", {
+    code: "Escape", key: "Escape", bubbles: true, cancelable: true,
+  }));
+
 // The cases share one booted app and run in sequence. That used to be forced —
 // `main.ts` was a side-effect module and imports once per file — and is now a
 // choice: `startApp(role)` is a function, and `tests/app-singletons.test.ts`
@@ -102,7 +104,11 @@ describe("the window hotkey handler and text entry", () => {
     vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
     document.body.innerHTML =
       '<div id="app"><div id="ledger"></div><div id="stage"><nav id="rail"></nav>'
-      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div><main id="deck"></main><div id="terminals"></div>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div>'
+      // `#workarea` stacks the deck and the terminal drawer; the note reader
+      // covers it, as `.term-drawer.is-full` does. On all four real bodies —
+      // `page-bodies.test.ts` — and it was missing from this fixture.
+      + '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>'
       + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
     + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'
     + '</div></div>';
@@ -132,5 +138,71 @@ describe("the window hotkey handler and text entry", () => {
     newSessionKey(helper);
     await flush();
     expect(tiles()).toBe(before + 1);
+  });
+
+  /** `Escape` belongs to whatever has the keyboard (#269).
+   *
+   *  In the real app xterm never lets this listener see an Escape typed into a
+   *  focused terminal — it writes the byte to the pty and stops the event dead.
+   *  The guard is what keeps that true of anything else focusable inside `.xterm`,
+   *  and of the next person to move this handler somewhere it fires first; a
+   *  synthetic keydown is the only way to reach it, which is what this dispatches.
+   *
+   *  `isTerminalCaret` has two clauses and both are driven below, because in
+   *  production only the second can ever be the sole one that matches: xterm always
+   *  nests its hidden textarea inside `.xterm`, so the class check alone would prove
+   *  nothing about the container check that the guard is actually written for. */
+  it("does not unzoom the deck on an Escape that came from a terminal", async () => {
+    const deckEl = document.querySelector<HTMLElement>("#deck")!;
+    // Two visible tiles: zooming the only tile there is has nothing to minimize
+    // and is a no-op by design. One is left over from the case above.
+    newSessionKey(document.body);
+    await flush();
+    expect(deckEl.querySelectorAll(".tile").length).toBeGreaterThan(1);
+
+    /* The terminal's own shape, which the mocked `TerminalPanel` does not build:
+       xterm renders `.xterm` around both its hidden input and its screen. Built
+       here rather than borrowed from the case above — that one leaves a bare
+       textarea on `<body>`, which is outside any `.xterm` and would leave the
+       clause this guard exists for untested, and reaching for it across cases
+       makes the order of the two an unwritten requirement. */
+    const term = document.createElement("div");
+    term.className = "xterm";
+    const helper = document.createElement("textarea");
+    helper.className = "xterm-helper-textarea";
+    // Focusable, inside `.xterm`, and not the helper: this is the clause that is
+    // the app's own rule rather than a restatement of xterm's class name.
+    const screen = document.createElement("div");
+    screen.className = "xterm-screen";
+    screen.tabIndex = 0;
+    term.append(helper, screen);
+    deckEl.querySelector<HTMLElement>(".tile .tile-body")!.append(term);
+
+    zoomKey(helper);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+
+    // The program's key, not the deck's — from the hidden input...
+    escapeKey(helper);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+
+    // ...and from anything else the terminal contains.
+    escapeKey(screen);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+
+    // Anywhere else it still means "leave zoom" — and the zoom key is the way out
+    // from inside a terminal.
+    escapeKey(document.body);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
+
+    zoomKey(helper);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(true);
+    zoomKey(helper);
+    await flush();
+    expect(deckEl.classList.contains("is-zoomed")).toBe(false);
   });
 });

@@ -10,14 +10,6 @@
 // PTY that is still alive — a second agent on one conversation.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-(globalThis as any).ResizeObserver ??= class {
-  observe() {} unobserve() {} disconnect() {}
-};
-(globalThis as any).window.__TAURI_INTERNALS__ ??= {
-  transformCallback: () => 1,
-  unregisterCallback: () => {},
-};
-
 const written: string[] = [];
 
 vi.mock("@xterm/xterm", () => ({

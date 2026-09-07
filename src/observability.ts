@@ -1,10 +1,5 @@
+import { formatTokens } from "./format";
 import type { SessionTokens, TokenUsage } from "./ipc";
-
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
 
 /** Everything billed on the way in. With prompt caching on, `input` alone is the
  *  uncached delta of each request — a couple of tokens — so it describes nothing

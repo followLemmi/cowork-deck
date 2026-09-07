@@ -87,17 +87,17 @@ pub fn parse_schedule_state(
     Ok(raw.into_iter().map(|(k, v)| (k, v.into())).collect())
 }
 
-/// Привязка воркспейса к GitHub-аккаунту.
+/// A workspace's binding to a GitHub account.
 ///
-/// Здесь лежит ТОЛЬКО имя аккаунта — публичное значение. Токен не хранится
-/// ни тут, ни где-либо ещё в приложении: он читается из keyring `gh` в момент
-/// старта сессии и живёт лишь в памяти дочернего процесса.
+/// The login and NOTHING else, which is a public value. No token is stored here
+/// or anywhere else in this app: one is read out of `gh`'s keyring at the moment a
+/// session starts, and lives in that child process's memory alone. ADR-0001.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceGithub {
-    /// Хост GitHub. В UI всегда "github.com"; поле существует, чтобы GHES
-    /// можно было добавить без миграции файла.
+    /// The GitHub host. Always `"github.com"` in the UI today; the field exists
+    /// so that GHES can be added without migrating the file.
     pub host: String,
-    /// Имя аккаунта в gh (как в `gh auth status`).
+    /// The account's login as `gh` knows it — the name `gh auth status` prints.
     pub login: String,
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "gitName")]
     pub git_name: Option<String>,
@@ -113,9 +113,9 @@ pub struct Workspace {
     pub name: String,
     pub path: String,
     pub color: String,
-    /// Привязка к GitHub-аккаунту. Отсутствует в файлах, записанных до
-    /// появления фичи; None не сериализуется, поэтому непривязанные
-    /// воркспейсы сохраняют прежнюю форму на диске.
+    /// The GitHub binding. Absent from files written before the feature existed,
+    /// and `None` is not serialised — so an unbound workspace keeps exactly the
+    /// shape it already had on disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github: Option<WorkspaceGithub>,
     /// Absent for every workspace created before the tracker existed, and for
@@ -124,6 +124,54 @@ pub struct Workspace {
     /// truncate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracker: Option<TrackerConfig>,
+    /// What repository this workspace's folder is, remembered rather than
+    /// re-derived. Absent until something has looked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<WorkspaceRepo>,
+}
+
+/// The remote a workspace's folder points at, and where that was read.
+///
+/// Identity across machines is the workspace id, and the id is made locally:
+/// two machines that each added the same folder before sync was switched on
+/// never agreed on one. The remote URL is the one string that *is* the same on
+/// both, which is what makes it the thing a duplicate is recognised by
+/// (`sync::adopt`).
+///
+/// Remembered rather than asked for, because the alternative is a subprocess per
+/// workspace on a five-minute timer for a value that changes about once in a
+/// project's life. Two things keep that safe, and they are the two ways a
+/// remembered answer goes stale: `from`, because an answer is only good for the
+/// folder it was read in, and `resolver`, because an answer is only good for the
+/// question that produced it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRepo {
+    /// The remote, as `sync::git::remote_url` gave it.
+    ///
+    /// `None` is an answer, not a gap: this folder has no remote, and it is
+    /// worth writing down, or every cycle asks the same question again. A
+    /// workspace in that state has no cross-machine identity to offer and is
+    /// never a duplicate of anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The folder the answer was read in. This machine's disk, so it never
+    /// travels — see `sync::projection`.
+    pub from: String,
+    /// Which version of the question this answers (`sync::identity::RESOLVER`).
+    ///
+    /// A stored `None` means "asked, and this folder has no remote", and
+    /// `identity::refresh` trusts it forever so the folder is not re-probed on
+    /// every cycle for the rest of its life. That trust is only earned while the
+    /// question stays the same. When `remote_url` learned to look past `origin`
+    /// (ADR-0010), every `None` written before it became an answer to a question
+    /// nobody is asking any more — and without this field they would have been
+    /// trusted anyway, leaving the fix inert on exactly the installs that
+    /// reported the bug (#359).
+    ///
+    /// Absent in a store written before the field existed, which deserialises to
+    /// `0` and is below every real version, so those answers are re-asked once.
+    #[serde(default)]
+    pub resolver: u32,
 }
 
 /// Where a workspace's cards were before its effective root last moved.
@@ -270,6 +318,21 @@ pub struct Skill {
     /// serialized so unscheduled scenarios keep their old on-disk shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule: Option<Schedule>,
+    /// True when `workspace_id` above was *inferred* by the #249 migration
+    /// rather than chosen by anybody — see `scheduler::pin_scheduled`.
+    ///
+    /// The distinction exists because the two answer different questions. A pin
+    /// somebody ticked says "this scenario belongs to that project", which is
+    /// true on every machine and travels. A migrated pin says "this is where it
+    /// used to run *here*", read off this machine's `ui_state.activeWorkspaceId`
+    /// — a machine-local fact, and publishing it would hand every other machine
+    /// a workspace it never chose. `enabled` is left behind for the same reason
+    /// and by the same mechanism (`sync::projection`).
+    ///
+    /// Cleared the moment somebody saves the scenario from the form: the pin
+    /// they saw and kept is theirs from then on.
+    #[serde(default, rename = "pinnedByMigration", skip_serializing_if = "std::ops::Not::not")]
+    pub pinned_by_migration: bool,
 }
 
 /// How often a scheduled scenario fires. Presets only — no cron expressions
@@ -459,6 +522,46 @@ pub struct SessionEntry {
     /// second word to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// Which agent CLI this session runs.
+    ///
+    /// **Absent means `Claude`**, which is every layout written before this
+    /// field existed and every session in them: `start_session` resolves
+    /// `claude` and nothing else, so a session with no recorded kind is a Claude
+    /// session by construction rather than by assumption.
+    ///
+    /// A `String` rather than the enum, and that is the decision: an entry
+    /// naming a CLI this build has never heard of must still restore its tile,
+    /// and `#[serde(deny_unknown_variants)]` is not a thing — a `CliKind` here
+    /// would fail the whole `SessionEntry` parse on a value from a newer
+    /// version, dropping the tile rather than the field. `CliKind::parse` reads
+    /// it back and answers `Claude` for anything it does not recognise.
+    ///
+    /// Read the NOTE on `task_id` before touching the rename: without an
+    /// explicit one serde writes `cli_kind` while TS reads `cliKind`, and the
+    /// activity reader would dispatch on a field that is never there.
+    #[serde(rename = "cliKind", default, skip_serializing_if = "Option::is_none")]
+    pub cli_kind: Option<String>,
+    /// Which conversation this tile should resume, when it is no longer the one
+    /// it was launched with.
+    ///
+    /// `session_id` above stays the launch id and is not negotiable: it is the
+    /// PTY key, the `COWORK_SESSION` in the session's argv, and the key every
+    /// hook event is attributed by. What `/clear` changes is the conversation —
+    /// Claude Code mints a new id, and `claude --resume <launch-id>` then
+    /// succeeds and brings back the conversation the person cleared away, with
+    /// the one they were working in orphaned on disk (#199). So: an additional
+    /// field, **absent until a clear happens**, and absent for every layout
+    /// written before it existed — which is exactly what a session still in its
+    /// launch conversation means.
+    ///
+    /// This is the only copy that survives a restart: `crate::resume_ids` holds
+    /// the same fact in memory for the life of the app run, and auto-restore is
+    /// the path where that map is empty. Read the NOTE on `task_id` before
+    /// touching the rename — without it serde writes `resume_id` while TS reads
+    /// `resumeId`, and a restored tile would silently resume the wrong
+    /// conversation, which is the whole of #199 back again.
+    #[serde(rename = "resumeId", default, skip_serializing_if = "Option::is_none")]
+    pub resume_id: Option<String>,
 }
 
 /// Which of the two kinds of launch name `SessionEntry::name` holds.
@@ -517,6 +620,24 @@ pub struct UiState {
     /// active workspace silently forgotten rather than an error.
     #[serde(rename = "recordScenarioRuns", default = "default_record_runs")]
     pub record_scenario_runs: bool,
+    /// Whether closing a session writes a note about it — the remembered answer
+    /// to the question #366 asks.
+    ///
+    /// **Three states, and that is the point.** `None` is "never asked", which is
+    /// not the same as "no": a default of `false` would silently decide the
+    /// question in the app's favour, and a default of `true` would start spending
+    /// the person's money on the first close. Only an answer they gave sets it.
+    ///
+    /// An `Option` rather than the `default`-with-a-value shape every field above
+    /// uses, for the same reason: those have a right answer to fall back on and
+    /// this one has a question.
+    ///
+    /// Local by nature, like `sync_offer_dismissed` and for the same reason:
+    /// `ui_state.json` is not on the sync allowlist, so consenting on the laptop
+    /// says nothing about the desktop. Consent to spend money is exactly the kind
+    /// of answer that should not travel.
+    #[serde(rename = "captureOnClose", default, skip_serializing_if = "Option::is_none")]
+    pub capture_on_close: Option<bool>,
     /// How tall the drawer is, **in rows of the terminal's own type** rather
     /// than in pixels. One value for the app, unlike whether the drawer is up
     /// (`TerminalLayout::open`): the height is how much of this window a person
@@ -526,6 +647,17 @@ pub struct UiState {
     /// text size, not however many fit in 260 pixels after the next change.
     #[serde(rename = "terminalRows", default = "default_terminal_rows")]
     pub terminal_rows: u32,
+    /// Whether the reported source of usage limits may be asked. **Default on.**
+    ///
+    /// The capability flag #306 asked for. On, because answering spends no quota
+    /// and reads no credential — it asks `claude` the way `gh.rs` asks `gh`. Off
+    /// is a legitimate answer all the same: it means "do not start a `claude`
+    /// process every five minutes on my machine", and the limits block stays on
+    /// screen on the observed source, saying so.
+    ///
+    /// `#[serde(default)]` for the reason spelled out above `ui_scale`.
+    #[serde(rename = "usageReported", default = "default_usage_reported")]
+    pub usage_reported: bool,
     /// How wide the panel is, in px, and how wide it is when it has taken the
     /// deck's width. Two numbers because they answer two questions: a column of
     /// names and a kanban do not want the same width, and a person who sizes one
@@ -553,11 +685,33 @@ pub struct UiState {
     /// rather than here — a stored number cannot know what the terminal is doing.
     #[serde(rename = "toolPx", default)]
     pub tool_px: Option<u32>,
+    /// Whether the left panel is collapsed to the rail.
+    ///
+    /// **The person's answer, and nobody else's.** It is stored at all because it
+    /// used not to be: zooming a session collapsed the panel and un-zooming
+    /// brought it back, so the state a restart found was whatever the last zoom
+    /// had made it rather than anything anyone chose (#480). With the automatic
+    /// collapse gone, the only writer is the shut button, the palette entry and
+    /// the hotkey — and a preference with one writer is a preference worth
+    /// keeping.
+    ///
+    /// `#[serde(default)]` for the reason spelled out above `ui_scale`, and the
+    /// default it lands on is the right one: a panel nobody has collapsed is
+    /// open.
+    #[serde(rename = "panelCollapsed", default)]
+    pub panel_collapsed: bool,
 }
 
 /// On. A journal nobody switched on records nothing, and the first thing anyone
 /// would ask of a history screen is why it is empty.
 fn default_record_runs() -> bool {
+    true
+}
+
+/// On. See `UiState::usage_reported`: the cost of asking is a subprocess that
+/// spends no quota, and the alternative default is a screen that says "unknown"
+/// to somebody who never knew there was a switch.
+fn default_usage_reported() -> bool {
     true
 }
 
@@ -597,13 +751,21 @@ impl Default for UiState {
             pr_diff_cols: default_pr_diff_cols(),
             sync_offer_dismissed: false,
             record_scenario_runs: default_record_runs(),
+            // Never asked. Not `false`, which would decide the question in the
+            // app's favour, and not `true`, which would start spending somebody's
+            // money on their first close.
+            capture_on_close: None,
             terminal_rows: default_terminal_rows(),
+            usage_reported: default_usage_reported(),
             // None, and not a pixel figure: until a person drags one, the width
             // belongs to the stylesheet, which tracks the window and the text size.
             panel_px: None,
             wsp_px: None,
             wsp_wide_px: None,
             tool_px: None,
+            // Open. A person who has never pressed the shut button has not asked
+            // for a rail.
+            panel_collapsed: false,
         }
     }
 }
@@ -626,12 +788,19 @@ pub struct UiStatePatch {
     pub ui_scale: Option<f32>,
     #[serde(rename = "prDiffCols")]
     pub pr_diff_cols: Option<u32>,
+    /// `Some(_)` sets the remembered answer; `None` leaves it alone, like every
+    /// other field of a patch. Clearing it back to "never asked" therefore needs
+    /// its own route — see `clear_capture_on_close`.
+    #[serde(rename = "captureOnClose")]
+    pub capture_on_close: Option<bool>,
     #[serde(rename = "syncOfferDismissed")]
     pub sync_offer_dismissed: Option<bool>,
     #[serde(rename = "recordScenarioRuns")]
     pub record_scenario_runs: Option<bool>,
     #[serde(rename = "terminalRows")]
     pub terminal_rows: Option<u32>,
+    #[serde(rename = "usageReported")]
+    pub usage_reported: Option<bool>,
     #[serde(rename = "panelPx")]
     pub panel_px: Option<u32>,
     #[serde(rename = "wspPx")]
@@ -640,6 +809,8 @@ pub struct UiStatePatch {
     pub wsp_wide_px: Option<u32>,
     #[serde(rename = "toolPx")]
     pub tool_px: Option<u32>,
+    #[serde(rename = "panelCollapsed")]
+    pub panel_collapsed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -700,6 +871,39 @@ pub struct GitChanges {
     pub files: Vec<GitChange>,
 }
 
+/// A limit this app watched a session be refused by, and when it lifts.
+///
+/// Persisted, and that is the whole reason it is a type rather than a field: a
+/// reset four hours out has to survive a restart. Without that, quitting the app
+/// while the budget is spent loses the one fact the person needs on the way back
+/// in — and the app cannot re-derive it, because the banner it read has scrolled
+/// off a terminal that no longer exists.
+///
+/// Written by `usage::observed`, read on boot, and discarded once `resets_at` has
+/// passed. See ADR-0009.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageExhaustion {
+    /// Which connected AI. `"claude"` today.
+    pub provider: String,
+    /// Which window, where the text said. `None` is a refusal whose window was
+    /// not named — kept as `None` rather than guessed, so the reader can say it
+    /// guessed.
+    #[serde(default)]
+    pub window: Option<String>,
+    /// Epoch ms, when it is known. `None` is a legitimate state: the app was
+    /// refused and was not told when that ends.
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+    /// Epoch ms when this app saw the refusal. What bounds the record's life when
+    /// `resets_at` is `None`.
+    pub at: i64,
+    /// What the terminal actually said, capped. On screen in the dialog, because
+    /// "this is the sentence we read" is the only way a person can check whether
+    /// this app understood it.
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub struct TokenUsage {
     pub input: u64,
@@ -741,6 +945,41 @@ pub struct ReporterEvent {
     /// hence `default`.
     #[serde(rename = "transcriptPath", default)]
     pub transcript_path: Option<String>,
+    /// Which conversation Claude Code says this session is in *now* — its own
+    /// `session_id`, which is the deck's launch id until somebody types
+    /// `/clear` and a different id afterwards. Present on every hook payload;
+    /// absent from a line written by an older reporter, hence `default`.
+    ///
+    /// Recorded, never used as a key: the deck knows a session by the id it
+    /// launched it with, and `ReporterEvent::session` above is that id. See
+    /// `crate::resume_ids`.
+    #[serde(rename = "reportedSession", default)]
+    pub reported_session: Option<String>,
+    /// Which workspace the session was launched in, on the one kind that asks a
+    /// question rather than reporting a fact (`memory`, #388). A dash from the
+    /// reporter — a session launched outside a workspace — reads as absent here,
+    /// so a scope of "everything" is what it means rather than a fallback.
+    #[serde(default, deserialize_with = "dash_is_none")]
+    pub workspace: Option<String>,
+    /// Where Claude Code says this session is working *now* — its own `cwd`,
+    /// which it reports on every hook payload. Present on every hook payload;
+    /// absent from a line written by an older reporter, hence `default`.
+    ///
+    /// The session's own answer to a question the app otherwise answers from
+    /// memory: `workspacePath` on a tile is the directory the launch *asked*
+    /// for, and every per-session display used to read that forever (#508). See
+    /// `crate::session_cwd`, which is also where the measured limit of this
+    /// field is written down.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}
+
+fn dash_is_none<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<String>::deserialize(d)?;
+    Ok(v.filter(|s| s != "-" && !s.trim().is_empty()))
 }
 
 /// Map a reporter `kind` (+ optional notification type) to a session state.
@@ -783,8 +1022,8 @@ mod tests {
 
     /// `Stop` means the agent finished its turn and the prompt is free again;
     /// a permission request means it is blocked until a human decides. The
-    /// overlap guard, the pill and notifications treat these differently, so
-    /// they must not share one state.
+    /// overlap guard, the ledger's waiting count and notifications treat these
+    /// differently, so they must not share one state.
     #[test]
     fn finished_turn_is_distinct_from_waiting_for_a_decision() {
         assert_eq!(event_kind_to_state("done", None), Some(SessionState::Done));
@@ -887,7 +1126,7 @@ mod tests {
         let entry = SessionEntry {
             session_id: "s3".into(), cwd: "/c".into(), name: "K".into(), workspace_id: None,
             task_id: None, scheduled_skill_id: None, user_name: None, name_kind: None,
-            skill_id: None, run_id: None, owner: None,
+            skill_id: None, run_id: None, owner: None, cli_kind: None, resume_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(!json.contains("workspaceId"), "None workspaceId must be omitted, got {json}");
@@ -923,7 +1162,7 @@ mod tests {
             session_id: "s3".into(), cwd: "/c".into(), name: "session · deck".into(),
             workspace_id: None, task_id: None, scheduled_skill_id: None,
             user_name: Some("relay".into()), name_kind: Some(NameKind::Placeholder),
-            skill_id: None, run_id: None, owner: None,
+            skill_id: None, run_id: None, owner: None, cli_kind: None, resume_id: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""userName":"relay""#), "got {json}");
@@ -935,6 +1174,85 @@ mod tests {
         let json = serde_json::to_string(&bare).unwrap();
         assert!(!json.contains("userName"), "None userName must be omitted, got {json}");
         assert!(!json.contains("nameKind"), "None nameKind must be omitted, got {json}");
+    }
+
+    /// The four directions again, for the field the activity registry
+    /// dispatches on. The rename is the whole risk: serde would write `cli_kind`
+    /// while TS reads `cliKind`, and every session would silently dispatch as
+    /// the default forever with nothing reported anywhere.
+    #[test]
+    fn session_entry_cli_kind_is_backward_compatible() {
+        // Every layout written before the field exists has no key for it.
+        let old = r#"[{"sessionId":"s1","cwd":"/a","name":"session · deck"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(old).unwrap();
+        assert_eq!(v[0].cli_kind, None, "absent is read as Claude by the registry");
+
+        // A new file carries it under the camelCase name TS writes.
+        let new = r#"[{"sessionId":"s2","cwd":"/b","name":"n","cliKind":"copilot"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(new).unwrap();
+        assert_eq!(v[0].cli_kind.as_deref(), Some("copilot"));
+
+        // **A CLI this build has never heard of does not drop the tile.** This is
+        // the reason the field is a `String` and not the enum: a `CliKind` here
+        // would fail the whole `SessionEntry` parse on a value from a newer
+        // version, costing the tile rather than the field.
+        let future = r#"[{"sessionId":"s3","cwd":"/c","name":"n","cliKind":"some-cli-from-2027"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(future).unwrap();
+        assert_eq!(v[0].session_id, "s3");
+        assert_eq!(v[0].cli_kind.as_deref(), Some("some-cli-from-2027"));
+
+        // The key serde writes is the key TS reads, and `None` is omitted so a
+        // layout of Claude sessions stays byte-identical to what it was.
+        let entry = SessionEntry {
+            session_id: "s4".into(), cwd: "/d".into(), name: "n".into(),
+            workspace_id: None, task_id: None, scheduled_skill_id: None,
+            user_name: None, name_kind: None, skill_id: None, run_id: None,
+            owner: None, cli_kind: Some("copilot".into()), resume_id: None,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""cliKind":"copilot""#), "got {json}");
+        assert!(!json.contains("cli_kind"), "snake_case would never be read back, got {json}");
+        let bare = SessionEntry { cli_kind: None, ..entry };
+        assert!(!serde_json::to_string(&bare).unwrap().contains("cliKind"));
+    }
+
+    /// The four directions once more, for the field that decides which
+    /// conversation a restart resumes (#199). The rename is the whole risk here
+    /// too, and this one is the worst of the three: serde would write
+    /// `resume_id` while TS reads `resumeId`, so a cleared session would restore
+    /// into the conversation the person cleared away — silently, because the
+    /// launch id still names a real conversation and `--resume` succeeds.
+    #[test]
+    fn session_entry_resume_id_is_backward_compatible() {
+        // Every layout written before the field exists has no key for it, and
+        // that is also what an uncleared session means: resume the launch id.
+        let old = r#"[{"sessionId":"s1","cwd":"/a","name":"session · deck"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(old).unwrap();
+        assert_eq!(v[0].resume_id, None);
+
+        // A new file carries it under the camelCase name TS writes.
+        let new = r#"[{"sessionId":"s2","cwd":"/b","name":"n","resumeId":"after-the-clear"}]"#;
+        let v: Vec<SessionEntry> = serde_json::from_str(new).unwrap();
+        // The tile's identity is untouched — it is still the id the deck
+        // launched with, and the conversation is the additional fact.
+        assert_eq!(v[0].session_id, "s2");
+        assert_eq!(v[0].resume_id.as_deref(), Some("after-the-clear"));
+
+        // The key serde writes is the key TS reads.
+        let entry = SessionEntry {
+            session_id: "s3".into(), cwd: "/c".into(), name: "n".into(),
+            workspace_id: None, task_id: None, scheduled_skill_id: None,
+            user_name: None, name_kind: None, skill_id: None, run_id: None,
+            owner: None, cli_kind: None, resume_id: Some("after-the-clear".into()),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains(r#""resumeId":"after-the-clear""#), "got {json}");
+        assert!(!json.contains("resume_id"), "snake_case would never be read back, got {json}");
+
+        // And `None` is omitted, so a layout of sessions nobody has cleared
+        // stays byte-identical to what it was.
+        let bare = SessionEntry { resume_id: None, ..entry };
+        assert!(!serde_json::to_string(&bare).unwrap().contains("resumeId"));
     }
 
     /// The record stays visible: one unreadable *provider* must not cost the
@@ -1031,9 +1349,10 @@ mod tests {
         let ws = Workspace {
             id: "w1".into(), name: "proj".into(), path: "/tmp/proj".into(),
             color: "#61afef".into(), github: None, tracker: None,
+            repo: None,
         };
         let json = serde_json::to_string(&ws).unwrap();
-        assert!(!json.contains("github"), "старая форма файла должна остаться байт-в-байт: {json}");
+        assert!(!json.contains("github"), "the old file shape must survive byte for byte: {json}");
     }
 
     #[test]
@@ -1048,10 +1367,11 @@ mod tests {
                 ssh_key: None,
             }),
             tracker: None,
+            repo: None,
         };
         let json = serde_json::to_string(&ws).unwrap();
         assert!(json.contains(r#""gitName":"Evgeny""#), "{json}");
-        assert!(!json.contains("sshKey"), "пустые поля не сериализуются: {json}");
+        assert!(!json.contains("sshKey"), "an empty field is not serialised: {json}");
         let back: Workspace = serde_json::from_str(&json).unwrap();
         assert_eq!(back.github, ws.github);
     }

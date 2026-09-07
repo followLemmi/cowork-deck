@@ -1,17 +1,20 @@
 // @vitest-environment jsdom
 /** The crumb's door to the workspace's two pages, driven through `startApp`.
  *
- *  It exists because the other door does not survive a zoom: the
- *  `board · PRs · journal` chip is on a row in the tree, a zoomed tile collapses
- *  the panel that tree lives in, and that left the palette as the only route to
- *  the board from the state a person spends most of their day in. The crumb is
- *  what stays, so the second door is on it.
+ *  It exists because the other door does not survive a collapse: the
+ *  `board · PRs · journal` chip is on a row in the tree, collapsing takes the
+ *  panel that tree lives in to zero width, and that left the palette as the only
+ *  route to the board from a collapsed panel. The crumb is what stays, so the
+ *  second door is on it. (Written when the app collapsed the panel itself on every
+ *  zoom; it is the person's own doing now — see #480 — and the door is needed
+ *  just the same.)
  *
  *  Driven through the app rather than through a unit, because every part of this
  *  is wiring: which element it is beside, whether it toggles, and whether
  *  `aria-expanded` still describes the panel after the panel was closed by
  *  something else. */
 import { describe, it, expect, vi } from "vitest";
+import { bootIpc } from "./helpers/boot-ipc";
 
 const WS = {
   id: "w", name: "P", path: "/p", color: "#fff",
@@ -31,27 +34,8 @@ const CAPS = {
 
 vi.mock("../src/ipc", async (orig) => ({
   ...(await orig() as object),
-  prList: vi.fn().mockResolvedValue([]),
-  claudeAvailable: vi.fn().mockResolvedValue(true),
-  loadLayout: vi.fn().mockResolvedValue([]),
-  saveLayout: vi.fn().mockResolvedValue(undefined),
-  closeSession: vi.fn(),
-  gitStatus: vi.fn().mockResolvedValue({ branch: null, dirty: false }),
-  sessionSnapshots: vi.fn().mockResolvedValue({}),
-  onState: vi.fn().mockResolvedValue(() => {}),
-  onExit: vi.fn().mockResolvedValue(() => {}),
-  prepareWorkspace: vi.fn().mockResolvedValue({ account: null, degraded: null }),
-  describeExit: vi.fn().mockReturnValue(null),
-  onScheduledFire: vi.fn().mockResolvedValue(() => {}),
-  onSchedulerBroken: vi.fn().mockResolvedValue(() => {}),
-  onTasksChanged: vi.fn().mockResolvedValue(() => {}),
-  scheduleAck: vi.fn().mockResolvedValue(undefined),
-  schedulerReady: vi.fn().mockResolvedValue(undefined),
-  taskWatchSync: vi.fn().mockResolvedValue(undefined),
-  taskOpenCounts: vi.fn().mockResolvedValue({}),
+  ...bootIpc(),
   taskCapabilities: vi.fn().mockResolvedValue(CAPS),
-  taskMigrationStatus: vi.fn().mockResolvedValue(null),
-  listTasks: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../src/workspaces", () => ({
@@ -60,6 +44,7 @@ vi.mock("../src/workspaces", () => ({
     get all() { return [WS]; }
     load = vi.fn().mockResolvedValue(undefined);
     setSkillsSource = vi.fn();
+    setSessionsSource = vi.fn();
     setTreeHooks = vi.fn();
     sessionHost = vi.fn().mockReturnValue(null);
     showWaiting = vi.fn();
@@ -110,7 +95,7 @@ describe("the crumb's board · PRs door", () => {
       '<div id="app"><header class="topbar"><div id="mark"></div>'
       + '<div id="ledger"></div><div id="topbar-actions"></div></header>'
       + '<div id="stage"><nav id="rail"></nav>'
-      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div></div>'
+      + '<div id="sidebar"><div id="panel-head"></div><div id="panel-stack"></div><div id="limits"></div></div>'
       + '<div id="workarea"><main id="deck"></main><div id="terminals"></div></div>'
       + '<aside id="wspanel" hidden><div id="wsp-head"></div>'
       + '<div id="wsp-body"><div id="board" class="panel-page hidden"></div></div></aside>'

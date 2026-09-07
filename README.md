@@ -14,7 +14,7 @@ answers one question at a glance: *which of these needs me?*
 ![TypeScript](https://img.shields.io/badge/frontend-TypeScript-3178C6?logo=typescript&logoColor=white)
 ![xterm.js](https://img.shields.io/badge/terminal-xterm.js-2A2A2A)
 ![No framework](https://img.shields.io/badge/UI-vanilla%20TS-informational)
-![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-lightgrey)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows%20from%20source-lightgrey)
 
 <br />
 
@@ -78,6 +78,30 @@ that repository's own row, into a panel on the other side of the deck.
 terminal on purpose — at that size a terminal is texture, not information, so the space goes to the
 four things worth knowing about a session you are not watching.*
 
+## When the window is not in front
+
+Two surfaces, and they answer different questions on purpose.
+
+- **The status area** — the menu bar on macOS, the notification area on Windows — is always there, and
+  it answers on demand rather than at a glance. Click the icon and a small panel drops under it, drawn
+  with the deck's own components: every connected AI's **meter**, with the caveat beside the reading
+  where there is one, and
+  the deck's sessions ordered by what wants a person, each one a row that takes you to it. A limit row
+  opens that provider's detail; a session row raises the window it lives in, even if that is a
+  workspace window on another monitor. It never carries a count, because that is the dock's number and
+  two surfaces saying it would be one too many.
+- **The dock**, or the taskbar, carries the number of sessions waiting. It is the glance: a number on
+  the icon you are already looking at when you decide whether to switch. It clears the moment you look
+  at the deck — a badge you have learned to ignore is worse than none.
+
+The icon follows the platform: on macOS it is a template image, so the system tints it white on a dark
+menu bar and black on a light one, the way every other icon up there behaves; on Windows and Linux,
+where nothing tints, it is the app's icon in colour. On Linux it also carries a **native menu** with the
+same sections instead of the panel, because an indicator's click is not deliverable to the application
+on most desktops and a panel opened on a click would never open. Both are built from one list, so adding a section is a list entry rather than a
+layout change in either. The decision, and why the panel is a window rather than a menu everywhere, is
+[ADR-0013](docs/adr/0013-the-tray-panel-is-a-window-and-a-menu-is-the-linux-fallback.md).
+
 ## Sessions
 
 - **State you can read across a dozen tiles.** "Finished a turn" and "waiting for a decision" are
@@ -91,10 +115,113 @@ four things worth knowing about a session you are not watching.*
   and waits. What is killed is the whole process *session*, so a `npm run build` inside a shell dies
   with it rather than outliving the app.
 - **Restart resumes the conversation** (`claude --resume`), and yesterday's tiles come back on launch.
+  The conversation as it is *now*: `/clear` starts a new one, and a restart — or tomorrow's launch —
+  follows it there rather than bringing back what you cleared away.
 - **Broadcast** types one thing into several sessions at once.
+- **What a session actually did.** The token badge says what it cost; the chart button beside it, or a
+  click on the badge, says what it ran — see below.
 
 Sessions are children of the app: there is no detached mode, and the scheduler only fires while the
 window is open. Missed runs are not lost — each scheduled scenario catches up once on the next launch.
+
+### Activity: which tools a session ran
+
+A tile's `ctx 83.7k` badge says what a session **costs**. The chart button next to it — and a click on
+the badge itself — opens what it **did**: a count per tool, and three ways to read it.
+
+- **By tool.** The name the CLI itself used, never a renamed one, with a quiet category chip beside it
+  and a bar scaled to the busiest row. `Bash 334` and nothing else is a different session from twenty
+  tools over a hundred calls, and the shape is visible before the digits are read.
+- **By agent.** The main conversation, then a row per subagent reading `agent type — description`,
+  indented by how deep it was delegated. This is the section the terminal cannot give you: a session
+  whose work was mostly delegated looks idle in its own scrollback.
+- **By MCP server.** Shown only when there were MCP calls. Half the distinct tool names in a measured
+  project were MCP across just two servers, and without the grouping the list is a wall of one prefix.
+
+Failures and refusals are counted **separately** and shown only when there are any. A refused call never
+ran; a session that declined three commands is not a session that broke three times.
+
+**The numbers come from the agent's own log, not from anything the deck records.** Two things follow,
+and both are the point rather than a limitation:
+
+- They cover the **whole conversation**, including the part that happened before this window was open.
+  Restart a tile, resume it tomorrow, `/clear` in the middle — the counts follow the conversation.
+- They are **only as fresh as the log**, exactly as the token badge already is.
+
+The panel reads that log when you open it and while it stays open, and not otherwise — a deck of twelve
+with no panel open reads nothing. The reasoning is in
+[ADR-0008](docs/adr/0008-session-activity-is-read-from-the-agents-log-not-from-our-hooks.md).
+
+Which CLIs can be read today: **Claude Code**, the **Copilot CLI**, and **opencode**. Every session the
+deck launches is Claude Code — driving the others is a separate piece of work — but a log can be read
+for a session the deck did not start. A CLI with no reader says so rather than showing zeroes.
+
+## Limits: what each AI has left, and where that number came from
+
+A dozen sessions draw on **one** budget, and when it runs out they stall together. The top bar says
+**Limits**, and behind that word is a dial per AI: its own logo, **the five-hour window drawn as a ring
+around it**, and the reading in figures underneath. Point at the word and the row opens with a card: the
+five hours and the week in full, each with its reading, its meter, when it lifts and where the number came
+from, and the plan and account above them. Press a dial for the caveats and what to do about them.
+
+One word rather than the dials themselves, because the bar is otherwise about the deck's own sessions and
+three logos parked in it would read as three more buttons. What does *not* go behind the point is the
+part you need without asking: **the word itself turns amber when anything is nearly spent and red when
+anything is spent**, out of every window of every AI ([#498](https://github.com/followLemmi/cowork-deck/issues/498)).
+
+The dials do not move. Claude is where Claude was yesterday whether it is at 0% or refusing work, because
+a glance you have to read to find out what it is about is not a glance. **Codex** and **Gemini** sit
+beside it as *coming soon* — this deck does not read their limits yet, and a lineup that is stable across
+the day one of them starts working is worth more than one that shows only today.
+
+The ring is the five hours because that is the window that decides whether the next prompt is answered —
+planning against the week is what the card and the dialog are for. The figure under it is there because a
+ring at 0% and a ring that is broken look identical. When the *week* is the one in trouble behind a fresh
+five hours, the dial carries a coloured dot — amber for "about to", red for "already".
+
+**The hue around it is how much is left**: green up to three quarters spent, amber to nine tenths, red past
+it. It carries the ring, the figure under it, the dot and the word in the bar, and the same three bands
+colour every meter in the card and the dialog. A window with no ceiling to divide by gets no hue at all
+rather than a green one, because that would be a denominator this app has just said it does not have. The
+colours are said in words too: *nearly spent*, *over 90% spent*, *nothing moves until 19:00* — a band
+carried by hue alone is a band a person who cannot see the hue does not get.
+
+**The logo in the middle is the exception, and it is the brand's own colour** — Claude's coral, `#D97757`.
+Identity in the middle, level around it: the mark says *which AI* before anything has been read and says
+it the same way at 3% and at 97%, so tinting it by the quota would move the one fixed thing on the dial.
+Codex and Gemini stay dim while they are *coming soon*, because that is how "not ready" is said.
+
+Beside the ledger rather than in the panel, because it is the same kind of fact: two readings of what
+wants a person, and a third that says whether they can act on either. It also means the reading is there
+when the panel is collapsed, which a limit is not a property of ([#461](https://github.com/followLemmi/cowork-deck/issues/461)).
+The same dials are behind the status-area icon, on show rather than behind a word — that window is
+nothing but the glance — with the card floating over the sessions instead of pushing them down.
+
+**The source of a number is part of the number**, and it is written beside it rather than hidden in a
+tooltip. There are three ways this app can know such a number:
+
+- **The account's own accounting**, the figure `/usage` draws. Obtained by asking `claude` itself, the
+  way this app asks `gh` about GitHub: it costs nothing from your budget and no password passes through
+  the app. Switch it off in Settings if you would rather nothing started a short-lived process every
+  few minutes to ask. The card prints it **plain** — an unqualified number is the account's.
+- **What the app saw for itself**, from the sessions it runs. Real, and *narrower than your account*:
+  other terminals, other machines and anything outside this app are not in it. The card says **"this app
+  only"** after the number, because that is the one direction that can mislead you into thinking you have
+  more runway than you do. No meter and no ring is drawn for it either — the app knows what it spent, not
+  what was allowed, and it will not divide by a ceiling it invented.
+- **Nothing at all** — the card says "no reading", the dial's figure is a dash rather than a number it
+  would have to invent, the ring is a bare dashed track rather than an empty one, and the dialog offers
+  the one command that would answer it, in a tile.
+
+The dialog behind a dial explains each tier in a sentence, and names the two whose names are worth
+knowing — Observed and Estimated. That is where the vocabulary is taught; the account's own figure is
+labelled nowhere, in a card or a dialog, because an unqualified number is the account's and the sentence
+under it says so in plain words.
+
+The reading that matters most needs no percentage at all. When a session is refused, the app reads the
+limit banner on its way to the screen and says **nothing moves until 19:00** — in the card on screen, and
+in a notification while you are looking at something else. That survives a restart, and
+you are told again when it lifts.
 
 ## A GitHub account per workspace
 
@@ -130,6 +257,12 @@ under the deck, started in the workspace's folder and carrying its account — a
 before the first prompt, naming the folder, the branch, the account and the git identity it will commit
 as. That line is the only way to check the identity: the binding is injected as `GIT_AUTHOR_*`, which
 outranks `.git/config`.
+
+The drawer can also take the deck's place for a moment: the chevron in its bar — or `Cmd+Shift+E`
+(`Ctrl+Shift+E` elsewhere) — gives the terminals the whole column and gives it back, at the exact
+height you had. It is deliberately momentary: switching workspace or putting the drawer away drops it,
+and nothing about it survives a restart. The counts in the topbar stay visible while it is up, so a
+session that starts waiting for you behind it still says so.
 
 **A workspace can have a window of its own.** Pull one out — a button on its row, or drag it out on
 macOS — and it gets a window holding that workspace and nothing else: no rail, no other projects, no
@@ -176,7 +309,9 @@ form at launch; a prompt with no placeholders asks nothing. Placeholder names ar
 rather than by ASCII, so a prompt written in any script names its fields in that script.
 
 Attach a **schedule** (hourly, daily at `HH:MM`, weekly) and it fires unattended into a fresh session
-using stored defaults. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra
+using stored defaults. A schedule belongs to **one workspace** — the one open when it was saved — and the
+scheduler resolves that before the fire, so an unattended run cannot land in whatever project happened to
+be on screen at 03:00. It runs on *your* machine through *your* Claude Code — no cloud agents, no extra
 cost, full local context and permissions. A scenario whose previous run is still working or waiting
 skips rather than stacking a second one.
 
@@ -184,6 +319,105 @@ Every run is **journalled**: how it started, how long it took, the final message
 newest first, filterable by scenario and by trigger, and a row that produced nothing says *which*
 nothing it was. Records are immutable; erasing exists at one granularity — one scenario's history,
 wholesale. Recording can be switched off, and the screen says so rather than looking empty.
+
+## Session notes
+
+A session that closes can leave a **note** behind: what it did, what was decided,
+what broke and why. That corpus is what later sessions — and, once the search lands, the
+agents themselves — read instead of starting blind. It fills itself, so nothing depends on
+anybody remembering to write anything down.
+
+**It is asked, every first time, and it costs you money.** The session's transcript is sent
+to a model to be summarised, and the call runs on **your own Claude account** — it spends
+from your plan or your API budget. The question at the close says so before the button that
+agrees to it, and you can answer once for good. Three positions, under **Session notes…** in
+the command palette: ask each time, always write one, never write one.
+
+What keeps the bill small is not restraint on your part. The transcript is reduced to its
+prose before anything is sent — tool calls, their output, thinking and injected context are
+most of the bytes of a working session and none of its meaning — what survives is capped, and
+a session with nothing in it never reaches a model at all. The summary runs on the cheap
+model, because shortening prose that is already in the request does not need the strong one.
+Each capture prints what it cost.
+
+**Notes are markdown on your disk**, under the same directory as your workspaces:
+
+```
+<config dir>/{workspace}/Sessions/2026-08/31-the-thing-you-fixed.md
+<config dir>/{workspace}/Facts.md          durable claims, appended and never rewritten
+<config dir>/Diaries/{room}/2026-08.md     lessons, global rather than per project
+```
+
+A **diary room** is where a lesson worth carrying to another project is filed — the model
+picks the room from a sentence you write. Rooms are global on purpose: that is what lets a
+mistake made in one repository stop the same mistake in the next. A room you remove keeps
+every lesson already in it; what stops is new ones being filed there. Two rooms come
+configured and both are yours to rewrite.
+
+**A note is written by a model and may be wrong.** It is somebody's notes, indexed — not a
+record of truth. Facts are appended and marked superseded rather than edited, so a wrong one
+can be corrected without losing what it said.
+
+**Writing into it yourself.** The memory page writes a note by hand, records a fact,
+replaces one that has stopped being true, and files a lesson into a room you pick rather
+than one a model picks. A note is written and edited where it is read — its raw markdown,
+because that is what a note is on disk — and it keeps its `## TL;DR`: that is what a search
+reads first, so a note without one does not come back from one. Saving is atomic, and a
+capture never overwrites what you are writing.
+
+**Editing a note makes a sync conflict likelier, and that is accepted rather than solved.**
+Two machines editing one note stops the sync cycle and names the file: notes are prose, and
+an automatic merge produces a plausible paragraph nobody wrote. A fact is
+one line — the date and the `[active]` marker are written for you — and replacing one marks
+the old line and puts the new one under it, so the corpus can still answer when it changed
+and to what. A single short line is on disk and listed immediately, but is not searchable on
+its own: the index skips anything under about 120 letters, so a file becomes findable once
+it holds a few.
+
+**Reading them.** The rail's **Memory** page lists everything ever written down: a heading
+per project with its notes under it, the most recently written project first, and the
+lessons last. It does not change with the project you have open — memory spans them. It is
+a directory listing rather than a search, so it works on a machine that has downloaded
+nothing. Opening the page puts a screen of its own where the deck was; choosing a note
+reads it there, and one control gives the deck back.
+
+**Searching them.** The field at the top of that page — or **Search your notes…** in the
+command palette, which lands on it — takes a sentence rather than a keyword: the notes are
+indexed by meaning, so "why did the cross build pick the wrong architecture" finds the
+session that answered it. Press Enter to search: a search embeds your sentence against the
+model, which is work worth asking for rather than doing on every keystroke. Opening
+the page starts loading the model in the background, so by the time you have read
+the list a search takes milliseconds rather than seconds; it is given back after a
+few minutes of not being used, and the next search loads it again. Emptying the
+field goes back to the whole corpus at once. A result opens the same way a listed note
+does.
+Searching needs a 479 MB embedding model, downloaded once per machine and offered rather
+than fetched behind your back — it runs on your machine and the index never leaves it.
+Everything is on your disk; nothing about a search reaches a network.
+
+**What it has cost.** The foot of the memory page keeps the record: which sessions were
+summarised, which failed and why, and what the model calls came to. It is folded away until
+you go looking for it. A retry runs the summary again on your own Claude account, and the
+queue is this machine's — each machine keeps its own, because a queued job names a
+transcript path here.
+
+**Your sessions can search them too.** A launched session is given a `search_memory` tool
+of its own and told when to reach for it: before changing code in an area it has not seen,
+and before settling a question somebody here has already settled. It reads; it never writes.
+
+**And they are handed what memory has, with the question.** A rule in the system prompt
+about every question in general loses to context about *this* one, so a question long
+enough to be a question arrives with the closest few passages already attached. Short
+instructions, slash commands and pasted code pay for nothing. When the corpus has nothing
+on it, it says so plainly rather than offering passages that did not match — a confident
+empty answer is worse than none.
+A session sees its own project's notes and every project's lessons, and nothing of anybody
+else's project.
+
+One limit worth knowing today: sessions on Claude Code get notes, and Copilot, opencode and
+Codex ones do not yet — the deck says so rather than quietly skipping them. Since the deck
+only launches Claude Code so far, that matters when you point it at a log rather than when
+you start a session.
 
 ## The same setup on your other machine
 
@@ -194,15 +428,33 @@ connected account, and offers both halves of the job — create a private reposi
 you already have, which is what every machine after the first does.
 
 **What travels:** workspaces and their bindings, scenarios, the run journal (one file per machine, so
-two never collide), and the memory corpus — which is a place kept for project memory rather than a
-thing you have yet; see the roadmap. **What does not:** session layout, window state, terminal drawers —
+two never collide), and the memory corpus — session notes, project
+facts, and the diary rooms with the lessons in them, so a mistake caught on one machine is
+there on the other. **What does not:** session layout, window state, terminal drawers —
 the repository is an allowlist, and a test asserts the tracked set equals it exactly. Absolute paths never travel: a workspace arriving from another machine has no folder here until
 you point it at one, and a schedule arrives switched off so a 03:00 job does not start firing on two
 machines. Conflicts are not resolved for you — notes are prose, and an automatic merge produces a
 plausible paragraph nobody wrote.
 
+**When both machines already had the project:** each added the folder before sync was switched on, so
+each made its own id, and the arriving record looks like a second project. The deck recognises them by
+the folder's git remote — the one thing that is the same string on both machines — and asks whether
+they are the same project instead of deciding. The remote does not have to be called `origin`: the deck
+takes `origin`, then `upstream`, then the only remote there is. Answering "same project" leaves one
+workspace with this machine's folder and both machines' history; answering "different projects" leaves
+both and does not ask again, on either machine.
+
+A project kept without a git remote — a config folder, a scratch checkout — is recognised by the folder
+instead, but only where both records are on *this* machine and point at the same directory. That
+comparison never leaves the machine, and the only thing that travels is the answer. Two records with
+neither a remote nor a folder here are compared to nothing, because a guess that is wrong merges two
+real projects.
+
 See [ADR-0006](docs/adr/0006-the-config-directory-is-the-sync-repository.md) for why the config
-directory *is* the repository.
+directory *is* the repository, and
+[ADR-0007](docs/adr/0007-a-workspaces-identity-across-machines-is-its-remote.md) for what a workspace's
+identity is across machines and what merging two records actually moves, as amended by
+[ADR-0010](docs/adr/0010-where-there-is-no-remote-the-folder-is-the-identity.md).
 
 ## Install
 
@@ -240,34 +492,68 @@ npm run tauri dev      # hot reload
 npm run tauri build    # a release bundle for this platform
 ```
 
+**A second copy, side by side.** `npm run dev:instance` runs one more dev build beside the one already
+open — the usual shape being a change under review in a worktree while trunk keeps running. It moves
+the dev server off 1420 and, more importantly, gives that copy a config directory of its own: the
+single-instance claim is a lock on *that directory* (`src-tauri/src/instance.rs`), and two copies
+sharing one would share a store, a run journal and the repository the sync cycle commits. So the second
+copy starts with no workspaces and syncs nowhere, and its window title says which slot it is.
+
+```bash
+npm run dev:instance -- --dir .claude/worktrees/limit-dials   # port 1421, slot from that branch
+npm run dev:instance -- --port 1422 --slot review             # a second one, beside the first
+```
+
+`--dir` is the checkout to launch, and it is an argument rather than "wherever the script lives"
+because the branch being checked would not carry the script itself. `--slot` names the config
+directory, defaulting to that checkout's branch, so a line of work keeps its state across runs. All of
+it is a `--config` merge for that one run: `tauri.conf.json` is untouched.
+
 ```bash
 npm test                                            # frontend (vitest)
 npm run contrast                                    # every colour pair the design claims
 cargo test --manifest-path src-tauri/Cargo.toml     # backend (Rust)
 ```
 
-> In a fresh clone or worktree, run `npm install && npm run build && npm run stage:reporter` once
-> before `cargo test`: neither `dist/` nor `src-tauri/binaries/` is in git, and Tauri's build script
-> fails without them.
+> In a fresh clone or worktree, run `npm install && npm run build && bash scripts/stage-sidecar.sh
+> --seed-only` once before `cargo test`: neither `dist/` nor `src-tauri/binaries/` is in git, and
+> Tauri's build script fails while any sidecar declared in `bundle.externalBin` is missing from disk.
+> `--seed-only` writes an empty placeholder for each of the three, which is all a `cargo test` needs;
+> `npm run tauri dev` and `npm run tauri build` stage the real ones themselves.
 
 **Two environment variables**, both optional: `COWORK_CLAUDE_PATH` pins a `claude` that is not on
 `PATH` (without it, and with none found, the app says so on startup), and `COWORK_GH_PATH` does the
 same for `gh`.
 
-**The memory sidecar** is a separate crate under `crates/cowork-memory`, built and tested on its own
-(`npm run stage:memory`). Its tests use a deterministic fake embedder; the ones needing the real model
-are `#[ignore]`d.
+**The memory sidecar** is a separate crate under `crates/cowork-memory`, with a target directory of
+its own outside any root `[workspace]`, so `npm run stage:memory` builds and stages it rather than the
+script the other two sidecars share. Its tests use a deterministic fake embedder; the ones needing the
+real model are `#[ignore]`d.
+
+**Both build hooks stage all three sidecars**, through the same three `stage:*` scripts, and that
+symmetry is the point: `bundle.externalBin` declares three binaries, Tauri's build script refuses to
+run while any one of them is missing from disk, and `src-tauri/binaries/` is not in git. A hook that
+staged a subset would work only on a machine where somebody had once run the rest by hand — which is
+exactly how a clean checkout came to be unable to start the app at all.
+
+`dev` therefore stages the same `--release` binaries `build` does, rather than debug ones. It costs a
+release compile of the sidecar trees on the first `dev` in a fresh clone, and again after a change to
+a sidecar's own source; cargo caches both, so the everyday `dev` pays nothing. The alternative —
+teaching the scripts a profile argument and staging debug builds — would buy back those minutes at the
+price of two staging paths to keep correct and a `dev` session running sidecars that are not the ones
+that ship. Neither is free; this is the one that cannot drift.
 
 ## The design
 
 The interface is a design system of its own — **True Ink**: a near-black, faintly cool ground where
-**hue belongs to state**, so green, amber and red mean working, waiting on you and broken, and are
-never spent on decoration. The accent is light itself, elevation is lightness rather than shadow (on
+**hue belongs to meaning**, so green, amber and red mean working, waiting on you and broken on a session
+— and, on a limit, plenty left, getting close and nearly gone. They are never spent on decoration. The accent is light itself, elevation is lightness rather than shadow (on
 this ground a cast shadow has nowhere to go), and the terminal deliberately does not follow the
 palette — it is a window onto another program, and those six ANSI hues are Claude Code's.
 
 Every colour pair it claims is measured by `npm run contrast`, which fails if one falls under its
-threshold and documents the three that deliberately do. The reasoning, the tokens, the mockups and the
+threshold and documents the thirteen that deliberately do. It runs on every pull request (#455), so a
+regression in the stylesheet cannot pass three green ticks. The reasoning, the tokens, the mockups and the
 measurements are in [docs/design/true-ink](docs/design/true-ink/README.md).
 
 ## Graceful degradation
@@ -275,6 +561,12 @@ measurements are in [docs/design/true-ink](docs/design/true-ink/README.md).
 State tracking depends on Claude Code's hooks reporting back. On an older `claude`, or if a hook fails
 to fire, the terminal is unaffected — you can type, scroll and work normally. The only symptom is a tile
 whose state label stays on `idle`.
+
+The limits degrade the same way, and say which rung they are on. The reported figure is read out of
+`claude`'s own output, so a version that words it differently costs the *percentage* and nothing else:
+the dial stays where it is, falls back to **Observed**, and labels itself. It never blanks, and it
+never passes the app's own counting off as your account's. See
+[ADR-0009](docs/adr/0009-the-source-of-a-usage-number-is-part-of-the-number.md).
 
 ## Roadmap
 
@@ -285,14 +577,12 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 
 | | |
 |---|---|
-| **Project memory** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | The piece the app is missing rather than a piece it improves. Semantic search over what earlier sessions actually did and decided — for you, and for the agents through an MCP tool of their own. The corpus fills itself: a session writes its own summary when it closes, so nothing depends on anyone keeping notes. Local, like everything else here — the embedding model runs on your machine and the index never leaves it. The sidecar under `crates/cowork-memory` is built and tested; what is left is the app around it. |
+| **Project memory** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | **Working, and being finished.** A closing session writes its own note, the rail's Memory page lists and searches the whole corpus and writes into it by hand, the record at its foot says what every capture cost and which jobs failed, and a session gets a `search_memory` tool of its own — see [Session notes](#session-notes) above. What is left is reading the other CLIs' logs ([#371](https://github.com/followLemmi/cowork-deck/issues/371), [#372](https://github.com/followLemmi/cowork-deck/issues/372)) so their sessions get notes too, and what a capture costs sampled at more than one call ([#379](https://github.com/followLemmi/cowork-deck/issues/379)). Local throughout: the embedding model runs on your machine and the index never leaves it. |
 
 ### After that
 
 | | |
 |---|---|
-| **Activity** [#323](https://github.com/followLemmi/cowork-deck/issues/323) | A tile says what a session **costs**. It says nothing about what it **did**. A panel that answers which tools ran, which subagents ran them and how many times — read from the agent CLI's own session log, Claude Code [#325](https://github.com/followLemmi/cowork-deck/issues/325) first. |
-| **Limits** [#301](https://github.com/followLemmi/cowork-deck/issues/301) | Many sessions draw on one budget, and when it runs out they stall together. What each connected AI has left, where that number came from, and a reading that says "nothing moves until 19:00" rather than "3 waiting" [#305](https://github.com/followLemmi/cowork-deck/issues/305). |
 | **Frame rate** [#261](https://github.com/followLemmi/cowork-deck/issues/261) | Dragging a grip or resizing the window gives up three quarters of the display's frame rate. Measured, with the work that follows from the measurements. |
 
 ### Later
@@ -309,7 +599,13 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 Two places and no third: **GitHub issues** carry the work, and **[`docs/adr/`](docs/adr/)** carries the
 decisions worth outliving the issue that prompted them. `CLAUDE.md` at the root is the contract for
 anyone — human or agent — sending a change: English everywhere that outlives a conversation, `dev` as
-the trunk, `main` as the released state.
+the trunk, `main` as the released state. **[`CONTEXT.md`](CONTEXT.md)** is the vocabulary those three
+are written in — what a tile is against a session, a workspace against a project, a note against a
+fact.
+
+Nine things in `docs/` are checklists rather than prose: what to look at in a real window, for the
+features whose faults a test cannot see. They are listed in **[`docs/README.md`](docs/README.md)**,
+which exists because they were reachable only by knowing they were there.
 
 The screenshots above come from [`harness/`](docs/images/README.md), which is the app itself with the
 backend replaced by fixtures: real xterm instances holding real bytes, invented accounts and

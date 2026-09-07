@@ -68,6 +68,26 @@ describe("matchHotkey", () => {
     // that reached for `key` at all would be one layout away from breaking.
     expect(matchHotkey({ ...base, code: "F2", key: "б" }, true)).toBe("rename-active");
   });
+  // Cmd+Shift+E / Ctrl+Shift+E, symmetric on both platforms — which a Shift
+  // variant of Cmd+J could not be, because Ctrl+Shift+J is already the drawer.
+  it("maps the full-window terminal hotkey the same way on both platforms", () => {
+    expect(matchHotkey({ ...base, code: "KeyE", metaKey: true, shiftKey: true }, true))
+      .toBe("expand-terminals");
+    expect(matchHotkey({ ...base, code: "KeyE", ctrlKey: true, shiftKey: true }, false))
+      .toBe("expand-terminals");
+    // Bare Ctrl+E stays readline's end-of-line, and bare Cmd+E is nobody's.
+    expect(matchHotkey({ ...base, code: "KeyE", ctrlKey: true }, false)).toBeNull();
+    expect(matchHotkey({ ...base, code: "KeyE", metaKey: true }, true)).toBeNull();
+  });
+
+  // It must not have taken the drawer's own key on the platform where that key
+  // already carries Shift.
+  it("leaves Ctrl+Shift+J the drawer's on Windows and Linux", () => {
+    expect(matchHotkey({ ...base, code: "KeyJ", ctrlKey: true, shiftKey: true }, false))
+      .toBe("toggle-terminals");
+    expect(matchHotkey({ ...base, code: "KeyJ", metaKey: true }, true)).toBe("toggle-terminals");
+  });
+
   it("maps the capture hotkey without shadowing readline", () => {
     const ev = { ...base, code: "KeyT", metaKey: true, shiftKey: true };
     expect(matchHotkey(ev, true)).toBe("new-task");

@@ -44,7 +44,10 @@ vi.mock("../src/terminal", () => {
     /** What the pty channel does to this panel: paint, or wait. */
     paint(b: Uint8Array) { if (this.held) this.held.push(b); else this.written.push(b); }
     focus() { this.focused++; }
-    fit() {}
+    /** How often the drawer refitted this panel — the call that recomputes the
+     *  grid and pushes the new size to the PTY. */
+    fits = 0;
+    fit() { this.fits++; }
     dispose() { this.disposed = true; }
     /** Everything the drawer wrote, as one string, for the banner assertions. */
     text() { return this.written.filter((w) => typeof w === "string").join(""); }
@@ -68,7 +71,7 @@ vi.mock("../src/modal", () => ({
   promptModal: vi.fn().mockResolvedValue(null),
 }));
 
-import { TerminalDrawer, bannerLine, drawerHeightPx, rowsForHeight, DEFAULT_TERMINAL_ROWS } from "../src/drawer";
+import { TerminalDrawer, bannerLine, drawerHeightPx, rowPx, DEFAULT_TERMINAL_ROWS } from "../src/drawer";
 import {
   loadTerminals, saveTerminals, saveUiState, sessionJobs, closeSession, gitStatus, onExit,
 } from "../src/ipc";
@@ -147,9 +150,14 @@ describe("the banner line", () => {
 // Rows rather than pixels, for the reason `prDiffCols` is columns: the thing
 // being sized is a grid of characters.
 describe("the drawer's height is a row count", () => {
-  it("survives the round trip through pixels", () => {
+  /** Asserted against the arithmetic rather than round-tripped through an
+   *  inverse, which is what this did until #424: a round trip through
+   *  `rowsForHeight` passed even if both functions were wrong in mirror-image
+   *  ways, and the inverse itself is gone — the grip anchors on the row count it
+   *  started at, so nothing converts an absolute height back any more. */
+  it("is the rows' own line boxes plus whatever the bar costs", () => {
     for (const rows of [4, 14, 30]) {
-      expect(rowsForHeight(drawerHeightPx(rows, 1, 40), 1, 40)).toBe(rows);
+      expect(drawerHeightPx(rows, 1, 40)).toBe(Math.round(rows * rowPx(1)) + 40);
     }
   });
 
@@ -157,12 +165,168 @@ describe("the drawer's height is a row count", () => {
     const small = drawerHeightPx(14, 1, 40);
     const large = drawerHeightPx(14, 1.45, 40);
     expect(large).toBeGreaterThan(small);
-    expect(rowsForHeight(large, 1.45, 40)).toBe(14);
+    // The same fourteen rows, each one 45% taller, and the bar unchanged: it is
+    // chrome, not text.
+    expect(large - 40).toBe(Math.round(14 * rowPx(1.45)));
   });
 
-  it("refuses a drag past what is still a terminal", () => {
-    expect(rowsForHeight(0, 1, 40)).toBe(4);
-    expect(rowsForHeight(100_000, 1, 40)).toBe(30);
+  /** The floor and the ceiling moved from the pixel conversion to the grip's own
+   *  `min`/`max` (`wireResizer`), which is where every other grip's range lives. */
+  it("keeps a row a row at every scale the text control offers", () => {
+    for (const scale of [0.85, 1, 1.15, 1.45]) {
+      expect(rowPx(scale)).toBeGreaterThan(0);
+    }
+  });
+});
+
+// Full window is a MODE, not a bigger row count: no number of rows is "the whole
+// window", and `terminalRows` is what a person chose their strip to be. The whole
+// point is that the round trip gives it back.
+describe("filling the window", () => {
+  /** The class the stylesheet answers, which is the whole of what the mode is. */
+  const isFull = (el: HTMLElement) => el.classList.contains("is-full");
+  const fullBtn = (el: HTMLElement) => el.querySelector<HTMLButtonElement>(".term-full-btn")!;
+
+  it("goes full from the control in the bar, and comes back from the same one", async () => {
+    const { el, drawer } = makeDrawer();
+    await drawer.newTerminal();
+    expect(isFull(el)).toBe(false);
+
+    fullBtn(el).click();
+    await vi.waitFor(() => expect(isFull(el)).toBe(true));
+    expect(drawer.isFull()).toBe(true);
+
+    fullBtn(el).click();
+    await vi.waitFor(() => expect(isFull(el)).toBe(false));
+    expect(drawer.isFull()).toBe(false);
+  });
+
+  // A maximise/restore pair says which of the two it will do. It changes what it
+  // IS rather than reporting whether it is on — hence no `aria-pressed`, which
+  // would announce the mode twice and contradict itself the second time.
+  it("says on the control which of the two it will do", async () => {
+    const { el, drawer } = makeDrawer();
+    await drawer.newTerminal();
+    expect(fullBtn(el).dataset.action).toBe("expand");
+    expect(fullBtn(el).getAttribute("aria-label")).toBe("Fill the window with the terminals");
+    expect(fullBtn(el).classList.contains("is-full")).toBe(false);
+
+    await drawer.toggleFull();
+    expect(fullBtn(el).dataset.action).toBe("collapse");
+    expect(fullBtn(el).getAttribute("aria-label")).toBe("Restore the terminals to their height");
+    expect(fullBtn(el).hasAttribute("aria-pressed")).toBe(false);
+    // The glyph never changes: it is one chevron, and `is-full` is what turns it.
+    expect(fullBtn(el).querySelector("use")!.getAttribute("href")).toBe("#i-chevron");
+    expect(fullBtn(el).classList.contains("is-full")).toBe(true);
+  });
+
+  // The one requirement the whole shape exists for: expanding must not go
+  // through `setRows`, so the stored height survives the round trip untouched.
+  it("gives back the exact height it had, and never writes terminalRows", async () => {
+    const { el, drawer } = makeDrawer();
+    await drawer.restore({ rows: 22 });
+    await drawer.newTerminal();
+    const before = el.style.height;
+    expect(before).not.toBe("");
+
+    await drawer.toggleFull();
+    // Nothing inline while the stylesheet owns the height: two numbers fighting
+    // over one property is exactly what the class avoids.
+    expect(el.style.height).toBe("");
+
+    await drawer.toggleFull();
+    expect(el.style.height).toBe(before);
+    expect(saveUiState).not.toHaveBeenCalled();
+  });
+
+  // The refit is what tells the PTY its new size — see `setFontSize` in
+  // terminal.ts. A jump this large needs no special path, but it does need the
+  // call.
+  it("refits the terminal in front, both ways", async () => {
+    const { drawer } = makeDrawer();
+    await drawer.newTerminal();
+    panels[0].fits = 0;
+    await drawer.toggleFull();
+    expect(panels[0].fits).toBeGreaterThan(0);
+    panels[0].fits = 0;
+    await drawer.toggleFull();
+    expect(panels[0].fits).toBeGreaterThan(0);
+  });
+
+  // Asking for a full-window terminal with no drawer up is one intent, not two.
+  // The alternative is a palette entry that does nothing.
+  it("opens a drawer to fill the window with when there is none", async () => {
+    const { el, drawer } = makeDrawer();
+    await drawer.toggleFull();
+    expect(drawer.isOpen()).toBe(true);
+    expect(panels).toHaveLength(1);
+    expect(isFull(el)).toBe(true);
+  });
+
+  // A drag names a height, which is the question this mode was one answer to.
+  it("comes back into flow when the grip is used", async () => {
+    const { el, drawer } = makeDrawer();
+    await drawer.newTerminal();
+    await drawer.toggleFull();
+
+    const grip = el.querySelector<HTMLElement>(".term-grip")!;
+    grip.setPointerCapture = () => {};
+    grip.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(isFull(el)).toBe(false);
+    expect(el.style.height).not.toBe("");
+  });
+
+  // Per window and momentary: see the `full` field. Written down here because
+  // "does it survive X" has to be a decision rather than an accident.
+  it("is dropped by a workspace switch", async () => {
+    const { el, drawer, switchTo } = makeDrawer();
+    await drawer.newTerminal();
+    switchTo(WS2);
+    await drawer.newTerminal();
+    await drawer.toggleFull();
+    expect(isFull(el)).toBe(true);
+
+    switchTo(WS);
+    expect(drawer.isOpen()).toBe(true);      // still up in the first project
+    expect(isFull(el)).toBe(false);          // but not covering its deck
+    switchTo(WS2);
+    expect(isFull(el)).toBe(false);          // and not on the way back either
+  });
+
+  it("is dropped by putting the drawer away", async () => {
+    const { el, drawer } = makeDrawer();
+    await drawer.newTerminal();
+    await drawer.toggleFull();
+    await drawer.toggle();                   // shut
+    expect(isFull(el)).toBe(false);
+    await drawer.toggle();                   // and back up at its own height
+    expect(isFull(el)).toBe(false);
+    expect(drawer.isFull()).toBe(false);
+  });
+
+  // Nothing about it reaches disk: `saveTerminals` carries open/shut per
+  // workspace and the tabs, and that is the whole of what a restart restores.
+  it("is not written down, so a restart cannot bring it back", async () => {
+    const { el, drawer } = makeDrawer();
+    await drawer.newTerminal();
+    await drawer.toggleFull();
+    const calls = vi.mocked(saveTerminals).mock.calls;
+    const saved = calls[calls.length - 1][0] as unknown as Record<string, unknown>;
+    expect(Object.keys(saved).sort()).toEqual(["active", "items", "open"]);
+
+    // A fresh drawer restoring that same state comes back at its stored height.
+    vi.mocked(loadTerminals).mockResolvedValue({
+      items: [{ sessionId: "t1", cwd: "/repos/api", name: "api", workspaceId: "w1" }],
+      active: { w1: "t1" },
+      open: ["w1"],
+    });
+    const second = makeDrawer();
+    await second.drawer.restore({ rows: 14 });
+    second.drawer.setWorkspace("w1");
+    expect(second.drawer.isOpen()).toBe(true);
+    expect(second.drawer.isFull()).toBe(false);
+    expect(second.el.classList.contains("is-full")).toBe(false);
+    expect(el).toBeDefined();
   });
 });
 

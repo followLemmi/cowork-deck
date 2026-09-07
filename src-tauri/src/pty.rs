@@ -127,6 +127,66 @@ fn classify(status: &portable_pty::ExitStatus) -> Exit {
     }
 }
 
+/// Where a session's output goes: a slot that can be pointed somewhere else,
+/// holding a handle that can be cloned out and called with the lock released.
+/// Both halves are load-bearing — see `Session::sink` and `retarget`.
+type Sink = Arc<Mutex<Arc<dyn Fn(Vec<u8>) + Send + Sync>>>;
+
+/// Collect reads that arrive within `window` of each other and pass them on as
+/// one.
+///
+/// Order is preserved and no byte is added, dropped or reframed — a batch is
+/// exactly the concatenation of the reads it replaces, which is what lets
+/// xterm's stateful UTF-8 decoder keep working across a glyph split by a read
+/// boundary.
+///
+/// It checks the generation flag too, and it is the one that has to: the reader
+/// breaking on a dead generation drops its sender, which is a `Disconnected`
+/// here and would otherwise flush a batch belonging to a process the app has
+/// already forgotten into its successor's terminal.
+///
+/// `window` is an argument rather than `COALESCE_WINDOW` read straight from the
+/// constant, and that is the whole reason this loop is a function: **how much it
+/// batches is a fact about arrival times, so a test that spawns a process can
+/// only ever hope for one.** Given the window instead, a test states it: a window
+/// no run can outlive turns every already-queued read into a single callback, a
+/// zero window turns each one into its own, and neither answer moves when the
+/// machine is busy. Every caller in the app passes `COALESCE_WINDOW`.
+fn coalesce(rx: mpsc::Receiver<Vec<u8>>, window: Duration, live: Arc<AtomicBool>, sink: Sink) {
+    // `recv` blocks, so nothing is polled while the session is idle, and it
+    // ends the loop when the reader thread hits EOF and drops its sender.
+    while let Ok(mut batch) = rx.recv() {
+        let deadline = Instant::now() + window;
+        let mut closed = false;
+        while batch.len() < MAX_BATCH {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            match rx.recv_timeout(deadline - now) {
+                Ok(more) => batch.extend_from_slice(&more),
+                Err(RecvTimeoutError::Timeout) => break,
+                // The reader hit EOF. Flush what is in hand before leaving,
+                // or the last of a short-lived command's output is lost.
+                Err(RecvTimeoutError::Disconnected) => {
+                    closed = true;
+                    break;
+                }
+            }
+        }
+        if !live.load(Ordering::SeqCst) {
+            break;
+        }
+        // Cloned out under the lock and called with it released, so a
+        // batch crossing into the webview never holds up a `retarget`.
+        let send = Arc::clone(&sink.lock().unwrap());
+        send(batch);
+        if closed {
+            break;
+        }
+    }
+}
+
 /// A session with processes still running inside it, and how many besides the
 /// session's own leader. What "there is something to lose here" is measured
 /// with — see the app-level exit handler in `main.rs`.
@@ -163,7 +223,7 @@ struct Session {
     /// under the lock and calls it with the lock released. Calling through the
     /// lock would make every batch — an IPC crossing — block a `retarget`, and
     /// `retarget` runs while a person is dragging a window.
-    sink: Arc<Mutex<Arc<dyn Fn(Vec<u8>) + Send + Sync>>>,
+    sink: Sink,
 }
 
 #[derive(Clone)]
@@ -303,54 +363,11 @@ impl PtyManager {
             }
         });
 
-        // Coalescer thread: collect reads that arrive within `COALESCE_WINDOW` of
-        // each other and pass them on as one. Order is preserved and no byte is
-        // added, dropped or reframed — a batch is exactly the concatenation of the
-        // reads it replaces, which is what lets xterm's stateful UTF-8 decoder keep
-        // working across a glyph split by a read boundary.
-        //
-        // It checks the generation flag too, and it is the one that has to: the
-        // reader breaking on a dead generation drops its sender, which is a
-        // `Disconnected` here and would otherwise flush a batch belonging to a
-        // process the app has already forgotten into its successor's terminal.
+        // Coalescer thread: one callback per burst of reads. See `coalesce`.
         let live_out = Arc::clone(&live);
-        let sink: Arc<Mutex<Arc<dyn Fn(Vec<u8>) + Send + Sync>>> =
-            Arc::new(Mutex::new(Arc::new(on_output)));
+        let sink: Sink = Arc::new(Mutex::new(Arc::new(on_output)));
         let sink_out = Arc::clone(&sink);
-        std::thread::spawn(move || {
-            // `recv` blocks, so nothing is polled while the session is idle, and it
-            // ends the loop when the reader thread hits EOF and drops its sender.
-            while let Ok(mut batch) = rx.recv() {
-                let deadline = Instant::now() + COALESCE_WINDOW;
-                let mut closed = false;
-                while batch.len() < MAX_BATCH {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        break;
-                    }
-                    match rx.recv_timeout(deadline - now) {
-                        Ok(more) => batch.extend_from_slice(&more),
-                        Err(RecvTimeoutError::Timeout) => break,
-                        // The reader hit EOF. Flush what is in hand before leaving,
-                        // or the last of a short-lived command's output is lost.
-                        Err(RecvTimeoutError::Disconnected) => {
-                            closed = true;
-                            break;
-                        }
-                    }
-                }
-                if !live_out.load(Ordering::SeqCst) {
-                    break;
-                }
-                // Cloned out under the lock and called with it released, so a
-                // batch crossing into the webview never holds up a `retarget`.
-                let send = Arc::clone(&sink_out.lock().unwrap());
-                send(batch);
-                if closed {
-                    break;
-                }
-            }
-        });
+        std::thread::spawn(move || coalesce(rx, COALESCE_WINDOW, live_out, sink_out));
 
         // Waiter thread: report what became of the process.
         //
@@ -479,6 +496,49 @@ impl PtyManager {
     /// actually ask.
     pub fn is_live(&self, session: &str) -> bool {
         self.sessions.lock().unwrap().contains_key(session)
+    }
+
+    /// Where this session's leader is working right now, read from the OS.
+    ///
+    /// **The leader, deliberately, and not its foreground descendant.** The
+    /// leader is the process this app started, and its directory is a fact about
+    /// the session; a descendant's is a fact about whatever the session is
+    /// running this second, so following it would swing a tile's badge to a
+    /// tool's directory for the length of a tool call and back. Being right
+    /// about the wrong question is worse than the answer this gives.
+    ///
+    /// For a shell that is exactly right: `cd` moves the leader. For an agent it
+    /// is the launch directory, because the agent does not move — see the header
+    /// of `crate::session_cwd`, where that is measured rather than assumed.
+    ///
+    /// `None` for an id the manager does not hold, for a leader that has already
+    /// exited, and on any platform with no cheap way to ask.
+    pub fn cwd(&self, session: &str) -> Option<String> {
+        let pid = self.sessions.lock().unwrap().get(session)?.pid?;
+        leader_cwd(pid as i32)
+    }
+
+    /// Where every session this manager holds is working, as directories.
+    ///
+    /// [`Self::cwd`] for the whole deck, and it exists because a *caller* needs
+    /// the set rather than one answer: `commands::git_roots` has to let a path
+    /// through for being where some live session is, without being told which
+    /// session is being asked about (#508). The ids are dropped for that reason —
+    /// the question there is "is anything of ours in this folder", not "whose".
+    ///
+    /// The pids are collected under the lock and read after it is dropped, the
+    /// same discipline `kill` and `kill_all` state: a `readlink` per session is
+    /// cheap but it is still a syscall, and no caller of this should be able to
+    /// hold up a write to an unrelated session.
+    ///
+    /// A session whose leader has exited, or which never had a pid, contributes
+    /// nothing — as on any platform that cannot answer the question at all.
+    pub fn cwds(&self) -> Vec<String> {
+        let pids: Vec<i32> = {
+            let map = self.sessions.lock().unwrap();
+            map.values().filter_map(|s| s.pid.map(|p| p as i32)).collect()
+        };
+        pids.into_iter().filter_map(leader_cwd).collect()
     }
 
     /// How many jobs one session is running — `live_work`, for a caller that
@@ -670,6 +730,90 @@ fn jobs_in_session(_leader: i32) -> usize {
     0
 }
 
+/// One process's working directory, by pid.
+///
+/// Three implementations and no portable one, which is the same shape as
+/// `all_pids` below and for the same reason: there is no syscall that asks this
+/// about another process.
+///
+/// Linux reads the symlink the kernel already keeps. macOS asks `proc_pidinfo`
+/// for the vnode path info, whose `pvi_cdir` is the answer — `libproc`'s own
+/// route, and the reason `libc` is a dependency of this file already. Windows
+/// has neither: reaching it needs a remote read of the process's PEB, which is
+/// the kind of thing this layer does not do (see the header — the process tree
+/// is unreachable there too).
+///
+/// Empty or unreadable answers `None`, never an empty string: a caller falls back
+/// to the launch directory on `None`, and `""` would reach `git -C`.
+#[cfg(target_os = "linux")]
+fn leader_cwd(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    // A directory the process has since had deleted under it reads back as
+    // "/some/where (deleted)", which is not a path and must not be handed on.
+    let text = path.to_str()?.to_string();
+    if text.is_empty() || text.ends_with(" (deleted)") {
+        return None;
+    }
+    Some(text)
+}
+
+#[cfg(target_os = "macos")]
+fn leader_cwd(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+    // Zeroed rather than `MaybeUninit`: the call fills the whole struct on
+    // success and this is read only when it reports having written all of it,
+    // and a zeroed `vip_path` is an empty C string rather than garbage on the
+    // path where it does not.
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    // A short write is a struct only partly filled, which is not an answer.
+    if written < size {
+        return None;
+    }
+    // `vip_path` is `[[c_char; 32]; 32]` — libc spells `[c_char; MAXPATHLEN]`
+    // that way to keep supporting an old rustc, so it is flattened back here.
+    let flat = info.pvi_cdir.vip_path;
+    c_string(flat.iter().flatten().map(|&c| c as u8))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn leader_cwd(_pid: i32) -> Option<String> {
+    None
+}
+
+/// The path in a fixed-size C buffer: bytes up to the NUL, as a `String`.
+///
+/// Split out of the macOS branch above so that the half with rules in it is
+/// under test on every platform — `cfg(test)` beside `macos` is what puts it in
+/// a Linux runner's build. Only the syscall is macOS-only; where the path ends,
+/// and what an empty or non-UTF-8 buffer means, are decisions a Linux test can
+/// hold, and the whole of `libproc`'s answer is a buffer of this shape.
+///
+/// `None` rather than `""` for an empty buffer, because the caller falls back to
+/// the launch directory on `None` and would hand an empty string to `git -C`.
+#[cfg(any(target_os = "macos", test))]
+fn c_string(bytes: impl Iterator<Item = u8>) -> Option<String> {
+    let taken: Vec<u8> = bytes.take_while(|&b| b != 0).collect();
+    if taken.is_empty() {
+        return None;
+    }
+    String::from_utf8(taken).ok()
+}
+
 #[cfg(target_os = "linux")]
 fn all_pids() -> Vec<i32> {
     let dir = match std::fs::read_dir("/proc") {
@@ -718,7 +862,7 @@ fn no_such_session(session: &str) -> std::io::Error {
 }
 
 fn to_io<E: std::fmt::Display>(e: E) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+    std::io::Error::other(e.to_string())
 }
 
 #[cfg(test)]
@@ -746,13 +890,26 @@ mod tests {
     /// A session moving between windows keeps running; only the far end of its
     /// pipe changes. The process must not notice, and no byte may be lost or
     /// doubled at the seam.
+    ///
+    /// "Later" is enforced by a handshake, not by a clock. The script blocks on
+    /// `read` until the test writes a newline, which it only does once `retarget`
+    /// has returned — so `after` is *provably* written after the swap. The
+    /// earlier version slept five seconds instead and raced its own five-second
+    /// wait: on a loaded runner the sleep overshot the deadline and the test
+    /// reported lost output where a shell had merely been slow (#337). A timed
+    /// version has a second failure mode too, and shortening the sleep makes it
+    /// worse — stall the test thread past the sleep and `after` reaches the old
+    /// window. Neither mode survives a handshake, so there is no margin left to
+    /// tune.
+    // The script needs a POSIX shell's `read`.
+    #[cfg(unix)]
     #[test]
     fn retargeting_sends_later_output_to_the_new_window_and_the_process_carries_on() {
         let mgr = PtyManager::new();
         let (first_tx, first_rx) = mpsc::channel();
         spawn_sh(
             &mgr, "s1",
-            "printf before; sleep 5; printf after",
+            "printf before; read _; printf after",
             false,
             move |b| { let _ = first_tx.send(b); },
             |_| {},
@@ -763,11 +920,142 @@ mod tests {
         let (second_tx, second_rx) = mpsc::channel();
         mgr.retarget("s1", move |b| { let _ = second_tx.send(b); }).unwrap();
 
+        // Release the `read`. Anything the script writes from here on is output
+        // the new window is owed. The newline may sit in the tty input queue if
+        // the shell has not reached `read` yet; it is consumed when it does.
+        mgr.write("s1", b"\n").unwrap();
+
         assert!(
             wait_for(&second_rx, "after").contains("after"),
             "output after the swap belongs to the window that claimed the session",
         );
         mgr.kill("s1");
+    }
+
+    /// The whole point of reading the leader rather than remembering the launch
+    /// argument: a shell that has `cd`-ed is somewhere else, and the manager can
+    /// say where (#508).
+    ///
+    /// The `cd` is provably done before the read, not probably: the script
+    /// announces itself only after it has moved and then blocks on `read`, so a
+    /// slow machine makes this test slower and never wrong. `canonicalize` on the
+    /// expectation because macOS resolves `/tmp` to `/private/tmp`, and the
+    /// kernel answers with the resolved path either way.
+    // Needs a POSIX shell's `read`, and a `/proc` or `libproc` to ask.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_sessions_directory_is_read_from_the_leader_and_follows_a_cd() {
+        let mgr = PtyManager::new();
+        let here = std::env::current_dir().unwrap();
+        let (tx, rx) = mpsc::channel();
+        spawn_sh(
+            &mgr, "s-cwd",
+            "printf started; read _; cd /tmp && printf moved; read _",
+            false,
+            move |b| { let _ = tx.send(b); },
+            |_| {},
+        ).unwrap();
+
+        assert!(wait_for(&rx, "started").contains("started"));
+        assert_eq!(
+            mgr.cwd("s-cwd").map(std::path::PathBuf::from),
+            Some(here.canonicalize().unwrap()),
+            "before the cd, the leader is where it was spawned",
+        );
+
+        mgr.write("s-cwd", b"\n").unwrap();
+        assert!(wait_for(&rx, "moved").contains("moved"));
+        assert_eq!(
+            mgr.cwd("s-cwd").map(std::path::PathBuf::from),
+            Some(std::path::Path::new("/tmp").canonicalize().unwrap()),
+            "after the cd, the leader is where it went",
+        );
+        mgr.kill("s-cwd");
+    }
+
+    /// An id the manager does not hold has no directory — which is what a caller
+    /// falls back to the launch path on, so it must be `None` and not a guess.
+    #[test]
+    fn a_session_that_is_not_there_has_no_directory() {
+        assert_eq!(PtyManager::new().cwd("nobody"), None);
+    }
+
+    /// The set the reachability roots are built from: a session that has moved is
+    /// listed at the folder it moved TO, not the one it was spawned in (#508).
+    ///
+    /// This is the half of `commands::session_dirs` that matters there. The other
+    /// half — the directory a Claude Code hook reports — always names the launch
+    /// directory, which every workspace root already contains; a session that
+    /// genuinely walks out of every workspace is one of these, so a root set
+    /// derived without them would refuse exactly the paths the displays had just
+    /// started following.
+    ///
+    /// Sequenced like the test above, and for the same reason: the script speaks
+    /// only after the `cd` has happened.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn every_live_sessions_directory_is_listed_and_follows_a_cd() {
+        let mgr = PtyManager::new();
+        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let (tx, rx) = mpsc::channel();
+        spawn_sh(
+            &mgr, "s-cwds",
+            "printf started; read _; cd /tmp && printf moved; read _",
+            false,
+            move |b| { let _ = tx.send(b); },
+            |_| {},
+        ).unwrap();
+
+        assert!(wait_for(&rx, "started").contains("started"));
+        let dirs: Vec<std::path::PathBuf> =
+            mgr.cwds().into_iter().map(std::path::PathBuf::from).collect();
+        assert!(dirs.contains(&here), "{dirs:?} should hold {here:?}");
+
+        mgr.write("s-cwds", b"\n").unwrap();
+        assert!(wait_for(&rx, "moved").contains("moved"));
+        let moved = std::path::Path::new("/tmp").canonicalize().unwrap();
+        let dirs: Vec<std::path::PathBuf> =
+            mgr.cwds().into_iter().map(std::path::PathBuf::from).collect();
+        assert!(dirs.contains(&moved), "{dirs:?} should hold {moved:?}");
+        mgr.kill("s-cwds");
+    }
+
+    /// A manager holding nothing contributes no roots. It has to be empty rather
+    /// than anything else: `Roots::add` is handed this, and one bogus entry there
+    /// would widen what a path from the webview is allowed to name.
+    #[test]
+    fn a_manager_with_no_sessions_lists_no_directories() {
+        assert_eq!(PtyManager::new().cwds(), Vec::<String>::new());
+    }
+
+    /// The parsing half of the macOS read, which no Linux runner can reach
+    /// through `leader_cwd` itself. `libproc` hands back a fixed 1024-byte
+    /// buffer, so everything after the NUL is whatever was there before.
+    #[test]
+    fn a_path_in_a_fixed_buffer_ends_at_the_nul() {
+        let mut buf = [0u8; 32];
+        buf[..8].copy_from_slice(b"/p/deck\0");
+        // Junk past the NUL, which a length-based read would have included.
+        buf[9] = b'!';
+        buf[31] = b'?';
+        assert_eq!(c_string(buf.into_iter()).as_deref(), Some("/p/deck"));
+    }
+
+    /// An all-zero buffer is the call having written nothing useful, and a
+    /// non-UTF-8 path is one this app cannot name. Both are `None`, so the caller
+    /// falls back to the launch directory rather than passing `""` to `git -C`.
+    #[test]
+    fn an_empty_or_undecodable_buffer_is_no_answer() {
+        assert_eq!(c_string([0u8; 8].into_iter()), None);
+        assert_eq!(c_string(std::iter::empty()), None);
+        assert_eq!(c_string([0xff, 0xfe, 0].into_iter()), None);
+    }
+
+    /// A buffer full to its last byte with no NUL at all: the whole buffer is the
+    /// path, rather than a read that runs off the end.
+    #[test]
+    fn a_buffer_with_no_nul_is_read_to_its_end() {
+        assert_eq!(c_string(b"/p/deck".iter().copied()).as_deref(), Some("/p/deck"));
     }
 
     /// A claim for an id nothing is running under has to fail, or the window
@@ -813,21 +1101,144 @@ mod tests {
         assert_eq!(exit.code, Some(0), "a clean exit is code 0: {exit:?}");
     }
 
+    /// A coalescing window no test run can outlive.
+    ///
+    /// What turns a batch count from a race into a fact: with this window the
+    /// only things that can end a batch are the sender dropping and `MAX_BATCH`
+    /// filling, neither of which is a question about the clock.
+    const NEVER: Duration = Duration::from_secs(3600);
+
+    /// How long a test waits for the *next* batch before calling the stream
+    /// dead. A guard against a hang, not a budget for the run: it is measured
+    /// per batch, so a slow machine that is still delivering never trips it,
+    /// and a machine ten times slower still passes.
+    const STALL: Duration = Duration::from_secs(30);
+
+    /// Run the coalescer over `reads` and return the batches it produced.
+    ///
+    /// Every read is queued and the sender dropped *before* the loop starts, so
+    /// no `recv` inside it can block: what comes back is a function of `window`
+    /// and `MAX_BATCH` and of nothing else — not of how fast a child writes, not
+    /// of when this thread is scheduled. It runs on the calling thread for the
+    /// same reason.
+    fn coalesced(reads: &[Vec<u8>], window: Duration) -> Vec<Vec<u8>> {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        for r in reads {
+            tx.send(r.clone()).unwrap();
+        }
+        drop(tx);
+
+        let batches: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&batches);
+        let sink: Sink =
+            Arc::new(Mutex::new(Arc::new(move |b: Vec<u8>| seen.lock().unwrap().push(b))));
+
+        coalesce(rx, window, Arc::new(AtomicBool::new(true)), sink);
+
+        // `coalesce` returns only once the stream is finished, so nothing is
+        // still in flight and this lock is uncontended.
+        let mut out = Vec::new();
+        out.append(&mut batches.lock().unwrap());
+        out
+    }
+
     /// The coalescer is a batching layer, and a batching layer that is not
     /// byte-transparent silently corrupts every multi-byte glyph it cuts. What is
     /// pinned here is that a batch is the concatenation of the reads it replaced —
-    /// same bytes, same order — including the tail written just before EOF, which
-    /// is the one a naive "flush on timeout" loop drops on the floor.
+    /// same bytes, same order — including the tail handed over just before EOF,
+    /// which is the one a naive "flush on timeout" loop drops on the floor.
     #[test]
-    fn coalescing_is_byte_transparent_including_the_tail_before_eof() {
+    fn a_batch_is_exactly_the_reads_it_replaced_tail_included() {
+        // Multi-byte throughout and cut *inside* glyphs, which is the split this
+        // layer exists to survive: xterm's UTF-8 decoder carries state across
+        // callbacks, so a batch that drops or reorders a continuation byte shows
+        // up as mojibake rather than as a length that no longer matches. 1024 is
+        // Darwin's real per-read cap and no multiple of this unit, so the cuts
+        // land mid-glyph the way the real ones do.
+        let payload: Vec<u8> = "─┤абв┃".repeat(4096).into_bytes();
+        let reads: Vec<Vec<u8>> = payload.chunks(1024).map(<[u8]>::to_vec).collect();
+        assert!(payload.len() < MAX_BATCH, "this test's one-batch claim needs an uncapped batch");
+
+        let batches = coalesced(&reads, NEVER);
+
+        assert_eq!(
+            String::from_utf8_lossy(&batches.concat()),
+            String::from_utf8_lossy(&payload),
+            "coalescing changed the byte stream",
+        );
+        // And it did batch: those reads became one callback. With a window nothing
+        // outlives, the only thing that could have ended this batch is the
+        // sender dropping — so this also pins the flush at EOF, and it holds on
+        // a machine of any speed, which the same claim made through a spawned
+        // process does not.
+        assert_eq!(
+            batches.len(),
+            1,
+            "{} reads should coalesce into one callback, got {} of lengths {:?}",
+            reads.len(),
+            batches.len(),
+            batches.iter().map(Vec::len).collect::<Vec<_>>(),
+        );
+    }
+
+    /// The other end of the same mechanism, and what stops the test above from
+    /// passing for the wrong reason: it is the *window* that does the batching,
+    /// so with no window there is no batching and every read is handed on alone.
+    #[test]
+    fn a_window_of_zero_hands_on_every_read_unbatched() {
+        let reads: Vec<Vec<u8>> = (0..64u8).map(|i| vec![i; 100]).collect();
+
+        assert_eq!(
+            coalesced(&reads, Duration::ZERO),
+            reads,
+            "with no window to wait in, a batch is one read",
+        );
+    }
+
+    /// `MAX_BATCH` is the guard against a process dumping megabytes growing an
+    /// unbounded `Vec`, and an unbounded window is exactly the case it has to
+    /// hold under: here the reads never stop arriving, so the cap is the only
+    /// thing that can end a batch.
+    #[test]
+    fn the_batch_cap_bounds_what_one_callback_carries() {
+        let read = vec![b'x'; 1024];
+        let reads = vec![read.clone(); 3 * (MAX_BATCH / 1024) + 8];
+
+        let batches = coalesced(&reads, NEVER);
+
+        assert_eq!(batches.concat(), reads.concat(), "the cap changed the byte stream");
+        assert!(batches.len() > 1, "a payload past the cap cannot arrive as one callback");
+        for b in &batches {
+            // A batch stops at the first read that reaches the cap, so one read
+            // is the most it can overshoot by.
+            assert!(
+                b.len() <= MAX_BATCH + read.len(),
+                "a batch of {} bytes is past the {MAX_BATCH}-byte cap",
+                b.len(),
+            );
+        }
+    }
+
+    /// What only a real pty can answer, now that the batching itself is pinned
+    /// above without one: that the reader thread, Darwin's 1024-byte read cap
+    /// and a real EOF between them deliver every byte the child wrote, tail
+    /// included.
+    ///
+    /// Nothing here asserts how *much* was batched, and that is the fix rather
+    /// than a gap. How much a real child's output coalesces is a fact about
+    /// arrival times: a machine busy enough to stall the writer between reads
+    /// makes every window close empty and batching legitimately collapses, so
+    /// the old bound held on an idle machine and failed beside the other ~350
+    /// tests. The question is asked above instead, where the answer is fixed.
+    #[test]
+    fn a_real_pty_delivers_every_byte_it_wrote() {
         let mgr = PtyManager::new();
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let (etx, erx) = mpsc::channel::<Exit>();
 
-        // Enough to cross many read boundaries — on Darwin the tty hands back at
-        // most 1024 bytes a read, so this is 256+ of them — and multi-byte
-        // throughout, so any cut mishandled by the batcher shows up as mojibake
-        // rather than as a length that still matches.
+        // Enough to cross many read boundaries — 60+ of them at Darwin's cap —
+        // and multi-byte throughout, so a cut mishandled anywhere on this path
+        // shows up as mojibake rather than as a length that still matches.
         let unit = "─┤абв┃";
         let reps = 4096;
         let expected: String = unit.repeat(reps);
@@ -850,39 +1261,44 @@ mod tests {
         )
         .unwrap();
 
-        // Collect until the child has exited AND the stream has gone quiet, so the
-        // final batch — the one flushed on Disconnected — is counted.
+        // Wait for the byte count, not for an interval: the loop ends when the
+        // payload is complete, however long this machine takes to produce it.
         let mut got: Vec<u8> = Vec::new();
-        let mut batches = 0usize;
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            match rx.recv_timeout(Duration::from_millis(400)) {
-                Ok(b) => { batches += 1; got.extend_from_slice(&b); }
-                Err(_) => if got.len() >= expected.len() { break },
+        while got.len() < expected.len() {
+            match rx.recv_timeout(STALL) {
+                Ok(b) => got.extend_from_slice(&b),
+                Err(e) => panic!(
+                    "output stopped for {STALL:?} at {} of {} bytes: {e:?}",
+                    got.len(),
+                    expected.len(),
+                ),
             }
         }
-        let _ = erx.recv_timeout(Duration::from_secs(5));
 
-        // A pty echoes and may translate \n; this payload contains neither, so the
-        // comparison is exact rather than "contains".
+        // A pty echoes and may translate \n; this payload contains neither, and
+        // nothing is written to this session, so the comparison is exact rather
+        // than "contains".
         assert_eq!(
             String::from_utf8_lossy(&got),
             expected,
-            "coalescing changed the byte stream (got {} bytes, wanted {})",
+            "the byte stream changed on its way through the pty (got {} bytes, wanted {})",
             got.len(),
-            expected.len()
+            expected.len(),
         );
 
-        // And it actually batched. Uncoalesced, Darwin's 1024-byte read cap alone
-        // would make this at least `expected.len() / 1024` callbacks — each one a
-        // main-thread `evaluateJavaScript`. The bound is loose on purpose: under
-        // load the windows only grow, so this can fail from too little batching
-        // but never from too much.
-        let uncoalesced_floor = expected.len() / 1024;
-        assert!(
-            batches < uncoalesced_floor / 2,
-            "expected far fewer than {uncoalesced_floor} callbacks, got {batches}"
-        );
+        let exit = erx.recv_timeout(STALL).expect("exit not reported");
+        assert_eq!(exit.code, Some(0), "the child should have run to completion: {exit:?}");
+
+        // Nothing may follow the payload. Drained without waiting, so this can
+        // only ever miss a stray batch, never invent one — a real pty has
+        // nothing left to say here, and if it does, the run that catches it is
+        // reporting a bug rather than a slow machine.
+        if let Ok(extra) = rx.try_recv() {
+            panic!(
+                "{} more bytes arrived after the whole payload had been delivered",
+                extra.len(),
+            );
+        }
     }
 
     #[test]

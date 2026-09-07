@@ -9,21 +9,36 @@
 // Not a screen either. A screen means a `ViewName`, the hidden-root rule and
 // the switch tests, and this is opened, read and closed.
 
+import { pickFolder } from "./dialog";
 import { openDialog } from "./dialog-shell";
 import {
+  listWorkspaces,
   onSyncState,
+  saveWorkspace,
   syncConnect,
   syncCreate,
   syncDisconnect,
+  syncKeepDistinct,
+  syncMergeWorkspaces,
   syncNow,
   syncPreflight,
   syncProbe,
+  syncQuestions,
   syncSummary,
   type GhAccount,
+  type SyncQuestion,
+  type Workspace,
   type SyncState,
   type SyncSummary,
 } from "./ipc";
-import { agoLabel, blockedCopy, faultCopy, repoCopy } from "./sync-copy";
+import {
+  blockedCopy,
+  faultCopy,
+  questionCopy,
+  questionCountLabel,
+  repoCopy,
+} from "./sync-copy";
+import { agoLabel } from "./format";
 
 /** The name offered when creating. Fixed rather than generated from anything
  *  local: it is the name the *second* machine will look for. */
@@ -57,9 +72,30 @@ export function mountSync(body: HTMLElement): { dispose: () => void } {
   const render = async () => {
     if (gone) return;
     body.replaceChildren();
-    const summary = await syncSummary();
-    if (summary.on) renderOn(body, summary, render);
-    else await renderOff(body, render);
+    try {
+      const summary = await syncSummary();
+      if (summary.on) renderOn(body, summary, render);
+      else await renderOff(body, render);
+    } catch (e) {
+      /* A read that fails left this section showing its blurb and nothing else,
+         for the life of the window, with the rejection going nowhere — `void
+         render()` below swallowed it (#463). The audit found the Settings page's
+         "Config repository" section blank and could not tell whether that was the
+         harness or the app; it was both, and this is the app's half.
+         `renderOff`'s own two failure paths already say the same kind of thing
+         about `gh` — "a failed listing is a fault, not an empty one" — and this is
+         that sentence one level up, about the state file rather than the accounts. */
+      body.append(el(
+        "p",
+        "sync-fault-text",
+        `Whether syncing is on could not be read: ${e instanceof Error ? e.message : String(e)}`,
+      ));
+      const again = el("button", "modal-ok", "Try again");
+      again.type = "button";
+      again.dataset.fk = "sync-retry";
+      again.onclick = () => { void render(); };
+      body.append(again);
+    }
   };
   void render();
   void onSyncState((s: SyncState) => {
@@ -69,6 +105,13 @@ export function mountSync(body: HTMLElement): { dispose: () => void } {
       if (gone || !sum.on) return;
       body.replaceChildren();
       renderOn(body, { ...sum, state: s }, render);
+    }).catch((e) => {
+      // Not a re-render into the fault text: a push arriving while the state
+      // cannot be read says nothing new about what is on screen, and replacing a
+      // working panel with an error because one poll failed is worse than
+      // leaving it. `render`'s own catch is what a person sees, on open and on
+      // retry.
+      console.debug("sync state push could not be read", e);
     });
   }).then((u) => {
     // A dispose that beat the listen call would otherwise leak it.
@@ -125,10 +168,28 @@ function renderOn(body: HTMLElement, summary: SyncSummary, refresh: () => void) 
   // broken for three weeks and a working one look identical from outside until
   // a disk dies and the remote turns out to be a month stale.
   const when = el("p", "sync-when");
+  /* `× 1000` at the call site, visibly, because `agoLabel` takes milliseconds
+     and this state is in seconds — which is the whole reason there is one
+     `agoLabel` now and not two (`format.ts`). `"days"` rather than a date past a
+     week: the age of the last push is the one number that says whether sync is
+     working, and "21 days ago" is the point where a date would make the reader
+     do the subtraction. */
+  const ms = (s: number | null) => (s === null ? null : s * 1000);
   when.textContent =
-    `Last sent ${agoLabel(summary.state.lastPush, now)}`
-    + ` · last received ${agoLabel(summary.state.lastPull, now)}`;
+    `Last sent ${agoLabel(ms(summary.state.lastPush), now * 1000, "days")}`
+    + ` · last received ${agoLabel(ms(summary.state.lastPull), now * 1000, "days")}`;
   body.append(when);
+
+  // The questions a pull raised, in the one place that already reports what
+  // sync is doing. They were collected and shown nowhere before: the amber dot
+  // in the settings rail counted them and named none of them, which tells a
+  // person something is waiting and not what (#348).
+  //
+  // Filled after the fact rather than awaited, because the panel is worth
+  // drawing whether or not this answers — the same reasoning as the rail's dot.
+  const asks = el("div", "sync-asks");
+  body.append(asks);
+  void fillQuestions(asks, refresh);
 
   if (summary.state.fault) {
     const copy = faultCopy(summary.state.fault);
@@ -155,6 +216,100 @@ function renderOn(body: HTMLElement, summary: SyncSummary, refresh: () => void) 
     "Stopping leaves the repository and everything in it alone; it only stops "
     + "this machine sending to it.";
   body.append(note);
+}
+
+/** Everything a pull could not decide, each with the action that decides it.
+ *
+ *  Silent when there is nothing outstanding: a heading over an empty list is a
+ *  worse report than no heading, because it looks like a feature that is broken
+ *  rather than one with nothing to say. */
+async function fillQuestions(host: HTMLElement, refresh: () => void): Promise<void> {
+  let asked: SyncQuestion[];
+  try {
+    asked = await syncQuestions();
+  } catch (e) {
+    // The panel's other facts are still worth having. A list that cannot be
+    // read says nothing rather than claiming there is nothing.
+    console.debug("sync questions unavailable", e);
+    return;
+  }
+  if (asked.length === 0) return;
+
+  host.append(el("p", "sync-asks-head", questionCountLabel(asked.length)));
+  for (const q of asked) {
+    const copy = questionCopy(q);
+    const row = el("div", "sync-ask");
+    row.append(el("p", "sync-ask-text", copy.text));
+
+    // A refusal is shown in the row that caused it and the question stays.
+    // Silently doing nothing would read as "answered", which is the one thing a
+    // failed merge must not look like.
+    const run = (primary: boolean) => {
+      void answer(q, primary)
+        .then(refresh)
+        .catch((e) => row.append(el("p", "sync-fault-text", String(e))));
+    };
+
+    const actions = el("div", "sync-row");
+    const primary = el("button", "modal-ok", copy.primary);
+    primary.onclick = () => run(true);
+    actions.append(primary);
+    if (copy.secondary) {
+      const secondary = el("button", "modal-cancel", copy.secondary);
+      secondary.onclick = () => run(false);
+      actions.append(secondary);
+    }
+    row.append(actions);
+    host.append(row);
+  }
+}
+
+/** Carry out one answer.
+ *
+ *  A cancelled folder picker is not an answer, and nothing is recorded for it —
+ *  the question stays, which is the honest outcome of closing a dialog. */
+async function answer(q: SyncQuestion, primary: boolean): Promise<void> {
+  switch (q.kind) {
+    case "duplicate":
+      // The arriving record folds into the local one: the local one is the one
+      // with a folder on this machine, and that is what the merge keeps.
+      await (primary
+        ? syncMergeWorkspaces(q.arrivingId, q.localId)
+        : syncKeepDistinct(q.arrivingId, q.localId));
+      return;
+    case "needs-path": {
+      const p = await pickFolder();
+      if (p) await locate(q.workspaceId, (w) => ({ ...w, path: p }));
+      return;
+    }
+    case "needs-board-path": {
+      const p = await pickFolder();
+      if (p) {
+        await locate(q.workspaceId, (w) => ({
+          ...w,
+          // One provider, replacing whatever arrived: the record travelled
+          // precisely because its board could not, so there is nothing here to
+          // preserve alongside the answer.
+          tracker: { providers: [{ type: "fs", root: { kind: "path", path: p } }] },
+        }));
+      }
+      return;
+    }
+  }
+}
+
+/** Read the workspace back, change it, and save it.
+ *
+ *  Read rather than carried in the question: the questions were listed before
+ *  the person went away to a folder picker, and saving a record from before that
+ *  would undo anything else that changed in between. */
+async function locate(
+  workspaceId: string,
+  change: (w: Workspace) => Workspace,
+): Promise<void> {
+  const found = (await listWorkspaces()).find((w) => w.id === workspaceId);
+  if (!found) return;
+  await saveWorkspace(change(found));
 }
 
 /** Sync is off. What it would do, and what stands in the way. */
