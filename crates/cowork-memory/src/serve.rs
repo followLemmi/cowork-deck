@@ -32,6 +32,7 @@
 //! minutes; keeping it fresh is the app's job (`memory::spawn_reindex`), and a
 //! request is answered from what is there.
 
+use crate::dates::Window;
 use crate::embed::Lazy;
 use crate::index::{self, Hit, SearchScope};
 use anyhow::Result;
@@ -55,6 +56,14 @@ pub struct Request {
     pub top: Option<usize>,
     #[serde(default)]
     pub min_score: Option<f32>,
+    /// The period to confine the search to, each end `YYYY-MM-DD` or `YYYY-MM`
+    /// and either omissible. #462: the app's prompt hook reads a time word out
+    /// of somebody's question and sends the period it names, because "what did
+    /// we do yesterday" selects on *when* and cosine distance cannot.
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub until: Option<String>,
 }
 
 /// One reply. `ok: false` carries `error` and never a partial result: a caller
@@ -164,6 +173,13 @@ fn search(served: &Served, embedder: &Lazy, req: &Request) -> Reply {
         "lessons" => SearchScope::Lessons,
         other => SearchScope::Project(other.to_string()),
     };
+    let window = match Window::parse(req.since.as_deref(), req.until.as_deref()) {
+        Ok(w) => w,
+        // A bound nobody could read is a failed request, never a search quietly
+        // widened to the whole corpus — which answers a question about last week
+        // with a note from May and looks like it worked.
+        Err(e) => return Reply::fail(req.id, e),
+    };
     match index::search(
         &ix,
         emb,
@@ -171,6 +187,7 @@ fn search(served: &Served, embedder: &Lazy, req: &Request) -> Reply {
         &scope,
         req.top.unwrap_or(10),
         req.min_score.unwrap_or(0.25),
+        &window,
     ) {
         Ok(hits) => Reply {
             id: req.id,
@@ -257,6 +274,54 @@ mod tests {
         let hits = out[0]["hits"].as_array().expect("hits");
         assert!(!hits.is_empty());
         assert!(hits[0]["file"].as_str().unwrap().ends_with("31-the-staging-script.md"));
+    }
+
+    /// #462: the route the app's prompt hook takes. A question naming a period
+    /// is confined to it, and a bound nobody could read fails rather than
+    /// widening the search back to the whole corpus.
+    #[test]
+    fn a_search_can_be_confined_to_a_period() {
+        let s = served("window");
+        let build = || Ok(fake());
+        let ask = |extra: Value| {
+            let mut req = serde_json::json!({
+                "id": 1, "op": "search", "query": "what did we do", "scope": "all",
+                "min_score": -1.0
+            });
+            let obj = req.as_object_mut().unwrap();
+            for (k, v) in extra.as_object().unwrap() {
+                obj.insert(k.clone(), v.clone());
+            }
+            req
+        };
+
+        let out = exchange(&s, &Lazy::new(&build), &[ask(serde_json::json!({}))]);
+        assert!(!out[0]["hits"].as_array().unwrap().is_empty(), "unwindowed: {:?}", out[0]);
+
+        let inside = exchange(
+            &s,
+            &Lazy::new(&build),
+            &[ask(serde_json::json!({ "since": "2026-08-31", "until": "2026-08-31" }))],
+        );
+        let hits = inside[0]["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "{:?}", inside[0]);
+        assert_eq!(hits[0]["date"], "2026-08-31");
+
+        let outside = exchange(
+            &s,
+            &Lazy::new(&build),
+            &[ask(serde_json::json!({ "since": "2026-01", "until": "2026-01" }))],
+        );
+        assert_eq!(outside[0]["ok"], true, "an empty period is an answer");
+        assert!(outside[0]["hits"].as_array().unwrap().is_empty());
+
+        let bad = exchange(
+            &s,
+            &Lazy::new(&build),
+            &[ask(serde_json::json!({ "since": "yesterday" }))],
+        );
+        assert_eq!(bad[0]["ok"], false, "{:?}", bad[0]);
+        assert!(bad[0]["error"].as_str().unwrap().contains("YYYY-MM-DD"));
     }
 
     /// The whole reason this mode exists: one process, one model, many searches.

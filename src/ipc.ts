@@ -677,6 +677,13 @@ export interface MemoryHit {
   scope: string;
   room: string | null;
   text: string;
+  /** When the note was written — `2026-08-31`, or `2026-08` for a diary.
+   *
+   *  Derived by the sidecar from `file`, which is the same derivation
+   *  `labelHit` performs here (#462). It is on the hit so that the block the
+   *  prompt hook injects can show a passage's age; the memory page keeps
+   *  reading the path, because it needs a title and a room off it anyway. */
+  date: string | null;
 }
 /** What one capture cost, off the CLI's own envelope. */
 export interface MemoryCost {

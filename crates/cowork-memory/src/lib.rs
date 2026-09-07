@@ -1,4 +1,5 @@
 pub mod corpus;
+pub mod dates;
 pub mod embed;
 pub mod index;
 pub mod mcp;

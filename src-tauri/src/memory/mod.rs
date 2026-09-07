@@ -32,6 +32,7 @@ pub mod resident;
 pub mod rooms;
 pub mod sidecar;
 pub mod transcript;
+pub mod when;
 
 use queue::Queue;
 use std::path::PathBuf;
@@ -391,7 +392,7 @@ pub fn memory_search(
         Some(id) => sidecar::Scope::Workspace(id),
         None => sidecar::Scope::Everything,
     };
-    search_scoped(&query, &scope, top.unwrap_or(10))
+    search_scoped(&query, &scope, top.unwrap_or(10), &sidecar::Window::any())
 }
 
 /// Search, through the process that already has the model if there is one.
@@ -404,12 +405,13 @@ pub fn search_scoped(
     query: &str,
     scope: &sidecar::Scope,
     top: usize,
+    window: &sidecar::Window,
 ) -> Result<Vec<sidecar::Hit>, String> {
     let indexer = indexer().ok_or_else(|| "memory is not wired up".to_string())?;
-    if let Some(hits) = resident::search(&indexer, query, scope, top) {
+    if let Some(hits) = resident::search(&indexer, query, scope, top, window) {
         return Ok(hits);
     }
-    indexer.search(query, scope, top)
+    indexer.search(query, scope, top, window)
 }
 
 /// Load the model before anything asks for it.
@@ -571,7 +573,17 @@ fn mcp_flags(
 /// out the alternative of injecting search results at `SessionStart`: "an agent
 /// that asks right before making a change phrases its query better than anything
 /// guessable at startup."
-pub const MEMORY_INSTRUCTION: &str = "This deck keeps a searchable memory of what earlier sessions in this project did and decided, plus lessons carried across every project, reachable through the `search_memory` tool. Consult it before changing code in an area you have not seen yet, and before settling a question that looks like one somebody here has already settled.";
+///
+/// # It names recall, in the words a person actually uses
+///
+/// #462: every cue here used to point at code and at decisions — "before
+/// changing code in an area you have not seen yet", "before settling a
+/// question". Not one of them was *recalling recent work*, which is the single
+/// most obvious thing anybody asks a memory, so an agent asked what happened
+/// yesterday had been told fairly precisely that this tool is for something
+/// else, and went to `git log` instead. The sentence below now leads with the
+/// case it was silent on, in the phrasing somebody would type.
+pub const MEMORY_INSTRUCTION: &str = "This deck keeps a searchable memory of what earlier sessions here did and decided, plus lessons carried across every project, through the `search_memory` tool. Search it when somebody asks what was done — what did we do yesterday, where did we leave off — with `since`/`until` for a period; and before changing code you have not seen, or settling a question somebody may already have settled.";
 
 /// Every note the corpus holds, newest first.
 ///
@@ -741,6 +753,13 @@ pub fn memory_save_note(file: String, markdown: String) -> Result<(), String> {
 /// the hook, because the corpus's state is known here and nowhere else — see
 /// [`prompt`] for why the gate is a requirement rather than a refinement.
 ///
+/// **And everything about *what period* to search.** #462: "what did we do
+/// yesterday" is a question whose selector is *when*, and cosine distance
+/// against that sentence returns whatever notes talk about doing things, from
+/// any month. [`when::window_of`] reads the period out of the person's own
+/// words — which is the one place it can be read, because by the time the query
+/// reaches the sidecar it is a vector.
+///
 /// Blocking: a search spawns the sidecar. The caller runs it off the runtime.
 pub fn prompt_context(workspace: Option<&str>, payload: &str) -> Option<String> {
     let query = prompt::prompt_of(payload)?;
@@ -763,10 +782,12 @@ pub fn prompt_context(workspace: Option<&str>, payload: &str) -> Option<String> 
         Some(id) if !id.trim().is_empty() => sidecar::Scope::Workspace(id.to_string()),
         _ => sidecar::Scope::Everything,
     };
+    let today = corpus::today();
+    let window = when::window_of(&query, today).unwrap_or_default();
     // Through the resident process too: a prompt worth searching should not pay
     // a model load, which is the cost #388 assumed was already avoided.
-    let hits = search_scoped(&query, &scope, prompt::TOP).ok()?;
-    Some(prompt::context_block(&scope, &hits))
+    let hits = search_scoped(&query, &scope, prompt::TOP, &window).ok()?;
+    Some(prompt::context_block(&scope, &hits, &window, today))
 }
 
 /// What every hand-written line owes afterwards: say the corpus moved, and bring
@@ -1085,6 +1106,10 @@ mod tests {
         let text = &f[at + 1];
         assert!(text.contains("search_memory"), "it names the tool: {text}");
         assert!(text.contains("before changing code"), "and says when: {text}");
+        // #462: and the case it used to be silent on, which is the one a person
+        // asks a memory most often.
+        assert!(text.contains("what did we do yesterday"), "and says recall: {text}");
+        assert!(text.contains("`since`/`until`"), "and how to ask for a period: {text}");
     }
 
     /// It competes for attention with the person's own `CLAUDE.md` and their
