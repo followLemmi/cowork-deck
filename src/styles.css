@@ -972,8 +972,14 @@ body {
    time would be the full-width screens back under another name. */
 /* Not animated, and that is deliberate: behind this edge is a grid of terminals,
    each with its own `ResizeObserver`, and animating the width makes every one of
-   them recompute for the length of the transition. `#sidebar` does not animate its
-   width either — one rule rather than two. */
+   them recompute for the length of the transition.
+   `#sidebar` is the other half of this argument and it went the other way — it
+   DOES animate its width (see the rule itself), and pays for it by holding those
+   observers off with `holdRefits` while the transition runs. Either answer is
+   sound; what was not was the claim that used to stand here, that neither panel
+   animated, while one of them had been doing so all along. The two differ because
+   the sidebar's collapse is a gesture a person makes many times an hour and the
+   diff's width is a consequence of opening a patch. */
 #wspanel.is-wide { width: var(--wsp-wide-w, min(64rem, 62vw)); }
 
 #wsp-head {
