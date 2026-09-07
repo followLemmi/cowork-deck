@@ -13,6 +13,7 @@ import {
 import { sessionRefusal, SESSION_GONE, SESSION_NOT_OWNER } from "./session-refusal";
 import { matchHotkey, isMacPlatform } from "./commands";
 import { terminalKeyBytes } from "./terminal-keys";
+import { refitsHeld } from "./motion";
 import { isInterruptKey, showsInterruptHint } from "./interrupt";
 import { currentScale, terminalFontPx, UI_SCALE_EVENT } from "./ui-scale";
 
@@ -298,6 +299,21 @@ export class TerminalPanel {
       (document as any).fonts.ready.then(() => this.fit());
     }
     this.ro = new ResizeObserver(() => {
+      /* A window layout that is ANIMATING its way to a new size delivers this
+         observer one box per frame, and a `fit` is not a cheap answer to one: it
+         re-measures the cell, recomputes `cols`, and on a change reflows the whole
+         buffer — scrollback included. That is the same cost `drag.ts` exists to
+         keep out of a gesture, and the sidebar's collapse had it back, because the
+         drag was fixed and the CLICK still animates a width.
+
+         So the animation says so, and the observer stands down for its length.
+         What the terminal loses is the one thing it can afford to: for `--dur-3`
+         it renders at the size it had, which on a tile growing means a strip of
+         its own background not yet written into, and on one shrinking means a few
+         columns clipped by `.tile`'s `overflow: hidden`. One reflow lands at the
+         end, from `Deck.refit`, instead of twenty on the way. The flag itself is
+         in `motion.ts`, with the argument for why it is not here. */
+      if (refitsHeld()) return;
       if (this.rafId !== null) return;
       this.rafId = requestAnimationFrame(() => { this.rafId = null; this.fit(); });
     });
