@@ -4594,32 +4594,74 @@ h6.md-head { font-size: var(--fs-sm); }
    A ROW OF DIALS since #498, and it was one folded line naming the worst-off AI
    (#392, ADR-0011), which was a slab of rows before that. What the line could not
    fix by shrinking further is that it named ONE AI and which one it named moved:
-   a reading you find by reading is not a glance. Three marks in a fixed order are
-   found by POSITION, and the answer to "how is Claude doing" is in the same place
-   every time.
+   a reading you find by reading is not a glance. Marks in a fixed order are found
+   by POSITION, and the answer to "how is Claude doing" is in the same place every
+   time.
 
-   Still in the top bar (#461) and for the reasons that record gives: the bar does
-   not grow, does not scroll, and is there when the panel is not. No border and no
-   ground of its own — it is IN the chrome rather than bounded by it. */
+   TWO GROUNDS, and they are why several rules below carry a variable rather than
+   a colour: the dials are on `--bg-island` inside the deck's popover and inside
+   the status-area panel, and the one word that opens the popover is on the top
+   bar's `--bg-chrome`. */
 #limits {
   /* `align-self: stretch` so the box is the bar's full 44px and `top: 100%` on
-     the card below is exactly the bar's bottom edge. Sized to its content it was
-     29px, and the card then hung four pixels INTO the bar. */
+     the popover is exactly the bar's bottom edge. Sized to its content it was
+     29px, and the popover then hung four pixels INTO the bar. */
   flex: none; align-self: stretch; position: relative;
   display: flex; align-items: center; min-width: 0;
 }
 #limits[hidden] { display: none; }
 
-.dial-row { display: flex; align-items: center; gap: var(--sp-1); }
-
-/* 26px in a 44px bar: the largest circle that leaves the bar's own breathing
-   room, and the smallest that can carry a 14px mark inside a 2.5px ring without
-   the two touching. */
-.dial {
-  position: relative; flex: none; display: grid; place-items: center;
-  width: 26px; height: 26px; padding: 0;
-  border: 0; border-radius: 50%;
+/* --- the one word in the bar, and what it opens ------------------------- */
+/* The dials are not in the top bar. The bar is a row of the deck's OWN state —
+   what is blocked, what is waiting — and three logos parked in it read as three
+   more controls rather than as a reading (#498). One word, and everything behind
+   it. What does NOT go behind the press is the alarm: the dot is the reason
+   hiding the rest is acceptable at all. */
+.dial-trigger {
+  flex: none; display: flex; align-items: center; gap: 4px;
+  padding: 4px var(--sp-2); border: 0; border-radius: var(--r-ctl);
   background: transparent; color: var(--fg-mid); cursor: pointer;
+  font: inherit; font-size: var(--fs-xs);
+}
+.dial-trigger:hover { background: var(--bg-hover); color: var(--fg); }
+.dial-trigger:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.dial-trigger-word { white-space: nowrap; }
+/* Amber, then red, on the word itself: the alarm is the half of the reading that
+   must not need a gesture. */
+.dial-trigger[data-alarm="near"] { color: var(--st-waiting); }
+.dial-trigger[data-alarm="exhausted"] { color: var(--st-error); }
+.dial-caret { display: inline-flex; align-items: center; flex: none; color: var(--fg-dim); }
+/* DOWN while shut and up while open: a disclosure's caret points at where its
+   content is, and the popover is below. */
+.dial-caret .icon { transition: transform var(--dur-2) var(--ease-out); transform: rotate(90deg); }
+.dial-trigger[aria-expanded="true"] .dial-caret .icon { transform: rotate(-90deg); }
+.dial-trigger:hover .dial-caret { color: var(--fg-mid); }
+
+/* Out of the flow, so opening it costs the bar no height and the deck below does
+   not move — which is the fault ADR-0011's amendment is about, one surface up. An
+   island, because unlike the panel's foot this floats over the work: it needs its
+   own ground, its own edge and a shadow to sit above the deck. `right: 0`, so it
+   grows leftward from the word rather than out past the window's edge. */
+.dial-pop {
+  position: absolute; top: 100%; right: 0; z-index: 20;
+  min-width: 20rem; max-width: min(26rem, 90vw);
+  padding: var(--sp-3); border-radius: var(--r-island);
+  background: var(--bg-island); border: 1px solid var(--line-strong);
+  box-shadow: var(--sh-float);
+  display: flex; flex-direction: column; gap: var(--sp-3);
+}
+.dial-pop[hidden] { display: none; }
+
+/* --- a dial ------------------------------------------------------------- */
+.dial-row { display: flex; align-items: flex-start; gap: var(--sp-3); }
+
+/* A column: the ring with its mark, and the figure under it. The figure is not
+   decoration — a ring at 4% is a hairline and a ring at 0% is nothing at all,
+   which is indistinguishable at a glance from a ring that is not working. */
+.dial {
+  flex: none; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: var(--sp-1); border: 0; border-radius: var(--r-ctl);
+  background: transparent; color: var(--fg-mid); cursor: pointer; font: inherit;
 }
 .dial:hover { background: var(--bg-hover); color: var(--fg); }
 .dial:focus-visible { outline: none; box-shadow: var(--focus-ring); }
@@ -4629,6 +4671,10 @@ h6.md-head { font-size: var(--fs-sm); }
 .dial[aria-disabled="true"] { cursor: default; color: var(--fg-dim); }
 .dial[aria-disabled="true"]:hover { background: transparent; color: var(--fg-dim); }
 
+/* 40px, which is the size at which a real logo is a logo. The row is behind a
+   press in the deck and in a window of its own in the panel, so neither surface
+   is paying bar height for it. */
+.dial-face { position: relative; display: grid; place-items: center; width: 40px; height: 40px; }
 .dial-ring { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; }
 .dial-track { stroke: var(--bg-inset); stroke-width: 2.5; }
 /* A dashed track is what "there is no reading here" looks like, and it is not
@@ -4646,41 +4692,47 @@ h6.md-head { font-size: var(--fs-sm); }
 .dial:hover .dial-ring.lim-out .dial-arc { stroke: var(--st-error); }
 
 .dial-mark { display: grid; place-items: center; }
-.dial-mark .icon { width: 14px; height: 14px; }
+/* The AI's own logo, filled, on its own 24-unit grid — the opposite of `.icon`,
+   which is stroked on 16 and would render every one of these as nothing. */
+.brand { display: block; flex: none; fill: currentColor; stroke: none; }
+.dial-mark .brand, .dial-mark .icon { width: 20px; height: 20px; }
 
-/* What the ring is NOT saying: the five-hour window in trouble while the week
-   is comfortable. Ringed in the ground it sits on so it reads as a badge on the
-   dial rather than as a fleck in the bar — which is why the ground is a variable:
-   this row is drawn on the chrome here and on the island in the status panel. */
+/* The reading in figures, under the ring. Tabular, so three dials side by side
+   line up and a change of value does not shift the row. */
+.dial-caption {
+  font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
+  color: var(--fg-dim); white-space: nowrap;
+}
+.dial[data-state="near"] .dial-caption { color: var(--st-waiting); }
+.dial[data-state="exhausted"] .dial-caption { color: var(--st-error); }
+
+/* What the ring is NOT saying: the five-hour window in trouble while the week is
+   comfortable. Ringed in the ground it sits on so it reads as a badge on the
+   dial rather than as a fleck in the box — which is why the ground is a
+   variable: the same badge rides the word in the top bar, on the chrome. */
 .dial-dot {
-  /* Clear of the ring rather than over it: at `top: 0` the badge ate the arc it
-     is a footnote to, which is the one thing it must not obscure. */
-  position: absolute; top: -1px; right: -1px; width: 6px; height: 6px;
+  position: absolute; top: -1px; right: -1px; width: 8px; height: 8px;
   border-radius: 50%; background: var(--st-waiting);
-  box-shadow: 0 0 0 2px var(--dial-ground, var(--bg-chrome));
+  box-shadow: 0 0 0 2px var(--dial-ground, var(--bg-island));
 }
 .dial[data-alert="exhausted"] .dial-dot { background: var(--st-error); }
+/* On the trigger it is not absolute — there is no ring to sit on the corner of,
+   and a badge floating beside a word reads as a bullet. */
+.dial-trigger .dial-dot { position: static; width: 6px; height: 6px; box-shadow: none; }
+.dial-trigger[data-alarm="exhausted"] .dial-dot { background: var(--st-error); }
 
-/* The detail, floating under the row. Out of the flow, so it costs the bar no
-   height and the deck below does not move when it opens. An island, because
-   unlike the panel's foot this one floats over the work: it needs its own ground,
-   its own edge and a shadow to sit above the deck. `right: 0`, so it grows
-   leftward from the row rather than out past the window's edge. */
+/* --- the detail behind a dial ------------------------------------------- */
+/* In the deck it is the second thing inside the popover, in the flow, because
+   the popover is already floating and is the right size for both. */
 .dial-card {
-  position: absolute; top: 100%; right: 0; z-index: 20;
-  min-width: 20rem; max-width: min(26rem, 90vw);
-  max-height: min(60vh, 26rem); overflow-y: auto;
-  padding: var(--sp-3); border-radius: var(--r-island);
-  background: var(--bg-island); border: 1px solid var(--line-strong);
-  box-shadow: var(--sh-float);
-  display: flex; flex-direction: column; gap: var(--sp-2);
+  min-width: 0; display: flex; flex-direction: column; gap: var(--sp-2);
 }
 .dial-card[hidden] { display: none; }
 .dial-card p { margin: 0; }
 .dial-card-head { display: flex; align-items: baseline; gap: var(--sp-2); }
 .dial-card-name { flex: 1; min-width: 0; font-weight: var(--fw-medium); }
-/* The same caps as a tier chip, because it is the same kind of thing: a word
-   about the reading rather than part of it. */
+/* The same caps as a qualifier chip, because it is the same kind of thing: a
+   word about the reading rather than part of it. */
 .dial-soon {
   flex: none; font-size: var(--fs-xs); text-transform: uppercase;
   letter-spacing: var(--ls-caps); color: var(--fg-dim);
@@ -4697,16 +4749,22 @@ h6.md-head { font-size: var(--fs-sm); }
 }
 .dial-win .lim-meter { background: var(--bg-hover-2); }
 .dial-foot { font-size: var(--fs-xs); }
-/* The card in the status-area panel, which has nowhere to float: `#tray` clips
-   what leaves it, so a popover there would be a card with its bottom sheared
-   off. In the flow instead, and with no ground or edge of its own — the window
-   around it is already an island, and an island inside an island reads as a
-   dialog that failed to open. */
-.dial-card--inline {
-  position: static; z-index: auto;
-  min-width: 0; max-width: none; max-height: none; overflow: visible;
-  margin-top: var(--sp-2); padding: 0;
-  background: none; border: 0; box-shadow: none;
+
+/* The card in the status-area panel. That window shows its dials — it is nothing
+   but a glance, and hiding its content behind a hover would put it two gestures
+   deep — but it must not GROW: a card in the flow pushed the sessions below it
+   down every time a pointer crossed a logo. So it floats over them, hung on the
+   panel's own box rather than inside its scrolling list, and `top` is set from
+   script because the two are not siblings. */
+.dial-card--float {
+  position: absolute; left: var(--sp-2); right: var(--sp-2); z-index: 20;
+  padding: var(--sp-3); border-radius: var(--r-island);
+  background: var(--bg-island); border: 1px solid var(--line-strong);
+  box-shadow: var(--sh-float);
+  /* `top` and `max-height` are set from script — see `place`. Scrolling rather
+     than clipped, because the box it hangs in clips and the last line of a spent
+     window is the one that says when work becomes possible again. */
+  overflow-y: auto;
 }
 
 /* --- and what the card shares with the dialog behind it ------------------
@@ -4718,19 +4776,20 @@ h6.md-head { font-size: var(--fs-sm); }
 /* What qualifies a number, at the same size as the number. A tooltip would be a
    footnote, and a footnote is what ADR-0009 exists to refuse: the source of a
    number is part of the number.
-   The caps are what make it a label rather than the tail of a sentence, and both
-   surfaces that print this chip — the card and the dialog — have the room to
-   name the tier outright. `tierNote`'s shortened caveat is for the surface that
-   does not: the Linux menu, which is a string per AI and no chip at all. */
+   The card prints the CAVEAT and not the tier's name — `tierNote`, which says
+   nothing at all for the account's own accounting. An unqualified number is the
+   account's, which is what a person assumes anyway; the failure that record
+   exists to prevent is the other direction, and only the weaker tiers can commit
+   it. The tier NAMES are in the dialog, beside the sentences that define them. */
 .lim-src {
   flex: none; font-size: var(--fs-xs); text-transform: uppercase;
   letter-spacing: var(--ls-caps); color: var(--fg-dim);
 }
 /* Nothing per-tier. The rule here used to colour `--reported` a step brighter,
    under a comment claiming it coloured the WEAKEST tier — the comment and the
-   selector had disagreed since the palette port. Every tier is equal furniture
-   now. The class is still written onto the element: it is a hook worth having,
-   and `[class]` is how the dialog's tests find a tier. */
+   selector had disagreed since the palette port. Every tier that reaches a card
+   is equal furniture. The class is still written onto the element: it is a hook
+   worth having, and `[class]` is how the dialog's tests find a tier. */
 .lim-reading {
   flex: 1; min-width: 0; font-size: var(--fs-xs); color: var(--fg-mid);
   text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

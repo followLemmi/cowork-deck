@@ -40,6 +40,14 @@ html, body {
 #tray {
   display: flex;
   flex-direction: column;
+  /* The containing block for the limits card, which floats over the sections
+     rather than pushing them down (`cardMount` in `tray-panel.ts`). It has to
+     be this box and not the scrolling list inside it: an absolutely positioned
+     card in a scroll container is clipped by it and adds to its scroll height,
+     so the content moves anyway. Here the card is clipped to the same rounded
+     edge as everything else the panel draws, which is what `overflow: hidden`
+     below already does for every other child. */
+  position: relative;
   margin: var(--tray-margin);
   max-height: calc(100vh - var(--tray-margin) * 2);
   background: var(--bg-island);
@@ -68,8 +76,8 @@ html, body {
 .tray-sec + .tray-sec { margin-top: var(--sp-3); }
 
 /* The heading is the section's, and it is why `LimitDials` is drawn here with
-   `detail: "inline"`: the card it would otherwise float has nowhere to float in
-   a window that clips what leaves it. */
+   its dials on show rather than behind a word: this window IS the glance, and a
+   glance behind a hover is two gestures deep. */
 .tray-sec > h2 {
   margin: 0 0 var(--sp-1) var(--sp-1);
   font-size: var(--fs-xs);
@@ -78,11 +86,6 @@ html, body {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-
-/* The ground the alert dot is ringed in. In the deck this row sits on the top
-   bar's chrome and the dot's ring defaults to that; here it sits on the island
-   the panel is drawn as, and a ring in the wrong colour reads as a halo. */
-.tray-sec .dial { --dial-ground: var(--bg-island); }
 
 /* A line that says something and does nothing. */
 .tray-note {

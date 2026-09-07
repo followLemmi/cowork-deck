@@ -199,13 +199,21 @@ const PANEL: PanelSection[] = [
      *  This is the whole reason the panel is a window: the block already draws
      *  the ring, the tier, the state colour and the accessible name, and #393
      *  asked for that rendering to be reused rather than reimplemented. Two
-     *  hooks are all that differs — the panel has no room for a dialog, and it
-     *  has nowhere for a popover to float, so the detail sits below the row
-     *  instead of over it.
+     *  hooks are all that differs — the panel has no room for a dialog, and its
+     *  dials are on show rather than behind a word, so the detail floats over
+     *  what is under them instead of opening in a box of its own.
      */
     fill: (body, f, act) => {
       const block = new LimitDials(body, {
-        detail: "inline",
+        detail: "float",
+        // The panel's own box, and not this section's body: an absolutely
+        // positioned card inside `#tray-sections` is clipped by that scrolling
+        // list and adds to its scroll height, which is the content-shifting this
+        // mode exists to stop, one level down. `#tray` is the box the window
+        // draws, it is `position: relative` for exactly this, and its
+        // `overflow: hidden` clips the card to the same rounded edge everything
+        // else in the panel is clipped to.
+        cardMount: () => document.querySelector<HTMLElement>("#tray"),
         openDetail: (snap) => act(ACTIONS.usage(snap.provider)),
         // Not reachable — `openDetail` takes every path that would have used
         // it — and both are required by the interface the deck's own host

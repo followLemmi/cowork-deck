@@ -315,12 +315,25 @@ describe("the action vocabulary", () => {
    The half a menu could not draw, and the reason the surface is a window. */
 
 describe("the panel, drawn", () => {
+  /** `#tray` because the limits card is hung on the panel's own box rather than
+   *  inside the scrolling list — see `cardMount` in `tray-panel.ts` — and the
+   *  block finds that box by id, in the document. A detached root would send the
+   *  card to its fallback and test a path the panel never takes. */
   const draw = (f: TrayFacts) => {
+    document.body.replaceChildren();
     const root = document.createElement("div");
+    root.id = "tray";
+    document.body.append(root);
     const acts: string[] = [];
     fillPanel(root, f, (a) => acts.push(a));
     return { root, acts };
   };
+
+  /** The card says nothing until a pointer asks: it floats over what is under
+   *  it, so leaving it open would cover the sessions. */
+  const point = (root: ParentNode, provider = "claude") =>
+    root.querySelector<HTMLElement>(`.dial[data-provider="${provider}"]`)!
+      .dispatchEvent(new MouseEvent("mouseenter"));
 
   it("draws one section per entry in PANEL, each with its heading", () => {
     const { root } = draw(facts());
@@ -336,8 +349,23 @@ describe("the panel, drawn", () => {
     const f = facts({ usage: [snap({
       windows: [win({ usedFraction: 0.23, state: "ok", source: "reported" })],
     })] });
-    const fill = draw(f).root.querySelector<HTMLElement>(".lim-meter .lim-fill")!;
+    const { root } = draw(f);
+    point(root);
+    const fill = root.querySelector<HTMLElement>(".lim-meter .lim-fill")!;
     expect(fill.style.width).toBe("23%");
+  });
+
+  /** The ring is the reading that needs no gesture, and the figure under it is
+   *  what makes the ring checkable: a fresh week is 0%, which draws an arc of
+   *  zero length and is otherwise indistinguishable from a broken dial. */
+  it("draws the reading on the dial itself, figure and all", () => {
+    const f = facts({ usage: [snap({
+      windows: [win({ id: "week", usedFraction: 0.23, state: "ok", source: "reported" })],
+    })] });
+    const { root } = draw(f);
+    const claude = root.querySelector<HTMLElement>('.dial[data-provider="claude"]')!;
+    expect(claude.querySelector(".dial-caption")!.textContent).toBe("23%");
+    expect(claude.querySelector(".dial-arc")).not.toBeNull();
   });
 
   /** ADR-0009 survives the change of surface: the qualifier is beside the
@@ -349,18 +377,22 @@ describe("the panel, drawn", () => {
    *  shortened the qualifier and dropped "Reported" because a 340px ROW had no
    *  room for a word that changed nothing; a card has the room, and it is where
    *  the vocabulary is taught (`sourceExplanation` in the dialog behind it). */
-  it("names the tier beside every reading, the strongest one included", () => {
+  it("qualifies a number that could mislead and leaves the account's plain", () => {
     const f = facts({ usage: [snap({
       windows: [win({ usedFraction: 0.5, state: "ok", source: "observed" })],
     })] });
-    const box = draw(f).root.querySelector(".dial-win")!;
-    expect(box.querySelector(".lim-src")!.textContent).toBe("Observed");
+    const { root } = draw(f);
+    point(root);
+    const box = root.querySelector(".dial-win")!;
+    expect(box.querySelector(".lim-src")!.textContent).toBe("this app only");
     expect(box.querySelector(".lim-reading")!.textContent).toBe("50% used");
 
     const g = facts({ usage: [snap({
       windows: [win({ usedFraction: 0.5, state: "ok", source: "reported" })],
     })] });
-    expect(draw(g).root.querySelector(".dial-win .lim-src")!.textContent).toBe("Reported");
+    const second = draw(g);
+    point(second.root);
+    expect(second.root.querySelector(".dial-win .lim-src")).toBeNull();
   });
 
   /** No share, no meter — the same rule, drawn by the same code. */
@@ -368,7 +400,10 @@ describe("the panel, drawn", () => {
     const f = facts({ usage: [snap({
       windows: [win({ amount: { used: 412_000, limit: null, unit: "tokens" }, source: "observed" })],
     })] });
-    expect(draw(f).root.querySelector(".lim-meter")).toBeNull();
+    const { root } = draw(f);
+    point(root);
+    expect(root.querySelector(".lim-meter")).toBeNull();
+    expect(root.querySelector(".dial-arc")).toBeNull();
   });
 
   /** The lineup is drawn whether or not the machine has anything on it: two of
@@ -376,11 +411,13 @@ describe("the panel, drawn", () => {
    *  to draw, and the brand that IS meant to answer says plainly that it did not
    *  rather than vanishing. */
   it("says which AI is missing rather than drawing nothing", () => {
-    const body = draw(facts()).root.querySelector('[data-section="limits"] .tray-body')!;
+    const { root } = draw(facts());
+    const body = root.querySelector<HTMLElement>('[data-section="limits"] .tray-body')!;
     expect([...body.querySelectorAll(".dial")].map((d) => (d as HTMLElement).dataset.provider))
       .toEqual(["claude", "codex", "gemini"]);
-    expect(body.textContent).toContain("Not found on this machine.");
-    expect((body as HTMLElement).hidden).toBe(false);
+    expect(body.hidden).toBe(false);
+    point(root);
+    expect(root.querySelector(".dial-card")!.textContent).toContain("Not found on this machine.");
   });
 
   it("sends a limit dial's press to the deck as the provider it is about", () => {
@@ -447,9 +484,10 @@ describe("the panel, drawn", () => {
       usage: [snap({ windows: [win({ usedFraction: 0.4, state: "ok" })] })],
       dial: "gemini",
     });
-    const card = draw(f).root.querySelector<HTMLElement>(".dial-card");
-    expect(card!.dataset.provider).toBe("gemini");
-    expect(card!.textContent).toContain("Coming soon");
+    const card = draw(f).root.querySelector<HTMLElement>(".dial-card")!;
+    expect(card.dataset.provider).toBe("gemini");
+    expect(card.hidden).toBe(false);
+    expect(card.textContent).toContain("Coming soon");
   });
 
   it("sends a session row's click to the deck", () => {

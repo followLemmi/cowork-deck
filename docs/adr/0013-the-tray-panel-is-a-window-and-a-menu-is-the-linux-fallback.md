@@ -103,19 +103,32 @@ and each defaults to what the deck already does. A second implementation of a
 reading is how the two would come to disagree about a number, which is what
 `usage.ts` exists to prevent.
 
-`detail: "inline"` is the one that is about this surface rather than about what
-it lacks. In the deck the detail floats under the row in a popover, which needs
-somewhere to float; `#tray` clips what leaves it, so the same card here would
-have its bottom sheared off. It is drawn in the flow instead, always open, on the
-most urgent dial — a window opened deliberately can afford to have the answer
-already on it, and a surface that is nothing but the glance should not put the
-glance one hover deep.
+`detail: "float"` is the one that is about this surface rather than about what it
+lacks, and it is two inversions of what the deck does, both for the same reason.
+
+In the deck the dials are behind one word, because the top bar is a row of the
+deck's own state and three logos parked in it read as three more controls. This
+window has no such competition — it is nothing but the glance, opened
+deliberately — so it shows its dials, and putting them behind a hover would make
+it two gestures deep.
+
+And in the deck the card is inside the box the word opens, in the flow, because
+that box is already floating. Here it FLOATS, over whatever is under it. In the
+flow it pushed the sessions down every time a pointer crossed a logo, which is
+the same displacement fault #461 moved the whole surface out of the deck's panel
+to escape, one level smaller. `cardMount` is where it hangs, and the answer is
+`#tray` rather than the section body: an absolutely positioned card inside
+`#tray-sections` is clipped by that scroll container AND adds to its scroll
+height, so the content moves anyway. `#tray` clips it to the panel's own rounded
+edge instead, which is right — and because that clips, the card is measured
+against the room under the row and scrolls inside it rather than losing its last
+line.
 
 > **Amended by #498**, which replaced the folded line with a row of dials (see
 > the second amendment to ADR-0011). The paragraphs above are as amended. Two
 > things went with the old shape: `strip: false`, which turned off a fold that no
-> longer exists, and `openProbe` with the `probe` action verb behind it — a 26px
-> dial has no room for a control beside it, so the offer lives in the dialog
+> longer exists, and `openProbe` with the `probe` action verb behind it — a dial
+> has no room for a control beside it, so the offer lives in the dialog
 > `openDetail` opens. What did not change is the claim this decision rests on:
 > `src-tauri/src/tray.rs` still contains no provider name, no window name, no
 > reading and no reset time.

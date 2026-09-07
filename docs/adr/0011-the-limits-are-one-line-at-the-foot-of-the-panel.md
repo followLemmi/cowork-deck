@@ -8,11 +8,14 @@ deciders:
 # ADR-0011 — The limits are one line at the foot of the panel, opened on demand
 
 > **Amended twice at the foot of this record.** #461 moved the glance out of the
-> panel's foot and into the TOP BAR. #498 then changed its shape: it is a row of
-> DIALS — one mark per AI, its week drawn around it — rather than one line naming
-> the worst-off AI with the rest behind a fold. Decisions 2, 3, 5 and 6 stand as
-> written; decision 1 is superseded on which AIs are shown, and decision 4's
-> disclosure is a hover card. Read the two amendments for what the glance is now.
+> panel's foot and into the TOP BAR. #498 then changed its shape: the bar carries
+> one WORD, and behind it is a row of DIALS — each AI's own logo with its week
+> drawn around it and its reading in figures under it — rather than one line
+> naming the worst-off AI with the rest behind a fold. Decisions 3 and 6 stand as
+> written; decision 2 is kept in the form ADR-0009 itself was amended into;
+> decision 1 is superseded on which AIs are shown and on what is on screen
+> unasked; decision 4's disclosure is a hover; decision 5's button is gone. Read
+> the two amendments for what the glance is now.
 
 ## Context
 
@@ -300,10 +303,10 @@ grow and take no space.
 
 ---
 
-## Amendment, 7 September 2026 — the line became a row of dials (#498)
+## Amendment, 7 September 2026 — the line became a row of dials behind a word (#498)
 
-*Status: Accepted. Supersedes decision 1 and the fold in decision 4. Decisions 2,
-3, 5 and 6 stand.*
+*Status: Accepted. Supersedes decision 1 and the fold in decision 4, and retires
+decision 5. Decisions 3 and 6 stand; decision 2 stands as ADR-0009 amended it.*
 
 ### What one line got wrong, and it was not the width
 
@@ -325,10 +328,11 @@ surface said about two thirds of the accounts on the machine.
 
 ### The decision
 
-**One dial per AI, in a fixed order, always all of them.**
+**One dial per AI, in a fixed order, always all of them.** A dial is the AI's own
+logo, the week drawn as a ring around it, and the reading in figures under it.
 
 - **The order does not move.** Claude, Codex, Gemini, then anything the registry
-  grew that this app has no drawing for. Not by urgency — urgency is what changes,
+  grew that this app has no logo for. Not by urgency — urgency is what changes,
   and a control that moves when its own reading moves cannot be found by
   position. Where a person looks for Claude is where Claude is, at 100% and at
   0%.
@@ -337,76 +341,144 @@ surface said about two thirds of the accounts on the machine.
   id where a provider declares a `week` and otherwise the last window it declared
   — both providers in the tree list theirs shortest first, and no file in `src/`
   keeps a table of provider names.
-- **The five hours is not lost.** It is the first thing in the card, and when it
-  is near or spent behind a comfortable week it puts a coloured dot on the dial.
-  That case is the whole reason the dot exists: a dial drawing 12% while the deck
-  is about to be refused would be answering a question nobody asked.
-- **A hover opens a card**, not a list of rows. Both windows in full, each with
-  its tier by name, its meter and its reset, and the plan and account above them.
-  A press still opens `openUsageDialog` (decision 6).
+- **The figure under it is not decoration.** A ring at 4% is a hairline and a ring
+  at 0% is nothing at all — and "nothing at all" is precisely what a dial that is
+  not working looks like. A fresh week reads 0% on a Monday morning, which is the
+  ordinary case, so without the figure the ordinary case is indistinguishable
+  from a fault. It is also what lets the ring be an ARC rather than a number, and
+  therefore what keeps decision 2 payable at this size: see below.
+- **The five hours is not lost.** It leads the card, and when it is near or spent
+  behind a comfortable week it puts a coloured dot on the dial. That case is the
+  whole reason the dot exists: a dial drawing 12% while the deck is about to be
+  refused would be answering a question nobody asked.
+- **A point opens a card**, not a list of rows. Both windows in full, each with
+  its reading, its qualifier, its meter and its reset, and the plan and account
+  above them. A press still opens `openUsageDialog` (decision 6).
 
-**Two of the three dials are held at "coming soon", and that is a claim about the
+**Two of the dials are held at "coming soon", and that is a claim about the
 roadmap rather than about the machine.** A held brand is not asked for a reading
 even where the backend has one — Gemini's provider exists and can answer nothing
 without a credential this app will not take (see the head of `gemini.rs`), and a
 permanent row of unknowns dressed as a live reading is worse than saying plainly
-that it is not ready. The alternative was to draw two brands and let the row
-change shape on the day a third arrives; a lineup that is stable across that day
-is worth more than one that is honest only about today.
+that it is not ready. The alternative was to draw one brand and let the row change
+shape on the day a second arrives; a lineup that is stable across that day is
+worth more than one that is honest only about today.
+
+### The bar carries one word, not the dials
+
+This is the part of decision 1 that goes furthest: **nothing of the reading is on
+screen unasked except one word and, when there is one, an alarm.**
+
+The top bar is a row of the deck's OWN state — what is blocked, what is waiting —
+and three logos parked in it read as three more controls rather than as a
+reading. They also cost the bar height that the whole of ADR-0011 was written to
+stop the limits taking. So the bar says `Limits`, and pointing at it or pressing
+it opens the row and the card together.
+
+That is a real loss and it is paid for by the one thing that does not go behind
+the press: **the word itself carries the alarm.** It turns amber when anything is
+nearly spent and red when anything is spent, out of every window of every AI —
+not only the ones the rings draw. Hiding a reading is acceptable when the reading
+is "fine, keep working", which is what it is almost always; hiding the fact that
+it is NOT would be the failure ADR-0009 and this record are both about.
+
+A press pins the box open, which is what a keyboard needs: a pointer holds it
+open by being there and a keyboard has nothing to hold it with. There is
+deliberately no `focus` opener — Escape shuts the box and hands the keyboard back
+to the word, and a word that opened on focus would re-open it on the way and make
+Escape do nothing.
+
+### The AIs' own logos, not this app's hand
+
+The first cut of this drew three marks on the icon set's own 16-unit grid, in its
+stroke weight, so that they would sit in the family. That was the wrong instinct
+and the review said so. An icon's job is to belong; a **logo's job is to be
+recognised**, and a mark redrawn at a different weight on a different grid is a
+mark a person has to learn a second time. So the three come in whole, filled, on
+their owners' 24-unit grid, traced from Simple Icons (CC0 files; the marks
+themselves stay their owners' trademarks and are used here to identify their own
+products). They are vendored rather than depended on: three path strings do not
+earn a package, and a logo that changed under us on an `npm update` is worse than
+one we have to notice by hand. `icons.ts` grows a second symbol family for them,
+because `.icon` sets `fill: none; stroke: currentColor` and would draw every one
+of them as nothing at all.
 
 ### What ADR-0009 costs here, and what it does not
 
 Decision 2 said the tier survives the shrink, and this shape shrinks the glance
-further than any before it: a 26px mark has room for **no** text at all. That
-would be the failure ADR-0009 exists to refuse — a number with nothing beside it
-to say which of three kinds of number it is — if the dial drew a number. It draws
-an ARC, which is not a figure a person can misread as their account's own
-accounting, and every surface that does draw the figure carries the tier beside
-it: the card, the dialog, the Linux menu row, and the dial's own accessible name.
+further than any before it: a dial has room for a logo, an arc and about four
+characters. That would be the failure ADR-0009 exists to refuse — a number with
+nothing beside it to say which of three kinds of number it is — if a dial drew
+its number bare. Two things keep it honest. The dial's figure is a percentage of
+a window that HAS a denominator, and where there is none it prints `—` rather
+than inventing one, exactly as the ring draws no arc. And every surface that
+gives the number in full carries its qualifier: the card, the dialog, the Linux
+menu row, and the dial's own accessible name.
 
-The card names every tier in FULL, the strongest included — `Reported`, not
-nothing. ADR-0009's amendment dropped "Reported" from a 340px row because the word
-cost a quarter of the line and changed nothing; a card has the room, and it is
-where the vocabulary is taught next to `sourceExplanation`. The shortened caveat
-(`this app only`) is kept for the one surface that is still a line: the Linux
-menu.
+The card prints `tierNote` — the CAVEAT, not the tier's name — which means the
+account's own accounting prints **nothing at all**. An unqualified number is the
+account's, which is what a person assumes anyway; the failure that record exists
+to prevent is the other direction, this app's own narrower count being read as
+the account's, and only the weaker tiers can commit it. This reverses the first
+cut of this amendment, which printed `Reported` in full because the card had the
+room. Having the room is not a reason: ADR-0009's own amendment retired that word
+because it changed nothing, and a card is not a place to un-retire it. The tier
+NAMES survive where they are taught — in the dialog, beside `sourceExplanation`.
+
+### The panel shows its dials, and its card floats
+
+The status-area panel (ADR-0013) draws the same block with two hooks changed, and
+they are the two decisions above, inverted for a surface that is nothing but the
+glance:
+
+- **No word in front.** That window was opened deliberately and contains nothing
+  else worth the room; putting its content behind a hover would make it two
+  gestures deep.
+- **The card FLOATS over what is under it.** In the flow it pushed the sessions
+  down every time a pointer crossed a logo, which is the same displacement fault
+  #461 moved this whole surface out of the panel to escape — one level smaller.
+  It is hung on `#tray` rather than inside `#tray-sections`, and that is not a
+  detail: an absolutely positioned card inside a scroll container is clipped by
+  it AND adds to its scroll height, so the content moves anyway. `#tray` clips to
+  the panel's own rounded edge, which is right, so the card is measured and
+  clamped to the room under the row and scrolls inside it — a scrollbar is a
+  worse card than one that fits and a far better one than one whose last line is
+  sheared off, and the last line of a spent window is when work becomes possible
+  again.
 
 ### What the shape let go
 
-- **The fold, and everything it needed.** No `aria-expanded`, no caret, no state
-  to keep out of a repaint's way. The card is opened by pointing at a dial and is
-  gone when the pointer leaves.
-- **The Ask button beside the strip** (decision 5). Nothing interactive lives in
-  the card: it is a description, `aria-describedby` says so, and a control that
-  appears under the pointer and vanishes when it leaves is a control nobody can
-  reach. The offer moved into the dialog a press opens — where it already was.
-  With it goes the tray's `probe` action verb, since nothing mints it any more.
+- **The fold, and everything it needed.** No caret on a strip, no rows, no state
+  to keep out of a repaint's way beyond the one dial the card is on.
+- **The Ask button** (decision 5). Nothing interactive lives in the card: it is a
+  description, and a control that appears under the pointer and vanishes when it
+  leaves is a control nobody can reach. The offer moved into the dialog a press
+  opens — where it already was. With it goes the tray's `probe` action verb,
+  since nothing mints it any more.
 - **`No AI detected on this machine` as a whole-surface state.** Two dials are
   always drawn, so the row is always there, and the brand that was meant to
   answer says for itself that it did not.
 
 ### Consequences
 
-- The bar gives up 26px of height and about 90px of width, fixed, for any number
-  of accounts. The line it replaces was up to 246px and grew a second line when
+- The bar gives up about 60px of width and no height at all, for any number of
+  accounts. The line it replaces was up to 246px and grew a second line when
   something was spent.
-- **The status-area panel cannot use the popover.** `#tray` clips what leaves it,
-  so the card is drawn in the flow there instead, always open, on the most urgent
-  dial by default. That is one more difference between the two surfaces than
-  ADR-0013 had, and it is a placement rather than a rendering: the dial, the ring,
-  the meter and the words are the same code (`LimitDials`).
 - **The panel has to carry the open card across its own repaint.** It rebuilds its
   entire document on every report from the deck, so nothing inside it can remember
   anything — the provider being described is read off the old DOM and handed back
   in, beside the scroll position and the focused control it already carried.
-- Three marks have to be told apart at 14px. They are drawn in this app's own hand
-  on the icon set's 16-unit grid rather than traced from anybody's brand artwork:
-  what a dial needs is three distinguishable silhouettes, and a logo lifted into a
-  stroke set at a different weight is neither the logo nor this set.
-- Every measured contrast pair for the limits moved again, and this time to two
-  grounds: `--bg-chrome` under the dials in the deck's bar and `--bg-island` under
-  them in the panel. The cases in `scripts/contrast.mjs` had still been recorded
-  against `--bg-void` from #392, which #461 had already made wrong.
+- **The three listeners that close the deck's popover are installed once**, in the
+  constructor, and read the DOM when they fire. Every other listener in the block
+  is on a node it creates and throws away once a minute; these are on `#limits`,
+  which outlives the paint, and attaching them per paint would add one a minute
+  for as long as the window is open.
+- Every measured contrast pair for the limits moved again, and this time onto two
+  grounds that are not the old one: `--bg-chrome` under the word in the bar, and
+  `--bg-island` under the dials and everything they open — in the deck's popover
+  and in the status-area panel alike. The cases in `scripts/contrast.mjs` had
+  still been recorded against `--bg-void` from #392, which #461 had already made
+  wrong.
 
 ### Alternatives considered
 
@@ -414,12 +486,16 @@ menu.
   with extra steps.
 - **Order the dials by urgency.** Everything this amendment is against, in one
   sentence: it makes the worst one easy to find and the specific one impossible.
-  The urgency ordering survives where it belongs — in the panel's card, which
-  opens on the AI that is worst off rather than on the first one drawn.
+  The urgency ordering survives where it belongs — in the card, which opens on
+  the AI that is worst off rather than on the first one drawn.
 - **Draw only the AIs that are installed.** Rejected for the same reason "show
   only what is not healthy" was rejected in this record: a surface that appears
   and disappears under a person cannot be learned. A held dial is also the only
   honest way to say a thing is planned.
-- **Show the five-hour window in a second, inner ring.** Two arcs at 26px is two
+- **Show the five-hour window in a second, inner ring.** Two arcs at 40px are two
   hairlines, and the reading that would have justified it — the session window in
   trouble — is carried by the dot at a size a person can actually see.
+- **Leave the dials in the bar and simply shrink them.** What the first cut did.
+  It cost the bar height permanently for a reading that is "fine" almost always,
+  and it put three brand marks in a row that is otherwise entirely about this
+  deck's own sessions.

@@ -158,25 +158,32 @@ for a session the deck did not start. A CLI with no reader says so rather than s
 
 ## Limits: what each AI has left, and where that number came from
 
-A dozen sessions draw on **one** budget, and when it runs out they stall together. A row of dials in the
-top bar says whether you can keep working — one mark per AI, with **the week drawn around it**. Point at
-one and a card opens with the rest: the five-hour window and the week in full, each with its reading, its
-meter, when it lifts and where the number came from, and the plan and account above them. Press it for
-the caveats and what to do about them.
+A dozen sessions draw on **one** budget, and when it runs out they stall together. The top bar says
+**Limits**, and behind that word is a dial per AI: its own logo, **the week drawn as a ring around it**,
+and the reading in figures underneath. Point at the word and the row opens with a card: the five-hour
+window and the week in full, each with its reading, its meter, when it lifts and where the number came
+from, and the plan and account above them. Press a dial for the caveats and what to do about them.
+
+One word rather than the dials themselves, because the bar is otherwise about the deck's own sessions and
+three logos parked in it would read as three more buttons. What does *not* go behind the point is the
+part you need without asking: **the word itself turns amber when anything is nearly spent and red when
+anything is spent**, out of every window of every AI ([#498](https://github.com/followLemmi/cowork-deck/issues/498)).
 
 The dials do not move. Claude is where Claude was yesterday whether it is at 0% or refusing work, because
 a glance you have to read to find out what it is about is not a glance. **Codex** and **Gemini** sit
 beside it as *coming soon* — this deck does not read their limits yet, and a lineup that is stable across
 the day one of them starts working is worth more than one that shows only today.
 
-The ring is the week because a week is what you plan against. The five hours is the number that stops you
-in the next ten minutes, so when it is nearly or wholly spent behind a comfortable week, the dial carries
-a coloured dot — amber for "about to", red for "already"
-([#498](https://github.com/followLemmi/cowork-deck/issues/498)).
+The ring is the week because a week is what you plan against; the figure under it is there because a ring
+at 0% and a ring that is broken look identical. The five hours is the number that stops you in the next
+ten minutes, so when it is nearly or wholly spent behind a comfortable week the dial carries a coloured
+dot — amber for "about to", red for "already".
 
 Beside the ledger rather than in the panel, because it is the same kind of fact: two readings of what
 wants a person, and a third that says whether they can act on either. It also means the reading is there
 when the panel is collapsed, which a limit is not a property of ([#461](https://github.com/followLemmi/cowork-deck/issues/461)).
+The same dials are behind the status-area icon, on show rather than behind a word — that window is
+nothing but the glance — with the card floating over the sessions instead of pushing them down.
 
 **The source of a number is part of the number**, and it is written beside it rather than hidden in a
 tooltip. There are three ways this app can know such a number:
@@ -184,17 +191,19 @@ tooltip. There are three ways this app can know such a number:
 - **The account's own accounting**, the figure `/usage` draws. Obtained by asking `claude` itself, the
   way this app asks `gh` about GitHub: it costs nothing from your budget and no password passes through
   the app. Switch it off in Settings if you would rather nothing started a short-lived process every
-  few minutes to ask. The card names it **Reported**.
+  few minutes to ask. The card prints it **plain** — an unqualified number is the account's.
 - **What the app saw for itself**, from the sessions it runs. Real, and *narrower than your account*:
-  other terminals, other machines and anything outside this app are not in it. It is named **Observed**,
-  because that is the one direction that can mislead you into thinking you have more runway than you do.
-  No meter and no ring is drawn for it either — the app knows what it spent, not what was allowed, and it
-  will not divide by a ceiling it invented.
-- **Nothing at all** — the card says "no reading", the ring is a bare dashed track rather than an empty
-  one, and the dialog offers the one command that would answer it, in a tile.
+  other terminals, other machines and anything outside this app are not in it. The card says **"this app
+  only"** after the number, because that is the one direction that can mislead you into thinking you have
+  more runway than you do. No meter and no ring is drawn for it either — the app knows what it spent, not
+  what was allowed, and it will not divide by a ceiling it invented.
+- **Nothing at all** — the card says "no reading", the dial's figure is a dash rather than a number it
+  would have to invent, the ring is a bare dashed track rather than an empty one, and the dialog offers
+  the one command that would answer it, in a tile.
 
 The dialog behind a dial names all three by their tier — Reported, Observed, Estimated — with a sentence
-saying what each means. That is where the vocabulary is taught.
+saying what each means. That is where the vocabulary is taught; a card carries only the caveat, and only
+where there is one.
 
 The reading that matters most needs no percentage at all. When a session is refused, the app reads the
 limit banner on its way to the screen and says **nothing moves until 19:00** — in the card on screen, and
