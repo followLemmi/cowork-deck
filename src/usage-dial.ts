@@ -16,19 +16,27 @@
  *
  *  What each part carries, and why it is that part:
  *
- *  - **The ring is the week** (`ringWindow`). A ring is a period coming round
- *    again, and the week is the period worth planning against.
+ *  - **The ring is the five hours** (`glanceWindow`). It was the week, on the
+ *    argument that a week is what you plan against; a glance is read while
+ *    working rather than while planning, and the five hours is the window that
+ *    decides whether the next prompt is answered.
  *  - **The mark is the AI**, and it is the AI's own logo rather than something
- *    drawn to match this app's icon set — see `BRAND_PATHS` in `icons.ts`.
+ *    drawn to match this app's icon set — see `BRAND_PATHS` in `icons.ts`. In the
+ *    brand's own colour, too (`--brand-claude`), which is the one hue on this
+ *    surface that is not this app's to choose: the mark answers WHICH AI, and it
+ *    answers it identically at 3% and at 97%.
+ *  - **The hue around it is how much is left** (`zoneOf`): green under three
+ *    quarters, amber to nine tenths, red past it. The arc, the figure under it
+ *    and the dot; never the logo in the middle, which is the one fixed thing on
+ *    a dial and would otherwise move with the readings.
  *  - **The caption is the reading, in figures.** A ring at 4% is a hairline and
  *    a ring at 0% is nothing at all, and neither is distinguishable at a glance
  *    from a ring that is not working. The number under it is what makes the
  *    drawing checkable, and it is the reason this surface can afford to be a
  *    drawing in the first place.
- *  - **The dot is what the ring is not saying** (`dialAlert`). A five-hour
- *    window nearly spent is what stops work in the next ten minutes, and a dial
- *    showing a comfortable 62% while the deck is about to be refused would be
- *    answering a question nobody asked.
+ *  - **The dot is what the ring is not saying** (`dialAlert`). The week, now
+ *    that the ring is the session: a week three quarters gone behind a fresh
+ *    five hours is a fact about the next two days that the ring cannot carry.
  *  - **The card is everything else**: both windows in full, each with its
  *    qualifier and its reset, the plan and the account. ADR-0009's rule holds
  *    inside it exactly as it held in a row.
@@ -50,14 +58,18 @@ import type { AiUsage, LimitWindow } from "./ipc";
 import { brandIcon, hasBrand, icon } from "./icons";
 import { openUsageDialog, type UsageDialogHost } from "./usage-dialog";
 import {
+  alarmOf,
+  alarmPhrase,
   dialLineup,
   formatReset,
   limitFoot,
   meterFraction,
   readingOf,
-  stateClass,
   tierNote,
+  zoneClass,
+  zoneOf,
   type Dial,
+  type LimitAlarm,
 } from "./usage";
 
 /** The least this block needs from the deck: somewhere to run the command that
@@ -112,6 +124,14 @@ export interface DialsHost extends CommandRunner, UsageDialogHost {
  *  points at. */
 const CARD_ID = "lim-card";
 const POP_ID = "lim-pop";
+
+/** How long the deck's popover survives a pointer that has left it.
+ *
+ *  Exported for the tests, which drive it on a fake clock rather than waiting.
+ *  See `shutSoon` for why there is a delay at all; the value is the usual one for
+ *  hover intent — long enough to cross a corner, short enough that a box nobody
+ *  wants is not still there when the eye comes back. */
+export const POP_GRACE_MS = 300;
 
 /** The ring's geometry, in the units of its own viewBox. `r` and the stroke
  *  together decide how much of the 32-unit box is ink; the rendered size is the
@@ -214,7 +234,7 @@ function windowLine(w: LimitWindow, error: string | null, now: number): HTMLElem
   const fill = meterFraction(w);
   if (fill !== null) {
     const meter = document.createElement("span");
-    meter.className = `lim-meter ${stateClass(w.state)}`;
+    meter.className = `lim-meter ${zoneClass(zoneOf(w))}`.trimEnd();
     const bar = document.createElement("span");
     bar.className = "lim-fill";
     bar.style.width = `${Math.round(fill * 100)}%`;
@@ -303,38 +323,39 @@ function dialLabel(d: Dial, now: number): string {
   } else {
     parts.push("no windows");
   }
-  if (d.alert === "exhausted") parts.push("another window is spent");
-  if (d.alert === "near") parts.push("another window is nearly spent");
+  // The words are `alarmPhrase`'s, so "spent" is said only where something has
+  // actually stopped and a window merely deep into its band says which band.
+  if (d.alert) parts.push(`another window is ${alarmPhrase(d.alert)}`);
   if (d.snap.error) parts.push(d.snap.error);
   parts.push("— open the detail");
   return parts.filter(Boolean).join(", ");
 }
 
-/** How urgent a dial is, for deciding which one the card opens on. Spent before
- *  nearly spent before everything else; a held brand last. It is deliberately
- *  NOT the order the dials are drawn in — see `dialLineup`. */
+/** How urgent a dial is, for deciding which one the card opens on. The red band
+ *  before the amber one before everything else; a held brand last. It is
+ *  deliberately NOT the order the dials are drawn in — see `dialLineup`.
+ *
+ *  Banded rather than stated, so it agrees with the hue a person is looking at:
+ *  the card opening on a green dial while a red one sat beside it was the same
+ *  disagreement in the ordering that the bands fixed in the drawing. */
 function cardRank(d: Dial): number {
   if (d.soon || !d.snap) return 5;
-  if (d.ring?.state === "exhausted" || d.alert === "exhausted") return 0;
-  if (d.ring?.state === "near" || d.alert === "near") return 1;
+  const worst = alarmOf(d.snap.windows);
+  if (worst?.zone === "out") return 0;
+  if (worst?.zone === "near") return 1;
   if (d.snap.error) return 2;
   return d.ring ? 3 : 4;
 }
 
-/** The worst state anything in the lineup is in, for the one word in the bar.
+/** The worst band anything in the lineup is in, for the one word in the bar.
  *
  *  The whole reason the trigger is not a bare word: hiding the dials behind a
  *  press is only acceptable if the press is not needed to find out that
- *  something is wrong. `null` is a lineup with nothing to report. */
-function alarmOf(dials: Dial[]): "near" | "exhausted" | null {
-  let out: "near" | "exhausted" | null = null;
-  for (const d of dials) {
-    for (const state of [d.ring?.state, d.alert]) {
-      if (state === "exhausted") return "exhausted";
-      if (state === "near") out = "near";
-    }
-  }
-  return out;
+ *  something is wrong. Every window of every live AI, and not only the ones the
+ *  rings draw — the ring shows one window and the word answers for all of them.
+ *  `null` is a lineup with nothing to report. */
+function lineupAlarm(dials: Dial[]): LimitAlarm | null {
+  return alarmOf(dials.flatMap((d) => (d.soon || !d.snap ? [] : d.snap.windows)));
 }
 
 export class LimitDials {
@@ -342,17 +363,19 @@ export class LimitDials {
     private el: HTMLElement,
     private host: DialsHost,
   ) {
-    /* Three listeners for closing the deck's popover, and they are installed
-       HERE rather than in `trigger` for one reason: `el` outlives the paint.
-       Every other listener in this file is on a node this block creates and
-       throws away once a minute, so attaching is free; attaching to `el` on
+    /* Four listeners for opening and closing the deck's popover, and they are
+       installed HERE rather than in `trigger` for one reason: `el` outlives the
+       paint. Every other listener in this file is on a node this block creates
+       and throws away once a minute, so attaching is free; attaching to `el` on
        every paint would add a listener a minute for as long as the window is
        open. They read the DOM when they fire instead of closing over it.
 
-       The pointer one is on the WHOLE block rather than on the word: the popover
-       is a descendant, so the pointer travelling from the word into the dials
-       does not leave, and this fires only when it has genuinely gone. */
-    el.addEventListener("mouseleave", () => this.shut());
+       The pointer ones are on the WHOLE block rather than on the word: the
+       popover is a descendant, so the pointer travelling from the word into the
+       dials does not leave, and these fire only when it has genuinely gone —
+       and, on the way back, when it has genuinely returned. */
+    el.addEventListener("mouseleave", () => this.shutSoon());
+    el.addEventListener("mouseenter", () => this.cancelShut());
     el.addEventListener("focusout", (e) => {
       const to = (e as FocusEvent).relatedTarget;
       if (to instanceof Node && el.contains(to)) return;
@@ -381,6 +404,9 @@ export class LimitDials {
    *  keyboard has no pointer, which is the case the pin exists for. */
   private open = false;
   private pinned = false;
+
+  /** A shut the pointer has asked for and not yet earned. See `shutSoon`. */
+  private shutAt: ReturnType<typeof setTimeout> | null = null;
 
   /** The floating card, which lives outside this block's own element and must
    *  therefore be taken away by hand — nothing else will empty its parent. */
@@ -496,9 +522,13 @@ export class LimitDials {
     b.title = "What every connected AI has left";
     b.append(span("dial-trigger-word", "Limits"));
 
-    const alarm = alarmOf(dials);
+    const alarm = lineupAlarm(dials);
     if (alarm) {
-      b.dataset.alarm = alarm;
+      // The band, not the state: the word goes amber at three quarters and red
+      // at nine tenths, which is the same arithmetic the dials behind it draw.
+      // A word that stayed neutral while a dial behind it was red would break
+      // the one property that makes hiding them acceptable.
+      b.dataset.alarm = alarm.zone;
       const dot = document.createElement("span");
       dot.className = "dial-dot";
       dot.setAttribute("aria-hidden", "true");
@@ -514,12 +544,13 @@ export class LimitDials {
       "aria-label",
       [
         "Limits",
-        alarm === "exhausted" ? "something is spent" : alarm === "near" ? "something is nearly spent" : "",
+        alarm ? `something is ${alarmPhrase(alarm)}` : "",
         "— what every connected AI has left",
       ].filter(Boolean).join(", "),
     );
 
     const open = () => {
+      this.cancelShut();
       if (this.open) return;
       this.open = true;
       pop.hidden = false;
@@ -543,14 +574,53 @@ export class LimitDials {
     return b;
   }
 
+  /** Shut it, but not yet — the reported defect (#498), and the whole of it is
+   *  the delay.
+   *
+   *  The word is in the top bar and the popover hangs from its bottom edge,
+   *  flush against it and growing LEFTWARD. So the pointer travelling from the
+   *  word to the Claude dial travels down and to the left, and the straight line
+   *  a hand actually draws between those two points passes through the corner
+   *  that belongs to neither: the bar, to the left of the word and above the box.
+   *  A `mouseleave` fires there, the box closes, and the box closes while
+   *  somebody is on their way into it. Nothing about the geometry can be fixed by
+   *  moving the box — every diagonal has a corner like that one.
+   *
+   *  So a leave is a REQUEST to close and `mouseenter` cancels it. The delay is
+   *  long enough for a hand to cross a corner and short enough that a box left
+   *  behind does not sit there: this is the same "hover intent" every menu on
+   *  every desktop is built on, and it is deliberately not a bridging element,
+   *  which would be an invisible box over the bar swallowing clicks meant for
+   *  what is under it.
+   *
+   *  Escape and a focus that has left the block do NOT come through here. They
+   *  are a deliberate act rather than a pointer wandering, and they close the box
+   *  at once. */
+  private shutSoon(): void {
+    if (this.pinned || !this.open || this.shutAt !== null) return;
+    this.shutAt = setTimeout(() => {
+      this.shutAt = null;
+      this.shut();
+    }, POP_GRACE_MS);
+  }
+
+  /** The pointer came back. Called from the block's own `mouseenter` and from the
+   *  word's, so a return by either route keeps the box. */
+  private cancelShut(): void {
+    if (this.shutAt === null) return;
+    clearTimeout(this.shutAt);
+    this.shutAt = null;
+  }
+
   /** Shut the deck's popover, unless a press is holding it open.
    *
-   *  Reached from the pointer leaving the whole block, from the focus going
-   *  somewhere else in the window, and from Escape — see the constructor for why
-   *  those three live there rather than here. It walks the DOM rather than
-   *  closing over the nodes, because the nodes it would close over are replaced
-   *  every minute. */
+   *  Reached from the pointer's grace running out, from the focus going somewhere
+   *  else in the window, and from Escape — see the constructor for why those
+   *  listeners live there rather than here. It walks the DOM rather than closing
+   *  over the nodes, because the nodes it would close over are replaced every
+   *  minute. */
   private shut(): void {
+    this.cancelShut();
     if (this.pinned || !this.open) return;
     this.open = false;
     const pop = this.el.querySelector<HTMLElement>(`#${POP_ID}`);
@@ -567,9 +637,18 @@ export class LimitDials {
     // On the element rather than only in a class, so the stylesheet reaches the
     // ring's hue without a second carrier — the vocabulary the deck's own
     // session rows and tiles already use for exactly this.
+    //
+    // TWO attributes, because they are two facts. `state` is the provider's own
+    // word and is what says a dial has no reading at all: a held brand, an AI
+    // this machine does not have, a window nobody can divide — which is what the
+    // dashed track is drawn from. `zone` is the band the reading falls in, and it
+    // is what every hue on the dial comes from: the ring, the logo and the figure
+    // take it together, so the three cannot disagree.
     b.dataset.state = d.soon || !d.snap ? "none" : d.ring?.state ?? "unknown";
+    const zone = d.ring && !d.soon ? zoneOf(d.ring) : null;
+    if (zone) b.dataset.zone = zone;
     if (d.soon) b.dataset.soon = "true";
-    if (d.alert) b.dataset.alert = d.alert;
+    if (d.alert) b.dataset.alert = d.alert.zone;
     b.setAttribute("aria-label", dialLabel(d, now));
     // Held and undetected dials still take focus and still describe themselves.
     // `disabled` would take both away, and "why is this one grey" is exactly the
@@ -579,7 +658,7 @@ export class LimitDials {
     const face = document.createElement("span");
     face.className = "dial-face";
     const fill = d.ring && !d.soon ? meterFraction(d.ring) : null;
-    face.append(ringOf(fill, d.ring && !d.soon ? stateClass(d.ring.state) : ""));
+    face.append(ringOf(fill, zoneClass(zone)));
 
     const mark = document.createElement("span");
     mark.className = "dial-mark";

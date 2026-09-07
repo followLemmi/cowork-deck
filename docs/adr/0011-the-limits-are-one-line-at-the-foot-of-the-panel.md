@@ -7,15 +7,18 @@ deciders:
 
 # ADR-0011 — The limits are one line at the foot of the panel, opened on demand
 
-> **Amended twice at the foot of this record.** #461 moved the glance out of the
-> panel's foot and into the TOP BAR. #498 then changed its shape: the bar carries
-> one WORD, and behind it is a row of DIALS — each AI's own logo with its week
-> drawn around it and its reading in figures under it — rather than one line
-> naming the worst-off AI with the rest behind a fold. Decisions 3 and 6 stand as
-> written; decision 2 is kept in the form ADR-0009 itself was amended into;
-> decision 1 is superseded on which AIs are shown and on what is on screen
-> unasked; decision 4's disclosure is a hover; decision 5's button is gone. Read
-> the two amendments for what the glance is now.
+> **Amended three times at the foot of this record.** #461 moved the glance out
+> of the panel's foot and into the TOP BAR. #498 then changed its shape: the bar
+> carries one WORD, and behind it is a row of DIALS — each AI's own logo with a
+> window drawn around it and its reading in figures under it — rather than one
+> line naming the worst-off AI with the rest behind a fold. Review of #498 then
+> changed which window (the five hours, not the week) and how it is coloured
+> (green to three quarters, amber to nine tenths, red past it), which **reverses
+> decision 3's "no green for fine"**. Decision 6 stands as written; decision 2 is
+> kept in the form ADR-0009 itself was amended into, twice; decision 1 is
+> superseded on which AIs are shown and on what is on screen unasked; decision
+> 4's disclosure is a hover. Decision 5's button is gone. Read the three
+> amendments for what the glance is now.
 
 ## Context
 
@@ -88,7 +91,9 @@ the budget, and it is why the two decisions below went the way they did.
 ### 3. The state is in words as well as in hue, and the strip has no meter
 
 `--st-waiting` near a ceiling and `--st-error` past it, unchanged, and still no
-green for "fine" — see ADR-0009 and `docs/design/slate-ember`.
+green for "fine" — see ADR-0009 and `docs/design/slate-ember`. *(The no-green
+half of this clause is reversed by amendment 3; the hue comes from the level now,
+and the words beside it are the half that stands.)*
 
 The strip carries them on its **second line**, with the words: *nearly spent —
 resets 19:00*, *nothing moves until 19:00*. That line exists only when something
@@ -274,7 +279,8 @@ Every one of #461's own requirements, which are this record's and ADR-0009's:
 - **The tier travels with the reading.** ADR-0009, and it is now the thing that
   never gives way rather than one of several.
 - **State colour as it is.** Neutral when healthy, `--st-waiting` near the limit,
-  `--st-error` when spent. No green for "fine".
+  `--st-error` when spent. No green for "fine". *(Reversed by amendment 3: the
+  hue is the level, and green is the first of the three bands.)*
 - **A way out of an unreadable row.** The Probe button is still beside the strip
   and not behind the fold — decision 5, unchanged.
 - **`openUsageDialog` is still the detail surface.** Decision 6, untouched.
@@ -340,7 +346,8 @@ logo, the week drawn as a ring around it, and the reading in figures under it.
   worth planning against is the week rather than the five hours. Chosen by window
   id where a provider declares a `week` and otherwise the last window it declared
   — both providers in the tree list theirs shortest first, and no file in `src/`
-  keeps a table of provider names.
+  keeps a table of provider names. *(Reversed by amendment 3: the ring is the
+  five hours. The selection rule is the same one with the ends swapped.)*
 - **The figure under it is not decoration.** A ring at 4% is a hairline and a ring
   at 0% is nothing at all — and "nothing at all" is precisely what a dial that is
   not working looks like. A fresh week reads 0% on a Monday morning, which is the
@@ -350,7 +357,9 @@ logo, the week drawn as a ring around it, and the reading in figures under it.
 - **The five hours is not lost.** It leads the card, and when it is near or spent
   behind a comfortable week it puts a coloured dot on the dial. That case is the
   whole reason the dot exists: a dial drawing 12% while the deck is about to be
-  refused would be answering a question nobody asked.
+  refused would be answering a question nobody asked. *(Amendment 3 acted on
+  exactly this sentence and moved the five hours onto the ring; the dot and its
+  reasoning survive, with the week in the place the session had.)*
 - **A point opens a card**, not a list of rows. Both windows in full, each with
   its reading, its qualifier, its meter and its reset, and the plan and account
   above them. A press still opens `openUsageDialog` (decision 6).
@@ -468,8 +477,10 @@ glance:
   entire document on every report from the deck, so nothing inside it can remember
   anything — the provider being described is read off the old DOM and handed back
   in, beside the scroll position and the focused control it already carried.
-- **The three listeners that close the deck's popover are installed once**, in the
-  constructor, and read the DOM when they fire. Every other listener in the block
+- **The listeners that open and close the deck's popover are installed once**, in
+  the constructor, and read the DOM when they fire. (Three of them when this was
+  written; a fourth — the `mouseenter` that cancels a pending close — came with
+  amendment 3.) Every other listener in the block
   is on a node it creates and throws away once a minute; these are on `#limits`,
   which outlives the paint, and attaching them per paint would add one a minute
   for as long as the window is open.
@@ -499,3 +510,141 @@ glance:
   It cost the bar height permanently for a reading that is "fine" almost always,
   and it put three brand marks in a row that is otherwise entirely about this
   deck's own sessions.
+
+## Amendment 3: the ring is the five hours, and the hue is the level
+
+*2026-09-07, prompted by review of #498 before it merged.*
+
+Four changes, and three of them are one argument: the glance was drawing the
+right things about the wrong window, and drawing them in a way that only said
+something once the answer was already bad.
+
+### The ring is the five-hour window, not the week
+
+Amendment 2 said *"the ring is the week … the period worth planning against is
+the week rather than the five hours"*, and put the five hours in the card and in
+a dot eight pixels across. That is the wrong way round for a surface whose whole
+justification is that **a limit is something you look at while working** — this
+record's first sentence. Planning is what the card and the dialog are for. The
+question a person asks of the chrome, twenty times a day, is whether the next
+prompt will be answered, and that is the five hours.
+
+The mechanism does not change at all: `glanceWindow` replaces `ringWindow`,
+picking the window whose id is `session` and otherwise the FIRST one a provider
+declared — both providers in the tree list theirs shortest first, so the first is
+the narrowest, and no file in `src/` keeps a table of provider names. The week
+takes the place the session had: the second block of the card, and the dot on the
+dial when it is the one in trouble (`dialAlert`, unchanged but for which window
+it is handed).
+
+**The status-area menu reads the same window.** It was `primaryWindow` —
+whichever of them was worst off — which meant a menu and a panel built from one
+report could name two different windows, and that which window a row was about
+moved with the readings. ADR-0013's decision 1 is amended where it named the old
+function.
+
+### The hue is the level, and there is green
+
+This record said, twice, that there is deliberately no green: *"Neutral when
+healthy, `--st-waiting` near the limit, `--st-error` when spent. No green for
+'fine'."* The reasoning was that green already means "working" on every session
+rail in the window, and a deck of healthy meters would read as activity.
+
+**Reversed.** Green under three quarters, amber to nine tenths, red past it
+(`zoneOf`, `NEAR_FROM`, `OUT_FROM`), on the arc, on the figure under it, on the
+dot, on the word in the bar, and on every meter in the card and the dialog.
+
+**Everything about the reading, and nothing about the identity.** The first cut
+of this coloured the logo too, on the argument that a logo is the biggest thing
+on a 40px dial and the arc alone leaves the reading in the thinnest part of the
+drawing. That argument was about the wrong element, and review said so: a green
+Claude mark is not Claude's mark. The logo answers WHICH AI, it answers it before
+anything has been read, and it answers it the same way at 3% and at 97% —
+tinting it by the quota made the one fixed thing on the dial move with the
+readings, which is the fault the fixed ORDER exists to prevent, one element
+further in.
+
+So the mark is drawn in **the brand's own colour** — Claude's `#D97757`, the
+coral of the Anthropic palette's accent and the `hex` of `claude` in Simple
+Icons, which is where the path itself was traced from. This is the one hue on the
+surface that is not this app's to choose, and it is the same argument that made
+these marks come in whole on their owners' 24-unit grid rather than redrawn to
+match the icon set. The division that results is cleaner than the one it
+replaces: **identity in the middle, level around it.**
+
+There is no token for Codex or Gemini, and that is not an omission. OpenAI's own
+hex is `#000000`, which on this ground is not a mark at all; Gemini's logo is a
+gradient with no single official hex. Both are also HELD, and a held dial is
+drawn dim on purpose — dimming is how "not ready" is said, and a full-colour logo
+would say the opposite. A brand with no token of its own keeps the dial's neutral.
+
+What the old rule cost is the thing a gauge is for. A provider's state is a step
+function — `ok` until it says `near` — so a ring three quarters of the way
+through the five hours was drawn in exactly the hue of a ring at four percent,
+and the only way to tell them apart was to read the figure. That is a gauge whose
+hue answers a question nobody asks ("is it broken?") and stays silent on the one
+they do ("how close is it?"). A person watching a quota wants the distance, and
+hue is the one channel that gives it without being read.
+
+The collision the old rule feared does not happen, because the two never share a
+surface: a rail is a bar down the side of a session row or a tile, and these
+bands are inside a dial or a meter with its own track. What survives is the rule
+underneath the old one — hue belongs to MEANING — with the meaning restated:
+here it is how much is left.
+
+Three consequences, all deliberate:
+
+- **The bands are the provider's floor, not its ceiling.** A window a provider
+  calls `near` is at least amber whatever the share says, because it knows things
+  this app does not. The bands only add urgency that was not declared.
+- **A reading with no denominator gets no hue.** An absolute with no ceiling is
+  not green; it is neutral, which is the same rule `meterFraction` keeps by
+  drawing no meter at all.
+- **The word in the bar is banded too**, on the same thresholds, and it is still
+  never green: "fine" is the state it is in almost always, and a chrome carrying a
+  hue almost always spends attention on the answer nobody asked for. What it must
+  not do is stay neutral over a dial that has gone red, which is the property that
+  makes hiding the dials acceptable — so the word's alarm now comes from every
+  window of every AI through `alarmOf` rather than from the provider's own word
+  for its state.
+
+Because a band and a refusal share the red, they are told apart in **words**:
+`alarmPhrase` says *spent* only where something is actually refusing work and
+*over 90% spent* where it is not. A dial claiming work had stopped when it had
+not would be the same class of error as an unlabelled tier.
+
+### The popover survives the pointer crossing a corner
+
+The reported defect: point at `Limits`, move diagonally towards the Claude dial,
+and the box shuts on the way in.
+
+It is geometry and not a bug in the listener. The word is in the top bar and the
+box hangs from its bottom edge growing LEFTWARD, so the straight line a hand
+draws between the word and the leftmost dial passes through the corner that
+belongs to neither — the bar, left of the word and above the box. A `mouseleave`
+fires there, and it fires while somebody is on their way in. No placement of the
+box fixes this: every diagonal has a corner like that one.
+
+**So a pointer leaving is a request to close, and returning within 300ms cancels
+it** (`POP_GRACE_MS`). Escape and a focus that has left the block still close it
+at once: those are deliberate acts rather than a hand in transit. The rejected
+alternative was a bridging element — an invisible box over the corner — which
+would swallow clicks meant for the bar underneath it.
+
+### `REPORTED` leaves the dialog too
+
+ADR-0009's first amendment took the word out of every row and kept it in the
+dialog, on the grounds that a dialog is where a vocabulary is taught. Its second
+amendment, made here, takes it out of the dialog as well: the word labels the one
+case that cannot mislead, and the sentence directly under it already says what it
+means. The two weaker tiers keep their names, which are the vocabulary actually
+worth teaching. See `sourceBadge`.
+
+### What this costs
+
+- Every hue on every limit surface is measured again in `scripts/contrast.mjs`,
+  and the green is new there: the arc, the logo (on the box's ground and on the
+  hover's, because a band deliberately does not move under a pointer) and the
+  figure, in all three bands.
+- The card's window order flips — the session leads, the week follows — because
+  the card explains the drawing before it explains anything else.

@@ -735,10 +735,19 @@ const CASES = [
     fg: "--line-strong", backdrop: ["--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
-  /* The limits (#301). Three states and one absence: there is deliberately no
-     green case here, because there is deliberately no green. A healthy window is
-     `--fg-dim` on its own track — hue belongs to state, and "your quota is fine" is
-     not a state worth a hue that already means "working".
+  /* The limits (#301). Three BANDS and one absence, and the green is new: #498's
+     review asked for green to three quarters, amber to nine tenths, red past it,
+     which reverses the rule these cases were written under — that a healthy
+     window is `--fg-dim` on its own track, because "your quota is fine" is not
+     worth a hue that already means "working". What that rule cost is the thing a
+     gauge is for: a provider's state is a step function, so three quarters of the
+     five hours was drawn in exactly the hue of four percent. The record of the
+     reversal is in `zoneOf` and ADR-0011's third amendment; what it costs HERE is
+     one more pair per surface, because green on this ground has never been
+     measured for the limits before.
+
+     The absence stays: a window with no share and nothing wrong gets no hue at
+     all, which is `--fg-dim` and is measured below as it always was.
 
      TWO GROUNDS since #498, and neither is the one measured here before. The
      limits were a card in the panel (#301), then a strip at the panel's foot
@@ -771,21 +780,30 @@ const CASES = [
     threshold: TEXT, sc: "1.4.3",
   },
   {
-    what: "a healthy limit ring",
-    where: "the neutral arc around a logo, and the fill on a meter inside the card — "
-      + "a graphic, not text, on the box's ground and on its own track",
+    what: "a limit ring inside its first three quarters",
+    where: "green on the arc around a logo, and on the fill of a meter inside the card "
+      + "— a graphic, not text, on the box's ground and on its own track",
+    fg: "--st-working", backdrop: ["--bg-island", "--bg-inset"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "a limit ring with no band at all",
+    where: "the neutral arc: an absolute with no ceiling, or a reading nobody has. Not "
+      + "green — a hue there would be this app inventing the denominator it has just "
+      + "said it does not have",
     fg: "--fg-dim", backdrop: ["--bg-island", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },
   {
-    what: "a nearly-spent limit ring",
+    what: "a limit ring past three quarters",
     where: "amber on the same arc: the one that means something is about to want you",
     fg: "--st-waiting", backdrop: ["--bg-island", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },
   {
-    what: "a spent limit ring",
-    where: "red on the same arc",
+    what: "a limit ring past nine tenths",
+    where: "red on the same arc, and on a spent one — the band and the refusal share a hue "
+      + "and are told apart in words (`alarmPhrase`)",
     fg: "--st-error", backdrop: ["--bg-island", "--bg-inset"],
     threshold: UI, sc: "1.4.11",
   },
@@ -807,15 +825,22 @@ const CASES = [
     threshold: UI, sc: "1.4.11",
   },
   {
-    what: "the figure under a healthy dial",
-    where: "“62%”, and it is not decoration: a ring at 4% is a hairline and a ring "
-      + "at 0% is nothing at all, which is what a broken dial also looks like",
+    what: "the figure under a dial in its first three quarters",
+    where: "“62%” in green, and it is not decoration: a ring at 4% is a hairline and a "
+      + "ring at 0% is nothing at all, which is what a broken dial also looks like. The "
+      + "band is in the characters as well as in the hue",
+    fg: "--st-working", backdrop: ["--bg-island"],
+    threshold: TEXT, sc: "1.4.3",
+  },
+  {
+    what: "the figure under a dial with no band",
+    where: "“—”, and every quiet figure: “soon”, and a reading nobody has",
     fg: "--fg-dim", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
   {
     what: "the figure under a dial in trouble",
-    where: "amber, then red, on the same figure — the state said in the characters as "
+    where: "amber, then red, on the same figure — the band said in the characters as "
       + "well as in the ring, for anybody the hue does not reach",
     fg: "--st-waiting", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
@@ -826,10 +851,26 @@ const CASES = [
     fg: "--st-error", backdrop: ["--bg-island"],
     threshold: TEXT, sc: "1.4.3",
   },
+  /* The logo is the BRAND's colour, which is the one pair in this file measuring a
+     hue the design system did not choose. It is measured on two grounds because
+     `.dial:hover` raises the one under a mark that deliberately does not move with
+     the pointer — a brand colour that brightened on hover would be a brand colour
+     for as long as nobody pointed at it.
+
+     The first cut of the bands coloured the mark too, and that is why there is no
+     green/amber/red logo case here any more: a green Claude mark is not Claude's
+     mark. The bands are measured above, on the arc and the figure. */
   {
-    what: "the logo inside a live dial",
-    where: "the AI's own mark in the middle of its ring — a graphic, and the thing that "
-      + "says WHICH AI a dial is about",
+    what: "the Claude logo inside its dial",
+    where: "`#D97757`, Anthropic's own coral — the mark says WHICH AI, at 3% and at "
+      + "97% alike, so it is the one thing on a dial that does not take a band",
+    fg: "--brand-claude", backdrop: ["--bg-island", "--bg-hover"],
+    threshold: UI, sc: "1.4.11",
+  },
+  {
+    what: "the logo inside a dial whose brand has no colour of its own",
+    where: "`--brand` falls back to the dial's neutral — and the hover brightens THIS "
+      + "one, because there is no brand colour for the brightening to overrule",
     fg: "--fg-mid", backdrop: ["--bg-island"],
     threshold: UI, sc: "1.4.11",
   },
@@ -841,7 +882,7 @@ const CASES = [
     threshold: UI, sc: "1.4.11",
   },
   {
-    what: "the logo on a hovered dial",
+    what: "the logo on a hovered dial with no brand colour",
     where: "the hover raises the ground under it and the mark brightens to meet it, so "
       + "this pair is measured too",
     fg: "--fg", backdrop: ["--bg-hover"],
@@ -849,13 +890,14 @@ const CASES = [
   },
   {
     what: "the dot for a window the ring is not showing",
-    where: "a five-hour window nearly spent behind a comfortable week. Ringed in the "
-      + "ground it sits on, and it rides the word in the bar too, so both are measured",
+    where: "the ring is the five hours, so this is the WEEK past three quarters behind a "
+      + "fresh session. Ringed in the ground it sits on, and it rides the word in the bar "
+      + "too, so both are measured",
     fg: "--st-waiting", backdrop: ["--bg-island", "--bg-chrome"],
     threshold: UI, sc: "1.4.11",
   },
   {
-    what: "the same dot once that window is spent",
+    what: "the same dot once that window is past nine tenths",
     where: "red rather than amber, which is the pair everything else in this app uses "
       + "for the same two meanings",
     fg: "--st-error", backdrop: ["--bg-island", "--bg-chrome"],

@@ -159,9 +159,9 @@ for a session the deck did not start. A CLI with no reader says so rather than s
 ## Limits: what each AI has left, and where that number came from
 
 A dozen sessions draw on **one** budget, and when it runs out they stall together. The top bar says
-**Limits**, and behind that word is a dial per AI: its own logo, **the week drawn as a ring around it**,
-and the reading in figures underneath. Point at the word and the row opens with a card: the five-hour
-window and the week in full, each with its reading, its meter, when it lifts and where the number came
+**Limits**, and behind that word is a dial per AI: its own logo, **the five-hour window drawn as a ring
+around it**, and the reading in figures underneath. Point at the word and the row opens with a card: the
+five hours and the week in full, each with its reading, its meter, when it lifts and where the number came
 from, and the plan and account above them. Press a dial for the caveats and what to do about them.
 
 One word rather than the dials themselves, because the bar is otherwise about the deck's own sessions and
@@ -174,10 +174,22 @@ a glance you have to read to find out what it is about is not a glance. **Codex*
 beside it as *coming soon* — this deck does not read their limits yet, and a lineup that is stable across
 the day one of them starts working is worth more than one that shows only today.
 
-The ring is the week because a week is what you plan against; the figure under it is there because a ring
-at 0% and a ring that is broken look identical. The five hours is the number that stops you in the next
-ten minutes, so when it is nearly or wholly spent behind a comfortable week the dial carries a coloured
-dot — amber for "about to", red for "already".
+The ring is the five hours because that is the window that decides whether the next prompt is answered —
+planning against the week is what the card and the dialog are for. The figure under it is there because a
+ring at 0% and a ring that is broken look identical. When the *week* is the one in trouble behind a fresh
+five hours, the dial carries a coloured dot — amber for "about to", red for "already".
+
+**The hue around it is how much is left**: green up to three quarters spent, amber to nine tenths, red past
+it. It carries the ring, the figure under it, the dot and the word in the bar, and the same three bands
+colour every meter in the card and the dialog. A window with no ceiling to divide by gets no hue at all
+rather than a green one, because that would be a denominator this app has just said it does not have. The
+colours are said in words too: *nearly spent*, *over 90% spent*, *nothing moves until 19:00* — a band
+carried by hue alone is a band a person who cannot see the hue does not get.
+
+**The logo in the middle is the exception, and it is the brand's own colour** — Claude's coral, `#D97757`.
+Identity in the middle, level around it: the mark says *which AI* before anything has been read and says
+it the same way at 3% and at 97%, so tinting it by the quota would move the one fixed thing on the dial.
+Codex and Gemini stay dim while they are *coming soon*, because that is how "not ready" is said.
 
 Beside the ledger rather than in the panel, because it is the same kind of fact: two readings of what
 wants a person, and a third that says whether they can act on either. It also means the reading is there
@@ -201,9 +213,10 @@ tooltip. There are three ways this app can know such a number:
   would have to invent, the ring is a bare dashed track rather than an empty one, and the dialog offers
   the one command that would answer it, in a tile.
 
-The dialog behind a dial names all three by their tier — Reported, Observed, Estimated — with a sentence
-saying what each means. That is where the vocabulary is taught; a card carries only the caveat, and only
-where there is one.
+The dialog behind a dial explains each tier in a sentence, and names the two whose names are worth
+knowing — Observed and Estimated. That is where the vocabulary is taught; the account's own figure is
+labelled nowhere, in a card or a dialog, because an unqualified number is the account's and the sentence
+under it says so in plain words.
 
 The reading that matters most needs no percentage at all. When a session is refused, the app reads the
 limit banner on its way to the screen and says **nothing moves until 19:00** — in the card on screen, and
@@ -504,8 +517,8 @@ are `#[ignore]`d.
 ## The design
 
 The interface is a design system of its own — **True Ink**: a near-black, faintly cool ground where
-**hue belongs to state**, so green, amber and red mean working, waiting on you and broken, and are
-never spent on decoration. The accent is light itself, elevation is lightness rather than shadow (on
+**hue belongs to meaning**, so green, amber and red mean working, waiting on you and broken on a session
+— and, on a limit, plenty left, getting close and nearly gone. They are never spent on decoration. The accent is light itself, elevation is lightness rather than shadow (on
 this ground a cast shadow has nowhere to go), and the terminal deliberately does not follow the
 palette — it is a window onto another program, and those six ANSI hues are Claude Code's.
 

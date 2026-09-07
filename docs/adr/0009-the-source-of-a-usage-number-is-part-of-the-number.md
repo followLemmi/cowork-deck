@@ -1,6 +1,7 @@
 ---
 status: Accepted (amended 2026-09-01 — see "Amendment: the row and the dialog say
-  different things")
+  different things"; and 2026-09-07 — see "Amendment 2: the dialog stops printing
+  Reported as well")
 date: 2026-08-27
 deciders:
   - evgenykharetski
@@ -53,10 +54,12 @@ and again in the dialog. Not a tooltip, not a title attribute, not a commit
 message. Two numbers that look alike and mean different things are worse than one
 number and a blank.
 
-> **Amended.** The clause about the ROW — every tier, in the tier's own name —
-> did not survive contact and is narrowed at the foot of this record. The rule
-> above still holds for the dialog, and the *purpose* of the rule still holds
-> everywhere. Read the amendment before changing anything here.
+> **Amended twice.** The clause about naming every tier — every reading, in the
+> tier's own name — did not survive contact and is narrowed at the foot of this
+> record: first out of the rows, then out of the dialog as well. What no longer
+> holds anywhere is the word `REPORTED`; what holds everywhere is the *purpose* —
+> a number this app inferred must never be readable as the account's own. Read
+> both amendments before changing anything here.
 
 Three rules fall out of this and are enforced in code rather than left to
 judgement:
@@ -264,6 +267,42 @@ not a state the model can reach.
 **Print the tier where it changes what a person would do.** That is what decision
 1 meant; "always, everywhere, by name" was a proxy for it, and the proxy is what
 broke.
+
+## Amendment 2: the dialog stops printing `Reported` as well
+
+*2026-09-07, prompted by review of #498 and decided by this record's own author.*
+
+The amendment above kept one exception to itself: *"Every window in the dialog
+still carries its tier by name, including `Reported`."* The reasoning was that a
+dialog is where a vocabulary is taught, and that is still true — it is just not
+true of that word.
+
+Look at what the dialog actually prints for the strongest tier. The tier's name,
+and then, two lines below it, `sourceExplanation`'s sentence:
+
+```
+Current session   REPORTED
+23% used
+Resets 19:00.
+The account's own accounting — the same figure its own usage command draws.
+```
+
+The name over the definition teaches nothing the definition does not, and it
+teaches it in the one word the author of this record could not read (see the
+amendment above). The rule that replaced decision 1 — *print the tier where it
+changes what a person would do* — is not satisfied by a word whose whole content
+is repeated underneath it in plain language.
+
+**So `sourceBadge` decides which tiers print their name, and `reported` prints
+none anywhere.** `Observed`, `Estimated` and `Unknown` keep theirs, in the
+dialog, and those are the names worth teaching: a row says "this app only", and
+this is the surface where a person finds out that it is a tier called `Observed`
+and what the tier means. The strong tier's sentence stays exactly where it was —
+what leaves is the label above it, not the claim.
+
+`sourceLabel` still knows every name and is still the one place they are written.
+What changed is which of them reaches a surface, which keeps the two decisions
+apart: what a tier is called, and where saying so is worth the room.
 
 ## Alternatives considered
 

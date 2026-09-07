@@ -52,10 +52,13 @@ paid the click, the person deserves more than a sentence.
 Two further things bear on the choice, and are not general:
 
 1. **The rendering rules for a limit are already pure functions in TypeScript** —
-   `primaryWindow`, `readingOf`, `tierNote`, `limitFoot`, `formatReset` in
+   `glanceWindow`, `readingOf`, `tierNote`, `limitFoot`, `formatReset` in
    `src/usage.ts`, written that way so the block, the dialog and anything after
    them cannot disagree about a number. A menu built in Rust would reimplement
-   every one of them.
+   every one of them. (The window a row reads was `primaryWindow` when this was
+   written and is `glanceWindow` since ADR-0011's third amendment: the menu reads
+   the same five hours the panel's ring draws, because a menu and a panel built
+   from one report must not name two different windows.)
 2. **On Linux the click may never reach us.** On most desktops a
    StatusNotifierItem's left click is not deliverable to the application, and
    some environments only ever show the menu. A design whose panel is a window

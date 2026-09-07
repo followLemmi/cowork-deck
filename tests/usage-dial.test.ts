@@ -11,7 +11,7 @@ vi.mock("../src/ipc", async (orig) => ({
   usageClearObserved: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { LimitDials } from "../src/usage-dial";
+import { LimitDials, POP_GRACE_MS } from "../src/usage-dial";
 import { installSprite } from "../src/icons";
 
 const win = (over: Partial<LimitWindow> = {}): LimitWindow => ({
@@ -150,15 +150,16 @@ describe("the row of dials: one mark per AI, in a fixed place", () => {
   });
 });
 
-describe("the ring: the week, and only the week", () => {
-  /** The five hours is the more urgent number and it is not what a ring is for:
-   *  a ring is a period coming round again, and the period worth planning
-   *  against is the week. The five hours is the first thing in the card. */
-  it("fills from the weekly window, not from the session's", () => {
+describe("the ring: the five hours, and only the five hours", () => {
+  /** It was the week, on the argument that a week is what you plan against. A
+   *  glance is read while working, and the five hours is the window that decides
+   *  whether the next prompt is answered. The week is the second block of the
+   *  card and the dot on the dial. */
+  it("fills from the session window, not from the week's", () => {
     const { el, dials } = mount();
     dials.render([snap({ windows: [
-      win({ usedFraction: 0.9, state: "near" }),
-      week({ usedFraction: 0.25, state: "ok" }),
+      win({ usedFraction: 0.25, state: "ok" }),
+      week({ usedFraction: 0.9, state: "near" }),
     ] })], NOW);
     const arc = dial(el, "claude").querySelector(".dial-arc")!;
     const circumference = 2 * Math.PI * 13.5;
@@ -173,18 +174,98 @@ describe("the ring: the week, and only the week", () => {
   it("draws a bare track where there is no share to draw an arc from", () => {
     const { el, dials } = mount();
     dials.render([snap({ windows: [
-      week({ amount: { used: 412_000, limit: null, unit: "tokens" }, source: "observed" }),
+      win({ amount: { used: 412_000, limit: null, unit: "tokens" }, source: "observed" }),
     ] })], NOW);
     expect(dial(el, "claude").querySelector(".dial-track")).not.toBeNull();
     expect(dial(el, "claude").querySelector(".dial-arc")).toBeNull();
   });
 
-  it("takes its hue from the weekly window's own state", () => {
+  /** The bands, and the reason they exist: a provider's state is a step function
+   *  — `ok` until it is `near` — so three quarters spent used to be drawn in
+   *  exactly the hue of four percent. */
+  it("takes its hue from the band the reading falls in, not from the state", () => {
     const { el, dials } = mount();
-    dials.render([snap({ windows: [week({ usedFraction: 0.92, state: "near" })] })], NOW);
-    expect(dial(el, "claude").querySelector(".dial-ring")!.classList).toContain("lim-near");
-    dials.render([snap({ windows: [week({ usedFraction: 1, state: "exhausted" })] })], NOW);
-    expect(dial(el, "claude").querySelector(".dial-ring")!.classList).toContain("lim-out");
+    const ring = () => dial(el, "claude").querySelector(".dial-ring")!.classList;
+
+    dials.render([snap({ windows: [win({ usedFraction: 0.25, state: "ok" })] })], NOW);
+    expect(ring()).toContain("lim-fine");
+    dials.render([snap({ windows: [win({ usedFraction: 0.8, state: "ok" })] })], NOW);
+    expect(ring()).toContain("lim-near");
+    dials.render([snap({ windows: [win({ usedFraction: 0.93, state: "ok" })] })], NOW);
+    expect(ring()).toContain("lim-out");
+    dials.render([snap({ windows: [win({ usedFraction: 1, state: "exhausted" })] })], NOW);
+    expect(ring()).toContain("lim-out");
+  });
+
+  /** The hue is one reading across the whole dial: the arc, the logo in the
+   *  middle of it and the figure under it. `data-zone` is the carrier, so the
+   *  stylesheet reaches all three from one attribute and they cannot disagree. */
+  it("carries the band on the dial itself, for the logo and the figure", () => {
+    const { el, dials } = mount();
+    dials.render([snap({ windows: [win({ usedFraction: 0.3, state: "ok" })] })], NOW);
+    expect(dial(el, "claude").dataset.zone).toBe("fine");
+    dials.render([snap({ windows: [win({ usedFraction: 0.99, state: "ok" })] })], NOW);
+    expect(dial(el, "claude").dataset.zone).toBe("out");
+  });
+
+  /** The cascade, against the real stylesheet — which is why this file loads it.
+   *  Rules in three different places have to agree, and the class and the
+   *  attribute above prove only that the carriers are on the elements. jsdom
+   *  leaves `var()` unresolved, and that is enough: the token it hands back is
+   *  the one the winning rule named. */
+  it("puts the band's hue on the arc and the figure, in every band", () => {
+    const { el, dials } = mount();
+    dials.render([snap({ windows: [win({ usedFraction: 0.3, state: "ok" })] })], NOW);
+    const d = dial(el, "claude");
+    expect(getComputedStyle(d.querySelector(".dial-arc")!).stroke).toBe("var(--st-working)");
+    expect(getComputedStyle(d.querySelector(".dial-caption")!).color).toBe("var(--st-working)");
+
+    dials.render([snap({ windows: [win({ usedFraction: 0.99, state: "ok" })] })], NOW);
+    const out = dial(el, "claude");
+    expect(getComputedStyle(out.querySelector(".dial-arc")!).stroke).toBe("var(--st-error)");
+    expect(getComputedStyle(out.querySelector(".dial-caption")!).color).toBe("var(--st-error)");
+  });
+
+  /** And NOT on the logo. A green Claude mark is not Claude's mark: the logo
+   *  answers which AI, it answers it before anything has been read, and it
+   *  answers it the same way at 3% and at 97%. Tinting it by the quota moved the
+   *  one fixed thing on the dial — the fault the fixed ORDER exists to prevent,
+   *  one element further in. */
+  it("leaves the logo in the brand's own colour, whatever the band", () => {
+    const { el, dials } = mount();
+    for (const used of [0.3, 0.8, 0.99]) {
+      dials.render([snap({ windows: [win({ usedFraction: used, state: "ok" })] })], NOW);
+      const mark = dial(el, "claude").querySelector(".dial-mark")!;
+      expect(getComputedStyle(mark).color).toBe("var(--brand)");
+      expect(getComputedStyle(dial(el, "claude")).getPropertyValue("--brand"))
+        .toBe("var(--brand-claude)");
+    }
+  });
+
+  /** A held brand is drawn dim, because dimming is how "not ready" is said — a
+   *  full-colour logo would say the opposite. So the brand rule does not reach
+   *  it, nor a provider this machine has nothing for. */
+  it("keeps a held or undetected dial out of the brand colour", () => {
+    const { el, dials } = mount();
+    dials.render([], NOW);
+    // Claude is in the lineup but nothing answered for it.
+    for (const p of ["claude", "codex", "gemini"]) {
+      const mark = dial(el, p).querySelector(".dial-mark")!;
+      expect(getComputedStyle(mark).color).not.toBe("var(--brand)");
+    }
+  });
+
+  /** A held brand and one this machine does not have are not "green": there is
+   *  no reading to band, and a hue would be one invented. */
+  it("gives no band to a dial with no reading", () => {
+    const { el, dials } = mount();
+    dials.render([snap({ windows: [
+      win({ amount: { used: 412_000, limit: null, unit: "tokens" }, source: "observed" }),
+    ] })], NOW);
+    expect(dial(el, "claude").dataset.zone).toBeUndefined();
+    expect(dial(el, "codex").dataset.zone).toBeUndefined();
+    // `className` on an SVG element is an `SVGAnimatedString`, not a string.
+    expect(dial(el, "claude").querySelector(".dial-ring")!.getAttribute("class")).toBe("dial-ring");
   });
 });
 
@@ -192,11 +273,11 @@ describe("the ring: the week, and only the week", () => {
  *  fresh week reads 0%, which draws an arc of zero length — indistinguishable
  *  from a ring that is not working. */
 describe("the caption: the figure the ring cannot say", () => {
-  it("prints the percentage, a fresh week included", () => {
+  it("prints the percentage, a fresh window included", () => {
     const { el, dials } = mount();
-    dials.render([snap({ windows: [week({ usedFraction: 0, state: "ok" })] })], NOW);
+    dials.render([snap({ windows: [win({ usedFraction: 0, state: "ok" })] })], NOW);
     expect(caption(el, "claude")).toBe("0%");
-    dials.render([snap({ windows: [week({ usedFraction: 0.624, state: "ok" })] })], NOW);
+    dials.render([snap({ windows: [win({ usedFraction: 0.624, state: "ok" })] })], NOW);
     expect(caption(el, "claude")).toBe("62%");
   });
 
@@ -205,7 +286,7 @@ describe("the caption: the figure the ring cannot say", () => {
   it("prints a dash rather than a number it would have to invent", () => {
     const { el, dials } = mount();
     dials.render([snap({ windows: [
-      week({ amount: { used: 412_000, limit: null, unit: "tokens" }, source: "observed" }),
+      win({ amount: { used: 412_000, limit: null, unit: "tokens" }, source: "observed" }),
     ] })], NOW);
     expect(caption(el, "claude")).toBe("—");
   });
@@ -219,24 +300,39 @@ describe("the caption: the figure the ring cannot say", () => {
 });
 
 describe("the dot: what the ring is not saying", () => {
-  /** A dial showing a comfortable 12% while the deck is about to be refused
-   *  would be answering the question nobody asked. */
-  it("marks a session window in trouble behind a healthy week", () => {
+  /** The ring is the five hours, so the window it cannot carry is the week: a
+   *  dial drawing a fresh 8% while two days of the week's budget are left would
+   *  be answering half the question. */
+  it("marks a weekly window in trouble behind a fresh five hours", () => {
     const { el, dials } = mount();
     dials.render([snap({ windows: [
-      win({ usedFraction: 1, state: "exhausted", resetsAt: RESET }),
-      week({ usedFraction: 0.12, state: "ok" }),
+      win({ usedFraction: 0.08, state: "ok" }),
+      week({ usedFraction: 1, state: "exhausted", resetsAt: RESET }),
     ] })], NOW);
-    expect(dial(el, "claude").dataset.alert).toBe("exhausted");
+    expect(dial(el, "claude").dataset.alert).toBe("out");
     expect(dial(el, "claude").querySelector(".dial-dot")).not.toBeNull();
     expect(dial(el, "claude").getAttribute("aria-label")).toContain("another window is spent");
+  });
+
+  /** "Spent" is a refusal and the band is a warning. A week at 93% has not
+   *  stopped anything, and a dial saying it had would be this app claiming work
+   *  was over when it was not. */
+  it("says which band a window is in rather than calling it spent", () => {
+    const { el, dials } = mount();
+    dials.render([snap({ windows: [
+      win({ usedFraction: 0.08, state: "ok" }),
+      week({ usedFraction: 0.93, state: "ok" }),
+    ] })], NOW);
+    expect(dial(el, "claude").dataset.alert).toBe("out");
+    expect(dial(el, "claude").getAttribute("aria-label"))
+      .toContain("another window is over 90% spent");
   });
 
   it("marks nothing when the ring is already the worst of them", () => {
     const { el, dials } = mount();
     dials.render([snap({ windows: [
-      win({ usedFraction: 0.1, state: "ok" }),
-      week({ usedFraction: 0.95, state: "near" }),
+      win({ usedFraction: 0.95, state: "near" }),
+      week({ usedFraction: 0.1, state: "ok" }),
     ] })], NOW);
     expect(dial(el, "claude").dataset.alert).toBeUndefined();
     expect(dial(el, "claude").querySelector(".dial-dot")).toBeNull();
@@ -259,47 +355,98 @@ describe("the one word in the top bar", () => {
    *  the press is not needed to find out that something is wrong. */
   it("carries the alarm itself, so nothing has to be opened to see it", () => {
     const { el, dials } = mount();
-    dials.render([snap({ windows: [week({ usedFraction: 0.2, state: "ok" })] })], NOW);
+    dials.render([snap({ windows: [win({ usedFraction: 0.2, state: "ok" })] })], NOW);
     expect(trigger(el).dataset.alarm).toBeUndefined();
     expect(trigger(el).querySelector(".dial-dot")).toBeNull();
 
-    // A five-hour window in trouble reaches the word even though the ring the
-    // dial draws is the week's and is fine.
+    // A weekly window in trouble reaches the word even though the ring the dial
+    // draws is the session's and is fine.
     dials.render([snap({ windows: [
-      win({ usedFraction: 0.98, state: "near" }),
-      week({ usedFraction: 0.2, state: "ok" }),
+      win({ usedFraction: 0.2, state: "ok" }),
+      week({ usedFraction: 0.8, state: "ok" }),
     ] })], NOW);
     expect(trigger(el).dataset.alarm).toBe("near");
-    expect(trigger(el).getAttribute("aria-label")).toContain("something is nearly spent");
+    expect(trigger(el).getAttribute("aria-label")).toContain("something is over 75% spent");
 
-    dials.render([snap({ windows: [week({ usedFraction: 1, state: "exhausted" })] })], NOW);
-    expect(trigger(el).dataset.alarm).toBe("exhausted");
+    dials.render([snap({ windows: [win({ usedFraction: 1, state: "exhausted" })] })], NOW);
+    expect(trigger(el).dataset.alarm).toBe("out");
+    expect(trigger(el).getAttribute("aria-label")).toContain("something is spent");
   });
 
-  it("opens on a point and shuts when the pointer leaves the block", () => {
+  /** The property that makes hiding the dials acceptable, stated against the
+   *  bands: the word cannot stay neutral over a dial that has gone red. */
+  it("goes amber and red on the same thresholds the dials do", () => {
     const { el, dials } = mount();
-    dials.render([snap({ windows: [week({ usedFraction: 0.25, state: "ok" })] })], NOW);
-    hover(trigger(el));
-    expect(pop(el).hidden).toBe(false);
-    expect(trigger(el).getAttribute("aria-expanded")).toBe("true");
-    // The popover is a DESCENDANT of the block, so the pointer travelling from
-    // the word into the dials does not leave it. Only leaving the block does.
-    unhover(el);
-    expect(pop(el).hidden).toBe(true);
-    expect(trigger(el).getAttribute("aria-expanded")).toBe("false");
+    dials.render([snap({ windows: [win({ usedFraction: 0.74, state: "ok" })] })], NOW);
+    expect(trigger(el).dataset.alarm).toBeUndefined();
+    dials.render([snap({ windows: [win({ usedFraction: 0.75, state: "ok" })] })], NOW);
+    expect(trigger(el).dataset.alarm).toBe("near");
+    dials.render([snap({ windows: [win({ usedFraction: 0.9, state: "ok" })] })], NOW);
+    expect(trigger(el).dataset.alarm).toBe("out");
+    // Not spent, so it does not say so.
+    expect(trigger(el).getAttribute("aria-label")).toContain("something is over 90% spent");
+  });
+
+  it("opens on a point and shuts once the pointer has stayed away", () => {
+    vi.useFakeTimers();
+    try {
+      const { el, dials } = mount();
+      dials.render([snap({ windows: [win({ usedFraction: 0.25, state: "ok" })] })], NOW);
+      hover(trigger(el));
+      expect(pop(el).hidden).toBe(false);
+      expect(trigger(el).getAttribute("aria-expanded")).toBe("true");
+      // The popover is a DESCENDANT of the block, so the pointer travelling from
+      // the word into the dials does not leave it. Only leaving the block does —
+      // and even then not at once, see below.
+      unhover(el);
+      expect(pop(el).hidden).toBe(false);
+      vi.advanceTimersByTime(POP_GRACE_MS);
+      expect(pop(el).hidden).toBe(true);
+      expect(trigger(el).getAttribute("aria-expanded")).toBe("false");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** The reported defect, and the whole of it is the delay. The word is in the
+   *  bar and the box hangs from its bottom edge growing LEFTWARD, so the line a
+   *  hand draws from the word to the Claude dial crosses the corner that belongs
+   *  to neither — a `mouseleave` fires there, on the way IN. */
+  it("survives a pointer cutting the corner between the word and a dial", () => {
+    vi.useFakeTimers();
+    try {
+      const { el, dials } = mount();
+      dials.render([snap({ windows: [win({ usedFraction: 0.25, state: "ok" })] })], NOW);
+      hover(trigger(el));
+      unhover(el);
+      // Half way across the corner, and back inside: the box is still there and
+      // the shut that was scheduled never happens.
+      vi.advanceTimersByTime(POP_GRACE_MS / 2);
+      hover(el);
+      vi.advanceTimersByTime(POP_GRACE_MS * 4);
+      expect(pop(el).hidden).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   /** A keyboard has no pointer to hold in place, which is the case the pin
    *  exists for: a press keeps the box open through both. */
   it("stays open on a press until it is pressed again", () => {
-    const { el, dials } = mount();
-    dials.render([snap({ windows: [week({ usedFraction: 0.25, state: "ok" })] })], NOW);
-    trigger(el).click();
-    expect(pop(el).hidden).toBe(false);
-    unhover(el);
-    expect(pop(el).hidden).toBe(false);
-    trigger(el).click();
-    expect(pop(el).hidden).toBe(true);
+    vi.useFakeTimers();
+    try {
+      const { el, dials } = mount();
+      dials.render([snap({ windows: [win({ usedFraction: 0.25, state: "ok" })] })], NOW);
+      trigger(el).click();
+      expect(pop(el).hidden).toBe(false);
+      unhover(el);
+      vi.advanceTimersByTime(POP_GRACE_MS * 2);
+      expect(pop(el).hidden).toBe(false);
+      trigger(el).click();
+      expect(pop(el).hidden).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shuts on Escape and hands the keyboard back to the word", () => {
@@ -311,21 +458,27 @@ describe("the one word in the top bar", () => {
     expect(document.activeElement).toBe(trigger(el));
   });
 
-  /** `el` outlives the paint, so the three listeners that close the popover are
-   *  installed once in the constructor. Attaching them per paint would add one a
-   *  minute for as long as the window is open — and the symptom would be this:
-   *  a shut that fires again for every paint that ever happened. */
+  /** `el` outlives the paint, so the listeners that open and close the popover
+   *  are installed once in the constructor. Attaching them per paint would add
+   *  one a minute for as long as the window is open — and the symptom would be
+   *  this: a shut that fires again for every paint that ever happened. */
   it("does not accumulate a closing listener on every repaint", () => {
-    const { el, dials } = mount();
-    const snaps = [snap({ windows: [week({ usedFraction: 0.25, state: "ok" })] })];
-    const spy = vi.spyOn(el, "addEventListener");
-    for (let i = 0; i < 5; i++) dials.render(snaps, NOW + i * 60_000);
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
-    // And it still closes after all those paints.
-    hover(trigger(el));
-    unhover(el);
-    expect(pop(el).hidden).toBe(true);
+    vi.useFakeTimers();
+    try {
+      const { el, dials } = mount();
+      const snaps = [snap({ windows: [win({ usedFraction: 0.25, state: "ok" })] })];
+      const spy = vi.spyOn(el, "addEventListener");
+      for (let i = 0; i < 5; i++) dials.render(snaps, NOW + i * 60_000);
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+      // And it still closes after all those paints.
+      hover(trigger(el));
+      unhover(el);
+      vi.advanceTimersByTime(POP_GRACE_MS);
+      expect(pop(el).hidden).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -371,7 +524,7 @@ describe("the card: everything the dial had no room for", () => {
     })], NOW);
     hover(trigger(el));
     const names = [...card(el).querySelectorAll(".dial-win .lim-name")].map((n) => n.textContent);
-    expect(names).toEqual(["Current week", "Current session"]);
+    expect(names).toEqual(["Current session", "Current week"]);
     // The two facts that explain an unexpected ceiling, and neither is guessable
     // from the numbers — which is why they are on the glance now.
     expect(card(el).querySelector(".lim-who")!.textContent).toBe("person@example.com · max");
@@ -388,8 +541,8 @@ describe("the card: everything the dial had no room for", () => {
   it("qualifies a number that could mislead and leaves the account's plain", () => {
     const { el, dials } = mount();
     dials.render([snap({ windows: [
-      week({ usedFraction: 0.25, state: "ok", source: "reported" }),
-      win({ usedFraction: 0.4, state: "ok", source: "observed" }),
+      win({ usedFraction: 0.4, state: "ok", source: "reported" }),
+      week({ usedFraction: 0.25, state: "ok", source: "observed" }),
     ] })], NOW);
     hover(trigger(el));
     const boxes = [...card(el).querySelectorAll(".dial-win")];

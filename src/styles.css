@@ -147,10 +147,30 @@
      island in the specimen sheet, and both composites are measured. */
   --sel-hover: rgba(246, 247, 249, 0.126);
 
-  /* Hue, therefore, means exactly one thing: what a session is doing. */
+  /* Hue, therefore, means exactly one thing: what a session is doing — and, on a
+     limit, how much of it is left (`zoneOf`). */
   --st-working: #7bd77f;
   --st-waiting: #efc845;
   --st-error: #fb817a;
+
+  /* --- somebody else's hue -----------------------------------------------
+     The ONE exception to everything above, and it is an exception because it is
+     not this app's colour to choose. A brand mark is drawn in the brand's own
+     colour or it is drawn wrong, the same argument that made these logos come in
+     whole on their owners' 24-unit grid rather than redrawn to match this icon
+     set (#498): a mark a person has to learn a second time is not a logo.
+
+     Claude's is `#D97757` — the coral of the Anthropic palette's accent and of
+     the mark itself, and the `hex` of `claude` in Simple Icons, which is where
+     the path in `icons.ts` was traced from.
+
+     There is no token here for Codex or Gemini, and that is not an omission.
+     OpenAI's own hex is `#000000`, which on this ground is not a mark at all,
+     and Gemini's logo is a four-stop gradient with no single official hex; both
+     brands are also HELD (`soon` in `usage.ts`) and drawn deliberately dim,
+     which is how "not ready" is said. A brand with no token keeps the dial's own
+     neutral — see `.dial-mark`. */
+  --brand-claude: #d97757;
   /* A soft error ground for a BANNER — a box with body text on it, not a chip.
      Deliberately not `.state-error`'s fill: that one is 0.06 because a chip's own fill
      shares the hue of its text and every point of alpha there costs contrast, whereas
@@ -4627,9 +4647,14 @@ h6.md-head { font-size: var(--fs-sm); }
 .dial-trigger:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .dial-trigger-word { white-space: nowrap; }
 /* Amber, then red, on the word itself: the alarm is the half of the reading that
-   must not need a gesture. */
+   must not need a gesture. The bands are the dials' own — three quarters and
+   nine tenths (`zoneOf`) — so the word cannot stay neutral over a dial that has
+   gone red, which is the property that makes hiding them acceptable. The word
+   deliberately does NOT go green when everything is fine: "fine" is the state it
+   is in almost always, and a chrome that carried a hue almost always would be
+   spending the reader's attention on the answer they did not ask for. */
 .dial-trigger[data-alarm="near"] { color: var(--st-waiting); }
-.dial-trigger[data-alarm="exhausted"] { color: var(--st-error); }
+.dial-trigger[data-alarm="out"] { color: var(--st-error); }
 .dial-caret { display: inline-flex; align-items: center; flex: none; color: var(--fg-dim); }
 /* DOWN while shut and up while open: a disclosure's caret points at where its
    content is, and the popover is below. */
@@ -4683,9 +4708,29 @@ h6.md-head { font-size: var(--fs-sm); }
 .dial[data-soon] .dial-track,
 .dial[data-state="none"] .dial-track,
 .dial[data-state="unknown"] .dial-track { stroke: var(--line); stroke-dasharray: 2 3; }
-/* Round caps, so a week at 2% is a mark rather than a hairline nobody sees. */
+/* Round caps, so a session at 2% is a mark rather than a hairline nobody sees.
+   The bare `--fg-dim` is what a ring with no BAND is drawn in: an absolute with
+   no ceiling, a reading nobody has. Everything with a share takes its hue from
+   the band below, green included. */
 .dial-arc { stroke: var(--fg-dim); stroke-width: 2.5; stroke-linecap: round; }
 .dial:hover .dial-arc { stroke: var(--fg-mid); }
+
+/* --- the three bands ---------------------------------------------------- */
+/* Green to three quarters, amber to nine tenths, red past it (`zoneOf`), and
+   the same three hues wherever a limit is drawn: the arc, the logo inside it,
+   the figure under it and the meters in the card and the dialog.
+
+   Green is a reversal, and the record of it is in `zoneOf` and in ADR-0011's
+   third amendment: a provider's state is a step function, so a ring three
+   quarters through the five hours used to be drawn exactly like a ring at 4%.
+   It does not collide with the session rails, because a rail is a bar down the
+   side of a row and these are inside a dial or a bar with its own track.
+
+   The hover rules exist because `.dial:hover` brightens the arc and the mark,
+   and a hue that changed under the pointer would be a reading that changed
+   under the pointer. A band survives being pointed at. */
+.dial-ring.lim-fine .dial-arc,
+.dial:hover .dial-ring.lim-fine .dial-arc { stroke: var(--st-working); }
 .dial-ring.lim-near .dial-arc,
 .dial:hover .dial-ring.lim-near .dial-arc { stroke: var(--st-waiting); }
 .dial-ring.lim-out .dial-arc,
@@ -4696,6 +4741,30 @@ h6.md-head { font-size: var(--fs-sm); }
    which is stroked on 16 and would render every one of these as nothing. */
 .brand { display: block; flex: none; fill: currentColor; stroke: none; }
 .dial-mark .brand, .dial-mark .icon { width: 20px; height: 20px; }
+/* --- the logo is the brand's colour, and nothing else on the dial is ----- */
+/* The first cut of the bands took the mark as well, on the argument that a logo
+   is the biggest thing on a 40px dial and colouring the arc alone leaves the
+   reading in the thinnest part of the drawing. The argument was about the wrong
+   element. A green Claude mark is not Claude's mark: the logo answers WHICH AI,
+   it answers it before anything has been read, and it answers it the same way at
+   3% and at 97%. Tinting it by the quota made the one fixed thing on the dial
+   move with the readings — which is the identical fault, one element further in,
+   that drawing the dials in a fixed order exists to prevent.
+
+   So the brand keeps its own colour (`--brand-claude`, and the note there for why
+   there is only one of them) and the BANDS keep everything that is about the
+   reading: the arc, the figure under it, the dot, the meters in the card and the
+   dialog, and the word in the top bar. A cleaner division than the one it
+   replaces — identity in the middle, level around it.
+
+   `--brand` falls back to `currentColor`, so a provider with no token of its own
+   inherits the dial's neutral. A HELD or undetected dial is excluded from the
+   rule altogether and keeps the `--fg-dim` of `[aria-disabled]`: dimming is how
+   "this one is not ready" is said, and a full-colour logo would say the
+   opposite. */
+.dial { --brand: currentColor; }
+.dial[data-provider="claude"] { --brand: var(--brand-claude); }
+.dial:not([data-soon]):not([data-state="none"]) .dial-mark { color: var(--brand); }
 
 /* The reading in figures, under the ring. Tabular, so three dials side by side
    line up and a change of value does not shift the row. */
@@ -4703,23 +4772,27 @@ h6.md-head { font-size: var(--fs-sm); }
   font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
   color: var(--fg-dim); white-space: nowrap;
 }
-.dial[data-state="near"] .dial-caption { color: var(--st-waiting); }
-.dial[data-state="exhausted"] .dial-caption { color: var(--st-error); }
+/* The band said in characters as well as in hue — for anybody the hue does not
+   reach, and because the figure is the part of a dial that can be checked. */
+.dial[data-zone="fine"] .dial-caption { color: var(--st-working); }
+.dial[data-zone="near"] .dial-caption { color: var(--st-waiting); }
+.dial[data-zone="out"] .dial-caption { color: var(--st-error); }
 
-/* What the ring is NOT saying: the five-hour window in trouble while the week is
-   comfortable. Ringed in the ground it sits on so it reads as a badge on the
-   dial rather than as a fleck in the box — which is why the ground is a
-   variable: the same badge rides the word in the top bar, on the chrome. */
+/* What the ring is NOT saying: now the ring is the five hours, that is the WEEK
+   in trouble behind a comfortable session. Ringed in the ground it sits on so it
+   reads as a badge on the dial rather than as a fleck in the box — which is why
+   the ground is a variable: the same badge rides the word in the top bar, on the
+   chrome. */
 .dial-dot {
   position: absolute; top: -1px; right: -1px; width: 8px; height: 8px;
   border-radius: 50%; background: var(--st-waiting);
   box-shadow: 0 0 0 2px var(--dial-ground, var(--bg-island));
 }
-.dial[data-alert="exhausted"] .dial-dot { background: var(--st-error); }
+.dial[data-alert="out"] .dial-dot { background: var(--st-error); }
 /* On the trigger it is not absolute — there is no ring to sit on the corner of,
    and a badge floating beside a word reads as a bullet. */
 .dial-trigger .dial-dot { position: static; width: 6px; height: 6px; box-shadow: none; }
-.dial-trigger[data-alarm="exhausted"] .dial-dot { background: var(--st-error); }
+.dial-trigger[data-alarm="out"] .dial-dot { background: var(--st-error); }
 
 /* --- the detail behind a dial ------------------------------------------- */
 /* In the deck it is the second thing inside the popover, in the flow, because
@@ -4800,7 +4873,13 @@ h6.md-head { font-size: var(--fs-sm); }
   display: block; height: 4px; border-radius: var(--r-pill);
   background: var(--bg-inset); overflow: hidden;
 }
+/* The bare `--fg-dim` is a fill with no band — an exhausted window with no share
+   fills to the brim and is red by `.lim-out` below, so what is left here is the
+   case that has neither. The three bands are the dials' own (`zoneOf`), which is
+   what stops a bar in the card and the ring that opened it reading as two
+   different answers. */
 .lim-fill { display: block; height: 100%; background: var(--fg-dim); }
+.lim-meter.lim-fine .lim-fill { background: var(--st-working); }
 .lim-meter.lim-near .lim-fill { background: var(--st-waiting); }
 .lim-meter.lim-out .lim-fill { background: var(--st-error); }
 .lim-out-text { color: var(--st-error); }

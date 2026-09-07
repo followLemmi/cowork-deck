@@ -113,6 +113,29 @@ describe("the limits section", () => {
     expect(texts(f, "Limits")[0]).toContain("nothing moves — no reset time known");
   });
 
+  /** The same window the dial's ring draws (`glanceWindow`), which is the five
+   *  hours. This menu is the Linux fallback for the panel, so a menu naming one
+   *  window while the panel's dial drew another would be two answers to one
+   *  question out of one report. It used to be whichever window was worst off,
+   *  which also meant the window a row was about moved with the readings. */
+  it("reads the five-hour window, whatever else the provider declared", () => {
+    const f = facts({ usage: [snap({ windows: [
+      win({ id: "session", usedFraction: 0.23, state: "ok", source: "reported" }),
+      win({ id: "week", label: "Current week", usedFraction: 0.62, state: "ok", source: "reported" }),
+    ] })] });
+    expect(texts(f, "Limits")[0]).toBe("Claude · 23% used");
+  });
+
+  /** What a fixed window would otherwise drop, in the dial's own words
+   *  (`alarmPhrase`): a week deep into its band behind a fresh five hours. */
+  it("says when a window it is not reading wants attention", () => {
+    const f = facts({ usage: [snap({ windows: [
+      win({ id: "session", usedFraction: 0.1, state: "ok", source: "reported" }),
+      win({ id: "week", label: "Current week", usedFraction: 0.93, state: "ok", source: "reported" }),
+    ] })] });
+    expect(texts(f, "Limits")[0]).toBe("Claude · 10% used · another window is over 90% spent");
+  });
+
   /** Nothing detected is a sentence, not an empty section: an app on a machine
    *  with no AI on it should say so rather than show a gap. */
   it("says so when there is no AI on the machine", () => {

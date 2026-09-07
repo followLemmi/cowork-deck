@@ -24,7 +24,7 @@
 import type { AiUsage, SessionState, TrayPanel, TrayRow } from "./ipc";
 import type { RemoteSession } from "./cross-window";
 import { LimitDials } from "./usage-dial";
-import { limitFoot, primaryWindow, readingOf, tierNote } from "./usage";
+import { alarmPhrase, dialAlert, glanceWindow, limitFoot, readingOf, tierNote } from "./usage";
 import { plural } from "./format";
 
 /** Everything a section is allowed to look at. */
@@ -173,11 +173,22 @@ const PANEL: PanelSection[] = [
      *  deck's rows were built to keep. So the row is the label, the tier, the
      *  reading, and — when there is one — the sentence about the state, which is
      *  `limitFoot`'s and shared with the block rather than written again.
+     *
+     *  **The window is `glanceWindow`'s**, which is the five hours, and it is
+     *  the same window the ring on the dial draws. This menu is the Linux
+     *  fallback for the panel (ADR-0013), so a menu naming one window while the
+     *  panel's dial drew another would be two answers to one question from one
+     *  report. It used to be `primaryWindow` — whichever window was worst off —
+     *  and that also meant which window a row was about moved with the readings.
+     *
+     *  What the fixed window would drop is picked up by `dialAlert`: a week in
+     *  trouble behind a comfortable session is said at the end of the row, in
+     *  the same words the dial's own description uses.
      */
     rows: ({ usage, now }) => {
       if (!usage.length) return [reading("No AI detected on this machine.")];
       return usage.map((snap) => {
-        const win = primaryWindow(snap);
+        const win = glanceWindow(snap);
         if (!win) {
           return {
             text: `${snap.label} · ${snap.error ?? "no limits reported"}`,
@@ -191,6 +202,8 @@ const PANEL: PanelSection[] = [
         if (tier) parts.push(tier);
         const foot = limitFoot(win, snap.error, now);
         if (foot) parts.push(foot);
+        const alert = dialAlert(snap, win);
+        if (alert) parts.push(`another window is ${alarmPhrase(alert)}`);
         return { text: parts.join(" · "), action: ACTIONS.usage(snap.provider) };
       });
     },

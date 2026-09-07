@@ -1,20 +1,26 @@
 import { describe, it, expect } from "vitest";
-import type { AiUsage, LimitState, LimitWindow, UsageSource } from "../src/ipc";
+import type { AiUsage, LimitWindow, UsageSource } from "../src/ipc";
 import {
+  alarmOf,
+  alarmPhrase,
   BRANDS,
   deckLimit,
   dialAlert,
   dialLineup,
-  ringWindow,
+  glanceWindow,
   formatReset,
   limitFoot,
   LimitNotifier,
   meterFraction,
+  NEAR_FROM,
+  OUT_FROM,
   primaryWindow,
   readingOf,
+  sourceBadge,
   sourceExplanation,
   sourceLabel,
-  stateClass,
+  zoneClass,
+  zoneOf,
   rankedAis,
   tierNote,
   usageGlance,
@@ -226,19 +232,76 @@ describe("what the whole deck is up against", () => {
   });
 });
 
-describe("colour, and the one that is missing", () => {
-  it("gives a hue to spent and nearly-spent, and none at all to healthy", () => {
-    expect(stateClass("exhausted")).toBe("lim-out");
-    expect(stateClass("near")).toBe("lim-near");
-    for (const s of ["ok", "unknown"] as LimitState[]) expect(stateClass(s)).toBe("lim-fine");
+describe("the three bands", () => {
+  /** The arithmetic, at both edges of both bands. Stated as inequalities against
+   *  the exported thresholds rather than as literals, so a threshold that moves
+   *  moves the test with it and a threshold that moves in only one of the two
+   *  places does not. */
+  it("is green below three quarters, amber to nine tenths, red past it", () => {
+    expect(zoneOf(win({ usedFraction: 0, state: "ok" }))).toBe("fine");
+    expect(zoneOf(win({ usedFraction: NEAR_FROM - 0.01, state: "ok" }))).toBe("fine");
+    expect(zoneOf(win({ usedFraction: NEAR_FROM, state: "ok" }))).toBe("near");
+    expect(zoneOf(win({ usedFraction: OUT_FROM - 0.01, state: "ok" }))).toBe("near");
+    expect(zoneOf(win({ usedFraction: OUT_FROM, state: "ok" }))).toBe("out");
+    expect(zoneOf(win({ usedFraction: 1, state: "ok" }))).toBe("out");
   });
 
-  /** The clause with teeth: green already means "working" on every rail in the
-   *  window, so a healthy meter must not borrow it. */
-  it("has no class that could carry the working green", () => {
-    const classes = (["ok", "near", "exhausted", "unknown"] as LimitState[]).map(stateClass);
+  /** A refusal is the end of the road whether or not anybody divided it by a
+   *  ceiling — the same case `meterFraction` fills a bar for without a number. */
+  it("paints a refusal red with no share at all", () => {
+    expect(zoneOf(win({ state: "exhausted" }))).toBe("out");
+    expect(zoneOf(win({ usedFraction: 0.1, state: "exhausted" }))).toBe("out");
+  });
+
+  /** The bands add urgency the provider did not declare; they never take away
+   *  urgency it did. A limit counted in requests, a ceiling that moved — it knows
+   *  things this app does not. */
+  it("never overrules a provider downward", () => {
+    expect(zoneOf(win({ usedFraction: 0.2, state: "near" }))).toBe("near");
+    expect(zoneOf(win({ state: "near" }))).toBe("near");
+  });
+
+  /** No share and nothing wrong: an absolute with no ceiling, or a reading
+   *  nobody has. A hue there would be this app inventing the denominator it has
+   *  just said it does not have. */
+  it("gives no band at all where there is nothing to divide", () => {
+    expect(zoneOf(win({ state: "ok" }))).toBeNull();
+    expect(zoneOf(win({ amount: { used: 412_000, limit: null, unit: "tokens" }, state: "ok" }))).toBeNull();
+    expect(zoneClass(null)).toBe("");
+  });
+
+  it("has one class per band and they are all different", () => {
+    const classes = (["fine", "near", "out"] as const).map(zoneClass);
+    expect(classes).toEqual(["lim-fine", "lim-near", "lim-out"]);
     expect(new Set(classes).size).toBe(3);
-    expect(classes.some((c) => /work|green|good|fine-ok/.test(c) && c !== "lim-fine")).toBe(false);
+  });
+});
+
+describe("an alarm about windows a surface is not drawing", () => {
+  it("takes the worst band and says whether anything has actually stopped", () => {
+    expect(alarmOf([win({ usedFraction: 0.1, state: "ok" })])).toBeNull();
+    expect(alarmOf([])).toBeNull();
+    expect(alarmOf([win({ usedFraction: 0.8, state: "ok" })])).toEqual({ zone: "near", spent: false });
+    expect(alarmOf([
+      win({ usedFraction: 0.8, state: "ok" }),
+      win({ id: "week", usedFraction: 0.95, state: "ok" }),
+    ])).toEqual({ zone: "out", spent: false });
+    expect(alarmOf([win({ state: "exhausted" })])).toEqual({ zone: "out", spent: true });
+  });
+
+  /** The distinction the two fields exist for: red is red either way, and the
+   *  WORDS must not claim work has stopped where it has not. */
+  it("says spent only where something is refusing work", () => {
+    expect(alarmPhrase({ zone: "out", spent: true })).toBe("spent");
+    expect(alarmPhrase({ zone: "out", spent: false })).toBe("over 90% spent");
+    expect(alarmPhrase({ zone: "near", spent: false })).toBe("over 75% spent");
+  });
+
+  /** The phrase quotes the thresholds rather than restating them, so the
+   *  sentence and the hue cannot come to disagree about where amber starts. */
+  it("quotes the thresholds it was painted with", () => {
+    expect(alarmPhrase({ zone: "near", spent: false })).toContain(String(NEAR_FROM * 100));
+    expect(alarmPhrase({ zone: "out", spent: false })).toContain(String(OUT_FROM * 100));
   });
 });
 
@@ -250,8 +313,18 @@ describe("saying where a number came from", () => {
     expect(new Set(labels).size).toBe(4);
   });
 
+  /** What the DIALOG prints, which is the two names worth teaching and not the
+   *  third — ADR-0009's second amendment. `sourceLabel` still knows every name;
+   *  what changed is which of them reaches a surface. */
+  it("prints no tier at all over the account's own figure", () => {
+    expect(sourceBadge("reported")).toBeNull();
+    expect(sourceBadge("observed")).toBe("Observed");
+    expect(sourceBadge("estimated")).toBe("Estimated");
+    expect(sourceBadge("unknown")).toBe("Unknown");
+  });
+
   /** What a ROW says, which is no longer the tier's name — see ADR-0009's
-   *  amendment. The dialog still uses `sourceLabel` above; this is the row. */
+   *  amendment. The dialog uses `sourceBadge` above; this is the row. */
   it("says nothing beside the account's own figure", () => {
     expect(tierNote(win({ usedFraction: 0.23, source: "reported" }))).toBeNull();
   });
@@ -421,36 +494,51 @@ describe("the lineup of dials", () => {
   const week = (over: Partial<LimitWindow> = {}) =>
     win({ id: "week", label: "Current week", ...over });
 
-  /** A ring is a period coming round again, and the period worth planning
-   *  against is the week — not the five hours, which is the more urgent number
-   *  and gets the dot and the first line of the card instead. */
-  it("draws the weekly window where a provider declares one", () => {
+  /** The five hours, not the week: a glance is read while working rather than
+   *  while planning, and the five hours is the window that decides whether the
+   *  next prompt is answered. The week gets the dot and the second block of the
+   *  card instead. */
+  it("draws the five-hour window where a provider declares one", () => {
     const u = snap({ windows: [win({ usedFraction: 0.9 }), week({ usedFraction: 0.2 })] });
-    expect(ringWindow(u)?.id).toBe("week");
+    expect(glanceWindow(u)?.id).toBe("session");
+    // Declared order does not decide it — the id does.
+    const backwards = snap({ windows: [week({ usedFraction: 0.2 }), win({ usedFraction: 0.9 })] });
+    expect(glanceWindow(backwards)?.id).toBe("session");
   });
 
   /** No table of provider names in this file: a provider with no window called
-   *  "week" gets its LAST declared one, and both providers in the tree declare
-   *  theirs shortest first. */
-  it("falls back to the widest window a provider declared", () => {
+   *  "session" gets its FIRST declared one, and both providers in the tree
+   *  declare theirs shortest first. */
+  it("falls back to the narrowest window a provider declared", () => {
     const gemini = snap({ windows: [win({ id: "rpm" }), win({ id: "rpd" })] });
-    expect(ringWindow(gemini)?.id).toBe("rpd");
-    expect(ringWindow(snap())).toBeNull();
+    expect(glanceWindow(gemini)?.id).toBe("rpm");
+    expect(glanceWindow(snap())).toBeNull();
   });
 
   it("marks the worst window the ring is not already showing", () => {
-    const u = snap({ windows: [win({ state: "exhausted" }), week({ state: "ok" })] });
-    expect(dialAlert(u, ringWindow(u))).toBe("exhausted");
+    const u = snap({ windows: [win({ state: "ok" }), week({ state: "exhausted" })] });
+    expect(dialAlert(u, glanceWindow(u))).toEqual({ zone: "out", spent: true });
+  });
+
+  /** The bands reach the dot too: a week deep into its own band with a provider
+   *  that has not called it anything yet is exactly the case the ring cannot
+   *  carry. */
+  it("marks a window that only the bands call urgent", () => {
+    const u = snap({ windows: [win({ usedFraction: 0.1, state: "ok" }), week({ usedFraction: 0.8, state: "ok" })] });
+    expect(dialAlert(u, glanceWindow(u))).toEqual({ zone: "near", spent: false });
   });
 
   /** Nothing to add where the ring is already the worst of them, and nothing to
    *  add for a healthy window — a mark that appeared for every reading would
    *  stop meaning "act on this". */
   it("marks nothing the ring already says, and nothing that is fine", () => {
-    const worst = snap({ windows: [win({ state: "ok" }), week({ state: "exhausted" })] });
-    expect(dialAlert(worst, ringWindow(worst))).toBeNull();
-    const fine = snap({ windows: [win({ state: "ok" }), week({ state: "ok" })] });
-    expect(dialAlert(fine, ringWindow(fine))).toBeNull();
+    const worst = snap({ windows: [win({ state: "exhausted" }), week({ usedFraction: 0.1, state: "ok" })] });
+    expect(dialAlert(worst, glanceWindow(worst))).toBeNull();
+    const fine = snap({ windows: [
+      win({ usedFraction: 0.1, state: "ok" }),
+      week({ usedFraction: 0.1, state: "ok" }),
+    ] });
+    expect(dialAlert(fine, glanceWindow(fine))).toBeNull();
   });
 
   it("draws every brand in a fixed order whatever answered", () => {
