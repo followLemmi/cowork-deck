@@ -552,7 +552,7 @@ this ground a cast shadow has nowhere to go), and the terminal deliberately does
 palette — it is a window onto another program, and those six ANSI hues are Claude Code's.
 
 Every colour pair it claims is measured by `npm run contrast`, which fails if one falls under its
-threshold and documents the five that deliberately do. It runs on every pull request (#455), so a
+threshold and documents the thirteen that deliberately do. It runs on every pull request (#455), so a
 regression in the stylesheet cannot pass three green ticks. The reasoning, the tokens, the mockups and the
 measurements are in [docs/design/true-ink](docs/design/true-ink/README.md).
 
@@ -577,7 +577,7 @@ are the shape of it. Decisions worth outliving their issue are in [`docs/adr/`](
 
 | | |
 |---|---|
-| **Project memory** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | **Working, and being finished.** A closing session writes its own note, you can search them by meaning from the palette, and a session gets a `search_memory` tool of its own — see [Session notes](#session-notes) above. What is left is the panel that shows what a capture cost and which jobs failed, and reading the other CLIs' logs so their sessions get notes too. Local throughout: the embedding model runs on your machine and the index never leaves it. |
+| **Project memory** [#35](https://github.com/followLemmi/cowork-deck/issues/35) | **Working, and being finished.** A closing session writes its own note, the rail's Memory page lists and searches the whole corpus and writes into it by hand, the record at its foot says what every capture cost and which jobs failed, and a session gets a `search_memory` tool of its own — see [Session notes](#session-notes) above. What is left is reading the other CLIs' logs ([#371](https://github.com/followLemmi/cowork-deck/issues/371), [#372](https://github.com/followLemmi/cowork-deck/issues/372)) so their sessions get notes too, and what a capture costs sampled at more than one call ([#379](https://github.com/followLemmi/cowork-deck/issues/379)). Local throughout: the embedding model runs on your machine and the index never leaves it. |
 
 ### After that
 
