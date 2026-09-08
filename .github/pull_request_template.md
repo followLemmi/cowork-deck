@@ -19,4 +19,5 @@ English throughout: title, body, review comments and replies.
 - [ ] `npx tsc --noEmit`
 - [ ] `cargo test --manifest-path src-tauri/Cargo.toml`
 - [ ] `npm run contrast` (any change to `src/styles.css`)
+- [ ] `npm run tauri:versions` (any change to a lockfile)
 - [ ] Looked at in a real window, if it changes something on screen
