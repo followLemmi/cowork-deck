@@ -123,6 +123,18 @@ export const layout: SessionEntry[] = [
   },
 ];
 
+/** Where each session says it is working now, as `session_cwds` answers.
+ *
+ *  Every one of them reports the directory it was launched in, which is what a
+ *  session that has not `cd`-ed anywhere reports — so nothing on a tile reads
+ *  differently and the poll's "this is not a move" branch is the one exercised.
+ *  A session absent from this record would be legal too, and means "nothing has
+ *  said"; the five states the deck is shot in do not need that case, and a
+ *  fixture that moved a session would put a directory in the hero shot that its
+ *  branch badge could not be read from. */
+export const liveCwds: Record<string, string> =
+  Object.fromEntries(layout.map((e) => [e.sessionId, e.cwd]));
+
 export const gitByCwd: Record<string, { branch: string | null; dirty: boolean }> = {
   "/home/dev/code/relay": { branch: "main", dirty: true },
   "/home/dev/code/relay-pr/128-flaky-timer": { branch: "fix-flaky-timer", dirty: false },

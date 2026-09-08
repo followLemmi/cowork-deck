@@ -40,7 +40,12 @@ If the dev server answers on `localhost` but not on `127.0.0.1` — which is wha
 default Vite bind does on some machines — point the script at it:
 `HARNESS_URL=http://localhost:1420 node harness/shoot.mjs`.
 
-## Two things the script does that are worth knowing
+Playwright is a tool for the shots rather than a dependency of the app, so it is not in
+`package.json` and the script goes looking for it: an `npx` cache, then a global install,
+then `PLAYWRIGHT=/path/to/playwright/index.mjs`. `npx playwright@latest --version` once is
+enough to leave a copy where it is found.
+
+## Three things the script does that are worth knowing
 
 **It runs Chromium with WebGL off.** xterm draws through a WebGL canvas when it can, and a
 screenshot of one comes back wrong in headless Chromium: the capture takes the backing
@@ -54,6 +59,14 @@ renderer.
 downscale, the rounded corners and the 256-colour quantization. Without it the corners are
 cut in the page instead, `sips` does the downscale, and the shots come out at 1600px rather
 than 2000 — there is no quantizer to bring a 2000px file back under the size rule below.
+
+**It reports a command the harness does not answer.** `mock.ts` returns null for anything it
+has no case for, which is the right default and an invisible failure: the app carries on and
+the shot comes out plausible and wrong. Those lines are collected beside the console errors
+and printed after the file size, because that is what mock drift looks like from here — the
+2026-09-08 re-shoot found `start_session`'s payload, `prepare_workspace` and `session_cwds`
+all past the mock, and the visible symptom was five idle tiles in a deck whose whole subject
+is that they are in five different states.
 
 Vite does not watch this worktree (`vite.config.ts` ignores `.claude/worktrees/**`), so
 restart the dev server after editing a fixture or the shot will be of the old data.
@@ -91,13 +104,21 @@ One terminal zoomed near-full with the filmstrip of the others below it. This is
 thing in the app that a sentence cannot convey: the strip cards carry the name, the state,
 the branch and the token count and no terminal at all, which is the decision worth showing.
 
+**The left panel is shut by hand for this one**, and since #480 that is the only way it
+can be: the zoom leaves the panel exactly as it found it, because the panel is the
+person's. With it open the zoomed terminal is not near-full and every strip card's name is
+cut to `Revi…`, so the shot would be of a truncation rather than of a filmstrip. The script
+presses the same control a person would.
+
 ### `board.png` — the board belongs to a repository
 
 The board with a configured `board.json`, in the workspace panel where it now lives: the
 deck still on the left, three or four columns of cards, and a card in the working step
 carrying its "session running" line. The panel is widened first, the way a person would drag
-it — four columns clipped at two says nothing about a board. The ⚙ editor's dialog is *not*
-wanted here.
+it — four columns clipped at two says nothing about a board. Widened to **three whole
+columns**, and the number in `shoot.mjs` is the measurement rather than a taste: at the
+previous 760 px the third column arrived clipped down its middle, and the card it cut in
+half was the one carrying a live session. The ⚙ editor's dialog is *not* wanted here.
 
 ### `issues.png` — the second source
 
@@ -140,13 +161,17 @@ size rather than at twice it:
 
 ```bash
 node harness/record.mjs                       # → docs/images/demo.webm + a trim offset
-ffmpeg -ss <trim> -t <len> -i docs/images/demo.webm \
+ffmpeg -y -ss <trim> -t <len> -i docs/images/demo.webm \
   -vf "fps=9,scale=880:-1:flags=lanczos,split[a][b];\
        [a]palettegen=max_colors=96:stats_mode=diff[p];\
        [b][p]paletteuse=dither=none:diff_mode=rectangle" \
   -loop 0 docs/images/demo.gif
 rm docs/images/demo.webm                      # the intermediate is not committed
 ```
+
+`-y` because a re-shoot always has the old GIF in place, and ffmpeg's overwrite question
+goes to a prompt nobody is watching — the take is recorded by then, so the failure looks
+like a conversion that did nothing.
 
 `dither=none` is a judgement about this UI rather than a general setting: the surfaces are
 flat, so there is nothing for a dither to smooth and every pixel it changes is a pixel that

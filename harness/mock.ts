@@ -166,6 +166,14 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     case "plugin:opener|open_url":
       console.debug("[harness] would open in the system browser:", args.url);
       return null;
+    /* The status-area presence. Named rather than left to the default below,
+       which is right about the answer and wrong about the noise: the deck pushes
+       a panel on every poll tick, so an unhandled `tray_update` prints a line a
+       second into the console a shot's real errors have to be read out of. The
+       tray is its own window and the harness does not mount it. */
+    case "tray_update":
+    case "tray_resize":
+    case "tray_activate": return null;
     case "schedule_ack": return null;
     case "scheduler_ready": return null;
     case "claude_available": return true;
@@ -190,11 +198,22 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
     /* Sessions. */
     case "load_layout": return F.layout;
     case "save_layout": return null;
+    /* The session id arrives inside `req`, not beside it: `start_session` takes
+       one `LaunchRequest` struct, and only `sink` stays outside it because Tauri
+       reads a channel's identity from the top level of the payload. Reading
+       `args.session` here — which is what this did until the struct landed — cost
+       every shot: the sink was filed under `undefined`, so no scrollback and no
+       state hook ever reached a tile and all five came up idle. */
     case "start_session": {
-      rememberSink(args.session as string, args.sink);
-      feed(args.session as string);
+      const session = (args.req as { session: string }).session;
+      rememberSink(session, args.sink);
+      feed(session);
       return { account: "acme-dev", degraded: null };
     }
+    /* The account binding, resolved off the paint thread ahead of a launch. The
+       harness has nothing to resolve, but it must answer: the deck calls this
+       before every `start_session`. */
+    case "prepare_workspace": return { account: "acme-dev", degraded: null };
     case "start_command_session": {
       rememberSink(args.session as string, args.sink);
       return null;
@@ -229,6 +248,18 @@ function handle(cmd: string, args: Record<string, unknown>): unknown {
       return F.filesByCwd[args.cwd as string] ?? [];
     case "git_changes":
       return F.changesByCwd[args.cwd as string] ?? { branch: null, files: [] };
+    /* Where each session is working now. Only the ids asked about, and only the
+       ones that have answered: the caller reads an absent id as "keep using the
+       launch directory", so filling in the rest would be the backend guessing on
+       the frontend's behalf — which is the thing `session_cwds` exists not to do. */
+    case "session_cwds": {
+      const out: Record<string, string> = {};
+      for (const id of args.sessions as string[]) {
+        const cwd = F.liveCwds[id];
+        if (cwd) out[id] = cwd;
+      }
+      return out;
+    }
     case "session_snapshots": {
       // Every requested id gets an entry, exactly as the Rust command promises —
       // a mock that dropped the unknown ones would hide the bug it exists to show.
