@@ -14,6 +14,7 @@
     "test": "vitest run",
     "contrast": "node scripts/contrast.mjs",
     "adr:check": "node scripts/adr-check.mjs",
+    "tauri:versions": "node scripts/tauri-versions.mjs",
     "tauri": "tauri",
     "dev:instance": "bash scripts/dev-instance.sh",
     "stage:reporter": "bash scripts/stage-reporter.sh",

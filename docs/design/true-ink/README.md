@@ -555,10 +555,15 @@ doing the shooting — `magick` is what draws the window's rounded corners and r
 npm run contrast
 ```
 
-82 cases from `src/styles.css` and `src/terminal.ts`, 77 with a threshold and all of them
-clear, 5 documented rejections. The last four are the sync dialog's two banners, text and
-border: both grounds were `color-mix()`, which this parser cannot read, so the one surface
-in the app putting body text on a tinted amber ground had never been measured (#463).
+Every case it measures is read out of `src/styles.css` and `src/terminal.ts` rather than
+restated anywhere, so a palette edit moves the measurements instead of silently disagreeing
+with them. It prints how many cases carry a threshold, whether all of them clear it, and how
+many rejections are on record with the reasoning for each. Those figures are not repeated
+here — see the note at the end of this section.
+
+Among them are the sync dialog's two banners, text and border. Both grounds were
+`color-mix()` until #463, which this parser cannot read, so the one surface in the app
+putting body text on a tinted amber ground had never been measured at all.
 
 The script also refuses a `var()` used with no fallback that nothing declares. That is not
 a style rule: such a declaration is invalid at computed-value time, so the property
@@ -566,15 +571,27 @@ inherits and every earlier declaration for it in the cascade is discarded — wh
 card title threw away its own field's `--fs-base`, and how `.hist-row` had no radius at
 all, for a month each. Properties `src/*.ts` writes with `setProperty` are read out of the
 source rather than listed, because the reason they are absent from `:root` is that
-JavaScript writes them. The script reads both files rather than restating them, so
-a palette edit moves these numbers instead of silently disagreeing with them. Six of the
-cases are this pass's: the ledger's two hues on the chrome and on the ground their own
-hover paints, and the rail's dot in both states.
+JavaScript writes them.
+
+What this pass put into the list is the ledger and the rail's dot: `a waiting reading in
+the ledger` and `a stopped reading in the ledger`, each measured again on the ground its
+own hover paints, because a reading whose hover moves the ground is a reading measured
+twice; and `the rail's dot` in both of its states, waiting and stopped. Later passes have
+added to the same list — the limit dials (#498) and the workspace band's gradient among
+them — so the list is a good deal longer than this pass's share of it.
 
 It runs in CI (#455). Before that it exited non-zero on failure and nobody called it, which
 made the gate an intention rather than a gate.
 
 ```
-npm test            # 1138, including the panel's contract and the 80-column floor
-cargo test --manifest-path src-tauri/Cargo.toml   # 645, including the porcelain folding
+npm test            # the panel's contract and the 80-column floor
+cargo test --manifest-path src-tauri/Cargo.toml   # the porcelain folding
 ```
+
+**No count in this section is maintained by hand.** This page used to state four of them —
+how many contrast cases there are, how many carry a threshold, how many rejections are
+documented, and how many tests each suite runs — and all four were stale by the 0.6.0
+release, far enough out that the paragraph read as being about a different codebase (#522).
+The commands above are the answer to *how many*; naming a figure here only puts a second,
+rotting copy beside the one the tools compute. If you find yourself wanting to write a
+number in, run the command instead.
