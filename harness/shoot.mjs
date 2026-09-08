@@ -165,6 +165,18 @@ const wspTab = async (page, name) => {
   await openWorkspacePanel(page);
   await page.locator(".wsp-tab", { hasText: name }).first().click();
 };
+/* Shut the left panel, by its own control and not by a class.
+ *
+ * A shot needs this since #480: the zoom used to collapse the panel itself, and
+ * now it leaves it exactly as it found it — correctly, because the panel is the
+ * person's. So the width the filmstrip is shot at is a width somebody chose, and
+ * the script has to choose it the way a person would. The wait is on the class
+ * the button writes; the settle is for `--dur-3`, the animation behind it. */
+const shutPanel = async (page) => {
+  await page.locator("#panel-shut").click();
+  await page.waitForSelector("#sidebar.is-collapsed");
+  await settle(page, 600);
+};
 
 const SHOTS = {
   async deck(page) {
@@ -179,6 +191,10 @@ const SHOTS = {
     await deckReady(page);
     await page.locator(".tile").first().locator(".tile-name").dblclick();
     await page.waitForSelector(".deck-strip .tile.minimized");
+    // The panel goes, because the strip is what this shot is of: at the width
+    // the panel leaves, four cards share what one tile had and every name is cut
+    // to "Revi…" — which is a shot of a truncation rather than of a filmstrip.
+    await shutPanel(page);
     await settle(page, 800);
   },
 
@@ -186,7 +202,11 @@ const SHOTS = {
     await deckReady(page);
     await wspTab(page, "Board");
     await page.waitForSelector(".tk-cols .tk-card");
-    await widenWorkspacePanel(page);
+    /* Wide enough for three WHOLE columns, which is what `docs/images/README.md`
+       asks of this shot and what 760 no longer bought: the third column arrived
+       clipped down its middle, so the one card carrying a live session — the
+       thing the board does that a list cannot — was cut in half. */
+    await widenWorkspacePanel(page, 940);
     await settle(page);
   },
 
@@ -250,6 +270,12 @@ async function shootWorkspaceWindow(browser) {
   if (!HAS_MAGICK) await roundInPage(page);
   await page.screenshot({ path: file, omitBackground: !HAS_MAGICK });
   await page.close();
+  /* `frame`, like every other shot — the line this function was missing, and the
+     comment above claimed it had. Without it the ImageMagick path never ran, so
+     this one came out of a 2× viewport at 2880px with square corners while its
+     six neighbours were 2000px and rounded: the odd shot in a README laid out to
+     one width, and the only one whose window edge was a rectangle of pixels. */
+  frame(file);
   const size = shrink(file);
   console.log(`workspace-window.png ${(size / 1024).toFixed(0)} kB`);
 }
@@ -281,6 +307,15 @@ for (const name of names) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("response", (r) => { if (r.status() >= 400) errors.push(`${r.status()} ${r.url()}`); });
+  /* A command the mock does not answer is a shot of a screen with a hole in it,
+     and it is the failure that does not announce itself: `handle`'s default
+     returns null, so the app carries on and the shot comes out plausible and
+     wrong. `session_cwds` fell out of the mock this way and cost a re-shoot, so
+     the line it prints is collected here beside the real errors rather than left
+     in a console nobody attaches to. */
+  page.on("console", (m) => {
+    if (m.text().startsWith("[harness] unhandled command")) errors.push(m.text());
+  });
   await shot(page);
   const file = join(OUT, `${name}.png`);
   if (!HAS_MAGICK) await roundInPage(page);
