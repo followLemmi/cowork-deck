@@ -565,6 +565,13 @@ mod tests {
     /// A `Sidecar` whose "binary" is a shell script, so the runner can be driven
     /// without a 479 MB download. `--root` and the subcommand arrive as arguments
     /// the script ignores.
+    ///
+    /// `@DIR@` in the script is replaced by the sidecar's own directory, so a
+    /// script can name a file the test looks at too. That is the whole reason the
+    /// placeholder exists: a test that needs one used to write its script itself,
+    /// after `faked` had already written one, and staging an executable is the
+    /// thing in here with a race in it (#512) — so there is one staging path and
+    /// no test rewrites the file afterwards.
     #[cfg(unix)]
     fn faked(name: &str, script: &str) -> (Sidecar, PathBuf) {
         // No `ThreadId(2)` in the name: it has parentheses in it, and these paths
@@ -579,13 +586,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("fake_memory");
-        std::fs::write(&p, format!("#!/bin/sh\n{script}\n")).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        let body = format!("#!/bin/sh\n{script}\n").replace("@DIR@", &dir.display().to_string());
+        stage_executable(&p, &body);
         (Sidecar { program: p, root: dir.clone() }, dir)
+    }
+
+    /// Put `body` at `path` and make it executable **without this process ever
+    /// holding a write descriptor on the file it is about to exec** — #512.
+    ///
+    /// `ETXTBSY`, "Text file busy", is the kernel refusing to exec a file that
+    /// has a writer, and a writer is an open file, not a busy thread:
+    /// descriptors belong to the process. The harness runs these tests in
+    /// parallel, so while one thread sits inside a write another thread can spawn
+    /// a process; that child gets a copy of the descriptor table, and its copy
+    /// holds the write open until it reaches its own `exec`. Exec'ing the script
+    /// inside that window fails, which is why the flake needed load and why the
+    /// test passed when run on its own.
+    ///
+    /// Writing to a temporary name and renaming does **not** close that window,
+    /// which is worth saying because it is the usual advice: `rename` moves a
+    /// name and `ETXTBSY` is a property of the inode, so the renamed file is the
+    /// same file the inherited descriptor still refers to. That trick cures the
+    /// opposite direction — a writer refused because the file is running — and
+    /// buys nothing here.
+    ///
+    /// So the write happens in a child process instead. `sh` opens `$1` for the
+    /// redirection and `chmod` needs no descriptor at all, so nothing in *this*
+    /// process's table ever refers to `path` and no fork of it can carry a writer
+    /// into the window, however many threads are spawning. The body travels as an
+    /// argument rather than through a quoted command, so a script containing
+    /// quotes and braces needs no escaping.
+    #[cfg(unix)]
+    fn stage_executable(path: &std::path::Path, body: &str) {
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"printf '%s' "$2" > "$1" && chmod 755 "$1""#)
+            .arg("sh") // `$0`, so the path and the body land on `$1` and `$2`
+            .arg(path)
+            .arg(body)
+            .output()
+            .expect("staging the fake sidecar needs a shell");
+        assert!(
+            out.status.success(),
+            "staging {} failed: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim(),
+        );
     }
 
     #[test]
@@ -615,23 +661,13 @@ echo '{"file":"model.onnx","got":2000000,"total":479383128}'"#,
     #[test]
     #[cfg(unix)]
     fn a_line_is_delivered_before_the_process_finishes() {
-        let (s, dir) = faked("early", "");
+        let (s, dir) = faked(
+            "early",
+            r#"echo '{"file":"model.onnx","got":5,"total":10}'
+while [ ! -f "@DIR@/go" ]; do sleep 0.05; done
+echo '{"file":"model.onnx","got":10,"total":10}'"#,
+        );
         let go = dir.join("go");
-        std::fs::write(
-            s.program(),
-            format!(
-                "#!/bin/sh\n\
-                 echo '{{\"file\":\"model.onnx\",\"got\":5,\"total\":10}}'\n\
-                 while [ ! -f \"{go}\" ]; do sleep 0.05; done\n\
-                 echo '{{\"file\":\"model.onnx\",\"got\":10,\"total\":10}}'\n",
-                go = go.display(),
-            ),
-        )
-        .unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(s.program(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
 
         let mut seen: Vec<u64> = Vec::new();
         s.download_model(&mut |p| {
