@@ -10,9 +10,24 @@
 #     rustfmt wants, throughout — adding the check would fail every run until
 #     someone reformats the crate, which is a decision about the code's style
 #     and not something a CI file gets to make on its own.
-#   * No bundling. `tauri build` is the release workflow's job; duplicating it
-#     per pull request would multiply the slowest step in the project for no
-#     answer that a tag build does not already give.
+#   * No bundling. `tauri build` is the release workflow's job, and running it
+#     per pull request would cost far more than the bundle it skips: its
+#     `beforeBuildCommand` release-builds all three sidecars, `cowork_memory`
+#     and its ONNX Runtime among them, on top of a release build of the app,
+#     and none of that shares a target directory with the debug artifacts
+#     `cargo test` leaves in the cache.
+#
+# That second trade stands; the sentence that used to follow it does not. It
+# claimed a tag build gives no answer a pull request does not, and twice it has
+# been wrong. `tauri build`'s very first step, before any compiling, compares
+# the Tauri versions in Cargo.lock against the ones in package-lock.json —
+# v0.6.0 failed there on all three platforms because a bump had moved one
+# lockfile and left the other behind (#523). That comparison is not the slow
+# part of a build and no longer waits for a tag: `npm run tauri:versions` in the
+# `frontend` job does the same comparison in milliseconds. What remains true is
+# narrower and worth stating plainly — nothing here bundles, so nothing here
+# notices a sidecar that `beforeBuildCommand` forgets to stage (#460), which is
+# guarded instead by `stage-sidecar.sh` reading its list out of tauri.conf.json.
 #
 # Clippy used to be on that list, with 21 warnings standing. It is a gate now
 # (see the step in the `rust` job): the warnings are gone, so `-D warnings` fails
@@ -67,6 +82,13 @@ jobs:
       # obvious. Cheap enough to sit beside the contrast gate.
       - name: ADR numbering
         run: npm run adr:check
+
+      # The one thing a tag build used to be alone in checking. Reads the two
+      # lockfiles and nothing else — no `node_modules`, no toolchain, no
+      # network — so it belongs beside the other second-long gates rather than
+      # in the `rust` job with the crates it is talking about.
+      - name: Tauri versions
+        run: npm run tauri:versions
 
   rust:
     # Both platforms, and not for symmetry: the terminal bugs this project has
