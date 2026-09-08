@@ -80,7 +80,7 @@ A release is a pull request from `dev` into `main`, a version bump in
 commit. `.github/workflows/release.yml` triggers on that tag rather than on any
 branch, and refuses to build when the tag and the config version disagree.
 
-Two things follow, and both are easy to get wrong:
+Three things follow, and each is easy to get wrong:
 
 - **A pull request against `main` is a mistake unless it is the release.**
   `gh pr create` uses the default branch, so this only goes wrong when someone
@@ -88,9 +88,21 @@ Two things follow, and both are easy to get wrong:
 - **`main`'s README describes the shipped app.** Documentation for something not
   yet released belongs on `dev`, and reaches `main` when the release carries it
   over.
+- **`main` does not require a pull request's head to be up to date with it.**
+  `dev-ruleset` sets `strict_required_status_checks_policy` and `main-ruleset`
+  deliberately does not. On `dev` the policy earns its keep, because several task
+  branches are in flight at once and one tested against a stale `dev` is a real
+  risk. `main` moves from one source only, so on it the policy bought nothing and
+  cost a loop: the release is a merge commit, that commit lands on `main` and not
+  on `dev`, and the next release then sat at `BEHIND` until a pull request with an
+  empty diff cleared it — a pull request, because `dev` allows no bypass actor
+  either. Two of those shipped with 0.6.0 before the policy came off (#527). The
+  three required checks are unchanged on both branches; only up-to-dateness went.
 
-A hotfix branches from `main` and its pull request goes to `main`; `main` is then
-merged back into `dev`, or the fix is lost at the next release.
+So an ordinary release needs nothing merged back. A hotfix does: it branches from
+`main` and its pull request goes to `main`, and `main` is then merged back into
+`dev`, or the fix is lost at the next release. That merge carries content, which
+is what makes it the only one that should ever exist.
 
 ## Where work is written down
 
